@@ -11,7 +11,7 @@ import xbmcplugin
 import xbmcaddon
 import xbmcvfs
 
-from . import scraper, tmdb, player, domain, download
+from . import scraper, tmdb, player, domain, download, debrid
 
 ADDON = xbmcaddon.Addon()
 HANDLE = int(sys.argv[1]) if len(sys.argv) > 1 else -1
@@ -20,35 +20,43 @@ BASE = sys.argv[0] if sys.argv else "plugin://plugin.video.dontorrent/"
 ADDON_PATH = xbmcvfs.translatePath(ADDON.getAddonInfo("path"))
 ICON = os.path.join(ADDON_PATH, "icon.png")
 FANART = os.path.join(ADDON_PATH, "fanart.jpg")
+MEDIA = os.path.join(ADDON_PATH, "resources", "media")
 # DEFAULT_ART intentionally only sets fanart so we never overwrite a real
 # poster with the addon logo when TMDB enrichment misses.
 DEFAULT_ART = {"fanart": FANART}
 
-# Kodi ships these PNGs in every skin's media folder, so referencing them
-# by filename gives us per-section icons without bundling extra art.
+
+def _ic(name):
+    """Resolve a custom section icon shipped in resources/media/."""
+    return os.path.join(MEDIA, name)
+
+
+# Custom flat-colored icons generated via tools/make_icons.py. Same image is
+# reused across closely related sections (e.g. movie / movie_hd / movie_4k
+# all share the cinema clapper).
 SECTION_ICONS = {
-    "home_estrenos":     "DefaultRecentlyAddedMovies.png",
-    "home_movie":        "DefaultMovies.png",
-    "home_tvshow":       "DefaultTVShows.png",
-    "home_documentary":  "DefaultVideoPlaylists.png",
-    "home_search":       "DefaultAddonsSearch.png",
-    "home_refresh":      "DefaultAddonsUpdates.png",
-    "home_diagnose":     "DefaultAddonService.png",
-    "home_help":         "DefaultAddonHelp.png",
-    "home_settings":     "DefaultAddonProgram.png",
-    "movie":             "DefaultMovies.png",
-    "movie_hd":          "DefaultMovies.png",
-    "movie_4k":          "DefaultMovies.png",
-    "tvshow":            "DefaultTVShows.png",
-    "tvshow_hd":         "DefaultTVShows.png",
-    "tvshow_4k":         "DefaultTVShows.png",
-    "documentary":       "DefaultVideoPlaylists.png",
-    "estrenos":          "DefaultRecentlyAddedMovies.png",
-    "estrenos_movie":    "DefaultRecentlyAddedMovies.png",
-    "estrenos_tvshow":   "DefaultRecentlyAddedEpisodes.png",
-    "search_movie":      "DefaultAddonsSearch.png",
-    "search_tvshow":     "DefaultAddonsSearch.png",
-    "next_page":         "DefaultFolderBack.png",
+    "home_estrenos":     _ic("estrenos.png"),
+    "home_movie":        _ic("movie.png"),
+    "home_tvshow":       _ic("tvshow.png"),
+    "home_documentary":  _ic("documentary.png"),
+    "home_search":       _ic("search.png"),
+    "home_refresh":      _ic("refresh.png"),
+    "home_diagnose":     _ic("diagnose.png"),
+    "home_help":         _ic("help.png"),
+    "home_settings":     _ic("settings.png"),
+    "movie":             _ic("movie.png"),
+    "movie_hd":          _ic("movie.png"),
+    "movie_4k":          _ic("movie.png"),
+    "tvshow":            _ic("tvshow.png"),
+    "tvshow_hd":         _ic("tvshow.png"),
+    "tvshow_4k":         _ic("tvshow.png"),
+    "documentary":       _ic("documentary.png"),
+    "estrenos":          _ic("estrenos.png"),
+    "estrenos_movie":    _ic("estrenos.png"),
+    "estrenos_tvshow":   _ic("estrenos.png"),
+    "search_movie":      _ic("search.png"),
+    "search_tvshow":     _ic("search.png"),
+    "next_page":         _ic("next_page.png"),
 }
 
 
@@ -462,6 +470,49 @@ def _pick_streamable_alternative(page_url):
     return sibling, dl, info
 
 
+def _rd_settings():
+    """Return (enabled, token, mode) where mode is 'auto', 'rd_only' or
+    'elementum_only'."""
+    enabled = ADDON.getSetting("rd_enabled") == "true"
+    token = ADDON.getSetting("rd_token") or ""
+    backend = ADDON.getSetting("player_backend") or "0"
+    mode = {"0": "auto", "1": "rd_only", "2": "elementum_only"}.get(backend, "auto")
+    return enabled, token.strip(), mode
+
+
+def _try_realdebrid(magnet_or_torrent):
+    """Send the magnet (or fallback HTTPS torrent URL) to Real-Debrid and
+    return a direct streamable URL. Shows a progress dialog while waiting.
+    Returns None on any failure (caller falls back)."""
+    enabled, token, _ = _rd_settings()
+    if not enabled or not token:
+        return None
+    progress = xbmcgui.DialogProgress()
+    progress.create("Real-Debrid", "Enviando a Real-Debrid...")
+    try:
+        def cb(pct, status):
+            if progress.iscanceled():
+                raise debrid.DebridError("Cancelado por el usuario")
+            progress.update(max(1, min(99, pct)), status)
+        if magnet_or_torrent.startswith("magnet:"):
+            return debrid.stream_url(token, magnet=magnet_or_torrent, progress_cb=cb)
+        # If we only have an https .torrent URL, download once and pass bytes.
+        import requests
+        r = requests.get(magnet_or_torrent, timeout=20,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        return debrid.stream_url(token, torrent_bytes=r.content, progress_cb=cb)
+    except debrid.DebridError as e:
+        xbmcgui.Dialog().notification("Real-Debrid", str(e),
+                                       xbmcgui.NOTIFICATION_WARNING, 5000)
+        return None
+    except Exception as e:
+        xbmc.log(f"[plugin.video.dontorrent] RD error: {e}", xbmc.LOGERROR)
+        return None
+    finally:
+        progress.close()
+
+
 def play(cid, tabla, page_url):
     try:
         torrent_url = download.resolve_torrent(cid, tabla, page_url=page_url)
@@ -471,10 +522,39 @@ def play(cid, tabla, page_url):
         return
 
     # Always inspect the .torrent: cheap, gives us the magnet URI (which
-    # Elementum handles much more reliably than an https URL), and lets
+    # both RD and Elementum handle more reliably than an https URL), and lets
     # us detect RAR packaging before launching playback.
     info = download.inspect_torrent(torrent_url) or {}
     play_uri = info.get("magnet") or torrent_url
+
+    rd_enabled, rd_token, mode = _rd_settings()
+
+    # Real-Debrid path: the user's premium account streams the file
+    # straight from RD's servers, including extracting RAR archives. This
+    # is the only way to play microHD-style RAR releases without a long
+    # local download.
+    if mode in ("auto", "rd_only") and rd_enabled and rd_token:
+        direct = _try_realdebrid(play_uri)
+        if direct:
+            xbmc.log(f"[plugin.video.dontorrent] RD direct: {direct[:80]}...", xbmc.LOGINFO)
+            item = xbmcgui.ListItem(path=direct)
+            item.setProperty("IsPlayable", "true")
+            xbmcplugin.setResolvedUrl(HANDLE, True, item)
+            return
+        if mode == "rd_only":
+            xbmcgui.Dialog().notification(
+                "DonTorrent", "Real-Debrid fallo y modo es 'solo RD'",
+                xbmcgui.NOTIFICATION_ERROR, 5000)
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+            return
+        # mode == "auto" and RD failed -> fall through to Elementum.
+
+    if mode == "elementum_only":
+        # Skip RAR alt-search even if it's a RAR; user explicitly wants Elementum.
+        play_url = player.elementum_url(play_uri)
+        item = xbmcgui.ListItem(path=play_url)
+        xbmcplugin.setResolvedUrl(HANDLE, True, item)
+        return
 
     skip_warning = ADDON.getSetting("skip_rar_warning") == "true"
     if info.get("is_rar") and not skip_warning:
@@ -585,7 +665,27 @@ def diagnose():
             lines.append(f"  - {it['title']}")
     except Exception as e:
         lines.append(f"Fallo cargando peliculas: {e}")
+    lines.append("")
+    rd_en, rd_tok, mode = _rd_settings()
+    lines.append(f"Real-Debrid activado: {rd_en}  (modo: {mode})")
+    if rd_en and rd_tok:
+        ok, msg = debrid.ping(rd_tok)
+        lines.append(f"  cuenta: {msg}" if ok else f"  ERROR: {msg}")
+    elif rd_en:
+        lines.append("  (sin token configurado)")
     xbmcgui.Dialog().textviewer("DonTorrent - Diagnostico", "\n".join(lines))
+
+
+def rd_test():
+    rd_en, rd_tok, _ = _rd_settings()
+    if not rd_tok:
+        xbmcgui.Dialog().ok("Real-Debrid", "No hay token configurado.")
+        return
+    ok, msg = debrid.ping(rd_tok)
+    if ok:
+        xbmcgui.Dialog().ok("Real-Debrid", f"Conexion correcta:\n\n{msg}")
+    else:
+        xbmcgui.Dialog().ok("Real-Debrid", f"Fallo de conexion:\n\n{msg}")
 
 
 HELP_TEXT = """DonTorrent - Addon privado para Kodi
@@ -611,8 +711,21 @@ descartando los marcados como Censurado (cruz roja).
 La revalidacion ocurre cada 12 horas por defecto (configurable en Ajustes).
 Tambien puedes forzarla desde el menu -> Actualizar dominio ahora.
 
+REPRODUCCION CON REAL-DEBRID (recomendado para RAR)
+Si configuras tu API token de Real-Debrid en Ajustes -> Real-Debrid, el
+addon enviara cada torrent a tu cuenta RD, esperara unos segundos y
+reproducira un enlace HTTPS directo desde los servidores de RD. Esto
+permite ver releases en RAR (microHD, etc.) sin descarga local y sin
+descomprimir nada.
+Token: real-debrid.com -> Mi cuenta -> API.
+
+MODOS DE REPRODUCCION (Ajustes -> Reproduccion)
+- Auto: Real-Debrid si esta configurado, si no Elementum.
+- Solo Real-Debrid: nunca usa Elementum.
+- Solo Elementum: nunca usa Real-Debrid.
+
 REQUISITOS
-- Elementum instalado y funcionando.
+- Elementum y/o cuenta Real-Debrid.
 - Conexion a Internet.
 
 CAPTCHA
@@ -622,7 +735,7 @@ un captcha. En ese caso espera unos minutos e intentalo de nuevo.
 PRIVACIDAD
 Este addon es privado, no envia telemetria y no recoge datos.
 
-VERSION 0.4.2
+VERSION 0.5.0
 """
 
 
@@ -654,6 +767,8 @@ def router(qs):
             refresh_domain()
         elif action == "diagnose":
             diagnose()
+        elif action == "rd_test":
+            rd_test()
         elif action == "help":
             show_help()
         elif action == "settings":
