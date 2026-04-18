@@ -13,14 +13,6 @@
     <setting id="tmdb_lang" type="text" label="Idioma TMDB" default="es-ES"/>
   </category>
   <category label="Reproduccion">
-    <setting id="player_backend" type="enum" label="Modo de reproduccion preferido"
-             values="Auto (Real-Debrid si esta configurado, si no Elementum)|Solo Real-Debrid|Solo Elementum"
-             default="0"/>
-    <setting id="skip_rar_warning" type="bool" label="No avisar si el torrent es RAR (Elementum)" default="false"/>
-  </category>
-  <category label="Real-Debrid">
-    <setting id="rd_enabled" type="bool" label="Activar Real-Debrid" default="false"/>
-    <setting id="rd_token" type="text" label="API token (real-debrid.com -> Mi cuenta -> API)" default="" option="hidden"/>
-    <setting id="rd_test" type="action" label="Probar conexion" action="RunPlugin(plugin://plugin.video.dontorrent/?action=rd_test)"/>
+    <setting id="skip_rar_warning" type="bool" label="No avisar si el torrent es RAR (pasar directo a Elementum)" default="false"/>
   </category>
 </settings>
