@@ -11,16 +11,16 @@ Kodi donde lo instales.
 1. En el dispositivo (PC, Fire Stick, TV box...) abre esta URL en el
    navegador (descarga directa, no listado):
 
-   https://github.com/tictacfit01-source/dontorrent-kodi/releases/latest/download/repository.dontorrent-1.0.0.zip
+   https://github.com/tictacfit01-source/dontorrent-kodi/releases/latest/download/repository.dontorrent-1.0.1.zip
 
 2. Abre Kodi -> Ajustes -> Sistema -> Complementos -> activa
    **Origenes desconocidos**.
 3. Complementos -> icono de la caja abierta -> **"Instalar desde un
    archivo zip"** -> navega a Descargas -> selecciona
-   `repository.dontorrent-1.0.0.zip`.
-4. Espera al toast verde "Complemento instalado: DonTorrent Repo (israe)".
-5. Mismo menu -> **"Instalar desde repositorio"** -> "DonTorrent Repo
-   (israe)" -> Complementos de video -> **DonTorrent** -> Instalar.
+   `repository.dontorrent-1.0.1.zip`.
+4. Espera al toast verde "Complemento instalado: DonTorrent Repo".
+5. Mismo menu -> **"Instalar desde repositorio"** -> "DonTorrent Repo"
+   -> Complementos de video -> **DonTorrent** -> Instalar.
 
 A partir de aqui, cada vez que se publique una nueva version, Kodi la
 descargara solo (revision automatica cada 24h por defecto, o forzando
