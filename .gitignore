@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+
+# local build artifacts (the ones in /repo are tracked)
+/plugin.video.dontorrent-*.zip

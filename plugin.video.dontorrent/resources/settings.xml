@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+  <category label="Dominio">
+    <setting id="telegram_channel" type="text" label="Canal de Telegram (sin @)" default="DonTorrent"/>
+    <setting id="manual_domain" type="text" label="Dominio manual (vacio = automatico)" default=""/>
+    <setting id="cache_hours" type="slider" label="Revalidar dominio cada (horas)" default="12" range="1,1,72" option="int"/>
+    <setting id="cached_domain" type="text" label="Dominio en cache" default="" visible="false"/>
+    <setting id="cached_at" type="text" label="" default="0" visible="false"/>
+  </category>
+  <category label="TMDB">
+    <setting id="tmdb_enabled" type="bool" label="Enriquecer con TMDB (caratulas/sinopsis)" default="true"/>
+    <setting id="tmdb_api_key" type="text" label="TMDB API key (opcional)" default=""/>
+    <setting id="tmdb_lang" type="text" label="Idioma TMDB" default="es-ES"/>
+  </category>
+  <category label="Reproduccion">
+    <setting id="skip_rar_warning" type="bool" label="No avisar si el torrent es RAR (pasar directo a Elementum)" default="false"/>
+  </category>
+</settings>

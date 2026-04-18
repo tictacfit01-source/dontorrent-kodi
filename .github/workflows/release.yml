@@ -1,0 +1,41 @@
+name: Build Kodi repo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugin.video.dontorrent/**"
+      - "repository.dontorrent/**"
+      - "tools/build_repo.py"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build repo/
+        run: python tools/build_repo.py
+
+      - name: Commit repo/ if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repo
+          if git diff --cached --quiet; then
+            echo "No changes to repo/"
+          else
+            git commit -m "ci: rebuild Kodi repo"
+            git push
+          fi
