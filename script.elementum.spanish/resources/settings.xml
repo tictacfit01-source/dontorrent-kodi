@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+  <category label="Proveedores">
+    <setting id="provider_dontorrent"   type="bool" label="DonTorrent"   default="true"/>
+    <setting id="provider_mejortorrent" type="bool" label="MejorTorrent" default="true"/>
+    <setting id="provider_wolfmax4k"    type="bool" label="WolfMax4k"    default="true"/>
+    <setting id="provider_divxtotal"    type="bool" label="DivxTotal"    default="false"/>
+  </category>
+  <category label="Avanzado">
+    <setting id="max_results_per_provider" type="slider" label="Maximo resultados por proveedor" default="8" range="3,1,20" option="int"/>
+    <setting id="resolve_timeout" type="slider" label="Timeout por resolucion (segundos)" default="15" range="5,1,30" option="int"/>
+    <setting id="domain_cache_hours" type="slider" label="Cachear dominio (horas)" default="12" range="1,1,72" option="int"/>
+  </category>
+  <category label="Diagnostico">
+    <setting id="debug_log" type="bool" label="Log detallado en kodi.log" default="false"/>
+    <setting id="cached_domains" type="text" label="" default="" visible="false"/>
+  </category>
+</settings>

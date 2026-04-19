@@ -25,6 +25,7 @@ REPO_DIR = os.path.join(ROOT, "repo")
 # Folders that look like addon sources (must contain addon.xml at the root).
 ADDON_DIRS = [
     "plugin.video.dontorrent",
+    "script.elementum.spanish",
     "repository.dontorrent",
 ]
 

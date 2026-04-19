@@ -20,7 +20,30 @@
       <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
-</addon><addon id="repository.dontorrent" name="DonTorrent Repo" version="1.0.1" provider-name="DonTorrent">
+</addon><addon id="script.elementum.spanish" name="Elementum - Espanol" version="0.1.0" provider-name="DonTorrent">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0" />
+    <import addon="script.module.requests" version="2.22.0" />
+    <import addon="script.module.beautifulsoup4" version="4.9.3" />
+    <import addon="plugin.video.elementum" />
+    <import addon="plugin.video.dontorrent" optional="true" />
+  </requires>
+  <extension point="xbmc.python.script" library="addon.py">
+    <provides>executable</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="es_ES">Proveedor de torrents en castellano para Elementum</summary>
+    <description lang="es_ES">Anade fuentes en espanol castellano (DonTorrent, MejorTorrent, WolfMax4k, DivxTotal) como proveedor nativo de Elementum. Resuelve dominios automaticamente desde Telegram.</description>
+    <platform>all</platform>
+    <language>es</language>
+    <license>Private</license>
+    <reuselanguageinvoker>true</reuselanguageinvoker>
+    <assets>
+      <icon>icon.png</icon>
+      <fanart>fanart.jpg</fanart>
+    </assets>
+  </extension>
+</addon><addon id="repository.dontorrent" name="DonTorrent Repo" version="1.0.2" provider-name="DonTorrent">
   <extension point="xbmc.addon.repository" name="DonTorrent Repo">
     <info compressed="false">https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/addons.xml</info>
     <checksum>https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/addons.xml.md5</checksum>
