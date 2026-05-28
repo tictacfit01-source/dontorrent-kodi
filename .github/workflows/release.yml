@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "plugin.video.dontorrent/**"
+      - "plugin.video.mejorwolf/**"
+      - "script.elementum.spanish/**"
       - "repository.dontorrent/**"
       - "tools/build_repo.py"
       - ".github/workflows/release.yml"
@@ -40,28 +42,32 @@ jobs:
             git push
           fi
 
-      - name: Read addon version
+      - name: Read addon versions
         id: ver
         run: |
-          PLUGIN_VER=$(python -c "import xml.etree.ElementTree as ET; print(ET.parse('plugin.video.dontorrent/addon.xml').getroot().attrib['version'])")
-          echo "plugin=$PLUGIN_VER" >> $GITHUB_OUTPUT
-          echo "Plugin version: $PLUGIN_VER"
+          MW_VER=$(python -c "import xml.etree.ElementTree as ET; print(ET.parse('plugin.video.mejorwolf/addon.xml').getroot().attrib['version'])")
+          echo "mejorwolf=$MW_VER" >> $GITHUB_OUTPUT
+          echo "MejorWolf version: $MW_VER"
 
-      - name: Publish/refresh GitHub Release for this version
+      - name: Publish/refresh GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          TAG="v${{ steps.ver.outputs.plugin }}"
-          PLUGIN_ZIP="repo/plugin.video.dontorrent/plugin.video.dontorrent-${{ steps.ver.outputs.plugin }}.zip"
-          REPO_ZIP=$(ls repo/repository.dontorrent/repository.dontorrent-*.zip | head -1)
+          TAG="mejorwolf-v${{ steps.ver.outputs.mejorwolf }}"
+          MW_ZIP="repo/plugin.video.mejorwolf/plugin.video.mejorwolf-${{ steps.ver.outputs.mejorwolf }}.zip"
+          REPO_ZIP=$(ls repo/repository.mejorwolf/repository.mejorwolf-*.zip 2>/dev/null | head -1)
 
           # Create release if it doesn't exist
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
-              --title "DonTorrent $TAG" \
-              --notes "Instala/actualiza el repo descargando el zip de \`repository.dontorrent\` adjunto. El addon DonTorrent se actualiza automaticamente vez instalado el repo."
+              --title "MejorWolf $TAG" \
+              --notes "Instala el repo descargando el zip de \`repository.mejorwolf\` adjunto. MejorWolf se actualiza solo una vez instalado el repo."
           fi
 
-          # Upload assets (overwrite if existed)
-          gh release upload "$TAG" "$PLUGIN_ZIP" "$REPO_ZIP" --clobber
+          # Upload assets (overwrite if existed). Skip missing files gracefully.
+          for f in "$MW_ZIP" "$REPO_ZIP"; do
+            if [ -n "$f" ] && [ -f "$f" ]; then
+              gh release upload "$TAG" "$f" --clobber
+            fi
+          done
