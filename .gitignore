@@ -6,3 +6,10 @@ Thumbs.db
 
 # local build artifacts (the ones in /repo are tracked)
 /plugin.video.dontorrent-*.zip
+
+# Exclude node_modules and built ZIPs at root
+plugin.video.mejorwolf/cloudflare-worker/node_modules/
+/plugin.video.mejorwolf-*.zip
+/repository.dontorrent-*.zip
+/repository.mejorwolf-*.zip
+/repo/.git/

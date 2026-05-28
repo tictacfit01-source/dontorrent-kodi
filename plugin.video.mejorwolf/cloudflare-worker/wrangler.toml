@@ -1,0 +1,5 @@
+name = "mw-relay"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+# compatibility_flags = ["nodejs_compat"]  # solo necesario para puppeteer
+account_id = "987c72d4823ef1e12ceae82a879807ee"

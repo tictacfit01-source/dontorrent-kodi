@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+  <category label="Series.ly">
+    <setting id="seriesly_enabled"        type="bool"   label="Habilitar Series.ly como fuente"                      default="true"/>
+    <setting id="seriesly_session_cookie" type="text"   label="Cookie seriesly_session (copiar del navegador)"       default=""/>
+    <setting id="seriesly_email"          type="text"   label="Email (alternativo, puede fallar por captcha)"        default=""/>
+    <setting id="seriesly_password"       type="text"   label="Contrasenya (alternativo)"                            default="" option="hidden"/>
+  </category>
+  <category label="TMDB">
+    <setting id="tmdb_enabled"  type="bool"   label="Enriquecer con TMDB (portadas/sinopsis)" default="true"/>
+    <setting id="tmdb_api_key"  type="text"   label="TMDB API key (opcional)"                 default=""/>
+    <setting id="tmdb_lang"     type="text"   label="Idioma TMDB"                             default="es-ES"/>
+  </category>
+  <category label="WolfMax4K">
+    <setting id="wf_base_url"         type="text"   label="URL base WolfMax4K"      default="https://www.wolfmax4k.com"/>
+    <setting id="enlacito_password"   type="text"   label="Password AES de enlacito (dejar vacio = autodeteccion)" default=""/>
+  </category>
+  <category label="Proxy">
+    <setting id="proxy_url"        type="text" label="URL del Cloudflare Worker (anti-bloqueo ISP)" default="https://mw-relay.israeldm93.workers.dev"/>
+    <setting id="proxy_force"      type="bool" label="Forzar uso del proxy siempre (no intentar directo)" default="true"/>
+    <setting id="render_relay_url" type="text" label="URL del Render relay (para AJAX wolfmax)" default=""/>
+  </category>
+</settings>
