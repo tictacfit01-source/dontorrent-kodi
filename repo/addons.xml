@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addons><addon id="plugin.video.dontorrent" name="DonTorrent" version="0.5.1" provider-name="DonTorrent">
+<addons><addon id="plugin.video.dontorrent" name="DonTorrent" version="0.9.1" provider-name="DonTorrent">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
     <import addon="script.module.requests" version="2.22.0" />
     <import addon="script.module.beautifulsoup4" version="4.9.3" />
-    <import addon="plugin.video.elementum" optional="true" />
+    <import addon="plugin.video.elementum" version="0.0.1" optional="true" />
   </requires>
   <extension point="xbmc.python.pluginsource" library="default.py">
     <provides>video</provides>
@@ -20,7 +20,28 @@
       <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
-</addon><addon id="script.elementum.spanish" name="Elementum - Espanol" version="0.1.0" provider-name="DonTorrent">
+</addon><addon id="plugin.video.mejorwolf" name="MejorWolf" version="2.4.0" provider-name="israel">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0" />
+    <import addon="script.module.requests" version="2.22.0" />
+    <import addon="script.module.beautifulsoup4" version="4.6.2" />
+    <import addon="plugin.video.elementum" version="0.0.1" optional="true" />
+  </requires>
+  <extension point="xbmc.python.pluginsource" library="default.py">
+    <provides>video</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="es_ES">Torrents en castellano para Kodi</summary>
+    <description lang="es_ES">Addon privado v2.4.0. 3 fuentes: DonTorrent (30K+ pelis, 14K+ series, documentales) + EliteTorrent + WolfMax4K. Todo en castellano. Portadas TMDB. Busqueda inteligente multi-fuente. Documentales. Anti-bloqueo ISP via DoH + proxy Cloudflare Worker. Resolucion automatica Anubis PoW. Reproduccion con Elementum.</description>
+    <platform>all</platform>
+    <language>es</language>
+    <license>Private</license>
+    <assets>
+      <icon>icon.png</icon>
+      <fanart>fanart.jpg</fanart>
+    </assets>
+  </extension>
+</addon><addon id="script.elementum.spanish" name="Elementum - Espanol" version="0.1.1" provider-name="DonTorrent">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
     <import addon="script.module.requests" version="2.22.0" />
@@ -43,15 +64,15 @@
       <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
-</addon><addon id="repository.dontorrent" name="DonTorrent Repo" version="1.0.2" provider-name="DonTorrent">
-  <extension point="xbmc.addon.repository" name="DonTorrent Repo">
+</addon><addon id="repository.dontorrent" name="MejorWolf Repo" version="1.1.0" provider-name="israel">
+  <extension point="xbmc.addon.repository" name="MejorWolf Repo">
     <info compressed="false">https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/addons.xml</info>
     <checksum>https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/addons.xml.md5</checksum>
     <datadir zip="true">https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/</datadir>
   </extension>
   <extension point="xbmc.addon.metadata">
-    <summary lang="es_ES">Repositorio privado para el addon DonTorrent</summary>
-    <description lang="es_ES">Repositorio que entrega actualizaciones automaticas del addon DonTorrent.</description>
+    <summary lang="es_ES">Repositorio MejorWolf para Kodi (auto-actualizacion)</summary>
+    <description lang="es_ES">Repositorio privado que entrega actualizaciones automaticas de MejorWolf, DonTorrent y Elementum - Espanol.</description>
     <platform>all</platform>
     <license>Private</license>
     <assets>
