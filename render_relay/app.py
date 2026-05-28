@@ -149,6 +149,55 @@ def root():
     )
 
 
+# === Kodi repo proxy =======================================================
+# Sirve los archivos del repositorio Kodi proxeando desde GitHub raw.
+# Esto resuelve el problema de Kodi para Windows que no puede negociar TLS
+# con raw.githubusercontent.com (probablemente por TLS 1.3 o HTTP/2).
+# Render usa HTTPS estandar con Let's Encrypt y HTTP/1.1 — compatible con
+# CUALQUIER version de Kodi.
+_REPO_BASE = ("https://raw.githubusercontent.com/"
+              "tictacfit01-source/dontorrent-kodi/main/repo")
+
+
+@app.route("/repo/<path:filepath>", methods=["GET", "HEAD"])
+def repo_proxy(filepath):
+    """Proxy del repositorio Kodi.
+
+    GET /repo/addons.xml
+    GET /repo/addons.xml.md5
+    GET /repo/plugin.video.mejorwolf/plugin.video.mejorwolf-2.4.2.zip
+    """
+    url = f"{_REPO_BASE}/{filepath}"
+    try:
+        r = requests.get(url, timeout=30, stream=False,
+                         headers={"User-Agent": "MejorWolfRelay/1.0",
+                                  "Accept": "*/*"})
+    except Exception as e:
+        return Response(f"upstream error: {e}", status=502,
+                        mimetype="text/plain")
+
+    # Decidir Content-Type segun extension
+    ct = r.headers.get("Content-Type", "")
+    if filepath.endswith(".xml"):
+        ct = "application/xml; charset=utf-8"
+    elif filepath.endswith(".md5"):
+        ct = "text/plain; charset=utf-8"
+    elif filepath.endswith(".zip"):
+        ct = "application/zip"
+    elif filepath.endswith(".png"):
+        ct = "image/png"
+    elif filepath.endswith(".jpg") or filepath.endswith(".jpeg"):
+        ct = "image/jpeg"
+
+    headers = {
+        "Content-Type": ct,
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=300",  # 5 min, suficiente para Kodi
+        "X-MW-Repo-Upstream": str(r.status_code),
+    }
+    return Response(r.content, status=r.status_code, headers=headers)
+
+
 @app.route("/relay", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"])
 def relay():
     target = request.args.get("u", "")
