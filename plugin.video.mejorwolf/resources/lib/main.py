@@ -239,8 +239,6 @@ def home():
                                                                  IC["documentary"]),
         ("Generos",       _u(action="generos_menu"),             IC["genre"]),
         ("Buscar",        _u(action="search"),                   IC["search"]),
-        ("Diagnostico",   _u(action="diagnose"),                 IC["help"]),
-        ("Ajustes",       _u(action="settings"),                 IC["settings"]),
     ]
     for label, url, ic in entries:
         xbmcplugin.addDirectoryItem(HANDLE, url, _li(label, icon=ic), isFolder=True)
@@ -1083,14 +1081,115 @@ def search(filter_kind=None):
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    # ── Agrupar TODAS las series por nombre (como Tacones) ───────────
-    # Peliculas y documentales → se muestran individualmente.
-    # Series (tvshow) de CUALQUIER fuente → se agrupan por nombre base.
-    # Si un grupo solo tiene 1 item → se muestra individual (sin carpeta).
-    individual = []       # items que se muestran tal cual
-    series_groups = {}    # series_name -> list of items
-
+    # ── Resultados organizados por fuente ────────────────────────────
+    # Nivel 1: una carpeta por fuente con su contador
+    #   DonTorrent (12 resultados)
+    #   EliteTorrent (25 resultados)
+    #   WolfMax4K (8 resultados)
+    # Dentro de cada carpeta: peliculas y series agrupadas por nombre.
+    cache_key = re.sub(r"[^a-zA-Z0-9]", "_", q.lower())[:40]
+    by_source = {"dt": [], "et": [], "wf": []}
     for it in items:
+        src = it.get("source", "dt")
+        by_source.setdefault(src, []).append(it)
+
+    # Cache items por fuente para que show_source_results los recupere
+    _cache_source_items(cache_key, by_source)
+
+    xbmcplugin.setContent(HANDLE, "videos")
+    xbmcplugin.setPluginCategory(HANDLE, f"Busqueda: {q}")
+
+    # Orden: DT primero (mas catalogo), luego ET, luego WF
+    order = [("dt", "DonTorrent"), ("et", "EliteTorrent"), ("wf", "WolfMax4K")]
+    for src, src_label in order:
+        src_items = by_source.get(src, [])
+        if not src_items:
+            continue
+        n = len(src_items)
+        label = f"{src_label}  ({n} resultados)"
+        action_url = _u(action="source_results", src=src,
+                       cache_key=cache_key, q=q)
+        # Usar icono basado en tipo dominante
+        movies = sum(1 for i in src_items
+                     if not (i.get("kind", "movie").startswith("tvshow")))
+        is_movies_dominant = movies > n / 2
+        icon = IC["movie"] if is_movies_dominant else IC["tvshow"]
+        li = _li(label, info={"title": label, "plot": f"{n} resultados de "
+                              f"'{q}' en {src_label}"}, icon=icon)
+        xbmcplugin.addDirectoryItem(HANDLE, action_url, li, isFolder=True)
+
+    xbmc.log(f"[MejorWolf] search display: {sum(len(v) for v in by_source.values())} "
+             f"items en {sum(1 for v in by_source.values() if v)} fuentes",
+             xbmc.LOGINFO)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _cache_source_items(cache_key, by_source):
+    """Cachea items por fuente en Window properties."""
+    data = {}
+    for src, src_items in by_source.items():
+        data[src] = [
+            {"title": it.get("title", ""), "url": it.get("url", ""),
+             "kind": it.get("kind", ""), "source": it.get("source", ""),
+             "thumb": it.get("thumb", ""), "quality": it.get("quality", "")}
+            for it in src_items
+        ]
+    try:
+        win = xbmcgui.Window(10000)
+        win.setProperty(f"mw_src_{cache_key}", json.dumps(data))
+    except Exception as e:
+        xbmc.log(f"[MejorWolf] cache_source_items error: {e}",
+                 xbmc.LOGWARNING)
+
+
+def _get_cached_source_items(cache_key, src):
+    """Recupera items de una fuente desde la cache."""
+    try:
+        win = xbmcgui.Window(10000)
+        raw = win.getProperty(f"mw_src_{cache_key}")
+        if not raw:
+            return []
+        data = json.loads(raw)
+        return data.get(src, [])
+    except Exception:
+        return []
+
+
+def show_source_results(src, cache_key, q=""):
+    """Muestra los resultados de una fuente concreta.
+
+    Dentro de cada fuente:
+      - Peliculas/documentales: individuales con su titulo y portada TMDB
+      - Series: agrupadas por nombre base (estilo Tacones)
+    """
+    items_data = _get_cached_source_items(cache_key, src)
+
+    # Si cache miss y tenemos query, re-buscar SOLO esa fuente
+    if not items_data and q:
+        xbmc.log(f"[MejorWolf] source_results: cache miss, re-buscando "
+                 f"{src} '{q}'", xbmc.LOGINFO)
+        scraper_map = {"dt": dt, "et": et, "wf": wf}
+        scraper = scraper_map.get(src)
+        if scraper:
+            try:
+                items_data = scraper.search(q) or []
+            except Exception as e:
+                xbmc.log(f"[MejorWolf] re-search {src} error: {e}",
+                         xbmc.LOGERROR)
+
+    if not items_data:
+        _error(f"Sin resultados en {SOURCE_LABEL.get(src, src)}",
+               xbmcgui.NOTIFICATION_WARNING, 4000)
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    src_label = SOURCE_LABEL.get(src, src)
+    xbmcplugin.setPluginCategory(HANDLE, f"{src_label}: {q}")
+
+    # Separar individuales (peliculas/docs) de series agrupables
+    individual = []
+    series_groups = {}
+    for it in items_data:
         kind = it.get("kind", "movie")
         if kind.startswith("tvshow"):
             sname = _extract_series_name(it.get("title", ""))
@@ -1101,38 +1200,32 @@ def search(filter_kind=None):
         else:
             individual.append(it)
 
-    # Grupos de 1 solo item → individual (no tiene sentido la carpeta)
-    single_groups = []
+    # Grupos de 1 item → individual
     multi_groups = {}
     for sname, group_items in series_groups.items():
         if len(group_items) == 1:
-            single_groups.append(group_items[0])
+            individual.append(group_items[0])
         else:
             multi_groups[sname] = group_items
 
-    individual.extend(single_groups)
-
-    # Cachear los grupos multi-item para series_group action
-    cache_key = re.sub(r"[^a-zA-Z0-9]", "_", q.lower())[:40]
+    # Cachear grupos para series_group action (reutiliza el sistema existente)
     if multi_groups:
-        _cache_series_groups(cache_key, multi_groups)
+        sg_key = f"{cache_key}_{src}"
+        _cache_series_groups(sg_key, multi_groups)
+    else:
+        sg_key = cache_key
 
-    # Enriquecer items individuales con TMDB
+    # Enriquecer con TMDB
     enriched_ind = _enrich_many(individual) if individual else []
-
-    # Enriquecer representantes de cada grupo (para portada TMDB)
-    group_list = []   # [(sname, group_items), ...]
-    group_reps = []   # [primer_item_del_grupo, ...]
-    for sname, group_items in multi_groups.items():
-        group_list.append((sname, group_items))
-        group_reps.append(group_items[0])
+    group_list = list(multi_groups.items())
+    group_reps = [g[0] for g in (v for _, v in group_list)] if group_list else []
     enriched_groups = _enrich_many(group_reps) if group_reps else []
 
-    # Tipo de contenido
+    # Determinar tipo de contenido
     has_movies = any(_media_type(it.get("kind", "movie")) == "movie"
-                     for it in items)
+                     for it in items_data)
     has_tvshows = any(_media_type(it.get("kind", "movie")) == "tvshow"
-                      for it in items)
+                      for it in items_data)
     if has_tvshows and not has_movies:
         xbmcplugin.setContent(HANDLE, "tvshows")
     elif has_movies and not has_tvshows:
@@ -1140,39 +1233,30 @@ def search(filter_kind=None):
     else:
         xbmcplugin.setContent(HANDLE, "videos")
 
-    # ── Mostrar resultados individuales ─────────────────────────────
+    # Mostrar items individuales
     for it, (info, art) in zip(individual, enriched_ind):
-        src = it.get("source", "dt")
-        src_tag = SOURCE_LABEL.get(src, src)
-        label = f"{info['title']}  ({src_tag})"
+        label = info["title"]
         kind = it.get("kind", "movie")
-
         action_url = _u(action="detail", src=src, url=it["url"],
                        kind=kind, title=it["title"])
-
         xbmcplugin.addDirectoryItem(
             HANDLE, action_url,
-            _li(label, info=dict(info, title=label), art=art),
+            _li(label, info=info, art=art),
             isFolder=True)
 
-    # ── Mostrar series agrupadas (una carpeta por serie) ────────────
+    # Mostrar series agrupadas (carpeta por serie con N caps)
     for (sname, group_items), (info, art) in zip(group_list, enriched_groups):
         n = len(group_items)
-        # Mostrar fuentes del grupo
-        sources = sorted(set(it.get("source", "dt") for it in group_items))
-        src_tags = ", ".join(SOURCE_LABEL.get(s, s) for s in sources)
-        label = f"{sname} ({n} resultados)  ({src_tags})"
-
+        label = f"{sname}  ({n} resultados)"
         action_url = _u(action="series_group", series_name=sname,
-                       cache_key=cache_key, q=q)
-
+                       cache_key=f"{cache_key}_{src}", q=q)
         li = _li(label, info=dict(info, title=label,
                                   mediatype="tvshow"), art=art)
-        xbmcplugin.addDirectoryItem(HANDLE, action_url, li,
-                                    isFolder=True)
+        xbmcplugin.addDirectoryItem(HANDLE, action_url, li, isFolder=True)
 
-    xbmc.log(f"[MejorWolf] search display: {len(individual)} individuales "
-             f"+ {len(group_list)} series agrupadas", xbmc.LOGINFO)
+    xbmc.log(f"[MejorWolf] source_results {src}: "
+             f"{len(individual)} individuales + {len(group_list)} series",
+             xbmc.LOGINFO)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -1603,6 +1687,10 @@ def router(qs):
                                                  params.get("tabla", ""),
                                                  page_url=params.get("page_url", ""))
         elif action == "search":        search(filter_kind=params.get("filter_kind"))
+        elif action == "source_results": show_source_results(
+                                            params.get("src", "dt"),
+                                            params.get("cache_key", ""),
+                                            q=params.get("q", ""))
         elif action == "series_group":  show_series_group(
                                             params.get("series_name", ""),
                                             params.get("cache_key", ""),

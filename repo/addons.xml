@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addons><addon id="plugin.video.dontorrent" name="DonTorrent" version="0.5.1" provider-name="DonTorrent">
+<addons><addon id="plugin.video.dontorrent" name="DonTorrent" version="0.9.1" provider-name="DonTorrent">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
     <import addon="script.module.requests" version="2.22.0" />
     <import addon="script.module.beautifulsoup4" version="4.9.3" />
-    <import addon="plugin.video.elementum" optional="true" />
+    <import addon="plugin.video.elementum" version="0.0.1" optional="true" />
   </requires>
   <extension point="xbmc.python.pluginsource" library="default.py">
     <provides>video</provides>
@@ -20,7 +20,7 @@
       <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
-</addon><addon id="plugin.video.mejorwolf" name="MejorWolf" version="2.4.1" provider-name="israel">
+</addon><addon id="plugin.video.mejorwolf" name="MejorWolf" version="2.4.2" provider-name="israel">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
     <import addon="script.module.requests" version="2.22.0" />
@@ -32,7 +32,7 @@
   </extension>
   <extension point="xbmc.addon.metadata">
     <summary lang="es_ES">Torrents en castellano para Kodi</summary>
-    <description lang="es_ES">Addon privado v2.4.1. 3 fuentes: DonTorrent (30K+ pelis, 14K+ series, documentales) + EliteTorrent + WolfMax4K. Todo en castellano. Portadas TMDB. Busqueda inteligente multi-fuente con agrupacion de series (estilo Tacones). Anti-bloqueo via Render relay (Anubis PoW server-side) + DoH + Cloudflare Worker. Reproduccion con Elementum.</description>
+    <description lang="es_ES">Addon privado v2.4.2. 3 fuentes: DonTorrent + EliteTorrent + WolfMax4K. Todo en castellano. Busqueda con jerarquia clara (carpeta por fuente, series agrupadas dentro). Portadas TMDB. Anti-bloqueo via Render relay (Anubis PoW server-side). Reproduccion con Elementum.</description>
     <platform>all</platform>
     <language>es</language>
     <license>Private</license>
@@ -41,7 +41,7 @@
       <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
-</addon><addon id="script.elementum.spanish" name="Elementum - Espanol" version="0.1.0" provider-name="DonTorrent">
+</addon><addon id="script.elementum.spanish" name="Elementum - Espanol" version="0.1.1" provider-name="DonTorrent">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
     <import addon="script.module.requests" version="2.22.0" />
