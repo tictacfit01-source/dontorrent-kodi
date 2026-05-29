@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="repository.mejorwolf" name="MejorWolf Repo" version="1.3.0" provider-name="israel">
+<addon id="repository.mejorwolf" name="MejorWolf Repo" version="1.4.0" provider-name="israel">
   <extension point="xbmc.addon.repository" name="MejorWolf Repo">
-    <info compressed="false">https://mw-render-relay-6noq.onrender.com/repo/addons.xml</info>
-    <checksum>https://mw-render-relay-6noq.onrender.com/repo/addons.xml.md5</checksum>
-    <datadir zip="true">https://mw-render-relay-6noq.onrender.com/repo/</datadir>
+    <dir>
+      <info compressed="false">https://tictacfit01-source.github.io/dontorrent-kodi/repo/addons.xml</info>
+      <checksum verify="md5">https://tictacfit01-source.github.io/dontorrent-kodi/repo/addons.xml.md5</checksum>
+      <datadir zip="true">https://tictacfit01-source.github.io/dontorrent-kodi/repo/</datadir>
+    </dir>
   </extension>
   <extension point="xbmc.addon.metadata">
     <summary lang="es_ES">Repositorio MejorWolf para Kodi (auto-actualizacion)</summary>
