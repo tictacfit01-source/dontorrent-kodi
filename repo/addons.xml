@@ -67,9 +67,9 @@
 </addon><addon id="repository.mejorwolf" name="MejorWolf Repo" version="1.4.0" provider-name="israel">
   <extension point="xbmc.addon.repository" name="MejorWolf Repo">
     <dir>
-      <info compressed="false">https://tictacfit01-source.github.io/dontorrent-kodi/repo/addons.xml</info>
-      <checksum verify="md5">https://tictacfit01-source.github.io/dontorrent-kodi/repo/addons.xml.md5</checksum>
-      <datadir zip="true">https://tictacfit01-source.github.io/dontorrent-kodi/repo/</datadir>
+      <info compressed="false">https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/addons.xml</info>
+      <checksum verify="md5">https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/addons.xml.md5</checksum>
+      <datadir zip="true">https://raw.githubusercontent.com/tictacfit01-source/dontorrent-kodi/main/repo/</datadir>
     </dir>
   </extension>
   <extension point="xbmc.addon.metadata">
