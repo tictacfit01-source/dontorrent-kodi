@@ -761,11 +761,58 @@ def dt_play(content_id, tabla, page_url=""):
         except Exception:
             pass
 
-        # .torrent → magnet
-        sess = hs.make_session()
-        r = hs.get(sess, torrent_url, timeout=30)
-        magnet = tparse.torrent_to_magnet(r.content or b"")
-        play_uri = magnet or torrent_url
+        # Descargar .torrent y guardarlo en temp para que Elementum
+        # lo lea directamente (evita timeout resolviendo magnet via DHT)
+        try:
+            if progress:
+                progress.update(60, "MejorWolf", "Descargando torrent...")
+        except Exception:
+            pass
+
+        torrent_data = None
+        try:
+            # Intentar descargar via render relay (bypass ISP)
+            relay_url = dt._render_relay_url()
+            if relay_url:
+                from urllib.parse import quote as _q
+                fetch_url = f"{relay_url}/dtfetch?u={_q(torrent_url, safe='')}"
+                import requests as _rq
+                rr = _rq.get(fetch_url, timeout=30)
+                if rr.status_code == 200 and len(rr.content) > 100:
+                    torrent_data = rr.content
+        except Exception:
+            pass
+
+        if not torrent_data:
+            try:
+                sess = hs.make_session()
+                r = hs.get(sess, torrent_url, timeout=30)
+                torrent_data = r.content
+            except Exception:
+                pass
+
+        # Guardar .torrent en temp y pasar file:// a Elementum
+        # Esto evita el problema de "Expired timeout for resolving magnet"
+        # porque Elementum tiene la metadata completa del torrent de inmediato.
+        play_uri = None
+        if torrent_data and len(torrent_data) > 100:
+            try:
+                import xbmcvfs
+                temp_dir = xbmcvfs.translatePath("special://temp/")
+                torrent_file = os.path.join(temp_dir, "mejorwolf_play.torrent")
+                with open(torrent_file, "wb") as tf:
+                    tf.write(torrent_data)
+                play_uri = torrent_file
+                xbmc.log(f"[MejorWolf] torrent saved to {torrent_file} "
+                         f"({len(torrent_data)} bytes)", xbmc.LOGINFO)
+            except Exception as e:
+                xbmc.log(f"[MejorWolf] save torrent failed: {e}",
+                         xbmc.LOGWARNING)
+
+        # Fallback: magnet URI (puede tardar 60s+ en resolver metadata)
+        if not play_uri:
+            magnet = tparse.torrent_to_magnet(torrent_data or b"")
+            play_uri = magnet or torrent_url
 
         try:
             if progress:
