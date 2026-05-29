@@ -99,8 +99,14 @@ def _score(result, preferred_kind, query_clean, year):
     y_res = (result.get("release_date") or result.get("first_air_date") or "")[:4]
     year_bonus = 50.0 if (year and y_res == year) else 0.0
     kind_here = "movie" if "title" in result else "tv"
-    kind_bonus = 5.0 if kind_here == preferred_kind else 0.0
-    return sim + pop + year_bonus + kind_bonus
+    # Bonus fuerte por kind correcto: si el scraper dice "movie" y TMDB
+    # devuelve una serie con el mismo nombre, la pelicula debe ganar.
+    # Ejemplo: "The Game" pelicula (1997, Fincher) vs serie (2006).
+    kind_bonus = 200.0 if kind_here == preferred_kind else 0.0
+    # Penalizar resultados del kind equivocado con exacto titulo match
+    # (evita que una serie popular gane a una pelicula correcta)
+    kind_penalty = -150.0 if kind_here != preferred_kind else 0.0
+    return sim + pop + year_bonus + kind_bonus + kind_penalty
 
 
 def _best_across_kinds(clean, kinds, year):
