@@ -248,54 +248,17 @@ def home():
 
 
 def estrenos():
-    """Estrenos mezclados de DonTorrent + EliteTorrent en paralelo."""
+    """Estrenos organizados por fuente."""
     xbmcplugin.setPluginCategory(HANDLE, "Estrenos")
-
-    items = []
-    def _fetch_dt():
-        try:
-            return dt.latest(kind="estrenos", page=1)
-        except Exception as e:
-            xbmc.log(f"[MejorWolf] estrenos DT: {e}", xbmc.LOGWARNING)
-            return []
-    def _fetch_et():
-        try:
-            r = et.latest(kind="estrenos", page=1)
-            return r[0] if isinstance(r, tuple) else r
-        except Exception as e:
-            xbmc.log(f"[MejorWolf] estrenos ET: {e}", xbmc.LOGWARNING)
-            return []
-
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        fut_dt = ex.submit(_fetch_dt)
-        fut_et = ex.submit(_fetch_et)
-        items.extend(fut_dt.result() or [])
-        items.extend(fut_et.result() or [])
-
-    # Deduplicar por URL
-    seen, unique = set(), []
-    for it in items:
-        u = it.get("url", "")
-        if u not in seen:
-            seen.add(u)
-            unique.append(it)
-    items = unique
-
-    if not items:
-        _error("Sin estrenos disponibles.", xbmcgui.NOTIFICATION_WARNING, 5000)
-        xbmcplugin.endOfDirectory(HANDLE)
-        return
-
-    enriched = _enrich_many(items)
-    for it, (info, art) in zip(items, enriched):
-        src = it.get("source", "dt")
-        url = _u(action="detail", src=src, url=it["url"],
-                 kind=it.get("kind", "movie"), title=it["title"])
-        xbmcplugin.addDirectoryItem(HANDLE, url,
-                                    _li(info["title"], info=info, art=art),
-                                    isFolder=True)
-
-    xbmcplugin.setContent(HANDLE, "movies")
+    entries = [
+        ("DonTorrent",    _u(action="list", src="dt", kind="estrenos", page=1),  IC["estrenos"]),
+        ("EliteTorrent",  _u(action="list", src="et", kind="estrenos", page=1),  IC["estrenos"]),
+        ("WolfMax4K",     _u(action="list", src="wf", kind="movie", page=1),     IC["estrenos"]),
+    ]
+    for lab, url, ic in entries:
+        xbmcplugin.addDirectoryItem(HANDLE, url, _li(lab, icon=ic), isFolder=True)
+    xbmcplugin.setContent(HANDLE, "files")
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -306,26 +269,32 @@ def section(kind):
 
     if kind == "movie":
         entries = [
-            ("Todas las peliculas",      _u(action="list", src="dt", kind="movie", page=1),     IC["movie"]),
-            ("Peliculas HD",             _u(action="list", src="dt", kind="movie_hd", page=1),  IC["movie"]),
-            ("Peliculas 4K",             _u(action="list", src="dt", kind="movie_4k", page=1),  IC["movie"]),
-            ("Peliculas 720p",           _u(action="list", src="et", kind="movie_720p", page=1),IC["movie"]),
-            ("Peliculas 1080p",          _u(action="list", src="et", kind="movie_hd", page=1),  IC["movie"]),
-            ("Peliculas HDRip",          _u(action="list", src="et", kind="movie_hdrip", page=1), IC["movie"]),
-            ("Peliculas MicroHD",        _u(action="list", src="et", kind="movie_micro", page=1), IC["movie"]),
-            ("Peliculas 4K (WolfMax)",   _u(action="list", src="wf", kind="movie_4k", page=1), IC["movie"]),
-            ("Buscar pelicula",          _u(action="search", filter_kind="movie"),               IC["search"]),
+            # DonTorrent — catalogo enorme (30K+ pelis)
+            ("Peliculas",                _u(action="list", src="dt", kind="movie", page=1),      IC["movie"]),
+            ("Peliculas HD",             _u(action="list", src="dt", kind="movie_hd", page=1),   IC["movie"]),
+            ("Peliculas 4K",             _u(action="list", src="dt", kind="movie_4k", page=1),   IC["movie"]),
+            # EliteTorrent — calidades complementarias
+            ("Peliculas 720p",           _u(action="list", src="et", kind="movie_720p", page=1), IC["movie"]),
+            ("Peliculas HDRip",          _u(action="list", src="et", kind="movie_hdrip", page=1),IC["movie"]),
+            ("Peliculas MicroHD",        _u(action="list", src="et", kind="movie_micro", page=1),IC["movie"]),
+            # WolfMax — 4K premium
+            ("Peliculas 4K (WolfMax)",   _u(action="list", src="wf", kind="movie_4k", page=1),  IC["movie"]),
+            # Buscar
+            ("Buscar pelicula",          _u(action="search", filter_kind="movie"),                IC["search"]),
         ]
     elif kind == "tvshow":
         entries = [
-            ("Todas las series",         _u(action="list", src="dt", kind="tvshow", page=1),     IC["tvshow"]),
+            # DonTorrent — catalogo enorme (14K+ series)
+            ("Series",                   _u(action="list", src="dt", kind="tvshow", page=1),     IC["tvshow"]),
             ("Series HD",                _u(action="list", src="dt", kind="tvshow_hd", page=1),  IC["tvshow"]),
             ("Series 4K",                _u(action="list", src="dt", kind="tvshow_4k", page=1),  IC["tvshow"]),
+            # EliteTorrent
             ("Series (EliteTorrent)",    _u(action="list", src="et", kind="tvshow", page=1),     IC["tvshow"]),
-            ("Series 720p (WolfMax)",    _u(action="list", src="wf", kind="tvshow_720p", page=1),IC["tvshow"]),
-            ("Series 1080p (WolfMax)",   _u(action="list", src="wf", kind="tvshow_hd", page=1), IC["tvshow"]),
-            ("Series 4K (WolfMax)",      _u(action="list", src="wf", kind="tvshow_4k", page=1), IC["tvshow"]),
-            ("Buscar serie",             _u(action="search", filter_kind="tvshow"),               IC["search"]),
+            # WolfMax — calidades premium
+            ("Series 1080p (WolfMax)",   _u(action="list", src="wf", kind="tvshow_hd", page=1),  IC["tvshow"]),
+            ("Series 4K (WolfMax)",      _u(action="list", src="wf", kind="tvshow_4k", page=1),  IC["tvshow"]),
+            # Buscar
+            ("Buscar serie",             _u(action="search", filter_kind="tvshow"),                IC["search"]),
         ]
     else:
         entries = [
