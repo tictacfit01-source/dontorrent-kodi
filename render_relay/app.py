@@ -584,35 +584,67 @@ def dtsearch():
         diag["anubis_solved"] = solved
 
         diag["phase"] = "search"
-        r = sess.post(
-            f"https://{domain}/buscar",
-            data={"valor": q, "Buscar": "Buscar"},
-            timeout=30,
-            allow_redirects=True,
-        )
-        diag["status"] = r.status_code
-        diag["bytes"] = len(r.content)
 
-        # Si Anubis vuelve a aparecer, re-resolver una vez
-        if "anubis_challenge" in r.text:
-            _DT_COOKIES.pop(domain, None)
-            sess, _ = _dt_anubis_session(domain)
-            r = sess.post(
-                f"https://{domain}/buscar",
-                data={"valor": q, "Buscar": "Buscar"},
-                timeout=30,
-            )
-            diag["retry_status"] = r.status_code
+        def _post_page(page):
+            """POST /buscar para una pagina concreta (campo p=N).
+            Reintenta una vez si aparece Anubis."""
+            data = {"valor": q, "Buscar": "Buscar"}
+            if page > 1:
+                data["p"] = str(page)
+            rr = sess.post(f"https://{domain}/buscar", data=data,
+                           timeout=30, allow_redirects=True)
+            if "anubis_challenge" in rr.text:
+                _DT_COOKIES.pop(domain, None)
+                ns, _ = _dt_anubis_session(domain)
+                rr = ns.post(f"https://{domain}/buscar", data=data, timeout=30)
+            return rr
+
+        # Pagina 1
+        r = _post_page(1)
+        full_html = r.text
+
+        # Detectar numero total de paginas desde buscarPagina(N) en el HTML
+        page_nums = [int(n) for n in
+                     _re_dt.findall(r"buscarPagina\((\d+)\)", full_html)]
+        max_page = max(page_nums) if page_nums else 1
+        # Limite de seguridad: no mas de 10 paginas (~100 resultados)
+        max_page = min(max_page, 10)
+        diag["max_page"] = max_page
+
+        # Extraer solo los <p>..serie/pelicula/documental..</p> de paginas 2..N
+        # y concatenarlos antes de </nav> para que el parser del addon los vea.
+        extra_blocks = []
+        for pg in range(2, max_page + 1):
+            try:
+                rp = _post_page(pg)
+                # Coger todos los <p>...</p> que contengan enlaces de contenido
+                for m in _re_dt.finditer(r"<p>.*?</p>", rp.text, _re_dt.S):
+                    blk = m.group(0)
+                    if _re_dt.search(r"/(?:pelicula|serie|documental)/\d+/", blk):
+                        extra_blocks.append(blk)
+            except Exception as e:
+                diag[f"page{pg}_error"] = str(e)
+                break
+
+        if extra_blocks:
+            inject = "".join(extra_blocks)
+            # Insertar antes de <nav (la paginacion) o al final del card-body
+            if "<nav" in full_html:
+                full_html = full_html.replace("<nav", inject + "<nav", 1)
+            else:
+                full_html = full_html + inject
+        diag["extra_items"] = len(extra_blocks)
 
         headers = {
             "Content-Type": "text/html; charset=utf-8",
             "Access-Control-Allow-Origin": "*",
             "X-MW-Dt-Domain": domain,
             "X-MW-Dt-Status": str(r.status_code),
-            "X-MW-Dt-Bytes": str(len(r.content)),
+            "X-MW-Dt-Bytes": str(len(full_html)),
             "X-MW-Dt-Anubis-Solved": "1" if solved else "0",
+            "X-MW-Dt-Pages": str(max_page),
         }
-        return Response(r.text, status=r.status_code, headers=headers)
+        return Response(full_html, status=r.status_code, headers=headers)
 
     except Exception as e:
         diag["error"] = e.__class__.__name__ + ": " + str(e)
