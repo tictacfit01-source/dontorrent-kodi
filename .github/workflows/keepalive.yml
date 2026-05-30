@@ -1,0 +1,29 @@
+name: Keep Render relay awake
+
+# Render free tier "spin down" tras 15 min de inactividad: la primera
+# busqueda tras dormir tarda ~30s en despertar. Este workflow hace ping
+# cada 10 min para mantenerlo caliente, asi las busquedas son rapidas.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # cada 10 minutos
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render relay
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 60 \
+              https://mw-render-relay-6noq.onrender.com/ || echo "000")
+            echo "Attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Relay awake."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Relay did not respond 200 after 3 attempts (non-fatal)."
