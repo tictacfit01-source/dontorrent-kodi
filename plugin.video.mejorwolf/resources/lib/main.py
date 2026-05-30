@@ -1011,14 +1011,17 @@ def search(filter_kind=None):
                      f"{traceback.format_exc()}", xbmc.LOGWARNING)
             return []
 
-    # Timeout duro por fuente: si una fuente se cuelga (~90s tipico DT con
-    # multiples fallbacks), no debe bloquear a las demas. Cada fuente tiene
-    # max 60s para responder; si no, se la abandona.
-    SOURCE_TIMEOUT = 60
+    # Timeout POR FUENTE (no global). DT y ET son rapidos y fiables -> 30s.
+    # WolfMax puede colgarse en su cascada de fallbacks (catalog+brave+
+    # proximity = hasta 60s) porque su buscador AJAX esta bloqueado. Le
+    # damos solo 8s: si responde rapido (catalogo top-100), genial; si no,
+    # se abandona sin bloquear la busqueda. Asi una busqueda nunca pasa de
+    # ~max(DT, ET, 8s) en vez de esperar a la cascada lenta de WF.
+    PER_SOURCE_TIMEOUT = {"DT": 30, "ET": 30, "WF": 8}
     progress_dlg = None
     try:
         progress_dlg = xbmcgui.DialogProgressBG()
-        progress_dlg.create("MejorWolf", f"Buscando '{q}' en las 3 fuentes...")
+        progress_dlg.create("MejorWolf", f"Buscando '{q}'...")
     except Exception:
         progress_dlg = None
 
@@ -1029,16 +1032,35 @@ def search(filter_kind=None):
             "WF": ex.submit(_search_src, "WF", wf.search),
         }
         from concurrent.futures import wait, FIRST_COMPLETED
+        start = time.time()
+        # Deadline individual por futuro
+        fut_deadline = {fut: start + PER_SOURCE_TIMEOUT[lbl]
+                        for lbl, fut in futs_map.items()}
         pending = set(futs_map.values())
-        deadline = time.time() + SOURCE_TIMEOUT
         completed_labels = []
         while pending:
-            remaining = max(1, int(deadline - time.time()))
-            if remaining <= 0:
+            now = time.time()
+            # Si algun futuro pendiente ya supero SU deadline, abandonarlo
+            expired = [f for f in pending if now >= fut_deadline[f]]
+            for f in expired:
+                label = next((k for k, v in futs_map.items() if v is f), "?")
+                xbmc.log(f"[MejorWolf] search {label}: TIMEOUT "
+                         f"{PER_SOURCE_TIMEOUT[label]}s", xbmc.LOGWARNING)
+                source_counts[label] = -1
+                try:
+                    f.cancel()
+                except Exception:
+                    pass
+                pending.discard(f)
+            if not pending:
                 break
-            done, pending = wait(pending, timeout=remaining,
-                                  return_when=FIRST_COMPLETED)
+            # Esperar hasta el proximo deadline mas cercano
+            next_deadline = min(fut_deadline[f] for f in pending)
+            remaining = max(0.2, next_deadline - time.time())
+            done, _ = wait(pending, timeout=remaining,
+                           return_when=FIRST_COMPLETED)
             for f in done:
+                pending.discard(f)
                 label = next((k for k, v in futs_map.items() if v is f), "?")
                 try:
                     all_items.extend(f.result(timeout=1) or [])
@@ -1047,23 +1069,12 @@ def search(filter_kind=None):
                 completed_labels.append(label)
                 if progress_dlg:
                     try:
-                        pct = int(33 * len(completed_labels))
                         progress_dlg.update(
-                            min(99, pct), "MejorWolf",
+                            min(99, 33 * len(completed_labels)), "MejorWolf",
                             f"Completadas: {', '.join(completed_labels)}",
                         )
                     except Exception:
                         pass
-        # Las que sigan pendientes: cancelarlas (timeout)
-        for f in pending:
-            label = next((k for k, v in futs_map.items() if v is f), "?")
-            xbmc.log(f"[MejorWolf] search {label}: TIMEOUT {SOURCE_TIMEOUT}s",
-                     xbmc.LOGWARNING)
-            source_counts[label] = -1
-            try:
-                f.cancel()
-            except Exception:
-                pass
     if progress_dlg:
         try:
             progress_dlg.close()
