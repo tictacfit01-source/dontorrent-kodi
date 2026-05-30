@@ -611,20 +611,29 @@ def dtsearch():
         max_page = min(max_page, 10)
         diag["max_page"] = max_page
 
-        # Extraer solo los <p>..serie/pelicula/documental..</p> de paginas 2..N
-        # y concatenarlos antes de </nav> para que el parser del addon los vea.
+        # Extraer los <p>..serie/pelicula/documental..</p> de paginas 2..N.
+        # Las pedimos EN PARALELO (no secuencial) — reduce el tiempo de
+        # ~Nx1s a ~1s para busquedas con muchas paginas. Mantenemos el
+        # orden de pagina para no desordenar los resultados.
         extra_blocks = []
-        for pg in range(2, max_page + 1):
-            try:
-                rp = _post_page(pg)
-                # Coger todos los <p>...</p> que contengan enlaces de contenido
-                for m in _re_dt.finditer(r"<p>.*?</p>", rp.text, _re_dt.S):
-                    blk = m.group(0)
-                    if _re_dt.search(r"/(?:pelicula|serie|documental)/\d+/", blk):
-                        extra_blocks.append(blk)
-            except Exception as e:
-                diag[f"page{pg}_error"] = str(e)
-                break
+        if max_page > 1:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            def _fetch_page_blocks(pg):
+                try:
+                    rp = _post_page(pg)
+                    blocks = []
+                    for m in _re_dt.finditer(r"<p>.*?</p>", rp.text, _re_dt.S):
+                        blk = m.group(0)
+                        if _re_dt.search(r"/(?:pelicula|serie|documental)/\d+/", blk):
+                            blocks.append(blk)
+                    return blocks
+                except Exception:
+                    return []
+            pages = list(range(2, max_page + 1))
+            with _TPE(max_workers=min(8, len(pages))) as _ex:
+                results = list(_ex.map(_fetch_page_blocks, pages))
+            for blocks in results:
+                extra_blocks.extend(blocks)
 
         if extra_blocks:
             inject = "".join(extra_blocks)
