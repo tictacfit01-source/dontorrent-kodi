@@ -258,6 +258,163 @@ _TOKEN_RE = re.compile(
 )
 
 
+# === WolfMax catalogo cacheado (fallback cuando data.find.php falla) ========
+# El AJAX data.find.php esta bloqueado por Cloudflare para datacenters.
+# Como fallback, crawleamos las secciones de listado (que SI renderizan
+# server-side el top-100 de cada categoria) via ScraperAPI, y cacheamos el
+# resultado 30 min. Asi el addon hace UNA llamada rapida y obtiene todo el
+# catalogo reciente (incluido /documentales -> "Rafa").
+import time as _wt
+import unicodedata as _wud
+
+_WF_CATALOG_SECTIONS = [
+    "/series/1080p/", "/series/4k-2160p/", "/series/720p/",
+    "/series/", "/animacion-manga/",
+    "/peliculas/bluray-1080p/", "/peliculas/4k-2160p/",
+    "/peliculas/bluray-720p/", "/peliculas/bluray/",
+    "/documentales/", "/programas-tv/",
+]
+_WF_BLOCK_RE = re.compile(
+    r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>'
+    r'(?:(?!</a>).){0,1200}?'
+    r'<img[^>]+src=["\']([^"\']+)["\']',
+    re.IGNORECASE | re.DOTALL,
+)
+_WF_PLAYABLE_RE = re.compile(
+    r"/(movie|online|pelicula|capitulo|episodio|serie-online(?:-[\w-]+)?)/\d+",
+    re.I,
+)
+_wf_catalog_cache = {"ts": 0.0, "items": []}
+_WF_CATALOG_TTL = 30 * 60
+
+
+def _wf_norm(s):
+    if not s:
+        return ""
+    s = _wud.normalize("NFKD", s)
+    s = "".join(c for c in s if not _wud.combining(c))
+    return re.sub(r"\s+", " ", s.lower().strip())
+
+
+def _wf_title_from_img(img_src):
+    """Extrae titulo del nombre de la imagen, igual que el scraper Kodi."""
+    try:
+        leaf = img_src.rsplit("/", 1)[-1]
+        leaf = re.sub(r"\.(jpg|jpeg|png|webp).*$", "", leaf, flags=re.I)
+        m = re.match(r"^\d+_\d+-(.+)$", leaf)
+        if m:
+            return re.sub(r"-+", " ", m.group(1)).strip()
+        leaf = re.sub(r"_\d+_\d+$", "", leaf)
+        title = re.sub(r"-+", " ", leaf)
+        title = re.sub(r"\b(?:bluray|blu-ray|hdtv|web-?dl|hdrip|dvdrip|"
+                       r"\d{3,4}p|4k|2160p|1080p|720p|480p|esp|latino|"
+                       r"hdr|x264|x265|hevc)\b", "", title, flags=re.I)
+        return re.sub(r"\s+", " ", title).strip()
+    except Exception:
+        return ""
+
+
+def _wf_build_catalog():
+    """Crawlea las secciones de listado via ScraperAPI. Cache 30 min."""
+    now = _wt.time()
+    if (now - _wf_catalog_cache["ts"]) < _WF_CATALOG_TTL and _wf_catalog_cache["items"]:
+        return _wf_catalog_cache["items"], True  # (items, from_cache)
+
+    base = "https://www.wolfmax4k.com"
+
+    def _fetch(path):
+        out = []
+        try:
+            url = base + path
+            if SCRAPERAPI_KEY:
+                wrapped = _scraperapi_url(url, session_number=None)
+                r = requests.get(wrapped, headers=BROWSER_HEADERS, timeout=60)
+            else:
+                cs = _make_scraper()
+                r = cs.get(url, headers=BROWSER_HEADERS, timeout=25)
+            if r.status_code != 200:
+                return out
+            txt = r.content.decode("utf-8", "ignore")
+            for href, img_src in _WF_BLOCK_RE.findall(txt):
+                low_img = img_src.lower()
+                if "logo" in low_img or "/temp/img/" in low_img:
+                    continue
+                full = href.strip()
+                if full.startswith("//"):
+                    full = "https:" + full
+                elif full.startswith("/"):
+                    full = base + full
+                if "wolfmax4k" not in full.lower():
+                    continue
+                title = _wf_title_from_img(img_src)
+                if not title:
+                    title = full.rstrip("/").rsplit("/", 1)[-1].replace("-", " ")
+                if len(title) < 2:
+                    continue
+                img_full = img_src
+                if img_full.startswith("//"):
+                    img_full = "https:" + img_full
+                elif img_full.startswith("/"):
+                    img_full = base + img_full
+                out.append({"url": full, "title": title, "image": img_full})
+        except Exception:
+            pass
+        return out
+
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    items, seen = [], set()
+    with _TPE(max_workers=6) as pool:
+        for batch in pool.map(_fetch, _WF_CATALOG_SECTIONS):
+            for it in batch:
+                if it["url"] not in seen:
+                    seen.add(it["url"])
+                    items.append(it)
+
+    if items:  # solo cacheamos si obtuvimos algo
+        _wf_catalog_cache["ts"] = now
+        _wf_catalog_cache["items"] = items
+    return items, False
+
+
+def _wf_catalog_search(query):
+    """Busca query en el catalogo cacheado. Devuelve items normalizados."""
+    q_tokens = [t for t in re.split(r"[\s\-\._]+", _wf_norm(query)) if len(t) >= 2]
+    if not q_tokens:
+        return []
+    catalog, _ = _wf_build_catalog()
+    out = []
+    for it in catalog:
+        title_n = _wf_norm(it.get("title") or "")
+        slug = (it.get("url") or "").rstrip("/").rsplit("/", 1)[-1].lower()
+        slug_n = _wf_norm(slug.replace("-", " "))
+        if all(tok in (title_n + " | " + slug_n) for tok in q_tokens):
+            out.append({
+                "url": it["url"],
+                "title": it["title"],
+                "image": it.get("image"),
+                "quality": None,
+                "guid": it["url"].rstrip("/").rsplit("/", 1)[-1],
+            })
+    return out
+
+
+@app.get("/wfcatalog")
+def wfcatalog():
+    """Busqueda WolfMax via catalogo cacheado (rapido, sin depender del
+    AJAX bloqueado). GET /wfcatalog?q=rafa -> {response, items}."""
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"response": False, "error": "missing q"}), 400
+    try:
+        items = _wf_catalog_search(q)
+        _, from_cache = _wf_build_catalog()
+        return jsonify({"response": True, "items": items,
+                        "_diag": {"cached": from_cache,
+                                  "catalog_size": len(_wf_catalog_cache["items"])}})
+    except Exception as e:
+        return jsonify({"response": False, "error": str(e)}), 502
+
+
 @app.get("/wfsearch")
 def wfsearch():
     """Busqueda dedicada wolfmax: GET shell + POST data.find.php manteniendo

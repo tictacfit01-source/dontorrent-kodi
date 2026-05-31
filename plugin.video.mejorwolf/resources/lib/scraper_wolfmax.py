@@ -385,6 +385,48 @@ def _render_relay_url():
     return (_ADDON.getSetting("render_relay_url") or "").strip().rstrip("/")
 
 
+def _search_via_relay_catalog(query):
+    """Busca via /wfcatalog del Render relay: catalogo cacheado server-side
+    (top-100 de cada seccion, incluido /documentales). UNA llamada rapida.
+    Es la fuente preferente porque el servidor ya tiene el catalogo crawleado
+    y cacheado 30 min -> evita que el TV box crawlee 14 secciones (40s)."""
+    base = _render_relay_url()
+    if not base:
+        return []
+    import requests as _rq
+    try:
+        r = _rq.get(f"{base}/wfcatalog", params={"q": query}, timeout=45)
+        _LOG(f"relay /wfcatalog q={query!r} HTTP {r.status_code} "
+             f"len={len(r.content)}")
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        if not data.get("response"):
+            return []
+        out = []
+        for it in (data.get("items") or []):
+            u = it.get("url") or ""
+            if not u:
+                continue
+            title = (it.get("title") or "").strip() or u.rsplit("/", 1)[-1]
+            kind = _classify(u) or "movie"
+            if kind == "movie" and _looks_like_tvshow(title, u):
+                kind = "tvshow"
+            image = it.get("image") or None
+            if image and image.startswith("/"):
+                image = _base() + image
+            out.append({
+                "title": title, "url": u, "kind": kind,
+                "image": image, "quality": it.get("quality"),
+                "source": SOURCE,
+            })
+        _LOG(f"_search_via_relay_catalog -> {len(out)} items")
+        return out
+    except Exception as e:
+        _LOG(f"_search_via_relay_catalog error: {e.__class__.__name__}: {e}")
+        return []
+
+
 def _search_via_render_relay(query):
     """Busca via el endpoint /wfsearch del Render relay. Devuelve lista
     normalizada de items (mismo formato que el resto de fuentes) o []
@@ -788,6 +830,22 @@ def search(query):
     # caps que da la web. Es la mejor fuente posible. Solo se activa si el
     # usuario ha pegado la URL del relay en settings.
     relay_items = []
+    # 0a) Catalogo cacheado server-side (rapido, ~1-2s). Si encuentra
+    #     resultados, salimos YA sin tocar las estrategias lentas (brave,
+    #     proximity, crawl local). Esto resuelve el caso "rafa" en <3s.
+    try:
+        cat = _search_via_relay_catalog(query)
+        if cat:
+            _LOG(f"search relay_catalog -> {len(cat)} items (fast-exit)")
+            try:
+                wf_index.add(cat)
+            except Exception:
+                pass
+            return cat
+    except Exception as e:
+        _LOG(f"search relay_catalog error: {e.__class__.__name__}: {e}")
+    # 0b) /wfsearch (AJAX data.find.php via ScraperAPI) — suele fallar pero
+    #     se intenta por si acaso.
     try:
         relay_items = _search_via_render_relay(query)
         _LOG(f"search render_relay -> {len(relay_items)} items")
