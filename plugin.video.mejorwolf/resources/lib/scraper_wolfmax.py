@@ -938,9 +938,14 @@ def search(query):
     #    SKIP: si el catalogo ya nos dio >=10 items, los caps de la serie ya
     #    estan cubiertos por el fan-out del landing — proximity solo añadiria
     #    latencia (cada scan = 160 fetches via proxy ~ 60s) sin items nuevos.
-    # Saltar proximity si ya tenemos cobertura suficiente del relay+catalogo
-    rich_sources = len(relay_items) + len(catalog_items)
-    skip_expansion = rich_sources >= 10
+    # Saltar proximity si el relay/catalogo ya dio CUALQUIER resultado.
+    # La proximity (160 fetches x varias ventanas = ~40s) solo se usa como
+    # ULTIMO recurso cuando no hay absolutamente nada. Antes el umbral era
+    # >=10, lo que dejaba pasar busquedas como "rafa" (4 items) a la cascada
+    # lenta de 40s. Ahora con >=1 cualquier resultado del catalogo evita
+    # ese coste.
+    rich_sources = len(relay_items) + len(catalog_items) + len(brave_items)
+    skip_expansion = rich_sources >= 1
     if skip_expansion:
         _LOG(f"search: skip expansion#1+#2 (relay+catalog ya rindio "
              f"{rich_sources} items)")
