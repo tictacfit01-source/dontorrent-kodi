@@ -204,15 +204,25 @@ def _enrich_one(it):
         "mediatype": _media_type(it.get("kind", "movie")),
     }
     art = {}
+    own_img = it.get("image") or it.get("thumb")
+    # WolfMax trae su propia caratula (correcta) en el catalogo. TMDB falla
+    # mucho con documentales/contenido espanol (p.ej. el documental "Rafa"
+    # de Nadal lo confunde con una peli portuguesa de 2012). Por eso, para
+    # WolfMax preferimos SIEMPRE su imagen propia sobre el poster de TMDB.
+    if it.get("source") == "wf" and own_img:
+        art["poster"] = own_img
+        art["thumb"]  = own_img
+        if meta.get("fanart"):
+            art["fanart"] = meta["fanart"]
+        return info, art
     if meta.get("poster"):
         art["poster"] = meta["poster"]
         art["thumb"]  = meta["poster"]
     if meta.get("fanart"):
         art["fanart"] = meta["fanart"]
-    img = it.get("image") or it.get("thumb")
-    if img:
-        art.setdefault("thumb",  img)
-        art.setdefault("poster", img)
+    if own_img:
+        art.setdefault("thumb",  own_img)
+        art.setdefault("poster", own_img)
     return info, art
 
 

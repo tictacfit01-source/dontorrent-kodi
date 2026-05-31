@@ -34,23 +34,22 @@ SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "").strip()
 SCRAPERAPI_BASE = "http://api.scraperapi.com"
 
 
-def _scraperapi_url(target_url, session_number=None, post=False):
+def _scraperapi_url(target_url, session_number=None, post=False, premium=True):
     """Construye URL de ScraperAPI envolviendo target_url.
 
-    `premium=true` -> usa el pool de IPs residenciales premium, necesario
-    para dominios protegidos como wolfmax4k. Consume 25 creditos/request
-    (vs 1 normal). Plan free 1000 creditos = ~40 requests/dia.
+    `premium=true` -> IPs residenciales, 25 creditos/request. Necesario solo
+    para el AJAX data.find.php (muy protegido). Las paginas de LISTADO del
+    catalogo salen con peticion normal (premium=False -> 1 credito), lo que
+    reduce el consumo ~25x. Plan free = 1000 creditos/mes.
     """
     params = {
         "api_key":      SCRAPERAPI_KEY,
         "url":          target_url,
         "keep_headers": "true",
         "country_code": "es",
-        # premium=true respeta nuestros headers (Referer, etc.) y rota
-        # IPs residenciales. ultra_premium=true usa navegador real que
-        # sobrescribe Referer -> server rechaza con "No Referrer".
-        "premium":      "true",
     }
+    if premium:
+        params["premium"] = "true"
     if session_number is not None:
         params["session_number"] = str(session_number)
     return SCRAPERAPI_BASE + "/?" + urlencode(params)
@@ -274,18 +273,25 @@ _WF_CATALOG_SECTIONS = [
     "/peliculas/bluray-720p/", "/peliculas/bluray/",
     "/documentales/", "/programas-tv/",
 ]
+# Captura el bloque entero de cada tarjeta: href + img-src + (todo el HTML
+# interior, de donde sacamos card-title y card-text con el Cap. N).
 _WF_BLOCK_RE = re.compile(
     r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>'
-    r'(?:(?!</a>).){0,1200}?'
-    r'<img[^>]+src=["\']([^"\']+)["\']',
+    r'((?:(?!</a>).){0,1500}?)'
+    r'<img[^>]+src=["\']([^"\']+)["\']'
+    r'((?:(?!</a>).){0,600})',
     re.IGNORECASE | re.DOTALL,
 )
+_WF_CARDTITLE_RE = re.compile(
+    r'card-title[^>]*>([^<]{1,80})</', re.IGNORECASE)
+_WF_CARDTEXT_RE = re.compile(
+    r'card-text[^>]*>([^<]{0,40})</', re.IGNORECASE)
 _WF_PLAYABLE_RE = re.compile(
     r"/(movie|online|pelicula|capitulo|episodio|serie-online(?:-[\w-]+)?)/\d+",
     re.I,
 )
 _wf_catalog_cache = {"ts": 0.0, "items": []}
-_WF_CATALOG_TTL = 30 * 60
+_WF_CATALOG_TTL = 6 * 3600  # 6h: catalogo cambia poco, ahorra creditos
 
 
 def _wf_norm(s):
@@ -329,7 +335,10 @@ def _wf_build_catalog():
         try:
             url = base + path
             if SCRAPERAPI_KEY:
-                wrapped = _scraperapi_url(url, session_number=None)
+                # Catalogo = paginas de listado, NO necesitan premium.
+                # 1 credito/seccion en vez de 25 -> sostenible en plan free.
+                wrapped = _scraperapi_url(url, session_number=None,
+                                          premium=False)
                 r = requests.get(wrapped, headers=BROWSER_HEADERS, timeout=70)
             else:
                 cs = _make_scraper()
@@ -338,7 +347,7 @@ def _wf_build_catalog():
             if r.status_code != 200:
                 return out
             txt = r.content.decode("utf-8", "ignore")
-            for href, img_src in _WF_BLOCK_RE.findall(txt):
+            for href, mid, img_src, tail in _WF_BLOCK_RE.findall(txt):
                 low_img = img_src.lower()
                 if "logo" in low_img or "/temp/img/" in low_img:
                     continue
@@ -349,7 +358,19 @@ def _wf_build_catalog():
                     full = base + full
                 if "wolfmax4k" not in full.lower():
                     continue
-                title = _wf_title_from_img(img_src)
+                # Titulo REAL desde el card-title del HTML (mejor que el
+                # nombre de la imagen). El card-text suele traer "Cap. N".
+                inner = mid + tail
+                ct = _WF_CARDTITLE_RE.search(inner)
+                base_title = (ct.group(1).strip() if ct else "") \
+                    or _wf_title_from_img(img_src)
+                cap = _WF_CARDTEXT_RE.search(inner)
+                cap_txt = (cap.group(1).strip() if cap else "")
+                # Componer "Rafa - Cap. 104" para distinguir capitulos
+                if cap_txt and re.search(r"\d", cap_txt):
+                    title = f"{base_title} - {cap_txt}"
+                else:
+                    title = base_title
                 if not title:
                     title = full.rstrip("/").rsplit("/", 1)[-1].replace("-", " ")
                 if len(title) < 2:
