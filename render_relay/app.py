@@ -322,16 +322,19 @@ def _wf_build_catalog():
 
     base = "https://www.wolfmax4k.com"
 
+    _diag_status = {}
+
     def _fetch(path):
         out = []
         try:
             url = base + path
             if SCRAPERAPI_KEY:
                 wrapped = _scraperapi_url(url, session_number=None)
-                r = requests.get(wrapped, headers=BROWSER_HEADERS, timeout=60)
+                r = requests.get(wrapped, headers=BROWSER_HEADERS, timeout=70)
             else:
                 cs = _make_scraper()
                 r = cs.get(url, headers=BROWSER_HEADERS, timeout=25)
+            _diag_status[path] = r.status_code
             if r.status_code != 200:
                 return out
             txt = r.content.decode("utf-8", "ignore")
@@ -361,15 +364,18 @@ def _wf_build_catalog():
             pass
         return out
 
+    # ScraperAPI free permite solo 5 hilos concurrentes -> usamos 3 para
+    # no toparnos con el limite (que devuelve 429 y descarta secciones).
     from concurrent.futures import ThreadPoolExecutor as _TPE
     items, seen = [], set()
-    with _TPE(max_workers=6) as pool:
+    with _TPE(max_workers=3) as pool:
         for batch in pool.map(_fetch, _WF_CATALOG_SECTIONS):
             for it in batch:
                 if it["url"] not in seen:
                     seen.add(it["url"])
                     items.append(it)
 
+    _wf_catalog_cache["last_status"] = _diag_status
     if items:  # solo cacheamos si obtuvimos algo
         _wf_catalog_cache["ts"] = now
         _wf_catalog_cache["items"] = items
@@ -410,9 +416,12 @@ def wfcatalog():
         _, from_cache = _wf_build_catalog()
         return jsonify({"response": True, "items": items,
                         "_diag": {"cached": from_cache,
-                                  "catalog_size": len(_wf_catalog_cache["items"])}})
+                                  "catalog_size": len(_wf_catalog_cache["items"]),
+                                  "section_status": _wf_catalog_cache.get("last_status", {})}})
     except Exception as e:
-        return jsonify({"response": False, "error": str(e)}), 502
+        import traceback
+        return jsonify({"response": False, "error": str(e),
+                        "tb": traceback.format_exc()[-500:]}), 502
 
 
 @app.get("/wfsearch")
