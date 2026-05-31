@@ -360,8 +360,9 @@ def _wf_build_catalog():
                 elif img_full.startswith("/"):
                     img_full = base + img_full
                 out.append({"url": full, "title": title, "image": img_full})
-        except Exception:
-            pass
+            _diag_status[path] = f"{r.status_code}/items={len(out)}"
+        except Exception as e:
+            _diag_status[path] = f"ERR:{e.__class__.__name__}:{str(e)[:60]}"
         return out
 
     # ScraperAPI free permite solo 5 hilos concurrentes -> usamos 3 para
