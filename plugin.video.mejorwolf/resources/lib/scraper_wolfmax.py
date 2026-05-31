@@ -382,7 +382,21 @@ _TOKEN_RE = re.compile(r'name=["\']?token["\']?\s+value=["\']([^"\']+)', re.I)
 # de listados (top-100 por categoria) y a Brave/proximity.
 
 def _render_relay_url():
-    return (_ADDON.getSetting("render_relay_url") or "").strip().rstrip("/")
+    """URL del Render relay. Lee el ajuste local primero; si esta vacio,
+    cae a Supabase (mw_config.relay.url) — IGUAL que DonTorrent. Sin este
+    fallback, WolfMax nunca llamaba al relay (la URL estaba solo en Supabase,
+    no en el ajuste local) y caia siempre en las estrategias lentas."""
+    try:
+        url = (_ADDON.getSetting("render_relay_url") or "").strip().rstrip("/")
+        if url:
+            return url
+    except Exception:
+        pass
+    try:
+        from . import supabase_sync as sb
+        return (sb.get_relay_url() or "").strip().rstrip("/")
+    except Exception:
+        return ""
 
 
 def _search_via_relay_catalog(query):
