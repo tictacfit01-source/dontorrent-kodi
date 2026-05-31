@@ -384,25 +384,38 @@ def _wf_build_catalog():
 
 
 def _wf_catalog_search(query):
-    """Busca query en el catalogo cacheado. Devuelve items normalizados."""
+    """Busca query en el catalogo cacheado. Devuelve items normalizados.
+
+    Prioriza URLs REPRODUCIBLES (/online/<id>, /movie/<id>, etc.). Los
+    'landing' tipo /series/<slug> sin id no se pueden reproducir y su
+    fan-out suele dar 0 caps -> se descartan salvo que no haya nada mejor.
+    """
     q_tokens = [t for t in re.split(r"[\s\-\._]+", _wf_norm(query)) if len(t) >= 2]
     if not q_tokens:
         return []
     catalog, _ = _wf_build_catalog()
-    out = []
+    playable, landings = [], []
     for it in catalog:
         title_n = _wf_norm(it.get("title") or "")
-        slug = (it.get("url") or "").rstrip("/").rsplit("/", 1)[-1].lower()
+        url = it.get("url") or ""
+        slug = url.rstrip("/").rsplit("/", 1)[-1].lower()
         slug_n = _wf_norm(slug.replace("-", " "))
-        if all(tok in (title_n + " | " + slug_n) for tok in q_tokens):
-            out.append({
-                "url": it["url"],
-                "title": it["title"],
-                "image": it.get("image"),
-                "quality": None,
-                "guid": it["url"].rstrip("/").rsplit("/", 1)[-1],
-            })
-    return out
+        if not all(tok in (title_n + " | " + slug_n) for tok in q_tokens):
+            continue
+        entry = {
+            "url": url,
+            "title": it["title"],
+            "image": it.get("image"),
+            "quality": None,
+            "guid": url.rstrip("/").rsplit("/", 1)[-1],
+        }
+        if _WF_PLAYABLE_RE.search(url):
+            playable.append(entry)
+        else:
+            landings.append(entry)
+    # Si hay reproducibles, devolvemos SOLO esos (evita entradas rotas).
+    # Si no, devolvemos los landings como ultimo recurso.
+    return playable if playable else landings
 
 
 @app.get("/wfcatalog")
