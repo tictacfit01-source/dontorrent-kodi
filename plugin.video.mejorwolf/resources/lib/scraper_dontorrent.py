@@ -579,12 +579,20 @@ def base_url():
 
 def _get(path):
     url = urljoin(base_url() + "/", path.lstrip("/"))
-    # DoH directo (evita ISP + Anubis fiable)
+    # 0) Render relay /dtfetch (PRIORIDAD): resuelve Anubis server-side y
+    #    funciona en Android donde DoH/proxy CF fallan. Es lo que hace que
+    #    los LISTADOS de DonTorrent (Cine/Series/Documentales) aparezcan
+    #    en el TV box, no solo la busqueda.
+    r = _render_fetch(url)
+    if r is not None:
+        return BeautifulSoup(r.text, "html.parser"), url
+    # 1) DoH directo (PC / redes sin bloqueo)
     try:
         r = _doh_fetch("GET", url)
         return BeautifulSoup(r.text, "html.parser"), r.url
     except Exception as e:
         _LOG(f"_get DoH fallo: {e}, fallback a proxy")
+    # 2) Proxy CF Worker
     r = _proxy_get(url)
     return BeautifulSoup(r.text, "html.parser"), r.url
 

@@ -178,13 +178,21 @@ def _enrich_one(it):
     alt     = None
     if scraper and url and hasattr(scraper, 'fetch_detail_title'):
         alt = lambda u=url: scraper.fetch_detail_title(u)
-    meta    = tmdb.enrich(
-        it.get("title", ""),
-        kind=_tmdb_kind(it.get("kind", "movie")),
-        alt_title_fn=alt,
-    )
-    # Año: preferir TMDB, fallback al scraper
-    year = meta.get("year") or it.get("year")
+    # WolfMax trae titulo + portada + (a veces) año fiables en su catalogo.
+    # TMDB confunde mucho el contenido español/documentales (p.ej. "Rafa"
+    # de Nadal -> peli portuguesa 2012). Para WF NO consultamos TMDB para
+    # año/portada; usamos lo del propio item. Solo pedimos plot si acaso.
+    if source == "wf":
+        meta = {}
+        year = it.get("year")
+    else:
+        meta = tmdb.enrich(
+            it.get("title", ""),
+            kind=_tmdb_kind(it.get("kind", "movie")),
+            alt_title_fn=alt,
+        )
+        # Año: preferir TMDB, fallback al scraper
+        year = meta.get("year") or it.get("year")
     # Calidad: asegurar que siempre se propaga
     if not it.get("quality"):
         # Intentar extraer calidad del titulo original del scraper
@@ -1340,6 +1348,11 @@ def show_series_group(series_name, cache_key, q=""):
     xbmcplugin.setPluginCategory(HANDLE, series_name)
     xbmcplugin.setContent(HANDLE, "tvshows")
 
+    # Ordenar por capitulo/episodio (Cap.101, 102... o SxxExx). Asi los
+    # capitulos salen 1x01, 1x02... en orden y no revueltos.
+    items_data = sorted(items_data,
+                        key=lambda it: _ep_key(it.get("title", "")))
+
     enriched = _enrich_many(items_data)
 
     for it, (info, art) in zip(items_data, enriched):
@@ -1348,19 +1361,28 @@ def show_series_group(series_name, cache_key, q=""):
         quality = it.get("quality", "")
         quality_tag = f" [{quality}]" if quality else ""
 
-        # Titulo descriptivo: titulo original + calidad + fuente
         raw_title = it.get("title", series_name)
-        label = f"{raw_title}{quality_tag}  ({src_tag})"
-
-        kind = it.get("kind", "tvshow")
         url = it.get("url", "")
+        kind = it.get("kind", "tvshow")
 
-        # Para WF series → navegacion WF (temporadas/capitulos)
-        if src == "wf":
-            action_url = _u(action="wf_series", q=raw_title,
-                           seed_url=url, title=series_name)
+        # Etiqueta: si detectamos numero de capitulo, mostrar "Cap. N" claro
+        s, e = _ep_key(raw_title)
+        if e != 99:
+            cap_label = f"Cap. {e}" if s in (1, 99) else f"{s}x{e:02d}"
+            label = f"{cap_label}{quality_tag}  ({src_tag})"
         else:
-            # DT / ET → pagina de detalle del scraper
+            label = f"{raw_title}{quality_tag}  ({src_tag})"
+
+        # WolfMax: si la URL ya es un capitulo reproducible (/online/<id>),
+        # vamos DIRECTO a reproducir (no re-buscar la serie -> evita 40s).
+        if src == "wf":
+            if re.search(r"/(online|movie|capitulo|episodio)/\d+", url):
+                action_url = _u(action="detail", src="wf", url=url,
+                               kind=kind, title=raw_title)
+            else:
+                action_url = _u(action="wf_series", q=raw_title,
+                               seed_url=url, title=series_name)
+        else:
             action_url = _u(action="detail", src=src, url=url,
                            kind=kind, title=raw_title)
 
