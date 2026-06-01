@@ -1029,13 +1029,11 @@ def search(filter_kind=None):
                      f"{traceback.format_exc()}", xbmc.LOGWARNING)
             return []
 
-    # Timeout POR FUENTE (no global). DT y ET son rapidos y fiables -> 30s.
-    # WolfMax puede colgarse en su cascada de fallbacks (catalog+brave+
-    # proximity = hasta 60s) porque su buscador AJAX esta bloqueado. Le
-    # damos solo 8s: si responde rapido (catalogo top-100), genial; si no,
-    # se abandona sin bloquear la busqueda. Asi una busqueda nunca pasa de
-    # ~max(DT, ET, 8s) en vez de esperar a la cascada lenta de WF.
-    PER_SOURCE_TIMEOUT = {"DT": 30, "ET": 30, "WF": 8}
+    # Timeout POR FUENTE (no global). El usuario exige busqueda <=6s.
+    # DT via relay ~2-3s, ET ~1s. A WolfMax le damos 6s duros: si su
+    # catalogo no responde a tiempo, se abandona y salen DT+ET sin esperar
+    # la cascada lenta. Asi la busqueda NUNCA pasa de ~6-7s.
+    PER_SOURCE_TIMEOUT = {"DT": 12, "ET": 12, "WF": 6}
     progress_dlg = None
     try:
         progress_dlg = xbmcgui.DialogProgressBG()
