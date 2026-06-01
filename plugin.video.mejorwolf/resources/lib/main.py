@@ -247,8 +247,27 @@ def _error(msg, level=xbmcgui.NOTIFICATION_ERROR, dur=8000):
 
 # ── Navegacion principal ───────────────────────────────────────────────────
 
+def _warm_wf_catalog():
+    """Pre-construye el catalogo WolfMax en segundo plano (sin bloquear).
+    Asi, al abrir el addon, el catalogo se cachea en disco y la PRIMERA
+    busqueda ya lo encuentra listo (en vez de tardar 8s construyendolo y
+    perderlo por el timeout de 6s)."""
+    def _bg():
+        try:
+            wf._build_catalog()
+        except Exception:
+            pass
+    try:
+        import threading
+        threading.Thread(target=_bg, daemon=True).start()
+    except Exception:
+        pass
+
+
 def home():
     xbmcplugin.setPluginCategory(HANDLE, "MejorWolf")
+    # Calentar el catalogo WolfMax en background al abrir el addon.
+    _warm_wf_catalog()
     entries = [
         ("Estrenos",      _u(action="estrenos"),                 IC["estrenos"]),
         ("Cine",          _u(action="section", kind="movie"),    IC["movie"]),

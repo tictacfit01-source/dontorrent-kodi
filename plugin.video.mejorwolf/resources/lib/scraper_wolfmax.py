@@ -18,6 +18,7 @@ from urllib.parse import urljoin, quote as urlquote
 from bs4 import BeautifulSoup
 import xbmc
 import xbmcaddon
+import xbmcvfs
 from . import http_session as hs
 from . import wf_index
 
@@ -556,9 +557,56 @@ _CATALOG_CARDTITLE_RE = re.compile(
 _CATALOG_CARDTEXT_RE = re.compile(
     r'card-text[^>]*>([^<]{0,40})</', re.IGNORECASE)
 
-# Cache en memoria del catalogo crawleado (TTL 30 min)
+# Cache del catalogo crawleado. En MEMORIA (proceso actual) + en DISCO
+# (persiste entre invocaciones del plugin). Cada busqueda en Kodi es un
+# proceso nuevo, asi que la cache en disco es la que de verdad hace que la
+# 2a busqueda sea instantanea (la 1a construye y guarda).
 _catalog_cache = {"ts": 0.0, "items": []}
-_CATALOG_TTL = 30 * 60  # segundos
+_CATALOG_TTL = 6 * 3600  # 6h: el top-100 cambia poco
+
+
+def _catalog_disk_path():
+    try:
+        prof = xbmcvfs.translatePath(_ADDON.getAddonInfo("profile"))
+        if not xbmcvfs.exists(prof):
+            xbmcvfs.mkdirs(prof)
+        import os as _os
+        return _os.path.join(prof, "wf_catalog.json")
+    except Exception:
+        return None
+
+
+def _catalog_load_disk():
+    """Carga el catalogo de disco si existe y es reciente. (items, ok)."""
+    import time as _t, json as _j
+    p = _catalog_disk_path()
+    if not p:
+        return [], False
+    try:
+        if not xbmcvfs.exists(p):
+            return [], False
+        f = xbmcvfs.File(p)
+        raw = f.read()
+        f.close()
+        data = _j.loads(raw)
+        if (_t.time() - data.get("ts", 0)) < _CATALOG_TTL and data.get("items"):
+            return data["items"], True
+    except Exception as e:
+        _LOG(f"_catalog_load_disk fail: {e.__class__.__name__}")
+    return [], False
+
+
+def _catalog_save_disk(items):
+    import time as _t, json as _j
+    p = _catalog_disk_path()
+    if not p or not items:
+        return
+    try:
+        f = xbmcvfs.File(p, "w")
+        f.write(_j.dumps({"ts": _t.time(), "items": items}))
+        f.close()
+    except Exception as e:
+        _LOG(f"_catalog_save_disk fail: {e.__class__.__name__}")
 
 
 def _catalog_extract_title_from_image(img_src):
@@ -607,8 +655,16 @@ def _build_catalog():
     import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
     now = time.time()
+    # 1) cache en memoria (mismo proceso)
     if (now - _catalog_cache["ts"]) < _CATALOG_TTL and _catalog_cache["items"]:
         return _catalog_cache["items"]
+    # 2) cache en DISCO (entre procesos) -> la 2a busqueda es instantanea
+    disk_items, ok = _catalog_load_disk()
+    if ok:
+        _catalog_cache["ts"] = now
+        _catalog_cache["items"] = disk_items
+        _LOG(f"_build_catalog: cargado de disco ({len(disk_items)} entradas)")
+        return disk_items
 
     sess = _session()
     base = _base()
@@ -671,8 +727,10 @@ def _build_catalog():
 
     _LOG(f"_build_catalog -> {len(items)} entradas unicas (de "
          f"{len(_CATALOG_SECTIONS)} secciones)")
-    _catalog_cache["ts"] = now
-    _catalog_cache["items"] = items
+    if items:
+        _catalog_cache["ts"] = now
+        _catalog_cache["items"] = items
+        _catalog_save_disk(items)   # persistir -> 2a busqueda instantanea
     return items
 
 
