@@ -1053,7 +1053,7 @@ def search(filter_kind=None):
     # DT via relay ~2-3s, ET ~1s. A WolfMax le damos 6s duros: si su
     # catalogo no responde a tiempo, se abandona y salen DT+ET sin esperar
     # la cascada lenta. Asi la busqueda NUNCA pasa de ~6-7s.
-    PER_SOURCE_TIMEOUT = {"DT": 12, "ET": 12, "WF": 6}
+    PER_SOURCE_TIMEOUT = {"DT": 8, "ET": 8, "WF": 6}
     progress_dlg = None
     try:
         progress_dlg = xbmcgui.DialogProgressBG()

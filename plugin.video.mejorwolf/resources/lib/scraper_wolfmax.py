@@ -556,6 +556,10 @@ _CATALOG_CARDTITLE_RE = re.compile(
     r'card-title[^>]*>([^<]{1,80})</', re.IGNORECASE)
 _CATALOG_CARDTEXT_RE = re.compile(
     r'card-text[^>]*>([^<]{0,40})</', re.IGNORECASE)
+# El alt de la <img> trae el titulo COMPLETO con calidad y capitulo, p.ej.
+# alt="Rafa [HDTV 1080p][Cap.104]". Es la fuente mas fiable del nombre+cap.
+_CATALOG_IMG_ALT_RE = re.compile(
+    r'<img[^>]+alt=["\']([^"\']{2,100})["\']', re.IGNORECASE)
 
 # Cache del catalogo crawleado. En MEMORIA (proceso actual) + en DISCO
 # (persiste entre invocaciones del plugin). Cada busqueda en Kodi es un
@@ -686,16 +690,24 @@ def _build_catalog():
                 kind = _classify(full_url) or ""
                 if not kind:
                     continue
-                # Titulo REAL del card-title; card-text suele traer "Cap. N".
+                # Titulo: PRIORIDAD al alt= de la tarjeta, que trae el nombre
+                # COMPLETO con capitulo (ej. "Rafa [HDTV 1080p][Cap.104]").
+                # Es clave para agrupar y ordenar capitulos. El alt puede ir
+                # antes o despues del src dentro del <img>, asi que lo
+                # buscamos en TODO el bloque (mid + tail).
                 inner = mid + tail
-                ct = _CATALOG_CARDTITLE_RE.search(inner)
-                title = (ct.group(1).strip() if ct else "") \
-                    or _catalog_extract_title_from_image(img_src)
-                cap = _CATALOG_CARDTEXT_RE.search(inner)
-                cap_txt = (cap.group(1).strip() if cap else "")
-                if cap_txt and re.search(r"\d", cap_txt) \
-                        and cap_txt.lower() not in title.lower():
-                    title = f"{title} - {cap_txt}"
+                alt_m = re.search(r'alt=["\']([^"\']{2,100})["\']', inner,
+                                  re.IGNORECASE)
+                title = alt_m.group(1).strip() if alt_m else ""
+                if not title:
+                    ct = _CATALOG_CARDTITLE_RE.search(inner)
+                    title = (ct.group(1).strip() if ct else "") \
+                        or _catalog_extract_title_from_image(img_src)
+                    cap = _CATALOG_CARDTEXT_RE.search(inner)
+                    cap_txt = (cap.group(1).strip() if cap else "")
+                    if cap_txt and re.search(r"\d", cap_txt) \
+                            and cap_txt.lower() not in title.lower():
+                        title = f"{title} - {cap_txt}"
                 if not title:
                     slug = full_url.rstrip("/").rsplit("/", 1)[-1]
                     title = slug.replace("-", " ").strip()
