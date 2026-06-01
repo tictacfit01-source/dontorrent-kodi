@@ -970,7 +970,8 @@ def _cache_series_groups(cache_key, groups):
         data[sname] = [
             {"title": it.get("title", ""), "url": it.get("url", ""),
              "kind": it.get("kind", ""), "source": it.get("source", ""),
-             "thumb": it.get("thumb", ""), "quality": it.get("quality", "")}
+             "thumb": it.get("thumb", ""), "image": it.get("image", ""),
+             "quality": it.get("quality", "")}
             for it in items_list
         ]
     try:
@@ -1174,7 +1175,8 @@ def _cache_source_items(cache_key, by_source):
         data[src] = [
             {"title": it.get("title", ""), "url": it.get("url", ""),
              "kind": it.get("kind", ""), "source": it.get("source", ""),
-             "thumb": it.get("thumb", ""), "quality": it.get("quality", "")}
+             "thumb": it.get("thumb", ""), "image": it.get("image", ""),
+             "quality": it.get("quality", "")}
             for it in src_items
         ]
     try:
@@ -1229,13 +1231,23 @@ def show_source_results(src, cache_key, q=""):
     src_label = SOURCE_LABEL.get(src, src)
     xbmcplugin.setPluginCategory(HANDLE, f"{src_label}: {q}")
 
-    # Separar individuales (peliculas/docs) de series agrupables
+    # Separar individuales (peliculas/docs) de series agrupables.
+    # Un item es "agrupable como serie" si:
+    #   a) su kind es tvshow, O
+    #   b) su titulo tiene marca de capitulo/episodio (Cap.N, SxxExx, NxNN).
+    # Esto cubre documentales/series de WolfMax cuya URL /online/<id> se
+    # clasifica como "movie" pero que en realidad son capitulos (ej. "Rafa").
+    _CAP_MARK = re.compile(
+        r"\b[Cc]ap\.?\s*\d+|\b[Ss]\d{1,2}[Ee]\d{1,3}\b|\b\d{1,2}x\d{2,3}\b",
+        re.IGNORECASE)
     individual = []
     series_groups = {}
     for it in items_data:
         kind = it.get("kind", "movie")
-        if kind.startswith("tvshow"):
-            sname = _extract_series_name(it.get("title", ""))
+        title = it.get("title", "")
+        is_episode = kind.startswith("tvshow") or bool(_CAP_MARK.search(title))
+        if is_episode:
+            sname = _extract_series_name(title)
             if sname:
                 series_groups.setdefault(sname, []).append(it)
             else:
