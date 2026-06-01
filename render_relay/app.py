@@ -334,15 +334,14 @@ def _wf_build_catalog():
         out = []
         try:
             url = base + path
-            if SCRAPERAPI_KEY:
-                # Catalogo = paginas de listado, NO necesitan premium.
-                # 1 credito/seccion en vez de 25 -> sostenible en plan free.
-                wrapped = _scraperapi_url(url, session_number=None,
-                                          premium=False)
-                r = requests.get(wrapped, headers=BROWSER_HEADERS, timeout=70)
-            else:
-                cs = _make_scraper()
-                r = cs.get(url, headers=BROWSER_HEADERS, timeout=25)
+            # Catalogo = paginas de listado publicas. Las servimos con
+            # CLOUDSCRAPER (GRATIS, ilimitado), NO con ScraperAPI. Las
+            # paginas de listado superan el anti-bot de Cloudflare con
+            # cloudscraper sin gastar creditos. ScraperAPI solo se reserva
+            # para el AJAX data.find.php (que cloudscraper no puede). Asi
+            # el catalogo (Cine/Series/Documentales/busqueda WF) es gratis.
+            cs = _make_scraper()
+            r = cs.get(url, headers=BROWSER_HEADERS, timeout=30)
             _diag_status[path] = r.status_code
             if r.status_code != 200:
                 return out
