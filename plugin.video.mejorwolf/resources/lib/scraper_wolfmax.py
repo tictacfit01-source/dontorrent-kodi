@@ -527,30 +527,34 @@ def _search_via_render_relay(query):
 # = todos los caps de cualquier serie que aparezca en el top-100.
 # Para series mas antiguas seguimos cayendo en brave/proximity.
 
+# Secciones esenciales (las mas pobladas). Menos secciones = catalogo mas
+# rapido. Cubren el grueso del contenido: series 1080p/4k, pelis bluray/4k,
+# documentales y animacion. Todas se crawlean EN PARALELO.
 _CATALOG_SECTIONS = [
     "/series/1080p/",
     "/series/4k-2160p/",
-    "/series/720p/",
-    "/series/480p/",
     "/series/",
-    "/animacion-manga/",
-    "/animacion-infantil/",
     "/peliculas/bluray-1080p/",
     "/peliculas/4k-2160p/",
-    "/peliculas/bluray-720p/",
     "/peliculas/bluray/",
     "/documentales/",
-    "/programas-tv/",
-    "/telenovelas/",
+    "/animacion-manga/",
 ]
 
-# Bloque <a href="..."> ... <img src="..."> capturando los DOS atributos
+# Bloque <a href="..."> ... <img src="..."> + HTML interior (card-title /
+# card-text con "Cap. N"). Capturamos 4 grupos: href, html-antes-img,
+# img-src, html-despues-img.
 _CATALOG_BLOCK_RE = re.compile(
     r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>'
-    r'(?:(?!</a>).){0,1200}?'
-    r'<img[^>]+src=["\']([^"\']+)["\']',
+    r'((?:(?!</a>).){0,1500}?)'
+    r'<img[^>]+src=["\']([^"\']+)["\']'
+    r'((?:(?!</a>).){0,600})',
     re.IGNORECASE | re.DOTALL,
 )
+_CATALOG_CARDTITLE_RE = re.compile(
+    r'card-title[^>]*>([^<]{1,80})</', re.IGNORECASE)
+_CATALOG_CARDTEXT_RE = re.compile(
+    r'card-text[^>]*>([^<]{0,40})</', re.IGNORECASE)
 
 # Cache en memoria del catalogo crawleado (TTL 30 min)
 _catalog_cache = {"ts": 0.0, "items": []}
@@ -613,9 +617,9 @@ def _build_catalog():
         out = []
         try:
             url = base.rstrip("/") + path
-            r = hs.get(sess, url, timeout=15)
+            r = hs.get(sess, url, timeout=8)
             txt = r.content.decode("utf-8", "ignore")
-            for href, img_src in _CATALOG_BLOCK_RE.findall(txt):
+            for href, mid, img_src, tail in _CATALOG_BLOCK_RE.findall(txt):
                 full_url = _catalog_normalize_url(href, url)
                 if not full_url or "wolfmax4k" not in full_url.lower():
                     continue
@@ -626,9 +630,17 @@ def _build_catalog():
                 kind = _classify(full_url) or ""
                 if not kind:
                     continue
-                title = _catalog_extract_title_from_image(img_src)
+                # Titulo REAL del card-title; card-text suele traer "Cap. N".
+                inner = mid + tail
+                ct = _CATALOG_CARDTITLE_RE.search(inner)
+                title = (ct.group(1).strip() if ct else "") \
+                    or _catalog_extract_title_from_image(img_src)
+                cap = _CATALOG_CARDTEXT_RE.search(inner)
+                cap_txt = (cap.group(1).strip() if cap else "")
+                if cap_txt and re.search(r"\d", cap_txt) \
+                        and cap_txt.lower() not in title.lower():
+                    title = f"{title} - {cap_txt}"
                 if not title:
-                    # caer al slug de la URL
                     slug = full_url.rstrip("/").rsplit("/", 1)[-1]
                     title = slug.replace("-", " ").strip()
                 if len(title) < 2:
@@ -839,14 +851,31 @@ def search(query):
         # AND de tokens — todos deben aparecer como substring
         return all(tok in t for tok in q_tokens) if q_tokens else False
 
-    # === -4) Render Relay (PRIMARY si esta configurado) =====================
-    # Llama a data.find.php desde infraestructura no-CF -> devuelve TODOS los
-    # caps que da la web. Es la mejor fuente posible. Solo se activa si el
-    # usuario ha pegado la URL del relay en settings.
+    # === ESTRATEGIA WolfMax (orden por fiabilidad/velocidad) ===============
+    # WolfMax bloquea con Cloudflare las IPs de datacenter (Render da 403),
+    # PERO la IP residencial del usuario NO esta bloqueada. Por eso el
+    # CATALOGO LOCAL (crawl directo desde el Kodi del usuario) es la fuente
+    # primaria y GRATIS. El relay queda solo como respaldo.
     relay_items = []
-    # 0a) Catalogo cacheado server-side (rapido, ~1-2s). Si encuentra
-    #     resultados, salimos YA sin tocar las estrategias lentas (brave,
-    #     proximity, crawl local). Esto resuelve el caso "rafa" en <3s.
+
+    # 0) CATALOGO LOCAL (PRIMARIO): crawl directo de listados desde el Kodi
+    #    del usuario. ~1-2s, gratis, sin ScraperAPI. Si encuentra algo,
+    #    salimos YA (fast-exit) -> evita brave/proximity (cascada de 40s).
+    catalog_items = []
+    try:
+        catalog_items = _search_via_catalog(query)
+        _LOG(f"search via_catalog (local) -> {len(catalog_items)} items")
+        if catalog_items:
+            try:
+                wf_index.add(catalog_items)
+            except Exception:
+                pass
+            return catalog_items   # FAST-EXIT: catalogo local rindio
+    except Exception as e:
+        _LOG(f"search via_catalog error: {e.__class__.__name__}: {e}")
+
+    # 1) Relay /wfcatalog (RESPALDO): por si el crawl local fallo (ISP del
+    #    usuario bloquea WolfMax). Solo util si el relay puede leer WolfMax.
     try:
         cat = _search_via_relay_catalog(query)
         if cat:
@@ -858,8 +887,8 @@ def search(query):
             return cat
     except Exception as e:
         _LOG(f"search relay_catalog error: {e.__class__.__name__}: {e}")
-    # 0b) /wfsearch (AJAX data.find.php via ScraperAPI) — suele fallar pero
-    #     se intenta por si acaso.
+
+    # 2) Relay /wfsearch (AJAX data.find.php) — ultimo respaldo de catalogo.
     try:
         relay_items = _search_via_render_relay(query)
         _LOG(f"search render_relay -> {len(relay_items)} items")
@@ -868,27 +897,13 @@ def search(query):
                 wf_index.add(relay_items)
             except Exception:
                 pass
+            return relay_items
     except Exception as e:
         _LOG(f"search render_relay error: {e.__class__.__name__}: {e}")
 
-    # === -3) Catalogo via listados publicos (PRIMARY) =======================
-    # Como el AJAX /mvc/controllers/data.find.php esta bloqueado para IPs
-    # CF, replicamos su comportamiento con: catalogo de top-100 entradas
-    # por categoria + fan-out a la pagina de aterrizaje de cada serie
-    # (renderiza server-side todos los caps). Esto da la MISMA UX que el
-    # buscador del navegador para todo lo que este en top-100 reciente.
-    # Para titulos antiguos seguimos cayendo en brave/proximity.
-    catalog_items = []
-    try:
-        catalog_items = _search_via_catalog(query)
-        _LOG(f"search via_catalog -> {len(catalog_items)} items")
-        if catalog_items:
-            try:
-                wf_index.add(catalog_items)
-            except Exception:
-                pass
-    except Exception as e:
-        _LOG(f"search via_catalog error: {e.__class__.__name__}: {e}")
+    # Si llegamos aqui, ninguna fuente rapida (catalogo local + relay) rindio.
+    # Como ULTIMO recurso probamos brave + proximity (mas lento), pero el
+    # timeout de 6s del addon lo cortara si tarda demasiado.
 
     # === -2) Buscador externo (Brave Search) ================================
     # Brave Search indexa wolfmax4k.com con titulos limpios por pagina
