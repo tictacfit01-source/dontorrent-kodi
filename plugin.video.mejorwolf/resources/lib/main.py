@@ -292,46 +292,66 @@ def estrenos():
 
 
 def section(kind):
-    """Submenu de secciones con calidades."""
+    """Submenu por FUENTE (DonTorrent / EliteTorrent / WolfMax4K).
+    Igual que Estrenos: primero eliges la web, dentro sus calidades. Asi
+    cada fuente luce su catalogo por separado, sin mezclar."""
     label = KIND_LABEL.get(kind, kind)
     xbmcplugin.setPluginCategory(HANDLE, label)
 
     if kind == "movie":
+        ic = IC["movie"]
         entries = [
-            # DonTorrent — catalogo enorme (30K+ pelis)
-            ("Peliculas",                _u(action="list", src="dt", kind="movie", page=1),      IC["movie"]),
-            ("Peliculas HD",             _u(action="list", src="dt", kind="movie_hd", page=1),   IC["movie"]),
-            ("Peliculas 4K",             _u(action="list", src="dt", kind="movie_4k", page=1),   IC["movie"]),
-            # EliteTorrent — calidades complementarias
-            ("Peliculas 720p",           _u(action="list", src="et", kind="movie_720p", page=1), IC["movie"]),
-            ("Peliculas HDRip",          _u(action="list", src="et", kind="movie_hdrip", page=1),IC["movie"]),
-            ("Peliculas MicroHD",        _u(action="list", src="et", kind="movie_micro", page=1),IC["movie"]),
-            # WolfMax — 4K premium
-            ("Peliculas 4K (WolfMax)",   _u(action="list", src="wf", kind="movie_4k", page=1),  IC["movie"]),
-            # Buscar
-            ("Buscar pelicula",          _u(action="search", filter_kind="movie"),                IC["search"]),
+            ("DonTorrent",    _u(action="src_movie", src="dt"), ic),
+            ("EliteTorrent",  _u(action="src_movie", src="et"), ic),
+            ("WolfMax4K",     _u(action="src_movie", src="wf"), ic),
+            ("Buscar pelicula", _u(action="search", filter_kind="movie"), IC["search"]),
         ]
     elif kind == "tvshow":
+        ic = IC["tvshow"]
         entries = [
-            # DonTorrent — catalogo enorme (14K+ series)
-            ("Series",                   _u(action="list", src="dt", kind="tvshow", page=1),     IC["tvshow"]),
-            ("Series HD",                _u(action="list", src="dt", kind="tvshow_hd", page=1),  IC["tvshow"]),
-            ("Series 4K",                _u(action="list", src="dt", kind="tvshow_4k", page=1),  IC["tvshow"]),
-            # EliteTorrent
-            ("Series (EliteTorrent)",    _u(action="list", src="et", kind="tvshow", page=1),     IC["tvshow"]),
-            # WolfMax — calidades premium
-            ("Series 1080p (WolfMax)",   _u(action="list", src="wf", kind="tvshow_hd", page=1),  IC["tvshow"]),
-            ("Series 4K (WolfMax)",      _u(action="list", src="wf", kind="tvshow_4k", page=1),  IC["tvshow"]),
-            # Buscar
-            ("Buscar serie",             _u(action="search", filter_kind="tvshow"),                IC["search"]),
+            ("DonTorrent",    _u(action="src_tvshow", src="dt"), ic),
+            ("EliteTorrent",  _u(action="src_tvshow", src="et"), ic),
+            ("WolfMax4K",     _u(action="src_tvshow", src="wf"), ic),
+            ("Buscar serie",  _u(action="search", filter_kind="tvshow"), IC["search"]),
         ]
     else:
         entries = [
             (f"Ultimas {label}", _u(action="list", src="dt", kind=kind, page=1), IC.get("documentary", IC["movie"])),
         ]
 
-    for lab, url, ic in entries:
-        xbmcplugin.addDirectoryItem(HANDLE, url, _li(lab, icon=ic), isFolder=True)
+    for lab, url, ic2 in entries:
+        xbmcplugin.addDirectoryItem(HANDLE, url, _li(lab, icon=ic2), isFolder=True)
+    xbmcplugin.setContent(HANDLE, "files")
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+# Calidades disponibles por fuente para peliculas y series.
+_SRC_MOVIE_QUALITIES = {
+    "dt": [("Peliculas", "movie"), ("Peliculas HD", "movie_hd"),
+           ("Peliculas 4K", "movie_4k")],
+    "et": [("Estrenos", "estrenos"), ("Peliculas 720p", "movie_720p"),
+           ("Peliculas HDRip", "movie_hdrip"), ("Peliculas MicroHD", "movie_micro")],
+    "wf": [("Peliculas 1080p", "movie_hd"), ("Peliculas 4K", "movie_4k")],
+}
+_SRC_TVSHOW_QUALITIES = {
+    "dt": [("Series", "tvshow"), ("Series HD", "tvshow_hd"),
+           ("Series 4K", "tvshow_4k")],
+    "et": [("Series", "tvshow")],
+    "wf": [("Series 1080p", "tvshow_hd"), ("Series 4K", "tvshow_4k")],
+}
+
+
+def src_section(src, kind):
+    """Lista las calidades de una fuente concreta (movie o tvshow)."""
+    table = _SRC_MOVIE_QUALITIES if kind == "movie" else _SRC_TVSHOW_QUALITIES
+    quals = table.get(src, [])
+    ic = IC["movie"] if kind == "movie" else IC["tvshow"]
+    xbmcplugin.setPluginCategory(HANDLE, SOURCE_LABEL.get(src, src))
+    for lab, k in quals:
+        xbmcplugin.addDirectoryItem(
+            HANDLE, _u(action="list", src=src, kind=k, page=1),
+            _li(lab, icon=ic), isFolder=True)
     xbmcplugin.setContent(HANDLE, "files")
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.endOfDirectory(HANDLE)
@@ -1770,6 +1790,8 @@ def router(qs):
         if   action is None:            home()
         elif action == "estrenos":      estrenos()
         elif action == "section":       section(params["kind"])
+        elif action == "src_movie":     src_section(params.get("src", "dt"), "movie")
+        elif action == "src_tvshow":    src_section(params.get("src", "dt"), "tvshow")
         elif action == "list":          list_items(params.get("src", "dt"),
                                                     params["kind"],
                                                     page=int(params.get("page", "1")))
