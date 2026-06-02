@@ -566,8 +566,20 @@ def _detail_wf(url, kind, title):
         return
 
     alt  = (lambda t=d.get("title"): t) if d.get("title") else None
-    meta = tmdb.enrich(title, kind=_tmdb_kind(kind), alt_title_fn=alt)
-    art  = _build_art(meta, d)
+    # Si el titulo tiene marca de capitulo es contenido seriado -> TMDB tv,
+    # asi "Rafa [Cap.101]" encuentra el documental seriado (2026) y no la
+    # peli portuguesa de 2012. Mismo criterio que en _enrich_one.
+    wf_kind = _tmdb_kind(kind)
+    if re.search(r"\b[Cc]ap\.?\s*\d+|\b[Ss]\d{1,2}[Ee]\d{1,3}\b", title or ""):
+        wf_kind = "tv"
+    meta = tmdb.enrich(title, kind=wf_kind, alt_title_fn=alt)
+    # Portada: TMDB (image.tmdb.org carga en Kodi). La imagen propia de
+    # WolfMax esta tras Cloudflare (403) -> NO usarla.
+    art = {}
+    if meta.get("poster"):
+        art["poster"] = meta["poster"]; art["thumb"] = meta["poster"]
+    if meta.get("fanart"):
+        art["fanart"] = meta["fanart"]
     info_base = _build_info_base(meta, d)
     year_str = f" ({meta.get('year') or d.get('year', '')})" if (meta.get("year") or d.get("year")) else ""
 
