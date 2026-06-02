@@ -178,21 +178,19 @@ def _enrich_one(it):
     alt     = None
     if scraper and url and hasattr(scraper, 'fetch_detail_title'):
         alt = lambda u=url: scraper.fetch_detail_title(u)
-    # WolfMax trae titulo + portada + (a veces) año fiables en su catalogo.
-    # TMDB confunde mucho el contenido español/documentales (p.ej. "Rafa"
-    # de Nadal -> peli portuguesa 2012). Para WF NO consultamos TMDB para
-    # año/portada; usamos lo del propio item. Solo pedimos plot si acaso.
-    if source == "wf":
-        meta = {}
-        year = it.get("year")
-    else:
-        meta = tmdb.enrich(
-            it.get("title", ""),
-            kind=_tmdb_kind(it.get("kind", "movie")),
-            alt_title_fn=alt,
-        )
-        # Año: preferir TMDB, fallback al scraper
-        year = meta.get("year") or it.get("year")
+    # TMDB para todas las fuentes. Para WolfMax, la portada propia esta
+    # bloqueada por Cloudflare (403), asi que dependemos de TMDB. El truco:
+    # si el item tiene marca de capitulo (Cap.N / SxxExx) es contenido
+    # SERIADO -> forzamos kind="tv". Esto hace que "Rafa" encuentre el
+    # documental seriado de TMDB (popularidad 11) en vez de la peli
+    # portuguesa de 2012 (popularidad 0.3).
+    raw_t = it.get("title", "")
+    tmdb_kind = _tmdb_kind(it.get("kind", "movie"))
+    if re.search(r"\b[Cc]ap\.?\s*\d+|\b[Ss]\d{1,2}[Ee]\d{1,3}\b", raw_t):
+        tmdb_kind = "tv"
+    meta = tmdb.enrich(raw_t, kind=tmdb_kind, alt_title_fn=alt)
+    # Año: preferir TMDB, fallback al scraper
+    year = meta.get("year") or it.get("year")
     # Calidad: asegurar que siempre se propaga
     if not it.get("quality"):
         # Intentar extraer calidad del titulo original del scraper
@@ -213,22 +211,16 @@ def _enrich_one(it):
     }
     art = {}
     own_img = it.get("image") or it.get("thumb")
-    # WolfMax trae su propia caratula (correcta) en el catalogo. TMDB falla
-    # mucho con documentales/contenido espanol (p.ej. el documental "Rafa"
-    # de Nadal lo confunde con una peli portuguesa de 2012). Por eso, para
-    # WolfMax preferimos SIEMPRE su imagen propia sobre el poster de TMDB.
-    if it.get("source") == "wf" and own_img:
-        art["poster"] = own_img
-        art["thumb"]  = own_img
-        if meta.get("fanart"):
-            art["fanart"] = meta["fanart"]
-        return info, art
+    # TMDB primero (su CDN image.tmdb.org SIEMPRE carga en Kodi). La imagen
+    # propia de WolfMax (wolfmax4k.com/assets) esta tras Cloudflare y da 403
+    # en Kodi, asi que solo la usamos como ultimo recurso para fuentes que no
+    # sean WF (DT/ET cuyas imagenes si cargan).
     if meta.get("poster"):
         art["poster"] = meta["poster"]
         art["thumb"]  = meta["poster"]
     if meta.get("fanart"):
         art["fanart"] = meta["fanart"]
-    if own_img:
+    if own_img and it.get("source") != "wf":
         art.setdefault("thumb",  own_img)
         art.setdefault("poster", own_img)
     return info, art
@@ -1382,9 +1374,12 @@ def show_series_group(series_name, cache_key, q=""):
     items_data = sorted(items_data,
                         key=lambda it: _ep_key(it.get("title", "")))
 
-    enriched = _enrich_many(items_data)
+    # Todos los capitulos son la MISMA serie -> enriquecer TMDB UNA sola vez
+    # (con el primer item) y reusar portada/info para todos. Evita N llamadas
+    # TMDB (4 caps de Rafa = 1 llamada en vez de 4 -> mucho mas rapido).
+    shared_info, shared_art = _enrich_one(items_data[0])
 
-    for it, (info, art) in zip(items_data, enriched):
+    for it in items_data:
         src = it.get("source", "dt")
         src_tag = SOURCE_LABEL.get(src, src)
         quality = it.get("quality", "")
@@ -1393,6 +1388,8 @@ def show_series_group(series_name, cache_key, q=""):
         raw_title = it.get("title", series_name)
         url = it.get("url", "")
         kind = it.get("kind", "tvshow")
+        info = dict(shared_info)
+        art = shared_art
 
         # Etiqueta: si detectamos numero de capitulo, mostrar "Cap. N" claro
         s, e = _ep_key(raw_title)
