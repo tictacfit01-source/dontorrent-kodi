@@ -31,7 +31,11 @@ ADDON_DIRS = [
 ]
 
 # Files/dirs that should never be packaged inside the addon zip.
-EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".DS_Store", "Thumbs.db"}
+# node_modules y cloudflare-worker NO son parte del addon de Kodi (el worker
+# corre en Cloudflare, no en Kodi). Excluirlos evita ZIPs de 7MB con 2600
+# archivos basura -> el addon limpio pesa ~600KB.
+EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".DS_Store", "Thumbs.db",
+                 "node_modules", "cloudflare-worker"}
 EXCLUDE_SUFFIXES = (".pyc", ".pyo")
 
 
