@@ -264,8 +264,7 @@ def home():
         ("Estrenos",      _u(action="estrenos"),                 IC["estrenos"]),
         ("Cine",          _u(action="section", kind="movie"),    IC["movie"]),
         ("Series",        _u(action="section", kind="tvshow"),   IC["tvshow"]),
-        ("Documentales",  _u(action="list", src="dt", kind="documentary", page=1),
-                                                                 IC["documentary"]),
+        ("Documentales",  _u(action="documentales_menu"),       IC["documentary"]),
         ("Generos",       _u(action="generos_menu"),             IC["genre"]),
         ("Buscar",        _u(action="search"),                   IC["search"]),
     ]
@@ -352,6 +351,22 @@ def src_section(src, kind):
         xbmcplugin.addDirectoryItem(
             HANDLE, _u(action="list", src=src, kind=k, page=1),
             _li(lab, icon=ic), isFolder=True)
+    xbmcplugin.setContent(HANDLE, "files")
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def documentales_menu():
+    """Submenu de Documentales por fuente (igual que Cine/Series)."""
+    xbmcplugin.setPluginCategory(HANDLE, "Documentales")
+    ic = IC["documentary"]
+    entries = [
+        ("DonTorrent",   _u(action="list", src="dt", kind="documentary", page=1), ic),
+        ("WolfMax4K",    _u(action="list", src="wf", kind="documentary", page=1), ic),
+        ("EliteTorrent", _u(action="et_genre", genre="documental", page=1),       ic),
+    ]
+    for lab, url, ic2 in entries:
+        xbmcplugin.addDirectoryItem(HANDLE, url, _li(lab, icon=ic2), isFolder=True)
     xbmcplugin.setContent(HANDLE, "files")
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.endOfDirectory(HANDLE)
@@ -1792,6 +1807,7 @@ def router(qs):
         elif action == "section":       section(params["kind"])
         elif action == "src_movie":     src_section(params.get("src", "dt"), "movie")
         elif action == "src_tvshow":    src_section(params.get("src", "dt"), "tvshow")
+        elif action == "documentales_menu": documentales_menu()
         elif action == "list":          list_items(params.get("src", "dt"),
                                                     params["kind"],
                                                     page=int(params.get("page", "1")))

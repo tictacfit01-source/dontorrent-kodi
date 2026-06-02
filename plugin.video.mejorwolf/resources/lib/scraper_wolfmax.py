@@ -297,9 +297,10 @@ _TVSHOW_LISTINGS = [
 def latest(kind="movie", page=1):
     _LOG(f"latest kind={kind} page={page}")
 
-    # --- Series/programas: los listados /series/* devuelven URLs dead-end.
-    # Agregamos listados que SI devuelven episodios playables con ID.
-    if kind.startswith("tvshow"):
+    # --- Series/programas/documentales: los listados devuelven URLs
+    # dead-end; usamos el listado que SI da episodios playables con ID.
+    # Los documentales de WolfMax son seriados (capitulos) igual que series.
+    if kind.startswith("tvshow") or kind == "documentary":
         return _latest_tvshow_playable(kind)
 
     section = SECTION_PATH.get(kind, "peliculas/bluray")
@@ -330,6 +331,10 @@ def _latest_tvshow_playable(kind):
     from concurrent.futures import ThreadPoolExecutor, as_completed
     quality_suffixes = _TVSHOW_QUALITY_SUFFIX.get(kind)
 
+    # Para documentales solo crawleamos la seccion /documentales (no la home
+    # ni telenovelas), asi salen SOLO documentales y no series mezcladas.
+    listings = ["documentales"] if kind == "documentary" else _TVSHOW_LISTINGS
+
     def _fetch(section):
         try:
             soup, page_url = _get(section)
@@ -340,8 +345,8 @@ def _latest_tvshow_playable(kind):
 
     all_items = []
     seen = set()
-    with ThreadPoolExecutor(max_workers=len(_TVSHOW_LISTINGS)) as pool:
-        futures = {pool.submit(_fetch, s): s for s in _TVSHOW_LISTINGS}
+    with ThreadPoolExecutor(max_workers=len(listings)) as pool:
+        futures = {pool.submit(_fetch, s): s for s in listings}
         for fut in as_completed(futures):
             section, raw = fut.result()
             kept = 0
