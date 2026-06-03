@@ -977,11 +977,11 @@ def dtpow():
             try:
                 gen = r1.json()
             except Exception:
-                tried.append(f"{dom}:non-json")
+                tried.append(f"{dom}:non-json[{r1.status_code}]:{r1.text[:120]!r}")
                 last_err = f"{dom}: non-json"
                 continue
             if not gen.get("success") or not isinstance(gen.get("challenge"), dict):
-                tried.append(f"{dom}:no-challenge")
+                tried.append(f"{dom}:no-challenge:{str(gen)[:160]}")
                 last_err = f"{dom}: {gen.get('error', 'no challenge')}"
                 continue
             challenge = gen["challenge"]
