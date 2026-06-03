@@ -977,17 +977,25 @@ def dtpow():
             try:
                 gen = r1.json()
             except Exception:
-                tried.append(f"{dom}:non-json[{r1.status_code}]:{r1.text[:120]!r}")
+                tried.append(f"{dom}:non-json[{r1.status_code}]")
                 last_err = f"{dom}: non-json"
                 continue
-            if not gen.get("success") or not isinstance(gen.get("challenge"), dict):
-                tried.append(f"{dom}:no-challenge:{str(gen)[:160]}")
+            challenge = gen.get("challenge")
+            if not gen.get("success") or not challenge:
+                tried.append(f"{dom}:no-challenge")
                 last_err = f"{dom}: {gen.get('error', 'no challenge')}"
                 continue
-            challenge = gen["challenge"]
 
-            rand = challenge.get("randomData", "")
-            diff = challenge.get("difficulty", 3)
+            # El challenge actual de DonTorrent es un STRING hex; el PoW es
+            # sha256(challenge + nonce) con dificultad 3 (ver _dl_pow del
+            # addon). El formato dict legacy (randomData/difficulty) tambien
+            # se soporta por compatibilidad.
+            if isinstance(challenge, dict):
+                rand = challenge.get("randomData", "")
+                diff = challenge.get("difficulty", 3)
+            else:
+                rand = str(challenge)
+                diff = 3
             h, nonce, elapsed = _dt_solve_pow(rand, diff)
 
             r2 = sess.post(api, json={
