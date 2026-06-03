@@ -240,20 +240,92 @@ def _error(msg, level=xbmcgui.NOTIFICATION_ERROR, dur=8000):
 # ── Navegacion principal ───────────────────────────────────────────────────
 
 def _warm_wf_catalog():
-    """Pre-construye el catalogo WolfMax en segundo plano (sin bloquear).
-    Asi, al abrir el addon, el catalogo se cachea en disco y la PRIMERA
-    busqueda ya lo encuentra listo (en vez de tardar 8s construyendolo y
-    perderlo por el timeout de 6s)."""
-    def _bg():
+    """Pre-calienta en segundo plano al abrir el addon (sin bloquear):
+      - Catalogo WolfMax (cache en disco) -> 1a busqueda WF lista.
+      - Sesion Anubis de DonTorrent en el relay -> los listados DT
+        (Cine/Series/Documentales) dejan de tardar 30-40s la 1a vez,
+        porque el PoW ya esta resuelto y cacheado en el servidor.
+    """
+    def _bg_wf():
         try:
             wf._build_catalog()
         except Exception:
             pass
+
+    def _bg_dt():
+        try:
+            # Toca el relay para que resuelva y cachee la sesion Anubis DT.
+            import requests as _rq
+            base = dt._render_relay_url()
+            dom = dt.resolve_domain()
+            if base and dom:
+                _rq.get(f"{base}/dtfetch",
+                        params={"u": f"https://{dom}/documentales"},
+                        timeout=60)
+        except Exception:
+            pass
+
     try:
         import threading
-        threading.Thread(target=_bg, daemon=True).start()
+        threading.Thread(target=_bg_wf, daemon=True).start()
+        threading.Thread(target=_bg_dt, daemon=True).start()
     except Exception:
         pass
+
+
+class _Timer:
+    """Dialogo de progreso con cronometro en vivo. Muestra los segundos que
+    lleva cargando para que el usuario vea el tiempo real. Se usa como:
+        with _Timer("Cargando documentales...") as t:
+            ... trabajo ...
+            t.tick("Obteniendo listado")   # actualiza el texto
+    Corre un hilo que refresca el contador cada 0.5s.
+    """
+    def __init__(self, heading):
+        self.heading = heading
+        self.t0 = time.time()
+        self.msg = "Conectando..."
+        self._stop = False
+        self._dlg = None
+        self._th = None
+
+    def __enter__(self):
+        try:
+            self._dlg = xbmcgui.DialogProgressBG()
+            self._dlg.create("MejorWolf", self.heading)
+            import threading
+            self._th = threading.Thread(target=self._run, daemon=True)
+            self._th.start()
+        except Exception:
+            self._dlg = None
+        return self
+
+    def _run(self):
+        pct = 0
+        while not self._stop:
+            try:
+                el = time.time() - self.t0
+                pct = min(95, pct + 3)
+                if self._dlg:
+                    self._dlg.update(pct, "MejorWolf",
+                                     f"{self.msg}  ({el:.0f}s)")
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    def tick(self, msg):
+        self.msg = msg
+
+    def elapsed(self):
+        return time.time() - self.t0
+
+    def __exit__(self, *a):
+        self._stop = True
+        try:
+            if self._dlg:
+                self._dlg.close()
+        except Exception:
+            pass
 
 
 def home():
@@ -391,35 +463,41 @@ def generos_menu():
 def list_items(src, kind, page=1):
     """Lista items de cualquier fuente."""
     label = KIND_LABEL.get(kind, kind)
+    src_name = SOURCE_LABEL.get(src, src)
     xbmcplugin.setPluginCategory(HANDLE, label)
 
-    try:
-        if src == "dt":
-            items = dt.latest(kind=kind, page=page)
-        elif src == "et":
-            result = et.latest(kind=kind, page=page)
-            items = result[0] if isinstance(result, tuple) else result
-        elif src == "wf":
-            items = wf.latest(kind=kind, page=page)
-        else:
-            items = []
-    except CloudflareChallengeError:
-        _error("Sitio bloqueado temporalmente. Prueba mas tarde.",
-               xbmcgui.NOTIFICATION_WARNING)
-        xbmcplugin.endOfDirectory(HANDLE)
-        return
-    except Exception as e:
-        xbmc.log(f"[MejorWolf] list error: {e}", xbmc.LOGERROR)
-        _error(f"Error de conexion: {type(e).__name__}")
-        xbmcplugin.endOfDirectory(HANDLE)
-        return
+    with _Timer(f"Cargando {label} ({src_name})...") as timer:
+        try:
+            timer.tick(f"Obteniendo listado de {src_name}")
+            if src == "dt":
+                items = dt.latest(kind=kind, page=page)
+            elif src == "et":
+                result = et.latest(kind=kind, page=page)
+                items = result[0] if isinstance(result, tuple) else result
+            elif src == "wf":
+                items = wf.latest(kind=kind, page=page)
+            else:
+                items = []
+        except CloudflareChallengeError:
+            _error("Sitio bloqueado temporalmente. Prueba mas tarde.",
+                   xbmcgui.NOTIFICATION_WARNING)
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
+        except Exception as e:
+            xbmc.log(f"[MejorWolf] list error: {e}", xbmc.LOGERROR)
+            _error(f"Error de conexion: {type(e).__name__}")
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
 
-    if not items:
-        _error("Sin resultados.", xbmcgui.NOTIFICATION_WARNING, 5000)
-        xbmcplugin.endOfDirectory(HANDLE)
-        return
+        if not items:
+            _error("Sin resultados.", xbmcgui.NOTIFICATION_WARNING, 5000)
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
 
-    enriched = _enrich_many(items)
+        timer.tick(f"Cargando portadas ({len(items)} resultados)")
+        enriched = _enrich_many(items)
+        xbmc.log(f"[MejorWolf] list {src}/{kind} cargado en "
+                 f"{timer.elapsed():.1f}s ({len(items)} items)", xbmc.LOGINFO)
     for it, (info, art) in zip(items, enriched):
         is_wf_series = it.get("kind", "").startswith("tvshow") and it.get("source") == "wf"
         if is_wf_series:
