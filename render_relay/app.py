@@ -648,9 +648,9 @@ from urllib.parse import quote as _uq
 
 
 DT_FALLBACK = [
-    "dontorrent.science", "dontorrent.irish", "dontorrent.club",
-    "dontorrent.info", "dontorrent.istanbul", "dontorrent.lighting",
-    "dontorrent.reisen",
+    "dontorrent.support", "dontorrent.science", "dontorrent.irish",
+    "dontorrent.club", "dontorrent.info", "dontorrent.istanbul",
+    "dontorrent.lighting", "dontorrent.reisen",
 ]
 
 # Cache de cookies Anubis en memoria (proceso). Funciona porque Render mantiene
@@ -776,18 +776,19 @@ def dtsearch():
 
     diag = {"phase": "init", "preferred": preferred}
     try:
-        domain = _dt_pick_domain(preferred or None)
-        diag["domain"] = domain
-        diag["phase"] = "anubis"
+        # Lista de dominios a probar: preferido primero, luego los fallback.
+        # Algunos mirrors (ej. science) tienen el buscador desincronizado y
+        # devuelven 0 resultados aunque la home funcione. Por eso probamos
+        # varios hasta que uno devuelva resultados de verdad.
+        dom_candidates = []
+        if preferred:
+            dom_candidates.append(preferred)
+        # dontorrent.support va primero en fallback (mirror mas completo)
+        for d in ["dontorrent.support"] + DT_FALLBACK:
+            if d not in dom_candidates:
+                dom_candidates.append(d)
 
-        sess, solved = _dt_anubis_session(domain)
-        diag["anubis_solved"] = solved
-
-        diag["phase"] = "search"
-
-        def _post_page(page):
-            """POST /buscar para una pagina concreta (campo p=N).
-            Reintenta una vez si aparece Anubis."""
+        def _post_page_on(domain, sess, page):
             data = {"valor": q, "Buscar": "Buscar"}
             if page > 1:
                 data["p"] = str(page)
@@ -799,9 +800,37 @@ def dtsearch():
                 rr = ns.post(f"https://{domain}/buscar", data=data, timeout=30)
             return rr
 
-        # Pagina 1
-        r = _post_page(1)
-        full_html = r.text
+        domain = None
+        sess = None
+        solved = False
+        r = None
+        full_html = ""
+        tried = []
+        for cand in dom_candidates[:5]:
+            try:
+                s2, sv = _dt_anubis_session(cand)
+                rr = _post_page_on(cand, s2, 1)
+                html = rr.text
+                # ¿Tiene resultados de contenido reales?
+                n_items = len(_re_dt.findall(
+                    r"/(?:pelicula|serie|documental)/\d+/", html))
+                tried.append(f"{cand}:{n_items}")
+                if n_items > 0:
+                    domain, sess, solved, r, full_html = cand, s2, sv, rr, html
+                    break
+                # Guardar el primero como fallback aunque sea 0
+                if domain is None:
+                    domain, sess, solved, r, full_html = cand, s2, sv, rr, html
+            except Exception as e:
+                tried.append(f"{cand}:ERR")
+                continue
+        diag["domain"] = domain
+        diag["tried"] = tried
+        diag["anubis_solved"] = solved
+        diag["phase"] = "search"
+
+        def _post_page(page):
+            return _post_page_on(domain, sess, page)
 
         # Detectar numero total de paginas desde buscarPagina(N) en el HTML
         page_nums = [int(n) for n in
