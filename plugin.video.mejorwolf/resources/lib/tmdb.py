@@ -80,33 +80,45 @@ def _score(result, preferred_kind, query_clean, year):
     q = (query_clean or "").lower().strip()
     if not title or not q:
         return 0.0
-    # Similitud
-    sim = 0.0
-    if title == q:
-        sim = 1000.0
-    elif title.startswith(q) or q.startswith(title):
-        sim = 500.0
-    elif q in title or title in q:
-        sim = 250.0
-    else:
-        # tokens compartidos
+    # Similitud (incluye titulo ORIGINAL: TMDB devuelve "Dias Perfectos"
+    # como title en es-ES pero "Perfect Days" como original_title; hay que
+    # comparar contra ambos para que la peli correcta puntue alto).
+    orig = (result.get("original_title")
+            or result.get("original_name") or "").lower()
+    def _sim(t):
+        if not t:
+            return 0.0
+        if t == q:
+            return 1000.0
+        if t.startswith(q) or q.startswith(t):
+            return 500.0
+        if q in t or t in q:
+            return 250.0
         q_tok = set(re.findall(r"\w+", q))
-        t_tok = set(re.findall(r"\w+", title))
+        t_tok = set(re.findall(r"\w+", t))
         if q_tok and t_tok:
             inter = len(q_tok & t_tok)
-            sim = 100.0 * inter / max(len(q_tok), 1)
+            return 100.0 * inter / max(len(q_tok), 1)
+        return 0.0
+    sim = max(_sim(title), _sim(orig))
+
     pop = float(result.get("popularity") or 0.0)
+    # La popularidad pesa MUCHO: una peli real (pop 9.5) debe ganar a una
+    # coincidencia exacta de titulo de contenido irrelevante (pop 0.2). Antes
+    # pop sumaba tal cual (~9) y perdia contra sim=1000. Ahora x40 -> 380.
+    # Ademas, resultados sin votos/popularidad casi nula se hunden.
+    pop_score = pop * 40.0
+    votes = float(result.get("vote_count") or 0.0)
+    # Penalizar fuerte resultados "fantasma" (0 votos, pop casi nula): suelen
+    # ser entradas basura que casualmente tienen el titulo en ingles.
+    ghost_penalty = -400.0 if (votes < 5 and pop < 1.0) else 0.0
+
     y_res = (result.get("release_date") or result.get("first_air_date") or "")[:4]
-    year_bonus = 50.0 if (year and y_res == year) else 0.0
+    year_bonus = 120.0 if (year and y_res == year) else 0.0
     kind_here = "movie" if "title" in result else "tv"
-    # Bonus fuerte por kind correcto: si el scraper dice "movie" y TMDB
-    # devuelve una serie con el mismo nombre, la pelicula debe ganar.
-    # Ejemplo: "The Game" pelicula (1997, Fincher) vs serie (2006).
     kind_bonus = 200.0 if kind_here == preferred_kind else 0.0
-    # Penalizar resultados del kind equivocado con exacto titulo match
-    # (evita que una serie popular gane a una pelicula correcta)
     kind_penalty = -150.0 if kind_here != preferred_kind else 0.0
-    return sim + pop + year_bonus + kind_bonus + kind_penalty
+    return sim + pop_score + year_bonus + kind_bonus + kind_penalty + ghost_penalty
 
 
 def _best_across_kinds(clean, kinds, year):
