@@ -947,56 +947,84 @@ def dtpow():
     if not content_id or not tabla:
         return jsonify({"error": "missing content_id/tabla"}), 400
 
-    if not domain:
-        domain = _dt_pick_domain()
+    # Los content_id se comparten entre mirrors de DonTorrent, pero NO todos
+    # exponen api_validate_pow.php (ej. support da 405). Probamos varios
+    # dominios hasta que uno resuelva la descarga.
+    dom_candidates = []
+    if domain:
+        dom_candidates.append(domain)
+    for d in DT_FALLBACK:
+        if d not in dom_candidates:
+            dom_candidates.append(d)
 
-    try:
-        sess, _ = _dt_anubis_session(domain)
-        api = f"https://{domain}/api_validate_pow.php"
+    last_err = "unknown"
+    tried = []
+    for dom in dom_candidates[:6]:
+        try:
+            sess, _ = _dt_anubis_session(dom)
+            api = f"https://{dom}/api_validate_pow.php"
 
-        # 1) generate
-        r1 = sess.post(api, json={
-            "action": "generate",
-            "content_id": int(content_id),
-            "tabla": tabla,
-        }, timeout=20)
-        gen = r1.json()
-        if not gen.get("success"):
-            return jsonify({"error": gen.get("error") or "no challenge",
-                            "phase": "generate"}), 502
-        challenge = gen["challenge"]
+            r1 = sess.post(api, json={
+                "action": "generate",
+                "content_id": int(content_id),
+                "tabla": tabla,
+            }, timeout=20)
+            # 405/404 -> este mirror no tiene el endpoint, siguiente
+            if r1.status_code in (404, 405):
+                tried.append(f"{dom}:no-endpoint")
+                last_err = f"{dom}: {r1.status_code}"
+                continue
+            try:
+                gen = r1.json()
+            except Exception:
+                tried.append(f"{dom}:non-json")
+                last_err = f"{dom}: non-json"
+                continue
+            if not gen.get("success") or not isinstance(gen.get("challenge"), dict):
+                tried.append(f"{dom}:no-challenge")
+                last_err = f"{dom}: {gen.get('error', 'no challenge')}"
+                continue
+            challenge = gen["challenge"]
 
-        # 2) solve PoW (download es difficulty=3, mas facil que browser=5)
-        rand = challenge.get("randomData", "")
-        diff = challenge.get("difficulty", 3)
-        h, nonce, elapsed = _dt_solve_pow(rand, diff)
+            rand = challenge.get("randomData", "")
+            diff = challenge.get("difficulty", 3)
+            h, nonce, elapsed = _dt_solve_pow(rand, diff)
 
-        # 3) validate
-        r2 = sess.post(api, json={
-            "action": "validate",
-            "challenge": challenge,
-            "nonce": nonce,
-        }, timeout=20)
-        val = r2.json()
-        if not val.get("success") or not val.get("download_url"):
-            return jsonify({"error": val.get("error") or "validate failed",
-                            "phase": "validate"}), 502
+            r2 = sess.post(api, json={
+                "action": "validate",
+                "challenge": challenge,
+                "nonce": nonce,
+            }, timeout=20)
+            try:
+                val = r2.json()
+            except Exception:
+                tried.append(f"{dom}:validate-non-json")
+                continue
+            if not val.get("success") or not val.get("download_url"):
+                tried.append(f"{dom}:validate-fail")
+                last_err = f"{dom}: {val.get('error', 'validate failed')}"
+                continue
 
-        url = val["download_url"]
-        if url.startswith("//"):
-            url = "https:" + url
-        elif url.startswith("/"):
-            url = f"https://{domain}{url}"
+            url = val["download_url"]
+            if url.startswith("//"):
+                url = "https:" + url
+            elif url.startswith("/"):
+                url = f"https://{dom}{url}"
 
-        return jsonify({
-            "success": True,
-            "download_url": url,
-            "domain": domain,
-            "elapsed": elapsed,
-        })
+            return jsonify({
+                "success": True,
+                "download_url": url,
+                "domain": dom,
+                "elapsed": elapsed,
+                "tried": tried,
+            })
+        except Exception as e:
+            tried.append(f"{dom}:ERR")
+            last_err = f"{dom}: {e.__class__.__name__}"
+            continue
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
+    return jsonify({"error": last_err, "tried": tried,
+                    "phase": "all-domains-failed"}), 502
 
 
 if __name__ == "__main__":
