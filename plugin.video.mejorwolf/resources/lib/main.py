@@ -1291,16 +1291,20 @@ def remote_kb_screen():
     qr = rkb.qr_url()
     web = rkb.relay_base() + "/kb" if rkb.relay_base() else ""
 
-    code_spaced = " ".join(code)   # "1 2 3 4 5 6" se lee mejor
+    code_spaced = "  ".join(code)   # "1  2  3  4  5  6" se lee mejor
     txt = (
-        "[B]1.[/B] Escanea el QR con la camara del movil.\n\n"
-        "[B]2.[/B] O entra en:\n[COLOR cyan]%s[/COLOR]\n"
-        "y escribe el codigo.\n\n"
-        "[B]Codigo del box:[/B]\n[COLOR yellow][B]%s[/B][/COLOR]\n\n"
-        "[B]3.[/B] Escribe la pelicula/serie en el movil y pulsa [B]Buscar[/B]:"
-        " aparecera sola aqui.\n\n"
-        "[COLOR grey]Pulsa Atras para cerrar.[/COLOR]"
-        % (web or "(configura el relay)", code_spaced)
+        "Controla MejorWolf desde tu movil.\n\n"
+        "[B]1[/B]   Escanea el QR con la camara del movil.\n"
+        "[COLOR grey]      o entra en[/COLOR]  [COLOR cyan]%s[/COLOR]\n\n"
+        "[B]2[/B]   Introduce este codigo para vincular:\n"
+        "      [COLOR yellow][B]%s[/B][/COLOR]\n\n"
+        "[B]3[/B]   Pulsa [B]Atras[/B] en el mando para CERRAR esta pantalla.\n"
+        "[COLOR grey]      (si buscas con esta pantalla abierta, el resultado\n"
+        "      queda detras y no lo veras)[/COLOR]\n\n"
+        "[B]4[/B]   Listo. Busca y controla desde el movil estes donde estes:\n"
+        "      la busqueda aparece sola en la tele.\n\n"
+        "[COLOR grey]Solo hay que vincular una vez por dispositivo.[/COLOR]"
+        % (web or "(configura el relay en Ajustes)", code_spaced)
     )
 
     class _KBWin(xbmcgui.WindowDialog):
