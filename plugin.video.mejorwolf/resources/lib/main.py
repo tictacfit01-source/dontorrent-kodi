@@ -24,6 +24,7 @@ from . import scraper_elitetorrent as et
 from . import scraper_dontorrent as dt
 from . import supabase_sync as sb
 from . import tmdb, player
+from . import filmaffinity as fa
 from . import http_session as hs
 from . import dns_doh
 from . import torrent as tparse
@@ -222,9 +223,20 @@ def _enrich_one(it):
         )
         if qm:
             it["quality"] = qm.group(1)
+    plot = meta.get("plot") or ""
+    # Nota de FilmAffinity al principio de la descripcion. Se busca por el
+    # titulo español que resuelve TMDB (lo que mejor casa en FA); fallback al
+    # titulo limpio del scraper. Cacheado en disco -> no penaliza velocidad.
+    try:
+        fa_title = meta.get("title") or tmdb._clean_title(raw_t)
+        fa_rt = fa.rating_str(fa_title, year)
+        if fa_rt:
+            plot = f"[B]FilmAffinity: {fa_rt}[/B]\n\n{plot}".rstrip()
+    except Exception:
+        pass
     info = {
         "title":     _display_title(it, year=year),
-        "plot":      meta.get("plot"),
+        "plot":      plot,
         "year":      year,
         "rating":    meta.get("rating"),
         "mediatype": _media_type(it.get("kind", "movie")),
