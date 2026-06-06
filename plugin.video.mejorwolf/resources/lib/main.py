@@ -25,6 +25,7 @@ from . import scraper_dontorrent as dt
 from . import supabase_sync as sb
 from . import tmdb, player
 from . import filmaffinity as fa
+from . import remote_kb as rkb
 from . import http_session as hs
 from . import dns_doh
 from . import torrent as tparse
@@ -461,6 +462,8 @@ def home():
         ("Documentales",  _u(action="documentales_menu"),       IC["documentary"]),
         ("Generos",       _u(action="generos_menu"),             IC["genre"]),
         ("Buscar",        _u(action="search"),                   IC["search"]),
+        ("Teclado Remoto (movil)", _u(action="remote_kb"),
+         "DefaultAddonRemote.png"),
     ]
     for label, url, ic in entries:
         xbmcplugin.addDirectoryItem(HANDLE, url, _li(label, icon=ic), isFolder=True)
@@ -1254,11 +1257,7 @@ def _get_cached_series_group(cache_key, series_name):
 
 
 def search(filter_kind=None):
-    """Busqueda combinada en las 3 fuentes.
-
-    Muestra resultados de DonTorrent, EliteTorrent y WolfMax4K.
-    Las series de TODAS las fuentes se agrupan por nombre (como Tacones).
-    """
+    """Busqueda combinada en las 3 fuentes (pide texto con el teclado)."""
     # Prerellenar con la ultima busqueda (comodidad)
     kb = xbmc.Keyboard(_last_search_load(), "Buscar en MejorWolf")
     kb.doModal()
@@ -1269,6 +1268,83 @@ def search(filter_kind=None):
     if not q:
         xbmcplugin.endOfDirectory(HANDLE)
         return
+    _run_search(q, filter_kind)
+
+
+def remote_search(q, filter_kind=None):
+    """Busqueda lanzada desde el Teclado Remoto (movil): q ya viene dada."""
+    q = (q or "").strip()
+    if not q:
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+    _run_search(q, filter_kind)
+
+
+def remote_kb_screen():
+    """Muestra el codigo de 6 cifras + un QR para vincular el movil.
+
+    El usuario escanea el QR (o entra en la web y teclea el codigo). El
+    servicio en segundo plano ya esta sondeando: cuando el movil envia una
+    busqueda, aparece sola en la tele.
+    """
+    code = rkb.get_code()
+    qr = rkb.qr_url()
+    web = rkb.relay_base() + "/kb" if rkb.relay_base() else ""
+
+    code_spaced = " ".join(code)   # "1 2 3 4 5 6" se lee mejor
+    txt = (
+        "[B]1.[/B] Escanea el QR con la camara del movil.\n\n"
+        "[B]2.[/B] O entra en:\n[COLOR cyan]%s[/COLOR]\n"
+        "y escribe el codigo.\n\n"
+        "[B]Codigo del box:[/B]\n[COLOR yellow][B]%s[/B][/COLOR]\n\n"
+        "[B]3.[/B] Escribe la pelicula/serie en el movil y pulsa [B]Buscar[/B]:"
+        " aparecera sola aqui.\n\n"
+        "[COLOR grey]Pulsa Atras para cerrar.[/COLOR]"
+        % (web or "(configura el relay)", code_spaced)
+    )
+
+    class _KBWin(xbmcgui.WindowDialog):
+        def __init__(self):
+            super().__init__()
+            w, h = 1280, 720
+            # Fondo (fanart del addon, fichero real)
+            try:
+                self.addControl(xbmcgui.ControlImage(0, 0, w, h, FANART))
+            except Exception:
+                pass
+            self.addControl(xbmcgui.ControlLabel(
+                80, 50, w - 160, 50, "[B]Teclado Remoto[/B]",
+                textColor="0xFFFFFFFF", font="font30"))
+            if qr:
+                self.addControl(xbmcgui.ControlImage(770, 150, 400, 400, qr))
+            self._tb = xbmcgui.ControlTextBox(
+                80, 150, 660, 500, font="font13", textColor="0xFFFFFFFF")
+            self.addControl(self._tb)
+            self._tb.setText(txt)
+
+        def onAction(self, action):
+            if action.getId() in (9, 10, 92):   # parent/back/nav-back
+                self.close()
+
+    try:
+        win = _KBWin()
+        win.doModal()
+        del win
+    except Exception as e:
+        xbmc.log(f"[MejorWolf] remote_kb_screen error: {e}", xbmc.LOGERROR)
+        xbmcgui.Dialog().ok(
+            "Teclado Remoto",
+            f"Entra en {web} en el movil y escribe el codigo:\n\n"
+            f"[B]{code_spaced}[/B]\n\nLuego escribe tu busqueda y pulsa Buscar.")
+
+
+def _run_search(q, filter_kind=None):
+    """Ejecuta la busqueda combinada para una query `q` ya dada.
+
+    Lo usan tanto el teclado normal como el Teclado Remoto (movil).
+    Muestra resultados de DonTorrent, EliteTorrent y WolfMax4K.
+    Las series de TODAS las fuentes se agrupan por nombre (como Tacones).
+    """
     _last_search_save(q)
 
     # Buscar en paralelo en las 3 fuentes con hilos DAEMON.
@@ -2077,6 +2153,10 @@ def router(qs):
                                                  params.get("tabla", ""),
                                                  page_url=params.get("page_url", ""))
         elif action == "search":        search(filter_kind=params.get("filter_kind"))
+        elif action == "remote_search": remote_search(params.get("q", ""))
+        elif action == "remote_kb":
+            remote_kb_screen()
+            xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         elif action == "source_results": show_source_results(
                                             params.get("src", "dt"),
                                             params.get("cache_key", ""),

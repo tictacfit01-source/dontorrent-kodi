@@ -58,10 +58,29 @@ def _drain_fa():
         return "empty"
 
 
+def _poll_remote_kb():
+    """Sondea el Teclado Remoto: si el movil envio una busqueda, la abre en la
+    tele. Devuelve True si lanzo una busqueda."""
+    try:
+        from resources.lib import remote_kb as rkb
+        q = rkb.poll(timeout=8)
+        if q:
+            from urllib.parse import quote
+            url = ("plugin://plugin.video.mejorwolf/?action=remote_search&q="
+                   + quote(q))
+            xbmc.log(f"[MejorWolf/service] teclado remoto -> '{q}'",
+                     xbmc.LOGINFO)
+            xbmc.executebuiltin('ActivateWindow(videos,"%s",return)' % url)
+            return True
+    except Exception as e:
+        xbmc.log(f"[MejorWolf/service] KB poll error: {e}", xbmc.LOGDEBUG)
+    return False
+
+
 def main():
     monitor = xbmc.Monitor()
-    xbmc.log("[MejorWolf/service] iniciado (keep-warm + notas FA)",
-             xbmc.LOGINFO)
+    xbmc.log("[MejorWolf/service] iniciado (keep-warm + notas FA + teclado "
+             "remoto)", xbmc.LOGINFO)
 
     base = _relay_base()
     if base:
@@ -74,6 +93,9 @@ def main():
         if monitor.waitForAbort(TICK):
             break
         now = time.time()
+
+        # 0) Teclado Remoto: si el movil envio una busqueda, abrirla ya
+        _poll_remote_kb()
 
         # 1) keep-warm relay
         if now - last_ping >= PING_INTERVAL:

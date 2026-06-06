@@ -1035,6 +1035,136 @@ def dtpow():
                     "phase": "all-domains-failed"}), 502
 
 
+# ===========================================================================
+# TECLADO REMOTO (escribir busquedas desde el movil)
+# ===========================================================================
+# El movil abre /kb (escaneando un QR que lleva el codigo del box), escribe la
+# busqueda y la envia. El servicio del addon sondea /kb/poll con su codigo y
+# abre los resultados en la tele. Almacen en fichero (compartido entre workers,
+# efimero: las busquedas son de un solo uso).
+_KB_FILE = "/tmp/mw_kb.json"
+_KB_TTL = 600   # una busqueda pendiente caduca a los 10 min
+
+
+def _kb_load():
+    try:
+        with open(_KB_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _kb_save(d):
+    try:
+        tmp = _KB_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _KB_FILE)
+    except Exception:
+        pass
+
+
+def _kb_clean(d):
+    now = _t.time()
+    return {k: v for k, v in d.items()
+            if (now - v.get("ts", 0)) < _KB_TTL}
+
+
+_KB_PAGE = """<!doctype html><html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>MejorWolf - Teclado Remoto</title>
+<style>
+*{box-sizing:border-box} body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+background:#0d1117;color:#e6edf3;display:flex;min-height:100vh;align-items:center;justify-content:center}
+.card{width:100%;max-width:440px;padding:24px}
+h1{font-size:20px;margin:0 0 4px} .sub{color:#8b949e;font-size:13px;margin:0 0 20px}
+label{display:block;font-size:12px;color:#8b949e;margin:14px 0 6px}
+input{width:100%;padding:14px;font-size:18px;border-radius:10px;border:1px solid #30363d;
+background:#161b22;color:#e6edf3;outline:none} input:focus{border-color:#2f81f7}
+#code{letter-spacing:3px;text-align:center}
+button{width:100%;margin-top:18px;padding:15px;font-size:17px;font-weight:600;border:0;
+border-radius:10px;background:#2f81f7;color:#fff} button:active{background:#1f6feb}
+#st{margin-top:16px;text-align:center;font-size:15px;min-height:22px}
+.ok{color:#3fb950} .err{color:#f85149}
+</style></head><body><div class="card">
+<h1>MejorWolf - Teclado Remoto</h1>
+<p class="sub">Escribe aqui y aparecera en tu tele.</p>
+<label>Que quieres buscar</label>
+<input id="q" autofocus autocomplete="off" placeholder="p.ej. El padrino"
+ enterkeyhint="search">
+<label>Codigo del box (6 cifras)</label>
+<input id="code" inputmode="numeric" maxlength="6" placeholder="------">
+<button id="go">Buscar en la tele</button>
+<div id="st"></div>
+</div><script>
+var p=new URLSearchParams(location.search); if(p.get('c')) document.getElementById('code').value=p.get('c');
+var q=document.getElementById('q'),code=document.getElementById('code'),st=document.getElementById('st');
+function send(){
+ var query=q.value.trim(), c=code.value.trim();
+ if(!c||c.length<6){st.className='err';st.textContent='Falta el codigo de 6 cifras';return;}
+ if(!query){st.className='err';st.textContent='Escribe algo';return;}
+ st.className='';st.textContent='Enviando...';
+ fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({code:c,query:query})})
+  .then(function(r){return r.json()})
+  .then(function(j){ if(j&&j.ok){st.className='ok';st.textContent='Enviado. Mira la tele';q.value='';q.focus();}
+    else {st.className='err';st.textContent=(j&&j.error)||'Error';}})
+  .catch(function(){st.className='err';st.textContent='Sin conexion';});
+}
+document.getElementById('go').onclick=send;
+q.addEventListener('keydown',function(e){if(e.key==='Enter')send();});
+</script></body></html>"""
+
+
+@app.get("/kb")
+def kb_page():
+    return Response(_KB_PAGE, mimetype="text/html; charset=utf-8")
+
+
+@app.post("/kb/send")
+def kb_send():
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    code = re.sub(r"\D", "", str(body.get("code") or ""))[:6]
+    query = (body.get("query") or "").strip()[:120]
+    if len(code) != 6 or not query:
+        return jsonify({"ok": False, "error": "datos invalidos"}), 400
+    d = _kb_clean(_kb_load())
+    d[code] = {"q": query, "ts": _t.time()}
+    _kb_save(d)
+    return jsonify({"ok": True})
+
+
+@app.get("/kb/poll")
+def kb_poll():
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    if len(code) != 6:
+        return jsonify({"query": ""})
+    d = _kb_clean(_kb_load())
+    entry = d.pop(code, None)
+    if entry:
+        _kb_save(d)   # consumo de un solo uso
+        return jsonify({"query": entry.get("q", "")})
+    return jsonify({"query": ""})
+
+
+@app.get("/kb/qr")
+def kb_qr():
+    import io
+    import segno
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    host = request.host_url.rstrip("/")
+    url = f"{host}/kb?c={code}" if code else f"{host}/kb"
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="png", scale=8, border=2,
+                                    dark="0d1117", light="ffffff")
+    return Response(buf.getvalue(), mimetype="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     app.run(host="0.0.0.0", port=port, debug=False)
