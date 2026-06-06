@@ -120,63 +120,217 @@ def _extract_rating(html):
         return None
 
 
-def _pick_film_id(html, year):
-    """De una pagina de resultados, elige el id de ficha. Si hay año, intenta
-    el resultado cuyo entorno contiene ese año; si no, el primero."""
-    ids = re.findall(r"/es/film(\d+)\.html", html)
-    if not ids:
+import threading
+
+# Sesion reutilizable + cortesia: limitamos concurrencia y espaciamos las
+# peticiones para parecer humano y no provocar el anti-bot de FilmAffinity
+# (que con rafagas devuelve 200 con cuerpo VACIO). Como casi todo va a cache,
+# el volumen real es bajo.
+_SESSION = requests.Session()
+_SEM = threading.Semaphore(3)
+_RATE_LOCK = threading.Lock()
+_last_req = [0.0]
+_MIN_INTERVAL = 0.20
+
+
+def _polite_get(url, params=None):
+    with _RATE_LOCK:
+        dt = time.time() - _last_req[0]
+        if dt < _MIN_INTERVAL:
+            time.sleep(_MIN_INTERVAL - dt)
+        _last_req[0] = time.time()
+    return _SESSION.get(url, params=params, headers=_HEADERS, timeout=8,
+                        allow_redirects=True)
+
+
+def _norm(s):
+    s = unicodedata.normalize("NFKD", (s or "").lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return [w for w in re.findall(r"\w+", s) if len(w) > 1]
+
+
+def _title_sim(a, b):
+    ta, tb = set(_norm(a)), set(_norm(b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(len(ta), 1)
+
+
+def _result_blocks(html):
+    """Extrae (film_id, titulo_visible, año) de una pagina de resultados."""
+    blocks = []
+    for m in re.finditer(r"/es/film(\d+)\.html", html):
+        fid = m.group(1)
+        window = html[m.start():m.start() + 500]
+        # titulo: texto del propio enlace o atributo title=
+        tm = (re.search(r'>([^<>]{2,120})</a>', window)
+              or re.search(r'title="([^"]{2,120})"', window))
+        title = tm.group(1).strip() if tm else ""
+        ym = re.search(r"\b(19|20)\d{2}\b", window)
+        yr = ym.group(0) if ym else ""
+        blocks.append((fid, title, yr))
+    return blocks
+
+
+def _pick_film_id(html, query, year):
+    """Elige la mejor ficha de la pagina de resultados por titulo + año."""
+    blocks = _result_blocks(html)
+    if not blocks:
         return None
-    if year:
-        for m in re.finditer(r"/es/film(\d+)\.html", html):
-            window = html[m.start():m.start() + 400]
-            if str(year) in window:
-                return m.group(1)
-    return ids[0]
+    best, best_score = None, -1.0
+    for fid, title, yr in blocks:
+        score = _title_sim(query, title) * 2.0
+        if year and yr == str(year):
+            score += 1.0
+        if score > best_score:
+            best, best_score = fid, score
+    return best or blocks[0][0]
 
 
+# Estados de _fetch: ("ok", nota) | ("none", None) | ("err", None)
+# 'err' = respuesta vacia/bloqueada/red: NO se cachea para reintentar luego.
 def _fetch(title, year):
     try:
-        r = requests.get(f"{_BASE}/search.php", params={"stext": title},
-                         headers=_HEADERS, timeout=6, allow_redirects=True)
-        if r.status_code != 200:
-            return None
-        html, url = r.text, r.url
-        if "/film" not in url:   # pagina de resultados (varias coincidencias)
-            fid = _pick_film_id(html, year)
-            if not fid:
-                return None
-            r2 = requests.get(f"{_BASE}/film{fid}.html",
-                              headers=_HEADERS, timeout=6)
-            if r2.status_code != 200:
-                return None
-            html = r2.text
-        return _extract_rating(html)
+        r = _polite_get(f"{_BASE}/search.php", params={"stext": title})
     except Exception as e:
         _log(f"fetch error: {e.__class__.__name__}")
-        return None
+        return "err", None
+    if r.status_code != 200 or len(r.text) < 500:
+        return "err", None   # vacio/bloqueado -> no envenenar la cache
+    html, url = r.text, r.url
+    if "/film" not in url:   # pagina de resultados (varias coincidencias)
+        fid = _pick_film_id(html, title, year)
+        if not fid:
+            return "none", None
+        try:
+            r2 = _polite_get(f"{_BASE}/film{fid}.html")
+        except Exception:
+            return "err", None
+        if r2.status_code != 200 or len(r2.text) < 500:
+            return "err", None
+        html = r2.text
+    val = _extract_rating(html)
+    return ("ok", val) if val is not None else ("none", None)
 
 
 def rating(title, year=None):
-    """Devuelve la nota de FilmAffinity (float 0-10) o None. Cacheado en disco.
+    """Nota de FilmAffinity (float 0-10) o None. Cacheado en disco.
 
-    `title` deberia ser el titulo español (idealmente el que resuelve TMDB),
-    que es el que mejor casa en FilmAffinity.
+    Solo cachea resultados REALES (encontrado o 'no existe'); las respuestas
+    vacias/bloqueadas NO se cachean para poder reintentar en otra sesion.
     """
     if not title or not _ENABLED_FN():
         return None
     sig = _sig(title, year)
     if sig in _CACHE:
         return _CACHE[sig]
-    val = _fetch(title, year)
-    _cache_put(sig, val)
+    with _SEM:
+        # Re-chequeo dentro del semaforo (otro hilo pudo cachearlo)
+        if sig in _CACHE:
+            return _CACHE[sig]
+        status, val = _fetch(title, year)
+    if status == "err":
+        return None          # no cacheamos -> se reintenta mas adelante
+    _cache_put(sig, val)     # 'ok' (float) o 'none' (None)
     return val
+
+
+def rating_best(titles, year=None):
+    """Prueba varios titulos candidatos (español, original, limpio) y devuelve
+    la primera nota encontrada. Maximiza la cobertura."""
+    seen = set()
+    for t in titles:
+        t = (t or "").strip()
+        if not t:
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        val = rating(t, year)
+        if val is not None:
+            return val
+    return None
+
+
+def _fmt(val):
+    if val is None:
+        return None
+    s = f"{val:.1f}".replace(".", ",")
+    return s[:-2] if s.endswith(",0") else s   # 9,0 -> 9
 
 
 def rating_str(title, year=None):
     """Nota formateada estilo español ('7,4') o None."""
-    val = rating(title, year)
-    if val is None:
+    return _fmt(rating(title, year))
+
+
+def rating_str_best(titles, year=None):
+    """Como rating_str pero probando varios titulos candidatos (BLOQUEA)."""
+    return _fmt(rating_best(titles, year))
+
+
+# ── API cache-only + warm en segundo plano ─────────────────────────────────
+# Para NO penalizar la velocidad de navegacion: al pintar la lista solo leemos
+# de cache (instantaneo); si falta, lanzamos un fetch en segundo plano para que
+# este disponible la proxima vez. Asi la cobertura crece con el uso.
+_inflight = set()
+_inflight_lock = threading.Lock()
+
+
+def _candidates_clean(titles):
+    out, seen = [], set()
+    for t in titles:
+        t = (t or "").strip()
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out
+
+
+def cached_best(titles, year=None):
+    """Nota desde cache SOLO (sin red). float | None."""
+    if not _ENABLED_FN():
         return None
-    s = f"{val:.1f}".replace(".", ",")
-    # 9,0 -> 9 (FA muestra enteros sin decimal)
-    return s[:-2] if s.endswith(",0") else s
+    for t in _candidates_clean(titles):
+        sig = _sig(t, year)
+        if sig in _CACHE and _CACHE[sig] is not None:
+            return _CACHE[sig]
+    return None
+
+
+def cached_str_best(titles, year=None):
+    """Nota formateada desde cache SOLO (instantaneo)."""
+    return _fmt(cached_best(titles, year))
+
+
+def warm_best(titles, year=None):
+    """Si no hay nota cacheada, la busca en SEGUNDO PLANO (no bloquea) para
+    tenerla disponible la proxima vez. Evita duplicar trabajo en vuelo."""
+    if not _ENABLED_FN():
+        return
+    cands = _candidates_clean(titles)
+    if not cands:
+        return
+    # Si todos los candidatos ya estan resueltos en cache (positivo o
+    # negativo), no hay nada que calentar.
+    if all(_sig(t, year) in _CACHE for t in cands):
+        return
+    key = "|".join(c.lower() for c in cands) + f"#{year or ''}"
+    with _inflight_lock:
+        if key in _inflight:
+            return
+        _inflight.add(key)
+
+    def _job():
+        try:
+            rating_best(cands, year)
+        finally:
+            with _inflight_lock:
+                _inflight.discard(key)
+
+    try:
+        threading.Thread(target=_job, daemon=True).start()
+    except Exception:
+        with _inflight_lock:
+            _inflight.discard(key)

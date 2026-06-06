@@ -224,14 +224,23 @@ def _enrich_one(it):
         if qm:
             it["quality"] = qm.group(1)
     plot = meta.get("plot") or ""
-    # Nota de FilmAffinity al principio de la descripcion. Se busca por el
-    # titulo español que resuelve TMDB (lo que mejor casa en FA); fallback al
-    # titulo limpio del scraper. Cacheado en disco -> no penaliza velocidad.
+    # Nota de FilmAffinity al principio de la descripcion. Probamos varios
+    # titulos candidatos para maximizar la cobertura: el español que resuelve
+    # TMDB, el ORIGINAL (ingles) y el titulo limpio del scraper. Cacheado en
+    # disco -> tras la 1a vez es instantaneo y no penaliza la velocidad.
     try:
-        fa_title = meta.get("title") or tmdb._clean_title(raw_t)
-        fa_rt = fa.rating_str(fa_title, year)
+        fa_candidates = [
+            meta.get("title"),
+            meta.get("original"),
+            tmdb._clean_title(raw_t),
+        ]
+        # Cache-only (instantaneo): no bloquea el render. Si falta, se calienta
+        # en segundo plano para que aparezca en la proxima navegacion.
+        fa_rt = fa.cached_str_best(fa_candidates, year)
         if fa_rt:
             plot = f"[B]FilmAffinity: {fa_rt}[/B]\n\n{plot}".rstrip()
+        else:
+            fa.warm_best(fa_candidates, year)
     except Exception:
         pass
     info = {
