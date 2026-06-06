@@ -1293,19 +1293,21 @@ def remote_kb_screen():
 
     code_spaced = "  ".join(code)   # "1  2  3  4  5  6" se lee mejor
     txt = (
-        "Controla MejorWolf desde tu movil.\n\n"
-        "[B]1[/B]   Escanea el QR con la camara del movil.\n"
+        "Controla MejorWolf desde tu móvil.\n\n"
+        "[B]1[/B]   Escanea el QR con la cámara del móvil.\n"
         "[COLOR grey]      o entra en[/COLOR]  [COLOR cyan]%s[/COLOR]\n\n"
-        "[B]2[/B]   Introduce este codigo para vincular:\n"
+        "[B]2[/B]   Introduce este código para vincular:\n"
         "      [COLOR yellow][B]%s[/B][/COLOR]\n\n"
-        "[B]3[/B]   Pulsa [B]Atras[/B] en el mando para CERRAR esta pantalla.\n"
+        "[B]3[/B]   Pulsa [B]Atrás[/B] en el mando para CERRAR esta pantalla.\n"
         "[COLOR grey]      (si buscas con esta pantalla abierta, el resultado\n"
-        "      queda detras y no lo veras)[/COLOR]\n\n"
-        "[B]4[/B]   Listo. Busca y controla desde el movil estes donde estes:\n"
-        "      la busqueda aparece sola en la tele.\n\n"
+        "      queda detrás y no lo verás)[/COLOR]\n\n"
+        "[B]4[/B]   Listo. Busca y controla desde el móvil estés donde estés:\n"
+        "      la búsqueda aparece sola en la tele.\n\n"
         "[COLOR grey]Solo hay que vincular una vez por dispositivo.[/COLOR]"
         % (web or "(configura el relay en Ajustes)", code_spaced)
     )
+
+    panel_tex = os.path.join(ADDON_PATH, "resources", "media", "white.png")
 
     class _KBWin(xbmcgui.WindowDialog):
         def __init__(self):
@@ -1316,13 +1318,20 @@ def remote_kb_screen():
                 self.addControl(xbmcgui.ControlImage(0, 0, w, h, FANART))
             except Exception:
                 pass
+            # Panel oscuro semitransparente detras del texto (legibilidad).
+            # Base blanca tintada con colorDiffuse AARRGGBB (E6 ~ 90% opaco).
+            try:
+                self.addControl(xbmcgui.ControlImage(
+                    40, 30, 700, 670, panel_tex, colorDiffuse="0xE60D1117"))
+            except Exception:
+                pass
             self.addControl(xbmcgui.ControlLabel(
-                80, 50, w - 160, 50, "[B]Teclado Remoto[/B]",
+                80, 50, 620, 50, "[B]Teclado Remoto[/B]",
                 textColor="0xFFFFFFFF", font="font30"))
             if qr:
                 self.addControl(xbmcgui.ControlImage(770, 150, 400, 400, qr))
             self._tb = xbmcgui.ControlTextBox(
-                80, 150, 660, 500, font="font13", textColor="0xFFFFFFFF")
+                80, 150, 640, 520, font="font13", textColor="0xFFFFFFFF")
             self.addControl(self._tb)
             self._tb.setText(txt)
 
@@ -1338,8 +1347,8 @@ def remote_kb_screen():
         xbmc.log(f"[MejorWolf] remote_kb_screen error: {e}", xbmc.LOGERROR)
         xbmcgui.Dialog().ok(
             "Teclado Remoto",
-            f"Entra en {web} en el movil y escribe el codigo:\n\n"
-            f"[B]{code_spaced}[/B]\n\nLuego escribe tu busqueda y pulsa Buscar.")
+            f"Entra en {web} en el móvil y escribe el código:\n\n"
+            f"[B]{code_spaced}[/B]\n\nLuego escribe tu búsqueda y pulsa Buscar.")
 
 
 def _run_search(q, filter_kind=None):
