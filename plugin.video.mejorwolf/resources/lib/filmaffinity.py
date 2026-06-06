@@ -40,7 +40,8 @@ _dirty = False
 _last_flush = 0.0
 _CACHE_FILE = os.path.join(_PROFILE, "fa_cache.json") if _PROFILE else ""
 _POS_TTL = 30 * 24 * 3600   # nota encontrada: 30 dias
-_NEG_TTL = 5 * 24 * 3600    # sin nota: 5 dias
+_NEG_TTL = 12 * 3600        # sin nota: 12h (asi un falso negativo por un
+                            # bloqueo puntual de FA se reintenta pronto)
 
 
 def _log(msg):
@@ -104,7 +105,35 @@ def _cache_put(sig, val):
     _cache_flush()
 
 
+def _purge_negatives_once():
+    """Purga UNA sola vez los negativos ya cacheados. Durante las primeras
+    pruebas, un bloqueo puntual de FA pudo cachear como 'sin nota' peliculas
+    que SI la tienen. Esta migracion los borra para que se reintenten."""
+    if not _PROFILE:
+        return
+    marker = os.path.join(_PROFILE, "fa_negpurge_v1.done")
+    if os.path.exists(marker):
+        return
+    global _dirty
+    removed = 0
+    for k in [k for k, v in list(_CACHE.items()) if v is None]:
+        _CACHE.pop(k, None)
+        _CACHE_TS.pop(k, None)
+        removed += 1
+    if removed:
+        _dirty = True
+        _cache_flush(force=True)
+    try:
+        os.makedirs(_PROFILE, exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("done")
+    except Exception:
+        pass
+    _log(f"purga unica de negativos: {removed} entradas")
+
+
 _cache_load()
+_purge_negatives_once()
 atexit.register(lambda: _cache_flush(force=True))
 
 
@@ -383,7 +412,10 @@ def drain_one():
     cands, yr = entry.get("t") or [], entry.get("y")
     rating_best(cands, yr, count_budget=False)   # gentil: sin tope de proceso
     if any(_sig(t, yr) in _CACHE for t in cands):
+        nota = cached_best(cands, yr)
+        _log(f"drain '{cands[0]}' ({yr or '-'}) -> {nota}")
         return "ok"
+    _log(f"drain '{cands[0]}' ({yr or '-'}) -> SIN RESPUESTA (FA bloquea?)")
     # No se cacheo nada -> FA no respondio (bloqueo): reencolar para reintentar
     with _queue_lock:
         q = _queue_load()

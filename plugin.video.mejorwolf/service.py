@@ -17,10 +17,16 @@ No depende de GitHub ni de cuentas externas: corre dentro de Kodi.
 import time
 import xbmc
 
-PING_INTERVAL = 300    # keep-warm relay: cada 5 min
-TICK = 3               # ciclo base del servicio (s)
-FA_GAP = 6             # separacion entre notas FA (~10/min: ritmo humano)
-FA_GAP_BLOCKED = 120   # si FA bloquea, espera 2 min antes de reintentar
+PING_INTERVAL = 300         # keep-warm relay: cada 5 min
+TICK = 3                    # ciclo base del servicio (s)
+FA_GAP = 6                  # separacion entre notas FA (~10/min: ritmo humano)
+# Backoff EXPONENCIAL ante bloqueos de FA. Reintentar a menudo cuando FA ya
+# te bloquea solo PERPETUA el bloqueo (no deja recuperar la IP). Por eso al
+# primer bloqueo esperamos 10 min, y se duplica con cada bloqueo seguido hasta
+# 2h. Asi la IP tiene tiempo real de recuperarse.
+FA_BACKOFF_BASE = 600       # 10 min al primer bloqueo
+FA_BACKOFF_MAX = 7200       # tope 2h
+FA_GAP_EMPTY = 30           # cola vacia: revisar en 30s
 
 
 def _relay_base():
@@ -62,6 +68,7 @@ def main():
         _ping(base)
     last_ping = time.time()
     next_fa = 0.0          # cuando podemos resolver la proxima nota FA
+    consec_blocks = 0      # bloqueos seguidos (para el backoff exponencial)
 
     while not monitor.abortRequested():
         if monitor.waitForAbort(TICK):
@@ -75,14 +82,22 @@ def main():
                 _ping(base)
             last_ping = now
 
-        # 2) notas FilmAffinity, espaciadas (ritmo humano)
+        # 2) notas FilmAffinity, espaciadas (ritmo humano) con backoff
         if now >= next_fa:
             status = _drain_fa()
             if status == "blocked":
-                next_fa = now + FA_GAP_BLOCKED   # FA capa la IP: esperar
+                consec_blocks += 1
+                wait = min(FA_BACKOFF_MAX,
+                           FA_BACKOFF_BASE * (2 ** (consec_blocks - 1)))
+                next_fa = now + wait
+                xbmc.log(f"[MejorWolf/service] FA bloqueado (x{consec_blocks}); "
+                         f"reintento en {int(wait // 60)} min", xbmc.LOGINFO)
             elif status == "ok":
-                next_fa = now + FA_GAP           # resuelta: pequeña pausa
-            # 'empty' -> no fijamos espera larga; reintenta en el proximo tick
+                consec_blocks = 0
+                next_fa = now + FA_GAP
+            else:   # 'empty'
+                consec_blocks = 0
+                next_fa = now + FA_GAP_EMPTY
 
     xbmc.log("[MejorWolf/service] detenido", xbmc.LOGINFO)
 
