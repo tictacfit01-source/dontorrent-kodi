@@ -58,20 +58,43 @@ def _drain_fa():
         return "empty"
 
 
+# Comando del movil -> builtin de Kodi (acciones de un disparo)
+_KB_ACTIONS = {
+    "back": "Action(Back)",
+    "playpause": "Action(PlayPause)",
+    "stop": "Action(Stop)",
+    "volup": "Action(VolumeUp)",
+    "voldown": "Action(VolumeDown)",
+    "mute": "Mute",
+    "subs": "Action(ShowSubtitles)",
+}
+_ADDON_HOME = 'ActivateWindow(videos,"plugin://plugin.video.mejorwolf/",return)'
+
+
 def _poll_remote_kb():
-    """Sondea el Teclado Remoto: si el movil envio una busqueda, la abre en la
-    tele. Devuelve True si lanzo una busqueda."""
+    """Sondea el Teclado Remoto y ejecuta lo que el movil haya enviado:
+    una busqueda (la abre en la tele) o comandos (play/pausa/stop/vol/...)."""
     try:
         from resources.lib import remote_kb as rkb
-        q = rkb.poll(timeout=8)
-        if q:
-            from urllib.parse import quote
-            url = ("plugin://plugin.video.mejorwolf/?action=remote_search&q="
-                   + quote(q))
-            xbmc.log(f"[MejorWolf/service] teclado remoto -> '{q}'",
-                     xbmc.LOGINFO)
-            xbmc.executebuiltin('ActivateWindow(videos,"%s",return)' % url)
-            return True
+        events = rkb.poll(timeout=8)
+        if not events:
+            return False
+        from urllib.parse import quote
+        for ev in events:
+            q = (ev.get("q") or "").strip()
+            c = (ev.get("c") or "").strip()
+            if q:
+                url = ("plugin://plugin.video.mejorwolf/?action=remote_search"
+                       "&q=" + quote(q))
+                xbmc.log(f"[MejorWolf/service] teclado remoto -> buscar '{q}'",
+                         xbmc.LOGINFO)
+                xbmc.executebuiltin('ActivateWindow(videos,"%s",return)' % url)
+            elif c == "home":
+                xbmc.executebuiltin(_ADDON_HOME)
+            elif c in _KB_ACTIONS:
+                xbmc.executebuiltin(_KB_ACTIONS[c])
+            xbmc.sleep(150)   # pequeña separacion entre acciones
+        return True
     except Exception as e:
         xbmc.log(f"[MejorWolf/service] KB poll error: {e}", xbmc.LOGDEBUG)
     return False

@@ -1070,48 +1070,75 @@ def _kb_clean(d):
             if (now - v.get("ts", 0)) < _KB_TTL}
 
 
+_KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
+                    "volup", "voldown", "mute", "subs"}
+
 _KB_PAGE = """<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>MejorWolf - Teclado Remoto</title>
 <style>
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
-background:#0d1117;color:#e6edf3;display:flex;min-height:100vh;align-items:center;justify-content:center}
-.card{width:100%;max-width:440px;padding:24px}
-h1{font-size:20px;margin:0 0 4px} .sub{color:#8b949e;font-size:13px;margin:0 0 20px}
-label{display:block;font-size:12px;color:#8b949e;margin:14px 0 6px}
+background:#0d1117;color:#e6edf3;display:flex;min-height:100vh;align-items:flex-start;justify-content:center}
+.card{width:100%;max-width:460px;padding:22px}
+h1{font-size:20px;margin:0 0 4px} .sub{color:#8b949e;font-size:13px;margin:0 0 16px}
+label{display:block;font-size:12px;color:#8b949e;margin:12px 0 6px}
 input{width:100%;padding:14px;font-size:18px;border-radius:10px;border:1px solid #30363d;
 background:#161b22;color:#e6edf3;outline:none} input:focus{border-color:#2f81f7}
 #code{letter-spacing:3px;text-align:center}
-button{width:100%;margin-top:18px;padding:15px;font-size:17px;font-weight:600;border:0;
-border-radius:10px;background:#2f81f7;color:#fff} button:active{background:#1f6feb}
+#go{width:100%;margin-top:16px;padding:15px;font-size:17px;font-weight:600;border:0;
+border-radius:10px;background:#2f81f7;color:#fff} #go:active{background:#1f6feb}
+.sec{margin-top:24px;border-top:1px solid #21262d;padding-top:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid.three{grid-template-columns:1fr 1fr 1fr}
+.ctrl{padding:16px 8px;font-size:15px;font-weight:600;border:1px solid #30363d;
+border-radius:10px;background:#161b22;color:#e6edf3} .ctrl:active{background:#21262d}
+.ctrl.play{background:#238636;border-color:#238636} .ctrl.play:active{background:#1a6e2c}
+.ctrl.stop{background:#3d1417;border-color:#5a1e22;color:#ff7b72} .ctrl.stop:active{background:#5a1e22}
 #st{margin-top:16px;text-align:center;font-size:15px;min-height:22px}
 .ok{color:#3fb950} .err{color:#f85149}
 </style></head><body><div class="card">
 <h1>MejorWolf - Teclado Remoto</h1>
-<p class="sub">Escribe aqui y aparecera en tu tele.</p>
+<p class="sub">Escribe y controla tu tele desde aqui.</p>
 <label>Que quieres buscar</label>
-<input id="q" autofocus autocomplete="off" placeholder="p.ej. El padrino"
- enterkeyhint="search">
+<input id="q" autocomplete="off" placeholder="p.ej. El padrino" enterkeyhint="search">
 <label>Codigo del box (6 cifras)</label>
 <input id="code" inputmode="numeric" maxlength="6" placeholder="------">
 <button id="go">Buscar en la tele</button>
+
+<div class="sec">
+ <div class="grid">
+  <button class="ctrl play" onclick="cmd('playpause')">&#9205; Play / Pausa</button>
+  <button class="ctrl stop" onclick="cmd('stop')">&#9209; Stop</button>
+ </div>
+ <div class="grid three" style="margin-top:10px">
+  <button class="ctrl" onclick="cmd('voldown')">&#128265; Vol -</button>
+  <button class="ctrl" onclick="cmd('mute')">&#128263; Silencio</button>
+  <button class="ctrl" onclick="cmd('volup')">&#128266; Vol +</button>
+ </div>
+ <div class="grid three" style="margin-top:10px">
+  <button class="ctrl" onclick="cmd('home')">&#127968; Inicio</button>
+  <button class="ctrl" onclick="cmd('back')">&#8617; Atras</button>
+  <button class="ctrl" onclick="cmd('subs')">&#128172; Subt.</button>
+ </div>
+</div>
 <div id="st"></div>
 </div><script>
 var p=new URLSearchParams(location.search); if(p.get('c')) document.getElementById('code').value=p.get('c');
 var q=document.getElementById('q'),code=document.getElementById('code'),st=document.getElementById('st');
-function send(){
- var query=q.value.trim(), c=code.value.trim();
- if(!c||c.length<6){st.className='err';st.textContent='Falta el codigo de 6 cifras';return;}
- if(!query){st.className='err';st.textContent='Escribe algo';return;}
+function getCode(){var c=code.value.trim();if(!c||c.length<6){st.className='err';st.textContent='Falta el codigo de 6 cifras';return null;}return c;}
+function post(body,okmsg){
  st.className='';st.textContent='Enviando...';
- fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({code:c,query:query})})
+ fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()})
-  .then(function(j){ if(j&&j.ok){st.className='ok';st.textContent='Enviado. Mira la tele';q.value='';q.focus();}
+  .then(function(j){ if(j&&j.ok){st.className='ok';st.textContent=okmsg;}
     else {st.className='err';st.textContent=(j&&j.error)||'Error';}})
   .catch(function(){st.className='err';st.textContent='Sin conexion';});
 }
+function send(){var c=getCode();if(!c)return;var query=q.value.trim();
+ if(!query){st.className='err';st.textContent='Escribe algo';return;}
+ post({code:c,query:query},'Enviado. Mira la tele');q.value='';}
+function cmd(x){var c=getCode();if(!c)return;post({code:c,cmd:x},'Enviado');}
 document.getElementById('go').onclick=send;
 q.addEventListener('keydown',function(e){if(e.key==='Enter')send();});
 </script></body></html>"""
@@ -1129,11 +1156,23 @@ def kb_send():
     except Exception:
         body = {}
     code = re.sub(r"\D", "", str(body.get("code") or ""))[:6]
+    if len(code) != 6:
+        return jsonify({"ok": False, "error": "codigo invalido"}), 400
     query = (body.get("query") or "").strip()[:120]
-    if len(code) != 6 or not query:
-        return jsonify({"ok": False, "error": "datos invalidos"}), 400
+    cmd = (body.get("cmd") or "").strip().lower()[:20]
+    if query:
+        ev = {"q": query}
+    elif cmd in _KB_ALLOWED_CMDS:
+        ev = {"c": cmd}
+    else:
+        return jsonify({"ok": False, "error": "nada que enviar"}), 400
     d = _kb_clean(_kb_load())
-    d[code] = {"q": query, "ts": _t.time()}
+    entry = d.get(code) or {"ev": [], "ts": _t.time()}
+    evs = entry.get("ev", [])
+    evs.append(ev)
+    entry["ev"] = evs[-20:]   # tope para no acumular
+    entry["ts"] = _t.time()
+    d[code] = entry
     _kb_save(d)
     return jsonify({"ok": True})
 
@@ -1142,13 +1181,13 @@ def kb_send():
 def kb_poll():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
-        return jsonify({"query": ""})
+        return jsonify({"events": []})
     d = _kb_clean(_kb_load())
     entry = d.pop(code, None)
     if entry:
-        _kb_save(d)   # consumo de un solo uso
-        return jsonify({"query": entry.get("q", "")})
-    return jsonify({"query": ""})
+        _kb_save(d)   # consumo: devolvemos los eventos pendientes y limpiamos
+        return jsonify({"events": entry.get("ev", [])})
+    return jsonify({"events": []})
 
 
 @app.get("/kb/qr")

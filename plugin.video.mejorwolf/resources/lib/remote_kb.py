@@ -59,15 +59,19 @@ def qr_url():
 
 
 def poll(timeout=10):
-    """Devuelve la busqueda pendiente del movil (y la consume), o ''."""
+    """Devuelve los eventos pendientes del movil (y los consume).
+
+    Cada evento es un dict: {"q": "<busqueda>"} o {"c": "<comando>"}.
+    Lista vacia si no hay nada o falla la conexion.
+    """
     base = relay_base()
     if not base:
-        return ""
+        return []
     try:
         r = requests.get(f"{base}/kb/poll", params={"code": get_code()},
                          timeout=timeout)
         if r.status_code == 200:
-            return (r.json().get("query") or "").strip()
+            return r.json().get("events") or []
     except Exception:
         pass
-    return ""
+    return []
