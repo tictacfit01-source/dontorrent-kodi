@@ -220,11 +220,12 @@ _MAX_FETCHES = 30
 _fetch_count = [0]
 
 
-def rating(title, year=None):
+def rating(title, year=None, count_budget=True):
     """Nota de FilmAffinity (float 0-10) o None. Cacheado en disco.
 
     Solo cachea resultados REALES (encontrado o 'no existe'); las respuestas
     vacias/bloqueadas NO se cachean para poder reintentar en otra sesion.
+    `count_budget=False` lo usa el SERVICIO (ritmo lento, sin tope de proceso).
     """
     if not title or not _ENABLED_FN():
         return None
@@ -235,9 +236,10 @@ def rating(title, year=None):
         # Re-chequeo dentro del semaforo (otro hilo pudo cachearlo)
         if sig in _CACHE:
             return _CACHE[sig]
-        if _fetch_count[0] >= _MAX_FETCHES:
-            return None      # presupuesto agotado: se reintenta en otra visita
-        _fetch_count[0] += 1
+        if count_budget:
+            if _fetch_count[0] >= _MAX_FETCHES:
+                return None   # presupuesto agotado: se reintenta en otra visita
+            _fetch_count[0] += 1
         status, val = _fetch(title, year)
     if status == "err":
         return None          # no cacheamos -> se reintenta mas adelante
@@ -245,19 +247,11 @@ def rating(title, year=None):
     return val
 
 
-def rating_best(titles, year=None):
+def rating_best(titles, year=None, count_budget=True):
     """Prueba varios titulos candidatos (español, original, limpio) y devuelve
     la primera nota encontrada. Maximiza la cobertura."""
-    seen = set()
-    for t in titles:
-        t = (t or "").strip()
-        if not t:
-            continue
-        key = t.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        val = rating(t, year)
+    for t in _candidates_clean(titles):
+        val = rating(t, year, count_budget=count_budget)
         if val is not None:
             return val
     return None
@@ -280,14 +274,13 @@ def rating_str_best(titles, year=None):
     return _fmt(rating_best(titles, year))
 
 
-# ── API cache-only + warm en segundo plano ─────────────────────────────────
-# Para NO penalizar la velocidad de navegacion: al pintar la lista solo leemos
-# de cache (instantaneo); si falta, lanzamos un fetch en segundo plano para que
-# este disponible la proxima vez. Asi la cobertura crece con el uso.
-_inflight = set()
-_inflight_lock = threading.Lock()
-
-
+# ── API cache-only (display) + COLA para el servicio ────────────────────────
+# FilmAffinity bloquea RAFAGAS de peticiones (responde 200 con cuerpo vacio),
+# incluso desde IP residencial. Por eso NO consultamos al pintar la lista (eso
+# seria una rafaga). En su lugar: la lista muestra solo lo que hay en cache, y
+# encola los titulos que falten. El SERVICIO en segundo plano (service.py, que
+# SI sobrevive entre navegaciones) los resuelve a RITMO HUMANO (1 cada varios
+# segundos). Asi la cobertura crece sin disparar el anti-bot.
 def _candidates_clean(titles):
     out, seen = [], set()
     for t in titles:
@@ -314,33 +307,87 @@ def cached_str_best(titles, year=None):
     return _fmt(cached_best(titles, year))
 
 
-def warm_best(titles, year=None):
-    """Si no hay nota cacheada, la busca en SEGUNDO PLANO (no bloquea) para
-    tenerla disponible la proxima vez. Evita duplicar trabajo en vuelo."""
-    if not _ENABLED_FN():
+# ── Cola persistente (la rellenan los plugins, la vacia el servicio) ────────
+_QUEUE_FILE = os.path.join(_PROFILE, "fa_queue.json") if _PROFILE else ""
+_QUEUE_MAX = 400
+_queue_lock = threading.Lock()
+
+
+def _queue_load():
+    if not _QUEUE_FILE or not os.path.exists(_QUEUE_FILE):
+        return []
+    try:
+        with open(_QUEUE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or []
+    except Exception:
+        return []
+
+
+def _queue_save(q):
+    if not _QUEUE_FILE:
+        return
+    try:
+        os.makedirs(os.path.dirname(_QUEUE_FILE), exist_ok=True)
+        tmp = _QUEUE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(q[-_QUEUE_MAX:], f)
+        os.replace(tmp, _QUEUE_FILE)
+    except Exception:
+        pass
+
+
+def enqueue(titles, year=None):
+    """Encola un titulo para que el SERVICIO resuelva su nota en segundo plano
+    (sin rafagas). No hace red. Idempotente (no duplica)."""
+    if not _ENABLED_FN() or not _QUEUE_FILE:
         return
     cands = _candidates_clean(titles)
     if not cands:
         return
-    # Si todos los candidatos ya estan resueltos en cache (positivo o
-    # negativo), no hay nada que calentar.
     if all(_sig(t, year) in _CACHE for t in cands):
-        return
+        return   # ya resuelto
     key = "|".join(c.lower() for c in cands) + f"#{year or ''}"
-    with _inflight_lock:
-        if key in _inflight:
+    with _queue_lock:
+        q = _queue_load()
+        if any(e.get("k") == key for e in q):
             return
-        _inflight.add(key)
+        q.append({"k": key, "t": cands, "y": year})
+        _queue_save(q)
 
-    def _job():
-        try:
-            rating_best(cands, year)
-        finally:
-            with _inflight_lock:
-                _inflight.discard(key)
 
-    try:
-        threading.Thread(target=_job, daemon=True).start()
-    except Exception:
-        with _inflight_lock:
-            _inflight.discard(key)
+def drain_one():
+    """Resuelve UN titulo encolado (lo llama el servicio, a ritmo lento).
+    Devuelve 'ok' (resuelto), 'empty' (cola vacia) o 'blocked' (FA no
+    respondio; el item se reencola para reintentar). Recarga la cache de disco
+    para no repetir lo ya resuelto por los plugins."""
+    if not _ENABLED_FN() or not _QUEUE_FILE:
+        return "empty"
+    _cache_load()
+    with _queue_lock:
+        q = _queue_load()
+        if not q:
+            return "empty"
+        # Descarta de golpe los ya resueltos
+        entry = None
+        while q:
+            e = q.pop(0)
+            cands = e.get("t") or []
+            yr = e.get("y")
+            if all(_sig(t, yr) in _CACHE for t in cands):
+                continue
+            entry = e
+            break
+        _queue_save(q)        # persistimos la extraccion antes de la red
+    if not entry:
+        return "empty"
+    cands, yr = entry.get("t") or [], entry.get("y")
+    rating_best(cands, yr, count_budget=False)   # gentil: sin tope de proceso
+    if any(_sig(t, yr) in _CACHE for t in cands):
+        return "ok"
+    # No se cacheo nada -> FA no respondio (bloqueo): reencolar para reintentar
+    with _queue_lock:
+        q = _queue_load()
+        if not any(x.get("k") == entry.get("k") for x in q):
+            q.append(entry)
+            _queue_save(q)
+    return "blocked"

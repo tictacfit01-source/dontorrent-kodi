@@ -234,12 +234,15 @@ def _enrich_one(it):
             meta.get("original"),
             tmdb._clean_title(raw_t),
         ]
-        # Sincrono (el render de Kodi es un proceso efimero: un fetch en
-        # segundo plano se mataria al terminar la navegacion). Cacheado en
-        # disco -> coste unico por titulo; la 2a vez es instantaneo.
-        fa_rt = fa.rating_str_best(fa_candidates, year)
+        # Al pintar la lista SOLO leemos de cache (instantaneo, sin red):
+        # consultar aqui seria una rafaga y FilmAffinity bloquea la IP. Lo que
+        # falte se encola para que el SERVICIO lo resuelva a ritmo humano en
+        # segundo plano; aparecera en proximas navegaciones.
+        fa_rt = fa.cached_str_best(fa_candidates, year)
         if fa_rt:
             plot = f"[B]FilmAffinity: {fa_rt}[/B]\n\n{plot}".rstrip()
+        else:
+            fa.enqueue(fa_candidates, year)
     except Exception:
         pass
     info = {
