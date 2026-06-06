@@ -1338,25 +1338,29 @@ def search(filter_kind=None):
 
     max_deadline = max(PER_SOURCE_TIMEOUT.values())
     done = set()
+    done_time = {}          # lbl -> segundos que tardo en completarse
     try:
         while True:
             now = time.time()
+            elapsed = now - start
             for lbl in ("DT", "ET", "WF"):
                 if lbl in done:
                     continue
                 if _events[lbl].is_set():
                     all_items.extend(_results.get(lbl, []))
                     done.add(lbl)
-                elif (now - start) >= PER_SOURCE_TIMEOUT[lbl]:
+                    done_time[lbl] = elapsed
+                elif elapsed >= PER_SOURCE_TIMEOUT[lbl]:
                     source_counts[lbl] = -1
                     done.add(lbl)
+                    done_time[lbl] = elapsed
                     xbmc.log(f"[MejorWolf] search {lbl}: TIMEOUT "
                              f"{PER_SOURCE_TIMEOUT[lbl]}s (relay frio?)",
                              xbmc.LOGWARNING)
             if dlg is not None:
                 # % combina fuentes completadas y tiempo transcurrido
                 pct = max(int(len(done) / 3.0 * 100),
-                          int(min(95, (now - start) / max_deadline * 90)))
+                          int(min(95, elapsed / max_deadline * 90)))
                 pct = min(99, pct) if len(done) < 3 else 100
                 lines = []
                 for lbl in ("DT", "ET", "WF"):
@@ -1366,19 +1370,20 @@ def search(filter_kind=None):
                                   and lbl == "DT") else "buscando...")
                     elif source_counts.get(lbl, 0) >= 0:
                         n = len(_results.get(lbl, []))
-                        estado = f"listo ({n})"
+                        estado = f"listo ({n}) en {done_time[lbl]:.1f}s"
                     else:
-                        estado = "sin respuesta"
+                        estado = f"sin respuesta ({done_time[lbl]:.0f}s)"
                     lines.append(f"{nm}: {estado}")
+                head = f"Buscando '{q}'   —   {elapsed:.1f}s"
                 try:
-                    dlg.update(pct, f"Buscando '{q}'\n" + "\n".join(lines))
+                    dlg.update(pct, head + "\n" + "\n".join(lines))
                 except Exception:
                     pass
                 if dlg.iscanceled():
                     break
             if len(done) == 3:
                 break
-            if (now - start) > max_deadline + 1:
+            if elapsed > max_deadline + 1:
                 break
             xbmc.sleep(200)
     finally:
@@ -1389,9 +1394,17 @@ def search(filter_kind=None):
             except Exception:
                 pass
 
+    total_elapsed = time.time() - start
     xbmc.log(f"[MejorWolf] search totals: DT={source_counts.get('DT',0)} "
              f"ET={source_counts.get('ET',0)} WF={source_counts.get('WF',0)} "
-             f"total_raw={len(all_items)}", xbmc.LOGINFO)
+             f"total_raw={len(all_items)} en {total_elapsed:.1f}s", xbmc.LOGINFO)
+    # Aviso breve con el tiempo total (para tener controlado el rendimiento)
+    try:
+        xbmcgui.Dialog().notification(
+            "MejorWolf", f"Busqueda en {total_elapsed:.1f}s",
+            xbmcgui.NOTIFICATION_INFO, 2500)
+    except Exception:
+        pass
 
     # ── Filtrar por tipo (movie / tvshow) ─────────────────────────────
     if filter_kind:
