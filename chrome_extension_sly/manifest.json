@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "MejorWolf - Series.ly Sync",
+  "version": "1.0",
+  "description": "Sincroniza la cookie de Series.ly con Supabase para el addon Kodi MejorWolf",
+  "permissions": [
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://series.ly/*",
+    "https://*.series.ly/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

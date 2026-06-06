@@ -1122,6 +1122,28 @@ def warm_relay_async():
         pass
 
 
+def relay_warmth(timeout=3.0):
+    """Sondea el relay y de paso lo despierta. Devuelve:
+      'warm' -> responde rapido (listo para usar)
+      'cold' -> dormido/despertando (la propia peticion lo activa)
+      'down' -> sin URL configurada o error de conexion inmediato
+    """
+    base = _render_relay_url()
+    if not base:
+        return "down"
+    try:
+        r = requests.get(f"{base}/", timeout=timeout,
+                         headers={"User-Agent": UA})
+        # 200 rapido = listo. Un Render dormido NO responde rapido con error:
+        # la peticion se queda colgada hasta que arranca (-> Timeout) o da 200.
+        # Por eso un non-200 rapido = URL mala/caida (down), no "despertando".
+        return "warm" if r.status_code == 200 else "down"
+    except requests.exceptions.Timeout:
+        return "cold"   # dormido: la peticion ya ha iniciado el arranque
+    except Exception:
+        return "down"
+
+
 def _render_fetch(url):
     """GET una URL DT via Render relay. Resuelve Anubis automaticamente."""
     base = _render_relay_url()

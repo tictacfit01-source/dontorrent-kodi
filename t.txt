@@ -1,0 +1,7 @@
+2026-06-02 13:19:19.034 T:3340     info <general>: [MejorWolf/DT] render_search -> 5 items
+2026-06-02 13:19:19.035 T:3340     info <general>: [MejorWolf/DT] search Render relay -> 5 items
+2026-06-02 13:19:19.035 T:3340     info <general>: [MejorWolf] search DT: 5 resultados
+2026-06-02 13:19:19.035 T:10436    info <general>: [MejorWolf] search totals: DT=5 ET=30 WF=4 total_raw=34
+2026-06-02 13:19:19.035 T:10436    info <general>: [MejorWolf] search 'rafa' -> 34 resultados unicos
+2026-06-02 13:19:19.056 T:10436    info <general>: [MejorWolf] search display: 34 items en 2 fuentes
+2026-06-02 13:19:29.588 T:4588     info <general>: [MejorWolf] source_results wf: 0 individuales + 1 series

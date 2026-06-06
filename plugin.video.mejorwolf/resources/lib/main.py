@@ -234,13 +234,12 @@ def _enrich_one(it):
             meta.get("original"),
             tmdb._clean_title(raw_t),
         ]
-        # Cache-only (instantaneo): no bloquea el render. Si falta, se calienta
-        # en segundo plano para que aparezca en la proxima navegacion.
-        fa_rt = fa.cached_str_best(fa_candidates, year)
+        # Sincrono (el render de Kodi es un proceso efimero: un fetch en
+        # segundo plano se mataria al terminar la navegacion). Cacheado en
+        # disco -> coste unico por titulo; la 2a vez es instantaneo.
+        fa_rt = fa.rating_str_best(fa_candidates, year)
         if fa_rt:
             plot = f"[B]FilmAffinity: {fa_rt}[/B]\n\n{plot}".rstrip()
-        else:
-            fa.warm_best(fa_candidates, year)
     except Exception:
         pass
     info = {
@@ -1207,20 +1206,11 @@ def search(filter_kind=None):
         return
     _last_search_save(q)
 
-    # Despierta el relay YA (DonTorrent es prioritario): si estaba dormido,
-    # gana unos segundos de arranque mientras se prepara la busqueda.
-    try:
-        dt.warm_relay_async()
-    except Exception:
-        pass
-
     # Buscar en paralelo en las 3 fuentes con hilos DAEMON.
     # CLAVE: usar hilos daemon (no ThreadPoolExecutor) para que un hilo
     # lento/colgado (p.ej. relay frio) NUNCA bloquee el cierre y congele
-    # la busqueda. Antes, el `with ThreadPoolExecutor` hacia shutdown(wait=
-    # True) al salir y esperaba al hilo abandonado -> 30s de espera. Ahora
-    # la busqueda devuelve EXACTAMENTE en el deadline mas largo (~8s) pase
-    # lo que pase con los rezagados.
+    # la busqueda. La busqueda devuelve EXACTAMENTE en el deadline de cada
+    # fuente pase lo que pase con los rezagados.
     import threading
     all_items = []
     source_counts = {}
@@ -1243,23 +1233,41 @@ def search(filter_kind=None):
                  xbmc.LOGINFO)
         _events[label].set()
 
-    # Deadline POR FUENTE. DonTorrent es la fuente prioritaria del usuario,
-    # por eso se le da el margen mayor; ET y WF no deben hacer esperar.
-    # Con el relay caliente DT responde en ~2-3s, asi que el caso normal
-    # termina mucho antes del deadline.
-    PER_SOURCE_TIMEOUT = {"DT": 9, "ET": 6, "WF": 6}
-
-    progress_dlg = None
-    try:
-        progress_dlg = xbmcgui.DialogProgressBG()
-        progress_dlg.create("MejorWolf", f"Buscando '{q}'...")
-    except Exception:
-        progress_dlg = None
-
+    # 1) Lanzamos YA los hilos (la propia peticion de DT despierta el relay).
     start = time.time()
     for lbl, fn in (("DT", dt.search), ("ET", et.search), ("WF", wf.search)):
         threading.Thread(target=_search_src, args=(lbl, fn),
                          daemon=True).start()
+
+    # 2) En PARALELO sondeamos el calor del relay para decidir cuanto esperar
+    # a DonTorrent. CLAVE: el deadline es un MAXIMO, no una espera fija -> en
+    # cuanto DT responde salimos. Con el relay CALIENTE (DT ~2-3s) un deadline
+    # alto NO cuesta nada; solo en FRIO (relay dormido, free tier de Render)
+    # esperamos mas para que DonTorrent llegue (es innegociable). El sondeo
+    # corre solapado con los hilos, asi que no añade latencia en caliente.
+    try:
+        warmth = dt.relay_warmth(timeout=3.0)
+    except Exception:
+        warmth = "warm"
+    if warmth == "cold":
+        dt_to = 55     # relay despertando (~50s): dale tiempo, DT debe salir
+    elif warmth == "down":
+        dt_to = 10     # relay no disponible: no esperes de balde
+    else:
+        dt_to = 12
+
+    # Deadline POR FUENTE. DT lleva el margen mayor (adaptativo segun calor);
+    # ET y WF no deben hacer esperar.
+    PER_SOURCE_TIMEOUT = {"DT": dt_to, "ET": 8, "WF": 7}
+
+    progress_dlg = None
+    try:
+        progress_dlg = xbmcgui.DialogProgressBG()
+        msg = (f"Despertando buscador (1a vez)... '{q}'"
+               if warmth == "cold" else f"Buscando '{q}'...")
+        progress_dlg.create("MejorWolf", msg)
+    except Exception:
+        progress_dlg = None
 
     # Esperamos a cada fuente hasta SU deadline (medido desde el mismo
     # inicio). Como corren en paralelo, el tiempo total queda acotado por

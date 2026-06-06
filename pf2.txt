@@ -1,0 +1,8 @@
+2026-06-03 22:31:35.669 T:5460  warning <general>: ActiveAE::CActiveAE::ValidateOutputDevices: passthrough output device setting has been updated from 'DIRECTSOUND:default' to 'DIRECTSOUND:{ED1AD4E5-1
+2026-06-03 22:32:07.590 T:19352    info <general>: [MejorWolf/DT] render_resolve_torrent: HTTP 502: {"error":"M\u00e9todo no permitido","phase":"generate"}
+2026-06-03 22:32:07.591 T:19352    info <general>: [MejorWolf/DT] resolve_torrent: generando challenge para 27456/peliculas
+2026-06-03 22:32:09.585 T:19352    info <general>: [MejorWolf/DT] _robust_post_json DoH error: 405 Client Error: Method Not Allowed for url: https://dontorrent.support/api_validate_pow.php
+2026-06-03 22:32:10.014 T:19352    info <general>: [MejorWolf/DT] _robust_post_json directo: no es JSON (len=3948 preview='<!doctype html><html lang="es"><head><title>¡Asegurándonos de que no eres un 
+2026-06-03 22:32:10.469 T:19352    info <general>: [MejorWolf/DT] _robust_post_json proxy: no es JSON (len=3957 preview='<!doctype html><html lang="es"><head><title>¡Asegurándonos de que no eres un ro
+2026-06-03 22:32:10.469 T:19352   error <general>: [MejorWolf] dt_play error: POST JSON fallo: doh: 405 Client Error: Method Not Allowed for url: https://dontorrent.support/api_validate_pow.php | dire
+2026-06-03 22:32:10.477 T:8820    error <general>: Playlist Player: skipping unplayable item: 0, path [plugin://plugin.video.mejorwolf/?action=dt_play&content_id=27456&tabla=peliculas&page_url=https%3

@@ -1,0 +1,15 @@
+2026-06-03 21:57:41.027 T:4016     info <general>: [MejorWolf/WF] relay /wfcatalog q='perfect days' HTTP 200 len=349
+2026-06-03 21:57:41.584 T:4016     info <general>: [MejorWolf/WF] render_relay /wfsearch q='perfect days' pg=1 HTTP 502 len=454
+2026-06-03 21:57:42.563 T:4016     info <general>: [MejorWolf/WF] _search_brave_wrapped: filtro final 1/4 (tokens orig=['perfect', 'days'])
+2026-06-03 21:57:42.576 T:23616    info <general>: [MejorWolf] search 'perfect days' -> 1 resultados unicos
+2026-06-03 22:18:00.281 T:11484    info <general>: [MejorWolf/DT] search: Perfect days
+2026-06-03 22:18:00.284 T:4080     info <general>: [MejorWolf/ET] search: Perfect days
+2026-06-03 22:18:00.285 T:19540    info <general>: [MejorWolf/WF] search: 'Perfect days'
+2026-06-03 22:18:00.294 T:19540    info <general>: [MejorWolf/WF] _search_via_catalog: 0 match en catalogo (743 entradas) para tokens=['perfect', 'days']
+2026-06-03 22:18:00.474 T:11484    info <general>: [MejorWolf/DT] render_search: POST https://mw-render-relay-6noq.onrender.com/dtsearch q='Perfect days' domain
+2026-06-03 22:18:08.347 T:19540    info <general>: [MejorWolf/WF] relay /wfcatalog q='Perfect days' HTTP 200 len=349
+2026-06-03 22:18:08.975 T:19540    info <general>: [MejorWolf/WF] render_relay /wfsearch q='Perfect days' pg=1 HTTP 502 len=453
+2026-06-03 22:18:10.122 T:19540    info <general>: [MejorWolf/WF] _search_brave_wrapped: filtro final 0/3 (tokens orig=['perfect', 'days'])
+2026-06-03 22:18:11.138 T:20740    info <general>: [MejorWolf/WF] _discover_series_container: slug probe -> https://www.wolfmax4k.com/series/4k-2160p/perfect-da
+2026-06-03 22:18:11.387 T:19540    info <general>: [MejorWolf/WF] search expansion#1 filter: 0 pasan tokens ['perfect', 'days'] (window=160)
+2026-06-03 22:18:11.396 T:22768    info <general>: [MejorWolf] search 'Perfect days' -> 4 resultados unicos

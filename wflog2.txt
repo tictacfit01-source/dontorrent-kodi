@@ -1,0 +1,27 @@
+2026-06-01 21:07:39.665 T:3000     info <general>: [MejorWolf/WF] search: 'rafa'
+2026-06-01 21:07:40.128 T:15904    info <general>: [MejorWolf] search ET: 30 resultados
+2026-06-01 21:07:41.677 T:22252    info <general>: [MejorWolf] search DT: 5 resultados
+2026-06-01 21:07:45.667 T:22584 warning <general>: [MejorWolf] search WF: TIMEOUT 6s
+2026-06-01 21:07:47.793 T:7704     info <general>: [MejorWolf/WF] _build_catalog fetch /series/1080p/ fail: ConnectionError
+2026-06-01 21:07:47.794 T:3000     info <general>: [MejorWolf/WF] _build_catalog -> 644 entradas unicas (de 8 secciones)
+2026-06-01 21:07:47.801 T:3000     info <general>: [MejorWolf/WF] _search_via_catalog: 5 match en catalogo (644 entradas) para tokens=['rafa']
+2026-06-01 21:07:48.212 T:11408    info <general>: [MejorWolf/WF] _series_landing_caps(https://wolfmax4k.com/series/rafa) -> 0 caps
+2026-06-01 21:07:48.213 T:3000     info <general>: [MejorWolf/WF] _search_via_catalog -> 4 items playables (de 1 landings + matches directos)
+2026-06-01 21:07:48.214 T:3000     info <general>: [MejorWolf/WF] search via_catalog (local) -> 4 items
+2026-06-01 21:07:48.215 T:3000     info <general>: [MejorWolf] search WF: 4 resultados
+2026-06-01 21:07:48.215 T:22584    info <general>: [MejorWolf] search totals: DT=5 ET=30 WF=4 total_raw=35
+2026-06-01 21:07:48.215 T:22584    info <general>: [MejorWolf] search 'rafa' -> 35 resultados unicos
+2026-06-01 21:07:48.226 T:22584    info <general>: [MejorWolf] search display: 35 items en 2 fuentes
+2026-06-01 21:08:05.900 T:20672    info <general>: [MejorWolf/WF] search: 'rafa'
+2026-06-01 21:08:06.308 T:18752    info <general>: [MejorWolf] search ET: 30 resultados
+2026-06-01 21:08:08.314 T:17620    info <general>: [MejorWolf] search DT: 5 resultados
+2026-06-01 21:08:11.901 T:3328  warning <general>: [MejorWolf] search WF: TIMEOUT 6s
+2026-06-01 21:08:12.381 T:20672    info <general>: [MejorWolf/WF] _build_catalog -> 743 entradas unicas (de 8 secciones)
+2026-06-01 21:08:12.387 T:20672    info <general>: [MejorWolf/WF] _search_via_catalog: 5 match en catalogo (743 entradas) para tokens=['rafa']
+2026-06-01 21:08:12.717 T:12348    info <general>: [MejorWolf/WF] _series_landing_caps(https://wolfmax4k.com/series/rafa) -> 0 caps
+2026-06-01 21:08:12.718 T:20672    info <general>: [MejorWolf/WF] _search_via_catalog -> 4 items playables (de 1 landings + matches directos)
+2026-06-01 21:08:12.718 T:20672    info <general>: [MejorWolf/WF] search via_catalog (local) -> 4 items
+2026-06-01 21:08:12.720 T:20672    info <general>: [MejorWolf] search WF: 4 resultados
+2026-06-01 21:08:12.720 T:3328     info <general>: [MejorWolf] search totals: DT=5 ET=30 WF=4 total_raw=35
+2026-06-01 21:08:12.720 T:3328     info <general>: [MejorWolf] search 'rafa' -> 35 resultados unicos
+2026-06-01 21:08:12.724 T:3328     info <general>: [MejorWolf] search display: 35 items en 2 fuentes

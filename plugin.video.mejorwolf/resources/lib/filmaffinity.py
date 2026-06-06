@@ -127,10 +127,10 @@ import threading
 # (que con rafagas devuelve 200 con cuerpo VACIO). Como casi todo va a cache,
 # el volumen real es bajo.
 _SESSION = requests.Session()
-_SEM = threading.Semaphore(3)
+_SEM = threading.Semaphore(4)
 _RATE_LOCK = threading.Lock()
 _last_req = [0.0]
-_MIN_INTERVAL = 0.20
+_MIN_INTERVAL = 0.05
 
 
 def _polite_get(url, params=None):
@@ -213,6 +213,13 @@ def _fetch(title, year):
     return ("ok", val) if val is not None else ("none", None)
 
 
+# Presupuesto de peticiones de red POR NAVEGACION (proceso). Acota el tiempo
+# de la 1a visita en paginas grandes y el riesgo de bloqueo: lo que no de
+# tiempo a resolver, se queda para la proxima visita (no se cachea como fallo).
+_MAX_FETCHES = 30
+_fetch_count = [0]
+
+
 def rating(title, year=None):
     """Nota de FilmAffinity (float 0-10) o None. Cacheado en disco.
 
@@ -228,6 +235,9 @@ def rating(title, year=None):
         # Re-chequeo dentro del semaforo (otro hilo pudo cachearlo)
         if sig in _CACHE:
             return _CACHE[sig]
+        if _fetch_count[0] >= _MAX_FETCHES:
+            return None      # presupuesto agotado: se reintenta en otra visita
+        _fetch_count[0] += 1
         status, val = _fetch(title, year)
     if status == "err":
         return None          # no cacheamos -> se reintenta mas adelante

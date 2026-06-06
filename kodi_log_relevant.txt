@@ -1,0 +1,61 @@
+written 467
+:18:43.577 T:24308    info <general>: [MejorWolf/WF] search expansion#1 filter: 0 pasan tokens ['burning'] (window=80)
+2026-05-30 01:18:43.577 T:24308    info <general>: [MejorWolf/WF] search accum[expand1]: +0 / 0 -> total 3
+2026-05-30 01:18:43.581 T:24308    info <general>: [MejorWolf/WF] search accum[indice]: +0 / 0 -> total 3
+2026-05-30 01:18:43.582 T:24308    info <general>: [MejorWolf/WF] search merged (brave+indice) -> 3 items
+2026-05-30 01:18:43.582 T:24308    info <general>: [MejorWolf] search WF: 3 resultados
+2026-05-30 01:18:43.582 T:2984     info <general>: [MejorWolf] search totals: DT=10 ET=9 WF=3 total_raw=22
+2026-05-30 01:18:43.582 T:2984     info <general>: [MejorWolf] search 'burning' -> 22 resultados unicos
+2026-05-30 01:18:43.585 T:2984     info <general>: [MejorWolf] search display: 22 items en 3 fuentes
+2026-05-30 01:18:53.109 T:14456    info <general>: [SupabaseSync] Config 'addon_mejorwolf' cargada desde Supabase
+2026-05-30 01:18:54.987 T:14456    info <general>: [MejorWolf] source_results dt: 8 individuales + 1 series
+2026-05-30 01:19:01.883 T:25336    info <general>: [SupabaseSync] Config 'addon_mejorwolf' cargada desde Supabase
+2026-05-30 01:19:01.889 T:25336    info <general>: [MejorWolf/DT] detail: https://dontorrent.science/pelicula/20557/Burning
+2026-05-30 01:19:02.771 T:25336    info <general>: [MejorWolf/DT] render_fetch OK (24874 bytes)
+2026-05-30 01:19:02.797 T:25336    info <general>: [MejorWolf/DT] detail -> 1 downloads
+2026-05-30 01:19:06.121 T:16396    info <general>: [SupabaseSync] Config 'addon_mejorwolf' cargada desde Supabase
+2026-05-30 01:19:06.967 T:16396    info <general>: [MejorWolf/DT] render_resolve_torrent: HTTP 502: {"error":"'str' object has no attribute 'get'"}
+2026-05-30 01:19:06.969 T:16396    info <general>: [MejorWolf/DT] resolve_torrent: generando challenge para 20557/peliculas
+2026-05-30 01:19:07.304 T:16396    info <general>: [MejorWolf/DT] DoH: dontorrent.science -> 188.114.96.5
+2026-05-30 01:19:07.550 T:16396    info <general>: [MejorWolf/DT] _robust_post_json DoH OK -> ['success', 'challenge']
+2026-05-30 01:19:07.553 T:16396    info <general>: [MejorWolf/DT] resolve_torrent: challenge OK, resolviendo PoW...
+2026-05-30 01:19:07.554 T:16396    info <general>: [MejorWolf/DT] resolve_torrent: PoW resuelto, nonce=204
+2026-05-30 01:19:07.555 T:16396    info <general>: [MejorWolf/DT] DoH: dontorrent.science -> 188.114.96.5
+2026-05-30 01:19:07.891 T:16396    info <general>: [MejorWolf/DT] _robust_post_json DoH OK -> ['success', 'download_url']
+2026-05-30 01:19:07.892 T:16396    info <general>: [MejorWolf/DT] resolve_torrent -> https://dontorrent.science/torrents/peliculas/burning-blurayrip.torrent
+2026-05-30 01:19:07.892 T:16396    info <general>: [MejorWolf] dt resolved: https://dontorrent.science/torrents/peliculas/burning-blurayrip.torrent
+2026-05-30 01:19:09.040 T:12588 warning <general>: [plugin.video.elementum]   URI: "magnet:?xt=urn:btih:b0c878e8d604d754f68f53544a50624cfb9c3364&dn=Burning%20%5BBluray%20Rip%5D%5BAC3%202.0%20Castellano%5D%5B2019%5D%5Bwww.pctnew.com%5D&tr=http%3A%2F%2Fwww.spanishtracker.com%3A2710%2Fannounce&tr=http%
+2026-05-30 01:19:09.041 T:12588 warning <general>: [plugin.video.elementum] INFO  bittorrent   ▶ AddTorrent       Adding torrent with options: bittorrent.AddOptions{URI:"magnet:?xt=urn:btih:b0c878e8d604d754f68f53544a50624cfb9c3364&dn=Burning%20%5BBluray%20Rip%5D%5BAC3%202.0%20Castellano%5D%5B2019%5D
+2026-05-30 01:19:09.041 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        add_torrent_alert: added torrent: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com]
+2026-05-30 01:19:09.041 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        torrent_resumed_alert: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com] resumed
+2026-05-30 01:19:09.060 T:12588 warning <general>: [plugin.video.elementum] INFO  bittorrent   ▶ AddTorrent       Adding new torrent item with url: magnet:?xt=urn:btih:b0c878e8d604d754f68f53544a50624cfb9c3364&dn=Burning%20%5BBluray%20Rip%5D%5BAC3%202.0%20Castellano%5D%5B2019%5D%5Bwww.pctnew.com%5D&t
+2026-05-30 01:20:09.080 T:12588 warning <general>: [plugin.video.elementum] ERRO  bittorrent   ▶ WaitForMetadata  Expired timeout for resolving magnet link for 60 seconds
+2026-05-30 01:20:09.085 T:12588 warning <general>: [plugin.video.elementum] ERRO  bittorrent   ▶ addTorrent       Error adding torrent to player: Expired timeout for resolving magnet link for 60 seconds
+2026-05-30 01:20:09.086 T:12588 warning <general>: [plugin.video.elementum] ERRO  bittorrent   ▶ Buffer           Error adding torrent: Expired timeout for resolving magnet link for 60 seconds
+2026-05-30 01:20:09.088 T:12588 warning <general>: [plugin.video.elementum] [GIN] 2026/05/30 - 01:20:09 | 200 |          1m0s |    18 EB |       127.0.0.1 | GET      "/play?uri=magnet%3A%3Fxt%3Durn%3Abtih%3Ab0c878e8d604d754f68f53544a50624cfb9c3364%26dn%3DBurning%2520%255BBluray%2520Rip%255D%255BAC3%
+2026-05-30 01:20:09.135 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        torrent_removed_alert: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com] removed
+2026-05-30 01:20:09.135 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        cache_flushed_alert: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com]
+2026-05-30 01:20:09.258 T:3196    error <general>: Playlist Player: skipping unplayable item: 0, path [plugin://plugin.video.mejorwolf/?action=dt_play&content_id=20557&tabla=peliculas&page_url=https%3A%2F%2Fdontorrent.science%2Fpelicula%2F20557%2FBurning]
+2026-05-30 01:20:33.811 T:16112    info <general>: [SupabaseSync] Config 'addon_mejorwolf' cargada desde Supabase
+2026-05-30 01:20:35.042 T:16112    info <general>: [MejorWolf/DT] render_resolve_torrent: HTTP 502: {"error":"'str' object has no attribute 'get'"}
+2026-05-30 01:20:35.044 T:16112    info <general>: [MejorWolf/DT] resolve_torrent: generando challenge para 20557/peliculas
+2026-05-30 01:20:35.385 T:16112    info <general>: [MejorWolf/DT] DoH: dontorrent.science -> 188.114.97.5
+2026-05-30 01:20:35.613 T:16112    info <general>: [MejorWolf/DT] _robust_post_json DoH OK -> ['success', 'challenge']
+2026-05-30 01:20:35.615 T:16112    info <general>: [MejorWolf/DT] resolve_torrent: challenge OK, resolviendo PoW...
+2026-05-30 01:20:35.627 T:16112    info <general>: [MejorWolf/DT] resolve_torrent: PoW resuelto, nonce=2985
+2026-05-30 01:20:35.628 T:16112    info <general>: [MejorWolf/DT] DoH: dontorrent.science -> 188.114.97.5
+2026-05-30 01:20:35.863 T:16112    info <general>: [MejorWolf/DT] _robust_post_json DoH OK -> ['success', 'download_url']
+2026-05-30 01:20:35.867 T:16112    info <general>: [MejorWolf/DT] resolve_torrent -> https://dontorrent.science/torrents/peliculas/burning-blurayrip.torrent
+2026-05-30 01:20:35.867 T:16112    info <general>: [MejorWolf] dt resolved: https://dontorrent.science/torrents/peliculas/burning-blurayrip.torrent
+2026-05-30 01:20:36.814 T:12588 warning <general>: [plugin.video.elementum]   URI: "magnet:?xt=urn:btih:b0c878e8d604d754f68f53544a50624cfb9c3364&dn=Burning%20%5BBluray%20Rip%5D%5BAC3%202.0%20Castellano%5D%5B2019%5D%5Bwww.pctnew.com%5D&tr=http%3A%2F%2Fwww.spanishtracker.com%3A2710%2Fannounce&tr=http%
+2026-05-30 01:20:36.816 T:12588 warning <general>: [plugin.video.elementum] INFO  bittorrent   ▶ AddTorrent       Adding torrent with options: bittorrent.AddOptions{URI:"magnet:?xt=urn:btih:b0c878e8d604d754f68f53544a50624cfb9c3364&dn=Burning%20%5BBluray%20Rip%5D%5BAC3%202.0%20Castellano%5D%5B2019%5D
+2026-05-30 01:20:36.816 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        add_torrent_alert: added torrent: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com]
+2026-05-30 01:20:36.816 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        torrent_resumed_alert: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com] resumed
+2026-05-30 01:20:36.830 T:12588 warning <general>: [plugin.video.elementum] INFO  bittorrent   ▶ AddTorrent       Adding new torrent item with url: magnet:?xt=urn:btih:b0c878e8d604d754f68f53544a50624cfb9c3364&dn=Burning%20%5BBluray%20Rip%5D%5BAC3%202.0%20Castellano%5D%5B2019%5D%5Bwww.pctnew.com%5D&t
+2026-05-30 01:21:36.846 T:12588 warning <general>: [plugin.video.elementum] ERRO  bittorrent   ▶ WaitForMetadata  Expired timeout for resolving magnet link for 60 seconds
+2026-05-30 01:21:36.853 T:12588 warning <general>: [plugin.video.elementum] ERRO  bittorrent   ▶ addTorrent       Error adding torrent to player: Expired timeout for resolving magnet link for 60 seconds
+2026-05-30 01:21:36.853 T:12588 warning <general>: [plugin.video.elementum] ERRO  bittorrent   ▶ Buffer           Error adding torrent: Expired timeout for resolving magnet link for 60 seconds
+2026-05-30 01:21:36.856 T:12588 warning <general>: [plugin.video.elementum] [GIN] 2026/05/30 - 01:21:36 | 200 |          1m0s |    18 EB |       127.0.0.1 | GET      "/play?uri=magnet%3A%3Fxt%3Durn%3Abtih%3Ab0c878e8d604d754f68f53544a50624cfb9c3364%26dn%3DBurning%2520%255BBluray%2520Rip%255D%255BAC3%
+2026-05-30 01:21:36.856 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        torrent_removed_alert: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com] removed
+2026-05-30 01:21:36.951 T:12588 warning <general>: [plugin.video.elementum] NOTI  bittorrent   ▶ logAlerts        cache_flushed_alert: Burning [Bluray Rip][AC3 2.0 Castellano][2019][www.pctnew.com]
+2026-05-30 01:21:37.013 T:3196    error <general>: Playlist Player: skipping unplayable item: 0, path [plugin://plugin.video.mejorwolf/?action=dt_play&content_id=20557&tabla=peliculas&page_url=https%3A%2F%2Fdontorrent.science%2Fpelicula%2F20557%2FBurning]
