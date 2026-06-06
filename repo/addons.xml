@@ -20,7 +20,7 @@
       <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
-</addon><addon id="plugin.video.mejorwolf" name="MejorWolf" version="2.6.4" provider-name="israel">
+</addon><addon id="plugin.video.mejorwolf" name="MejorWolf" version="2.7.0" provider-name="israel">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
     <import addon="script.module.requests" version="2.22.0" />
@@ -30,6 +30,7 @@
   <extension point="xbmc.python.pluginsource" library="default.py">
     <provides>video</provides>
   </extension>
+  <extension point="xbmc.service" library="service.py" />
   <extension point="xbmc.addon.metadata">
     <summary lang="es_ES">Torrents en castellano para Kodi</summary>
     <description lang="es_ES">Addon privado v2.4.2. 3 fuentes: DonTorrent + EliteTorrent + WolfMax4K. Todo en castellano. Busqueda con jerarquia clara (carpeta por fuente, series agrupadas dentro). Portadas TMDB. Anti-bloqueo via Render relay (Anubis PoW server-side). Reproduccion con Elementum.</description>
