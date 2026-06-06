@@ -13,3 +13,20 @@ plugin.video.mejorwolf/cloudflare-worker/node_modules/
 /repository.dontorrent-*.zip
 /repository.mejorwolf-*.zip
 /repo/.git/
+
+# Artefactos temporales de depuracion / scratch (en la raiz del repo)
+_dump_*.py
+_probe_*.py
+_verify*.py
+_make_icon.py
+_install_icon.py
+make_icons.py
+check_sly_session*.py
+test_cookie_*.py
+test_login_*.py
+*_pelis.html
+wflog*.txt
+kodi_log_relevant.txt
+pf.txt
+pf2.txt
+t.txt
