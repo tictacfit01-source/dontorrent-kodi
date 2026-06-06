@@ -26,8 +26,10 @@ import contextlib
 from urllib.parse import urljoin, urlparse, quote as urlquote
 from bs4 import BeautifulSoup
 import requests
+import os
 import xbmc
 import xbmcaddon
+import xbmcvfs
 
 from . import anubis
 from . import dns_doh
@@ -35,6 +37,54 @@ from . import dns_doh
 SOURCE = "dt"
 _ADDON = xbmcaddon.Addon()
 _LOG = lambda msg: xbmc.log(f"[MejorWolf/DT] {msg}", xbmc.LOGINFO)
+
+# ── Cache en disco de torrents resueltos ────────────────────────────────────
+# El download_url de DonTorrent es un fichero .torrent ESTATICO (sin token que
+# caduque), asi que cachear (content_id, tabla) -> url permite reproducir de
+# nuevo SIN repetir todo el PoW. Acelera reintentos y re-visionados.
+try:
+    _DT_PROFILE = xbmcvfs.translatePath(_ADDON.getAddonInfo("profile"))
+except Exception:
+    _DT_PROFILE = ""
+_RESOLVE_CACHE_FILE = (os.path.join(_DT_PROFILE, "dt_resolve_cache.json")
+                       if _DT_PROFILE else "")
+_RESOLVE_TTL = 7 * 24 * 3600   # 7 dias
+
+
+def _resolve_cache_get(content_id, tabla):
+    if not _RESOLVE_CACHE_FILE or not os.path.exists(_RESOLVE_CACHE_FILE):
+        return None
+    try:
+        with open(_RESOLVE_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ent = data.get(f"{tabla}:{content_id}")
+        if ent and (time.time() - ent.get("t", 0)) < _RESOLVE_TTL:
+            return ent.get("u")
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_cache_put(content_id, tabla, url):
+    if not _RESOLVE_CACHE_FILE or not url:
+        return
+    try:
+        data = {}
+        if os.path.exists(_RESOLVE_CACHE_FILE):
+            with open(_RESOLVE_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+        # Poda de entradas viejas para que el fichero no crezca sin limite.
+        now = time.time()
+        data = {k: v for k, v in data.items()
+                if (now - v.get("t", 0)) < _RESOLVE_TTL}
+        data[f"{tabla}:{content_id}"] = {"u": url, "t": now}
+        os.makedirs(_DT_PROFILE, exist_ok=True)
+        tmp = _RESOLVE_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, _RESOLVE_CACHE_FILE)
+    except Exception:
+        pass
 
 # ── Dominios conocidos ──────────────────────────────────────────────────
 # Probados 2026-05: science, irish, reisen, club, info, istanbul, lighting
@@ -1241,6 +1291,22 @@ def _render_resolve_torrent(content_id, tabla, domain=""):
 
 
 def resolve_torrent(content_id, tabla, page_url=None):
+    """Devuelve la URL del .torrent, usando cache en disco si esta disponible.
+
+    El .torrent es estatico, asi que un acierto de cache evita repetir el PoW
+    por completo (reproduccion casi instantanea en re-visionados/reintentos).
+    """
+    cached = _resolve_cache_get(content_id, tabla)
+    if cached:
+        _LOG(f"resolve_torrent: cache HIT {tabla}:{content_id}")
+        return cached
+    url = _resolve_torrent_uncached(content_id, tabla, page_url=page_url)
+    if url:
+        _resolve_cache_put(content_id, tabla, url)
+    return url
+
+
+def _resolve_torrent_uncached(content_id, tabla, page_url=None):
     """Ejecuta el handshake PoW para obtener la URL del .torrent.
 
     Estrategia 0: Render relay (Python sin limites de CPU).

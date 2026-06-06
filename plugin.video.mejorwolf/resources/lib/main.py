@@ -40,6 +40,26 @@ ICON       = os.path.join(ADDON_PATH, "icon.png")
 FANART     = os.path.join(ADDON_PATH, "fanart.jpg")
 DEFAULT_ART = {"fanart": FANART}
 
+_PROFILE = xbmcvfs.translatePath(ADDON.getAddonInfo("profile"))
+_LAST_SEARCH_FILE = os.path.join(_PROFILE, "last_search.txt")
+
+
+def _last_search_load():
+    try:
+        with open(_LAST_SEARCH_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _last_search_save(q):
+    try:
+        os.makedirs(_PROFILE, exist_ok=True)
+        with open(_LAST_SEARCH_FILE, "w", encoding="utf-8") as f:
+            f.write(q or "")
+    except Exception:
+        pass
+
 # Kodi built-in icons — no necesitamos archivos custom
 IC = {
     "estrenos":    "DefaultRecentlyAddedMovies.png",
@@ -229,6 +249,23 @@ def _enrich_one(it):
 def _enrich_many(items, workers=6):
     if not items:
         return []
+    # Dedupe de consultas TMDB: varias variantes del mismo titulo (p.ej. 4x
+    # "La cosa (The Thing)") comparten UNA sola consulta. Pre-calentamos las
+    # claves unicas en paralelo; despues _enrich_one va 100% a cache.
+    seen, uniq = set(), []
+    for it in items:
+        raw_t = it.get("title", "")
+        kk = _tmdb_kind(it.get("kind", "movie"))
+        if re.search(r"\b[Cc]ap\.?\s*\d+|\b[Ss]\d{1,2}[Ee]\d{1,3}\b", raw_t):
+            kk = "tv"
+        sig = (kk, tmdb._clean_title(raw_t).lower())
+        if sig in seen:
+            continue
+        seen.add(sig)
+        uniq.append(it)
+    if len(uniq) < len(items):
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(_enrich_one, uniq))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         return list(ex.map(_enrich_one, items))
 
@@ -1137,7 +1174,8 @@ def search(filter_kind=None):
     Muestra resultados de DonTorrent, EliteTorrent y WolfMax4K.
     Las series de TODAS las fuentes se agrupan por nombre (como Tacones).
     """
-    kb = xbmc.Keyboard("", "Buscar en MejorWolf")
+    # Prerellenar con la ultima busqueda (comodidad)
+    kb = xbmc.Keyboard(_last_search_load(), "Buscar en MejorWolf")
     kb.doModal()
     if not kb.isConfirmed():
         xbmcplugin.endOfDirectory(HANDLE)
@@ -1146,6 +1184,7 @@ def search(filter_kind=None):
     if not q:
         xbmcplugin.endOfDirectory(HANDLE)
         return
+    _last_search_save(q)
 
     # Despierta el relay YA (DonTorrent es prioritario): si estaba dormido,
     # gana unos segundos de arranque mientras se prepara la busqueda.

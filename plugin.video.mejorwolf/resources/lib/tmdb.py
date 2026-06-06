@@ -1,12 +1,90 @@
 import re
+import os
+import json
+import time
+import atexit
 import requests
 import xbmcaddon
+
+try:
+    import xbmcvfs
+    _PROFILE = xbmcvfs.translatePath(
+        "special://profile/addon_data/plugin.video.mejorwolf/")
+except Exception:
+    _PROFILE = ""
 
 ADDON = xbmcaddon.Addon()
 
 DEFAULT_KEY = "f090bb54758cabf231fb605d3e3e0468"
 
-_CACHE = {}
+# ── Cache TMDB persistente en disco ─────────────────────────────────────────
+# Kodi arranca un proceso nuevo en CADA navegacion, asi que una cache solo en
+# memoria se perderia al entrar en una carpeta. Persistir en disco hace que
+# las caratulas salgan instantaneas la 2a vez (y los dias siguientes) y reduce
+# muchisimo las llamadas a la API.
+_CACHE = {}        # sig(str) -> data(dict)   (dict vacio = "sin match")
+_CACHE_TS = {}     # sig -> timestamp
+_dirty = False
+_last_flush = 0.0
+_CACHE_FILE = os.path.join(_PROFILE, "tmdb_cache.json") if _PROFILE else ""
+_POS_TTL = 30 * 24 * 3600   # match positivo: 30 dias
+_NEG_TTL = 3 * 24 * 3600    # "sin match": 3 dias (por si TMDB lo añade luego)
+
+
+def _sig(kind, clean):
+    return f"{kind}|{(clean or '').lower()}"
+
+
+def _cache_load():
+    if not _CACHE_FILE or not os.path.exists(_CACHE_FILE):
+        return
+    try:
+        with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        now = time.time()
+        for sig, ent in raw.items():
+            data = ent.get("d", {})
+            ts = ent.get("t", 0)
+            ttl = _POS_TTL if data else _NEG_TTL
+            if now - ts < ttl:
+                _CACHE[sig] = data
+                _CACHE_TS[sig] = ts
+    except Exception:
+        pass
+
+
+def _cache_flush(force=False):
+    global _dirty, _last_flush
+    if not _CACHE_FILE or not _dirty:
+        return
+    now = time.time()
+    if not force and (now - _last_flush) < 1.0:
+        return   # agrupa rafagas de escrituras (una pagina de ~20 items)
+    try:
+        os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
+        # Snapshot (list) para no iterar un dict que otros hilos pueden mutar.
+        snap = list(_CACHE.items())
+        tmp = _CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({s: {"d": d, "t": _CACHE_TS.get(s, now)}
+                       for s, d in snap}, f)
+        os.replace(tmp, _CACHE_FILE)
+        _dirty = False
+        _last_flush = now
+    except Exception:
+        pass
+
+
+def _cache_put(sig, data):
+    global _dirty
+    _CACHE[sig] = data
+    _CACHE_TS[sig] = time.time()
+    _dirty = True
+    _cache_flush()
+
+
+_cache_load()
+atexit.register(lambda: _cache_flush(force=True))
 
 
 def _key():
@@ -206,7 +284,7 @@ def enrich(title, kind="movie", alt_title_fn=None):
     clean = _clean_title(title)
     if not clean:
         return {}
-    cache_key = (kind, clean)
+    cache_key = _sig(kind, clean)
     if cache_key in _CACHE:
         return _CACHE[cache_key]
 
@@ -228,21 +306,19 @@ def enrich(title, kind="movie", alt_title_fn=None):
         if alt:
             alt_clean = _clean_title(alt)
             if alt_clean and alt_clean.lower() != clean.lower():
-                alt_key = (kind, alt_clean)
+                alt_key = _sig(kind, alt_clean)
                 if alt_key in _CACHE:
-                    _CACHE[cache_key] = _CACHE[alt_key]
+                    _cache_put(cache_key, _CACHE[alt_key])
                     return _CACHE[cache_key]
                 best, matched_kind = _best_across_kinds(
                     [alt_clean], kinds, _year(alt) or y
                 )
 
-    results = [best] if best is not None else []
-
-    if not results:
-        _CACHE[cache_key] = {}
+    if best is None:
+        _cache_put(cache_key, {})   # negative cache (persistente, TTL corto)
         return {}
 
-    top = results[0]
+    top = best
     poster = top.get("poster_path")
     backdrop = top.get("backdrop_path")
     out = {
@@ -253,5 +329,5 @@ def enrich(title, kind="movie", alt_title_fn=None):
         "rating": top.get("vote_average"),
         "title": top.get("title") or top.get("name"),
     }
-    _CACHE[cache_key] = out
+    _cache_put(cache_key, out)
     return out
