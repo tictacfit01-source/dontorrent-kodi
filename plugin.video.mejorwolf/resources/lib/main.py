@@ -460,9 +460,9 @@ def home():
         ("Cine",          _u(action="section", kind="movie"),    IC["movie"]),
         ("Series",        _u(action="section", kind="tvshow"),   IC["tvshow"]),
         ("Documentales",  _u(action="documentales_menu"),       IC["documentary"]),
-        ("Generos",       _u(action="generos_menu"),             IC["genre"]),
+        ("Géneros",       _u(action="generos_menu"),             IC["genre"]),
         ("Buscar",        _u(action="search"),                   IC["search"]),
-        ("Teclado Remoto (movil)", _u(action="remote_kb"),
+        ("Teclado Remoto (móvil)", _u(action="remote_kb"),
          "DefaultAddonRemote.png"),
     ]
     for label, url, ic in entries:
@@ -524,11 +524,11 @@ def section(kind):
 
 # Calidades disponibles por fuente para peliculas y series.
 _SRC_MOVIE_QUALITIES = {
-    "dt": [("Peliculas", "movie"), ("Peliculas HD", "movie_hd"),
-           ("Peliculas 4K", "movie_4k")],
-    "et": [("Estrenos", "estrenos"), ("Peliculas 720p", "movie_720p"),
-           ("Peliculas HDRip", "movie_hdrip"), ("Peliculas MicroHD", "movie_micro")],
-    "wf": [("Peliculas 1080p", "movie_hd"), ("Peliculas 4K", "movie_4k")],
+    "dt": [("Películas", "movie"), ("Películas HD", "movie_hd"),
+           ("Películas 4K", "movie_4k")],
+    "et": [("Estrenos", "estrenos"), ("Películas 720p", "movie_720p"),
+           ("Películas HDRip", "movie_hdrip"), ("Películas MicroHD", "movie_micro")],
+    "wf": [("Películas 1080p", "movie_hd"), ("Películas 4K", "movie_4k")],
 }
 _SRC_TVSHOW_QUALITIES = {
     "dt": [("Series", "tvshow"), ("Series HD", "tvshow_hd"),
@@ -571,7 +571,7 @@ def documentales_menu():
 
 def generos_menu():
     """Generos cinematograficos (EliteTorrent)."""
-    xbmcplugin.setPluginCategory(HANDLE, "Generos")
+    xbmcplugin.setPluginCategory(HANDLE, "Géneros")
     for key in sorted(et.GENRE_LABELS.keys()):
         label = et.GENRE_LABELS[key]
         xbmcplugin.addDirectoryItem(
@@ -604,13 +604,13 @@ def list_items(src, kind, page=1):
             else:
                 items = []
         except CloudflareChallengeError:
-            _error("Sitio bloqueado temporalmente. Prueba mas tarde.",
+            _error("Sitio bloqueado temporalmente. Prueba más tarde.",
                    xbmcgui.NOTIFICATION_WARNING)
             xbmcplugin.endOfDirectory(HANDLE)
             return
         except Exception as e:
             xbmc.log(f"[MejorWolf] list error: {e}", xbmc.LOGERROR)
-            _error(f"Error de conexion: {type(e).__name__}")
+            _error(f"Error de conexión: {type(e).__name__}")
             xbmcplugin.endOfDirectory(HANDLE)
             return
 
@@ -663,7 +663,7 @@ def et_genre(genre_key, page=1):
         return
 
     if not items:
-        _error("Sin resultados en este genero.", xbmcgui.NOTIFICATION_WARNING, 5000)
+        _error("Sin resultados en este género.", xbmcgui.NOTIFICATION_WARNING, 5000)
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
@@ -716,7 +716,7 @@ def _detail_dt(url, kind, title):
     art = _build_art(meta, d)
     info_base = _build_info_base(meta, d)
 
-    movie_label = d.get("title") or title or "Pelicula"
+    movie_label = d.get("title") or title or "Película"
     has_episodes = any(dl.get("season") is not None for dl in d["downloads"])
     year_str = f" ({meta.get('year') or d.get('year', '')})" if (meta.get("year") or d.get("year")) else ""
 
@@ -727,7 +727,7 @@ def _detail_dt(url, kind, title):
         quality = dl.get("quality", "")
 
         if has_episodes:
-            label = dl.get("label", "Capitulo")
+            label = dl.get("label", "Capítulo")
             if quality and quality.lower() not in label.lower():
                 label = f"{label} [{quality}]"
             mtype = "episode"
@@ -897,7 +897,7 @@ def _check_elementum():
 def play(torrent_url):
     """Reproduce un magnet o URL de .torrent via Elementum."""
     if not torrent_url:
-        _error("URL de torrent vacia")
+        _error("URL de torrent vacía")
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
     if not _check_elementum():
@@ -1490,7 +1490,7 @@ def _run_search(q, filter_kind=None):
     # Aviso breve con el tiempo total (para tener controlado el rendimiento)
     try:
         xbmcgui.Dialog().notification(
-            "MejorWolf", f"Busqueda en {total_elapsed:.1f}s",
+            "MejorWolf", f"Búsqueda en {total_elapsed:.1f}s",
             xbmcgui.NOTIFICATION_INFO, 2500)
     except Exception:
         pass
@@ -1534,7 +1534,7 @@ def _run_search(q, filter_kind=None):
     _cache_source_items(cache_key, by_source)
 
     xbmcplugin.setContent(HANDLE, "videos")
-    xbmcplugin.setPluginCategory(HANDLE, f"Busqueda: {q}")
+    xbmcplugin.setPluginCategory(HANDLE, f"Búsqueda: {q}")
 
     # Orden: DT primero (mas catalogo), luego ET, luego WF
     order = [("dt", "DonTorrent"), ("et", "EliteTorrent"), ("wf", "WolfMax4K")]
@@ -1866,7 +1866,7 @@ def wf_series(q, seed_url="", title=""):
     data = _load_series_cache(clean_q)
     if not data:
         progress = xbmcgui.DialogProgressBG()
-        progress.create("MejorWolf", "Buscando todos los capitulos...")
+        progress.create("MejorWolf", "Buscando todos los capítulos...")
         try:
             progress.update(20, "MejorWolf", "Buscando y expandiendo...")
             expanded = wf.search_and_expand(clean_q)
@@ -1890,7 +1890,7 @@ def wf_series(q, seed_url="", title=""):
     series_title = data.get("title") or title or q
 
     if not seasons:
-        _error(f"No se encontraron capitulos para: {q}",
+        _error(f"No se encontraron capítulos para: {q}",
                xbmcgui.NOTIFICATION_WARNING, 5000)
         xbmcplugin.endOfDirectory(HANDLE)
         return
@@ -1908,7 +1908,7 @@ def wf_series(q, seed_url="", title=""):
     for s_num in sorted(seasons.keys()):
         eps = seasons[s_num]
         n = len(eps)
-        label = f"Temporada {s_num}  ({n} capitulo{'s' if n != 1 else ''})"
+        label = f"Temporada {s_num}  ({n} capítulo{'s' if n != 1 else ''})"
         info = {
             "title": label, "plot": meta.get("plot"),
             "year": meta.get("year"), "mediatype": "season",
@@ -1952,7 +1952,7 @@ def wf_season(q, season, title="", seed_url=""):
     series_title = data.get("title") or title or q
 
     if not episodes:
-        _error(f"Sin capitulos de la temporada {s_num}",
+        _error(f"Sin capítulos de la temporada {s_num}",
                xbmcgui.NOTIFICATION_WARNING, 5000)
         xbmcplugin.endOfDirectory(HANDLE)
         return
@@ -2000,7 +2000,7 @@ def _show_season_episodes(episodes, series_title, s_num, art, meta):
 # ── WolfMax: A-Z e Indice ──────────────────────────────────────────────────
 
 def wf_az_menu(filter_kind=None, letter=None):
-    label_kind = {"movie": "Peliculas", "tvshow": "Series"}.get(filter_kind, "Todo")
+    label_kind = {"movie": "Películas", "tvshow": "Series"}.get(filter_kind, "Todo")
     if not letter:
         xbmcplugin.setPluginCategory(HANDLE, f"A-Z {label_kind}")
         letters = wf.az_letters(kind_filter=filter_kind)
@@ -2081,7 +2081,7 @@ def wf_rebuild_index():
 # ── Diagnostico ─────────────────────────────────────────────────────────────
 
 def diagnose():
-    xbmcplugin.setPluginCategory(HANDLE, "Diagnostico")
+    xbmcplugin.setPluginCategory(HANDLE, "Diagnóstico")
 
     # Proxy
     ok, msg = hs.diagnose_proxy()
