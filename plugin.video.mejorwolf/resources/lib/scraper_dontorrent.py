@@ -1038,6 +1038,40 @@ def fetch_detail_title(url):
 
 # ── Detalle + Descargas ─────────────────────────────────────────────────
 
+_last_warm_ts = 0.0
+
+
+def warm_relay_async():
+    """Despierta el relay de Render en segundo plano (no bloquea).
+
+    Render free tier se duerme tras 15 min de inactividad y el primer
+    request tarda ~50s en arrancar. Llamar a esto en cuanto el usuario
+    inicia una busqueda da al relay una ventaja de arranque. Se auto-limita
+    a 1 ping cada 60s para no saturar.
+    """
+    global _last_warm_ts
+    now = time.time()
+    if now - _last_warm_ts < 60:
+        return
+    _last_warm_ts = now
+    base = _render_relay_url()
+    if not base:
+        return
+
+    def _ping():
+        try:
+            requests.get(f"{base}/", timeout=60,
+                         headers={"User-Agent": UA})
+        except Exception:
+            pass
+
+    try:
+        import threading
+        threading.Thread(target=_ping, daemon=True).start()
+    except Exception:
+        pass
+
+
 def _render_fetch(url):
     """GET una URL DT via Render relay. Resuelve Anubis automaticamente."""
     base = _render_relay_url()

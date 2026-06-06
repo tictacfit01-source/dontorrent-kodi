@@ -6,7 +6,8 @@ name: Keep Render relay awake
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # cada 10 minutos
+    - cron: "*/5 * * * *"    # cada 5 min (GitHub retrasa crons; con 5min
+                             # hay margen para no superar los 15min de Render)
   workflow_dispatch:
 
 jobs:

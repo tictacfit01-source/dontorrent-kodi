@@ -1147,30 +1147,48 @@ def search(filter_kind=None):
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    # Buscar en paralelo en las 3 fuentes
+    # Despierta el relay YA (DonTorrent es prioritario): si estaba dormido,
+    # gana unos segundos de arranque mientras se prepara la busqueda.
+    try:
+        dt.warm_relay_async()
+    except Exception:
+        pass
+
+    # Buscar en paralelo en las 3 fuentes con hilos DAEMON.
+    # CLAVE: usar hilos daemon (no ThreadPoolExecutor) para que un hilo
+    # lento/colgado (p.ej. relay frio) NUNCA bloquee el cierre y congele
+    # la busqueda. Antes, el `with ThreadPoolExecutor` hacia shutdown(wait=
+    # True) al salir y esperaba al hilo abandonado -> 30s de espera. Ahora
+    # la busqueda devuelve EXACTAMENTE en el deadline mas largo (~8s) pase
+    # lo que pase con los rezagados.
+    import threading
     all_items = []
     source_counts = {}
+    _results = {}                  # label -> [items]
+    _events = {lbl: threading.Event() for lbl in ("DT", "ET", "WF")}
+
     def _search_src(label, fn):
         try:
-            results = fn(q) or []
-            source_counts[label] = len(results)
-            xbmc.log(f"[MejorWolf] search {label}: {len(results)} resultados",
-                     xbmc.LOGINFO)
-            return results
+            res = fn(q) or []
         except Exception as e:
-            source_counts[label] = 0
+            res = []
             xbmc.log(f"[MejorWolf] search {label} ERROR: {e}",
                      xbmc.LOGWARNING)
             import traceback
             xbmc.log(f"[MejorWolf] search {label} traceback: "
                      f"{traceback.format_exc()}", xbmc.LOGWARNING)
-            return []
+        _results[label] = res
+        source_counts[label] = len(res)
+        xbmc.log(f"[MejorWolf] search {label}: {len(res)} resultados",
+                 xbmc.LOGINFO)
+        _events[label].set()
 
-    # Timeout POR FUENTE (no global). El usuario exige busqueda <=6s.
-    # DT via relay ~2-3s, ET ~1s. A WolfMax le damos 6s duros: si su
-    # catalogo no responde a tiempo, se abandona y salen DT+ET sin esperar
-    # la cascada lenta. Asi la busqueda NUNCA pasa de ~6-7s.
-    PER_SOURCE_TIMEOUT = {"DT": 8, "ET": 8, "WF": 6}
+    # Deadline POR FUENTE. DonTorrent es la fuente prioritaria del usuario,
+    # por eso se le da el margen mayor; ET y WF no deben hacer esperar.
+    # Con el relay caliente DT responde en ~2-3s, asi que el caso normal
+    # termina mucho antes del deadline.
+    PER_SOURCE_TIMEOUT = {"DT": 9, "ET": 6, "WF": 6}
+
     progress_dlg = None
     try:
         progress_dlg = xbmcgui.DialogProgressBG()
@@ -1178,56 +1196,36 @@ def search(filter_kind=None):
     except Exception:
         progress_dlg = None
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        futs_map = {
-            "DT": ex.submit(_search_src, "DT", dt.search),
-            "ET": ex.submit(_search_src, "ET", et.search),
-            "WF": ex.submit(_search_src, "WF", wf.search),
-        }
-        from concurrent.futures import wait, FIRST_COMPLETED
-        start = time.time()
-        # Deadline individual por futuro
-        fut_deadline = {fut: start + PER_SOURCE_TIMEOUT[lbl]
-                        for lbl, fut in futs_map.items()}
-        pending = set(futs_map.values())
-        completed_labels = []
-        while pending:
-            now = time.time()
-            # Si algun futuro pendiente ya supero SU deadline, abandonarlo
-            expired = [f for f in pending if now >= fut_deadline[f]]
-            for f in expired:
-                label = next((k for k, v in futs_map.items() if v is f), "?")
-                xbmc.log(f"[MejorWolf] search {label}: TIMEOUT "
-                         f"{PER_SOURCE_TIMEOUT[label]}s", xbmc.LOGWARNING)
-                source_counts[label] = -1
-                try:
-                    f.cancel()
-                except Exception:
-                    pass
-                pending.discard(f)
-            if not pending:
-                break
-            # Esperar hasta el proximo deadline mas cercano
-            next_deadline = min(fut_deadline[f] for f in pending)
-            remaining = max(0.2, next_deadline - time.time())
-            done, _ = wait(pending, timeout=remaining,
-                           return_when=FIRST_COMPLETED)
-            for f in done:
-                pending.discard(f)
-                label = next((k for k, v in futs_map.items() if v is f), "?")
-                try:
-                    all_items.extend(f.result(timeout=1) or [])
-                except Exception:
-                    pass
-                completed_labels.append(label)
-                if progress_dlg:
-                    try:
-                        progress_dlg.update(
-                            min(99, 33 * len(completed_labels)), "MejorWolf",
-                            f"Completadas: {', '.join(completed_labels)}",
-                        )
-                    except Exception:
-                        pass
+    start = time.time()
+    for lbl, fn in (("DT", dt.search), ("ET", et.search), ("WF", wf.search)):
+        threading.Thread(target=_search_src, args=(lbl, fn),
+                         daemon=True).start()
+
+    # Esperamos a cada fuente hasta SU deadline (medido desde el mismo
+    # inicio). Como corren en paralelo, el tiempo total queda acotado por
+    # el deadline mayor (~9s) y, con todo caliente, por la fuente mas lenta.
+    completed_labels = []
+    for lbl in ("DT", "ET", "WF"):
+        remaining = PER_SOURCE_TIMEOUT[lbl] - (time.time() - start)
+        if remaining > 0:
+            _events[lbl].wait(remaining)
+        if _events[lbl].is_set():
+            all_items.extend(_results.get(lbl, []))
+            completed_labels.append(lbl)
+        else:
+            source_counts[lbl] = -1
+            xbmc.log(f"[MejorWolf] search {lbl}: TIMEOUT "
+                     f"{PER_SOURCE_TIMEOUT[lbl]}s (relay frio?)",
+                     xbmc.LOGWARNING)
+        if progress_dlg:
+            try:
+                progress_dlg.update(
+                    min(99, 33 * len(completed_labels)), "MejorWolf",
+                    f"Completadas: {', '.join(completed_labels) or '...'}",
+                )
+            except Exception:
+                pass
+
     if progress_dlg:
         try:
             progress_dlg.close()
