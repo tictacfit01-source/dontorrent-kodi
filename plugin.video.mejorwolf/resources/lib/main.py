@@ -173,8 +173,61 @@ def _media_type(kind):
     return "tvshow"
 
 
+_RES_RE = re.compile(r"\b(4K|2160p|1080p|720p|480p)\b", re.I)
+_SRC_RE = re.compile(
+    r"\b(BDremux|BDRemux|Remux|FullBluRay|BluRay|Bluray|BDRip|BRRip|"
+    r"WEB-?DL|WEBRip|microHD|MicroHD|HDTV|DVDRip|HDRip)\b", re.I)
+
+# Normalizacion de fuente -> etiqueta bonita
+_SRC_NORM = {
+    "bdremux": "BDRemux", "remux": "Remux", "fullbluray": "BluRay",
+    "bluray": "BluRay", "bdrip": "BDRip", "brrip": "BRRip",
+    "webdl": "WEB-DL", "web-dl": "WEB-DL", "webrip": "WEBRip",
+    "microhd": "MicroHD", "hdtv": "HDTV", "dvdrip": "DVDRip", "hdrip": "HDRip",
+}
+# Rango de calidad para ordenar (mayor = mejor)
+_RES_RANK = {"4k": 400, "2160p": 400, "1080p": 300, "720p": 200, "480p": 100}
+_SRC_RANK = {
+    "BDRemux": 60, "Remux": 60, "BluRay": 50, "WEB-DL": 40, "BDRip": 30,
+    "BRRip": 30, "MicroHD": 25, "WEBRip": 20, "HDTV": 20, "DVDRip": 10,
+    "HDRip": 5,
+}
+
+
+def _quality_parts(text):
+    """Devuelve (resolucion, fuente) normalizadas desde un texto, o (None,None)."""
+    text = text or ""
+    res, src = None, None
+    rm = _RES_RE.search(text)
+    if rm:
+        r = rm.group(1).lower()
+        res = "4K" if r in ("4k", "2160p") else r
+    sm = _SRC_RE.search(text)
+    if sm:
+        src = _SRC_NORM.get(sm.group(1).lower().replace("-", ""), None) \
+            or _SRC_NORM.get(sm.group(1).lower(), sm.group(1))
+    return res, src
+
+
+def _quality_tag(it):
+    """Etiqueta de calidad legible: '1080p BluRay', '4K', '720p'..."""
+    src_text = f"{it.get('quality','')} {it.get('title','')}"
+    res, src = _quality_parts(src_text)
+    if res and src:
+        return f"{res} {src}"
+    return res or src or (it.get("quality") or "")
+
+
+def _quality_rank(it):
+    """Puntua la calidad para ordenar (mayor = mejor)."""
+    res, src = _quality_parts(f"{it.get('quality','')} {it.get('title','')}")
+    score = _RES_RANK.get((res or "").lower(), 50)
+    score += _SRC_RANK.get(src or "", 0)
+    return score
+
+
 def _display_title(it, year=None):
-    """Construye titulo limpio: 'Titulo (2001) [1080p]'."""
+    """Construye titulo limpio: 'Titulo (2001) [1080p BluRay]'."""
     base = it.get("title") or ""
     # Año
     yr = year or it.get("year")
@@ -183,10 +236,14 @@ def _display_title(it, year=None):
         # Solo añadir si no esta ya en el titulo
         if yr_str not in base:
             base = f"{base} ({yr_str})"
-    # Calidad
-    q = it.get("quality")
-    if q and q.lower() not in base.lower():
-        base = f"{base} [{q}]"
+    # Calidad: etiqueta legible (resolucion + fuente). Solo si no esta ya
+    # reflejada en el titulo, para no duplicar (DonTorrent ya la trae).
+    tag = _quality_tag(it)
+    if tag:
+        res, src = _quality_parts(base)
+        # Si el titulo ya muestra la resolucion, no añadimos etiqueta
+        if not res:
+            base = f"{base} [{tag}]"
     return base
 
 
@@ -224,27 +281,32 @@ def _enrich_one(it):
         if qm:
             it["quality"] = qm.group(1)
     plot = meta.get("plot") or ""
-    # Nota de FilmAffinity al principio de la descripcion. Probamos varios
-    # titulos candidatos para maximizar la cobertura: el español que resuelve
-    # TMDB, el ORIGINAL (ingles) y el titulo limpio del scraper. Cacheado en
-    # disco -> tras la 1a vez es instantaneo y no penaliza la velocidad.
+    # Cabecera de NOTAS. TMDB siempre (gratis, instantaneo, sin bloqueos; para
+    # pelis conocidas va en linea con IMDb). FilmAffinity como extra cuando ya
+    # esta en cache (NO se consulta aqui: seria una rafaga y FA bloquea la IP;
+    # lo que falte se encola para que el servicio lo resuelva despacio).
+    ratings = []
+    try:
+        tmdb_r = meta.get("rating")
+        if tmdb_r and float(tmdb_r) > 0:
+            ratings.append("TMDB " + ("%.1f" % float(tmdb_r)).replace(".", ","))
+    except Exception:
+        pass
     try:
         fa_candidates = [
             meta.get("title"),
             meta.get("original"),
             tmdb._clean_title(raw_t),
         ]
-        # Al pintar la lista SOLO leemos de cache (instantaneo, sin red):
-        # consultar aqui seria una rafaga y FilmAffinity bloquea la IP. Lo que
-        # falte se encola para que el SERVICIO lo resuelva a ritmo humano en
-        # segundo plano; aparecera en proximas navegaciones.
         fa_rt = fa.cached_str_best(fa_candidates, year)
         if fa_rt:
-            plot = f"[B]FilmAffinity: {fa_rt}[/B]\n\n{plot}".rstrip()
+            ratings.append(f"FilmAffinity {fa_rt}")
         else:
             fa.enqueue(fa_candidates, year)
     except Exception:
         pass
+    if ratings:
+        plot = f"[B]{' · '.join(ratings)}[/B]\n\n{plot}".rstrip()
     info = {
         "title":     _display_title(it, year=year),
         "plot":      plot,
@@ -1263,45 +1325,69 @@ def search(filter_kind=None):
     # ET y WF no deben hacer esperar.
     PER_SOURCE_TIMEOUT = {"DT": dt_to, "ET": 8, "WF": 7}
 
-    progress_dlg = None
+    # Diálogo de carga CENTRADO con barra de %. Va mostrando el estado de cada
+    # fuente en vivo y se puede cancelar. No penaliza la velocidad: las fuentes
+    # corren en hilos aparte; aqui solo refrescamos la UI cada 0.2s.
+    NAMES = {"DT": "DonTorrent", "ET": "EliteTorrent", "WF": "WolfMax4K"}
+    dlg = None
     try:
-        progress_dlg = xbmcgui.DialogProgressBG()
-        msg = (f"Despertando buscador (1a vez)... '{q}'"
-               if warmth == "cold" else f"Buscando '{q}'...")
-        progress_dlg.create("MejorWolf", msg)
+        dlg = xbmcgui.DialogProgress()
+        dlg.create("MejorWolf", f"Buscando '{q}'...")
     except Exception:
-        progress_dlg = None
+        dlg = None
 
-    # Esperamos a cada fuente hasta SU deadline (medido desde el mismo
-    # inicio). Como corren en paralelo, el tiempo total queda acotado por
-    # el deadline mayor (~9s) y, con todo caliente, por la fuente mas lenta.
-    completed_labels = []
-    for lbl in ("DT", "ET", "WF"):
-        remaining = PER_SOURCE_TIMEOUT[lbl] - (time.time() - start)
-        if remaining > 0:
-            _events[lbl].wait(remaining)
-        if _events[lbl].is_set():
-            all_items.extend(_results.get(lbl, []))
-            completed_labels.append(lbl)
-        else:
-            source_counts[lbl] = -1
-            xbmc.log(f"[MejorWolf] search {lbl}: TIMEOUT "
-                     f"{PER_SOURCE_TIMEOUT[lbl]}s (relay frio?)",
-                     xbmc.LOGWARNING)
-        if progress_dlg:
+    max_deadline = max(PER_SOURCE_TIMEOUT.values())
+    done = set()
+    try:
+        while True:
+            now = time.time()
+            for lbl in ("DT", "ET", "WF"):
+                if lbl in done:
+                    continue
+                if _events[lbl].is_set():
+                    all_items.extend(_results.get(lbl, []))
+                    done.add(lbl)
+                elif (now - start) >= PER_SOURCE_TIMEOUT[lbl]:
+                    source_counts[lbl] = -1
+                    done.add(lbl)
+                    xbmc.log(f"[MejorWolf] search {lbl}: TIMEOUT "
+                             f"{PER_SOURCE_TIMEOUT[lbl]}s (relay frio?)",
+                             xbmc.LOGWARNING)
+            if dlg is not None:
+                # % combina fuentes completadas y tiempo transcurrido
+                pct = max(int(len(done) / 3.0 * 100),
+                          int(min(95, (now - start) / max_deadline * 90)))
+                pct = min(99, pct) if len(done) < 3 else 100
+                lines = []
+                for lbl in ("DT", "ET", "WF"):
+                    nm = NAMES[lbl]
+                    if lbl not in done:
+                        estado = ("despertando..." if (warmth == "cold"
+                                  and lbl == "DT") else "buscando...")
+                    elif source_counts.get(lbl, 0) >= 0:
+                        n = len(_results.get(lbl, []))
+                        estado = f"listo ({n})"
+                    else:
+                        estado = "sin respuesta"
+                    lines.append(f"{nm}: {estado}")
+                try:
+                    dlg.update(pct, f"Buscando '{q}'\n" + "\n".join(lines))
+                except Exception:
+                    pass
+                if dlg.iscanceled():
+                    break
+            if len(done) == 3:
+                break
+            if (now - start) > max_deadline + 1:
+                break
+            xbmc.sleep(200)
+    finally:
+        if dlg is not None:
             try:
-                progress_dlg.update(
-                    min(99, 33 * len(completed_labels)), "MejorWolf",
-                    f"Completadas: {', '.join(completed_labels) or '...'}",
-                )
+                dlg.update(100)
+                dlg.close()
             except Exception:
                 pass
-
-    if progress_dlg:
-        try:
-            progress_dlg.close()
-        except Exception:
-            pass
 
     xbmc.log(f"[MejorWolf] search totals: DT={source_counts.get('DT',0)} "
              f"ET={source_counts.get('ET',0)} WF={source_counts.get('WF',0)} "
@@ -1474,6 +1560,15 @@ def show_source_results(src, cache_key, q=""):
         _cache_series_groups(sg_key, multi_groups)
     else:
         sg_key = cache_key
+
+    # Ordenar por CALIDAD (mejor primero) — SOLO en busquedas. Agrupamos por
+    # titulo base para que las versiones de la misma peli queden juntas y, en
+    # cada una, la mejor calidad arriba. (En Estrenos/Cine NO se ordena: alli
+    # interesa el orden por fecha/recientes.)
+    individual.sort(key=lambda it: (
+        _norm_for_group(_series_base(it.get("title", ""))),
+        -_quality_rank(it),
+    ))
 
     # Enriquecer con TMDB
     enriched_ind = _enrich_many(individual) if individual else []
