@@ -1071,7 +1071,9 @@ def _kb_clean(d):
 
 
 _KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
-                    "volup", "voldown", "mute", "subs"}
+                    "volup", "voldown", "mute",
+                    "seek_fwd", "seek_back",
+                    "up", "down", "left", "right", "ok"}
 
 _KB_PAGE = """<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
@@ -1088,13 +1090,17 @@ background:#161b22;color:#e6edf3;outline:none} input:focus{border-color:#2f81f7}
 #code{letter-spacing:3px;text-align:center}
 #go{width:100%;margin-top:16px;padding:15px;font-size:17px;font-weight:600;border:0;
 border-radius:10px;background:#2f81f7;color:#fff} #go:active{background:#1f6feb}
-.sec{margin-top:24px;border-top:1px solid #21262d;padding-top:16px}
+.sec{margin-top:22px;border-top:1px solid #21262d;padding-top:14px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid.three{grid-template-columns:1fr 1fr 1fr}
 .ctrl{padding:16px 8px;font-size:15px;font-weight:600;border:1px solid #30363d;
 border-radius:10px;background:#161b22;color:#e6edf3} .ctrl:active{background:#21262d}
 .ctrl.play{background:#238636;border-color:#238636} .ctrl.play:active{background:#1a6e2c}
 .ctrl.stop{background:#3d1417;border-color:#5a1e22;color:#ff7b72} .ctrl.stop:active{background:#5a1e22}
+.dpad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;max-width:300px;margin:0 auto}
+.dpad .ctrl{padding:20px 8px;font-size:18px} .dpad .sp{visibility:hidden}
+.ctrl.okk{background:#2f81f7;border-color:#2f81f7;color:#fff}
+.hint{color:#8b949e;font-size:11px;text-align:center;margin:8px 0 0}
 #st{margin-top:16px;text-align:center;font-size:15px;min-height:22px}
 .ok{color:#3fb950} .err{color:#f85149}
 </style></head><body><div class="card">
@@ -1111,15 +1117,33 @@ border-radius:10px;background:#161b22;color:#e6edf3} .ctrl:active{background:#21
   <button class="ctrl play" onclick="cmd('playpause')">&#9205; Play / Pausa</button>
   <button class="ctrl stop" onclick="cmd('stop')">&#9209; Stop</button>
  </div>
+ <div class="grid" style="margin-top:10px">
+  <button class="ctrl" onclick="cmd('seek_back')">&#9194; -10s</button>
+  <button class="ctrl" onclick="cmd('seek_fwd')">+30s &#9193;</button>
+ </div>
  <div class="grid three" style="margin-top:10px">
   <button class="ctrl" onclick="cmd('voldown')">&#128265; Vol -</button>
   <button class="ctrl" onclick="cmd('mute')">&#128263; Silencio</button>
   <button class="ctrl" onclick="cmd('volup')">&#128266; Vol +</button>
  </div>
- <div class="grid three" style="margin-top:10px">
+</div>
+
+<div class="sec">
+ <div class="dpad">
+  <div class="sp"></div>
+  <button class="ctrl" onclick="cmd('up')">&#9650;</button>
+  <div class="sp"></div>
+  <button class="ctrl" onclick="cmd('left')">&#9664;</button>
+  <button class="ctrl okk" onclick="cmd('ok')">OK</button>
+  <button class="ctrl" onclick="cmd('right')">&#9654;</button>
+  <div class="sp"></div>
+  <button class="ctrl" onclick="cmd('down')">&#9660;</button>
+  <div class="sp"></div>
+ </div>
+ <p class="hint">Cruceta para toques sueltos (~1 s de retardo)</p>
+ <div class="grid" style="margin-top:10px">
   <button class="ctrl" onclick="cmd('home')">&#127968; Inicio</button>
   <button class="ctrl" onclick="cmd('back')">&#8617; Atras</button>
-  <button class="ctrl" onclick="cmd('subs')">&#128172; Subt.</button>
  </div>
 </div>
 <div id="st"></div>

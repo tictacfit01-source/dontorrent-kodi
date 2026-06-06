@@ -18,7 +18,7 @@ import time
 import xbmc
 
 PING_INTERVAL = 300         # keep-warm relay: cada 5 min
-TICK = 3                    # ciclo base del servicio (s)
+TICK = 1                    # ciclo base (s): sondeo del teclado remoto agil
 FA_GAP = 6                  # separacion entre notas FA (~10/min: ritmo humano)
 # Backoff EXPONENCIAL ante bloqueos de FA. Reintentar a menudo cuando FA ya
 # te bloquea solo PERPETUA el bloqueo (no deja recuperar la IP). Por eso al
@@ -66,17 +66,43 @@ _KB_ACTIONS = {
     "volup": "Action(VolumeUp)",
     "voldown": "Action(VolumeDown)",
     "mute": "Mute",
-    "subs": "Action(ShowSubtitles)",
+    "up": "Action(Up)",
+    "down": "Action(Down)",
+    "left": "Action(Left)",
+    "right": "Action(Right)",
+    "ok": "Action(Select)",
 }
-_ADDON_HOME = 'ActivateWindow(videos,"plugin://plugin.video.mejorwolf/",return)'
+# Home: ruta de accion EXPLICITA (como la busqueda, que si navega). El root
+# "pelado" no re-navegaba si ya estabas dentro del addon.
+_ADDON_HOME = ('ActivateWindow(videos,"plugin://plugin.video.mejorwolf/'
+               '?action=home",return)')
+
+
+def _seek(seconds):
+    """Salto relativo en la reproduccion (segundos, +/-) via JSON-RPC."""
+    try:
+        import json
+        res = xbmc.executeJSONRPC(
+            '{"jsonrpc":"2.0","id":1,"method":"Player.GetActivePlayers"}')
+        players = (json.loads(res).get("result") or [])
+        vid = next((p for p in players if p.get("type") == "video"),
+                   players[0] if players else None)
+        if not vid:
+            return
+        req = {"jsonrpc": "2.0", "id": 1, "method": "Player.Seek",
+               "params": {"playerid": vid["playerid"],
+                          "value": {"seconds": int(seconds)}}}
+        xbmc.executeJSONRPC(json.dumps(req))
+    except Exception as e:
+        xbmc.log(f"[MejorWolf/service] seek error: {e}", xbmc.LOGDEBUG)
 
 
 def _poll_remote_kb():
     """Sondea el Teclado Remoto y ejecuta lo que el movil haya enviado:
-    una busqueda (la abre en la tele) o comandos (play/pausa/stop/vol/...)."""
+    busqueda (la abre en la tele), comandos, saltos o cruceta."""
     try:
         from resources.lib import remote_kb as rkb
-        events = rkb.poll(timeout=8)
+        events = rkb.poll(timeout=6)
         if not events:
             return False
         from urllib.parse import quote
@@ -91,9 +117,13 @@ def _poll_remote_kb():
                 xbmc.executebuiltin('ActivateWindow(videos,"%s",return)' % url)
             elif c == "home":
                 xbmc.executebuiltin(_ADDON_HOME)
+            elif c == "seek_fwd":
+                _seek(30)
+            elif c == "seek_back":
+                _seek(-10)
             elif c in _KB_ACTIONS:
                 xbmc.executebuiltin(_KB_ACTIONS[c])
-            xbmc.sleep(150)   # pequeña separacion entre acciones
+            xbmc.sleep(120)   # pequeña separacion entre acciones
         return True
     except Exception as e:
         xbmc.log(f"[MejorWolf/service] KB poll error: {e}", xbmc.LOGDEBUG)

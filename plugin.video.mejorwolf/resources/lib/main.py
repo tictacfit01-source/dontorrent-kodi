@@ -2134,6 +2134,7 @@ def router(qs):
     action = params.get("action")
     try:
         if   action is None:            home()
+        elif action == "home":          home()
         elif action == "estrenos":      estrenos()
         elif action == "section":       section(params["kind"])
         elif action == "src_movie":     src_section(params.get("src", "dt"), "movie")
