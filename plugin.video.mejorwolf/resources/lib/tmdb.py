@@ -35,12 +35,48 @@ def _year(title):
     return m.group(0) if m else None
 
 
+# Palabras vacias que NO deben contar para la similitud de titulos: si no se
+# filtran, "The Thing" casaria con "Sabrina, The Teenage Witch" por la palabra
+# "the", dando carátulas equivocadas.
+_STOP = {
+    "the", "a", "an", "of", "and", "or", "to", "in", "on", "for",
+    "la", "el", "los", "las", "un", "una", "unos", "unas", "de", "del",
+    "y", "o", "en", "al", "lo", "le", "les", "su", "se", "con",
+}
+
+
+def _alt_titles(title):
+    """Extrae titulos alternativos entre parentesis (p.ej. el titulo ORIGINAL).
+
+    'La cosa (The Thing) (1996) [BluRay-1080p]' -> ['The Thing']
+    El titulo original es la mejor pista para acertar en TMDB.
+    """
+    alts = []
+    for m in re.findall(r"\(([^)]+)\)", title or ""):
+        m = m.strip()
+        if not m:
+            continue
+        # Saltar años sueltos y marcas tecnicas
+        if re.fullmatch(r"(19|20)\d{2}", m):
+            continue
+        if re.search(r"\b(1080p|720p|2160p|4K|HDRip|BluRay|BDRip|BDremux|"
+                     r"BRRip|WEB-?DL|WEBRip|microHD|HDTV|DVDRip|HEVC|x26[45]|"
+                     r"DUAL|VOSE|Latino|Castellano|Remux)\b", m, re.IGNORECASE):
+            continue
+        c = _clean_title(m)
+        if c and len(c) >= 3:
+            alts.append(c)
+    return alts
+
+
 def _search(clean, kind, year):
     endpoint = "movie" if kind == "movie" else "tv"
     lang = (ADDON.getSetting("tmdb_lang") or "").strip() or "es-ES"
     params = {"api_key": _key(), "query": clean, "language": lang}
-    if year and kind == "movie":
-        params["year"] = year
+    # NO filtramos por año en la API: en DonTorrent el año suele ser el de la
+    # edicion/reestreno (p.ej. "The Thing (1996)" cuando es de 1982), asi que
+    # filtrar por año descartaria la pelicula correcta. El año se usa solo como
+    # bonus suave en el scoring.
     try:
         r = requests.get(
             f"https://api.themoviedb.org/3/search/{endpoint}",
@@ -67,76 +103,99 @@ def _kinds_to_try(kind):
     return ("tv", "movie")
 
 
-def _score(result, preferred_kind, query_clean, year):
-    """Puntua un resultado TMDB. Mayor es mejor.
-
-    Factores:
-      - similitud titulo (exacto > empieza-por > contiene)
-      - popularidad
-      - coincidencia de anio
-      - bonus leve por kind preferente (solo desempate)
-    """
-    title = (result.get("title") or result.get("name") or "").lower()
-    q = (query_clean or "").lower().strip()
-    if not title or not q:
+def _sim_one(t, q):
+    """Similitud entre un titulo `t` y una query `q` (ambos en minusculas)."""
+    if not t or not q:
         return 0.0
-    # Similitud (incluye titulo ORIGINAL: TMDB devuelve "Dias Perfectos"
-    # como title en es-ES pero "Perfect Days" como original_title; hay que
-    # comparar contra ambos para que la peli correcta puntue alto).
+    if t == q:
+        return 1000.0
+    if t.startswith(q) or q.startswith(t):
+        return 600.0
+    if q in t or t in q:
+        return 350.0
+    # Solapamiento de palabras IGNORANDO articulos/preposiciones y palabras
+    # de <=2 letras. Asi "the thing" NO casa con "sabrina the teenage witch"
+    # (solo compartirian "the", que es stopword).
+    q_tok = {w for w in re.findall(r"\w+", q) if len(w) > 2 and w not in _STOP}
+    t_tok = {w for w in re.findall(r"\w+", t) if len(w) > 2 and w not in _STOP}
+    if q_tok and t_tok:
+        inter = len(q_tok & t_tok)
+        if inter:
+            return 220.0 * inter / max(len(q_tok), 1)
+    return 0.0
+
+
+def _best_sim(result, queries):
+    """Mejor similitud del resultado contra cualquiera de las queries,
+    comparando tanto el titulo localizado como el ORIGINAL."""
+    title = (result.get("title") or result.get("name") or "").lower()
     orig = (result.get("original_title")
             or result.get("original_name") or "").lower()
-    def _sim(t):
-        if not t:
-            return 0.0
-        if t == q:
-            return 1000.0
-        if t.startswith(q) or q.startswith(t):
-            return 500.0
-        if q in t or t in q:
-            return 250.0
-        q_tok = set(re.findall(r"\w+", q))
-        t_tok = set(re.findall(r"\w+", t))
-        if q_tok and t_tok:
-            inter = len(q_tok & t_tok)
-            return 100.0 * inter / max(len(q_tok), 1)
-        return 0.0
-    sim = max(_sim(title), _sim(orig))
+    best = 0.0
+    for q in queries:
+        q = (q or "").lower().strip()
+        if not q:
+            continue
+        best = max(best, _sim_one(title, q), _sim_one(orig, q))
+    return best
+
+
+def _score(result, preferred_kind, queries, year):
+    """Puntua un resultado TMDB. Mayor es mejor.
+
+    REGLA DE ORO: la similitud de titulo manda. Un resultado cuyo titulo no
+    comparte NADA con la busqueda esta DESCALIFICADO por muy popular que sea
+    (antes la popularidad x40 hacia ganar a 'Sabrina' frente a 'The Thing').
+    La popularidad y el año solo desempatan entre titulos que SI casan.
+    """
+    sim = _best_sim(result, queries)
+    if sim <= 0:
+        return -1e9   # descalificado: titulo sin relacion con la busqueda
 
     pop = float(result.get("popularity") or 0.0)
-    # La popularidad pesa MUCHO: una peli real (pop 9.5) debe ganar a una
-    # coincidencia exacta de titulo de contenido irrelevante (pop 0.2). Antes
-    # pop sumaba tal cual (~9) y perdia contra sim=1000. Ahora x40 -> 380.
-    # Ademas, resultados sin votos/popularidad casi nula se hunden.
-    pop_score = pop * 40.0
     votes = float(result.get("vote_count") or 0.0)
-    # Penalizar fuerte resultados "fantasma" (0 votos, pop casi nula): suelen
-    # ser entradas basura que casualmente tienen el titulo en ingles.
-    ghost_penalty = -400.0 if (votes < 5 and pop < 1.0) else 0.0
-
+    # Popularidad SECUNDARIA y acotada (max ~150): desempata, no domina.
+    pop_score = min(pop, 60.0) * 2.5
+    # Señal de contenido real (no entrada basura).
+    real_bonus = 60.0 if votes >= 50 else (20.0 if votes >= 5 else 0.0)
+    ghost_penalty = -150.0 if (votes < 5 and pop < 1.0) else 0.0
+    # Bonus de año SOLO si ademas hay similitud decente (evita que "cualquier
+    # cosa del año X" gane por la fecha).
     y_res = (result.get("release_date") or result.get("first_air_date") or "")[:4]
-    year_bonus = 120.0 if (year and y_res == year) else 0.0
+    year_bonus = 150.0 if (year and y_res == year and sim >= 300) else 0.0
     kind_here = "movie" if "title" in result else "tv"
-    kind_bonus = 200.0 if kind_here == preferred_kind else 0.0
-    kind_penalty = -150.0 if kind_here != preferred_kind else 0.0
-    return sim + pop_score + year_bonus + kind_bonus + kind_penalty + ghost_penalty
+    kind_bonus = 120.0 if kind_here == preferred_kind else -120.0
+    return sim + pop_score + real_bonus + year_bonus + kind_bonus + ghost_penalty
 
 
-def _best_across_kinds(clean, kinds, year):
-    """Consulta todos los kinds, agrega resultados, devuelve el mejor."""
+def _best_across_kinds(queries, kinds, year):
+    """Consulta todas las queries x kinds, agrega y devuelve el mejor match.
+
+    `queries` es una lista: titulo principal + titulos alternativos (original
+    entre parentesis). Devuelve (None, kind) si ningun resultado tiene
+    similitud real -> preferimos SIN caratula antes que una equivocada.
+    """
     all_results = []
-    for k in kinds:
-        for r in _search(clean, k, year):
-            # anotamos el kind para saber de que endpoint vino
-            r["_tmdb_kind"] = k
-            all_results.append(r)
+    seen = set()
+    for q in queries:
+        for k in kinds:
+            for r in _search(q, k, year):
+                rid = (k, r.get("id"))
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                r["_tmdb_kind"] = k
+                all_results.append(r)
     if not all_results:
         return None, kinds[0]
     preferred = kinds[0]
     all_results.sort(
-        key=lambda r: _score(r, preferred, clean, year),
+        key=lambda r: _score(r, preferred, queries, year),
         reverse=True,
     )
     best = all_results[0]
+    if _best_sim(best, queries) <= 0:
+        return None, preferred   # nada casa de verdad
     return best, best.get("_tmdb_kind", preferred)
 
 
@@ -153,7 +212,13 @@ def enrich(title, kind="movie", alt_title_fn=None):
 
     y = _year(title)
     kinds = _kinds_to_try(kind)
-    best, matched_kind = _best_across_kinds(clean, kinds, y)
+    # Queries: titulo principal + titulos alternativos entre parentesis
+    # (normalmente el ORIGINAL, p.ej. "(The Thing)"), que es la mejor pista.
+    queries = [clean]
+    for a in _alt_titles(title):
+        if a.lower() != clean.lower() and a not in queries:
+            queries.append(a)
+    best, matched_kind = _best_across_kinds(queries, kinds, y)
 
     if best is None and alt_title_fn is not None:
         try:
@@ -168,7 +233,7 @@ def enrich(title, kind="movie", alt_title_fn=None):
                     _CACHE[cache_key] = _CACHE[alt_key]
                     return _CACHE[cache_key]
                 best, matched_kind = _best_across_kinds(
-                    alt_clean, kinds, _year(alt) or y
+                    [alt_clean], kinds, _year(alt) or y
                 )
 
     results = [best] if best is not None else []
