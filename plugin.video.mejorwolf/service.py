@@ -74,10 +74,32 @@ _KB_ACTIONS = {
     "right": "Action(Right)",
     "ok": "Action(Select)",
 }
-# Home: ruta de accion EXPLICITA (como la busqueda, que si navega). El root
-# "pelado" no re-navegaba si ya estabas dentro del addon.
-_ADDON_HOME = ('ActivateWindow(videos,"plugin://plugin.video.mejorwolf/'
-               '?action=home",return)')
+_HOME_URL = "plugin://plugin.video.mejorwolf/?action=home"
+
+
+def _go_home():
+    """Va a la portada del addon de forma ROBUSTA desde cualquier estado.
+    Causa del 'se queda pillado': un dialogo abierto (barra de carga de una
+    busqueda, notificacion) o estar reproduciendo bloqueaban el ActivateWindow.
+    Solucion: cerrar dialogos primero y elegir la navegacion segun el estado."""
+    try:
+        # 1) Cerrar cualquier dialogo modal que pueda bloquear la navegacion.
+        xbmc.executebuiltin("Dialog.Close(all,true)")
+        xbmc.sleep(150)
+        # 2) Si hay un video a pantalla completa, salir del reproductor primero.
+        if xbmc.getCondVisibility("Player.HasVideo") and \
+           xbmc.getCondVisibility("VideoPlayer.IsFullscreen"):
+            xbmc.executebuiltin("Action(FullScreen)")
+            xbmc.sleep(150)
+        # 3) Si ya estamos en la ventana de Videos, navegar dentro (replace,
+        #    fiable y sin acumular historial); si no, abrir Videos en la portada.
+        if xbmc.getCondVisibility("Window.IsVisible(10025)"):
+            xbmc.executebuiltin('Container.Update("%s",replace)' % _HOME_URL)
+        else:
+            xbmc.executebuiltin('ActivateWindow(Videos,"%s",return)' % _HOME_URL)
+        xbmc.log("[MejorWolf/service] Home -> portada del addon", xbmc.LOGINFO)
+    except Exception as e:
+        xbmc.log(f"[MejorWolf/service] home error: {e}", xbmc.LOGWARNING)
 
 
 def _seek(seconds):
@@ -213,7 +235,7 @@ def _poll_remote_kb():
                 if _open_index(ev.get("i")):
                     _push_after_nav(old_path)
             elif c == "home":
-                xbmc.executebuiltin(_ADDON_HOME)
+                _go_home()
             elif c == "seek_fwd":
                 _seek(30)
             elif c == "seek_back":

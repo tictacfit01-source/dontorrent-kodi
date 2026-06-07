@@ -1135,6 +1135,13 @@ border-radius:10px;margin-bottom:8px;background:#161b22} .item:active{background
 .poster.noimg{background:#21262d}
 .lbl{flex:1;font-size:14px;line-height:1.3}
 .chev{color:#8b949e;font-size:20px;flex:none}
+#lb{position:fixed;inset:0;background:rgba(0,0,0,.93);z-index:50;display:none;
+flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:14px}
+#lbimg{max-width:86%;max-height:64vh;border-radius:12px;object-fit:contain;
+box-shadow:0 8px 40px rgba(0,0,0,.6)}
+#lblbl{color:#e6edf3;text-align:center;font-size:15px;max-width:92%}
+.lbbtns{display:flex;gap:10px;width:100%;max-width:380px}
+.lbbtns .ctrl{flex:1}
 #st{margin-top:14px;text-align:center;font-size:15px;min-height:22px}
 .ok{color:#3fb950} .err{color:#f85149}
 </style></head><body><div class="card">
@@ -1200,10 +1207,25 @@ border-radius:10px;margin-bottom:8px;background:#161b22} .item:active{background
 </section>
 
 <div id="st"></div>
+
+<div id="lb" onclick="closeBig(event)">
+ <img id="lbimg" alt="">
+ <div id="lblbl"></div>
+ <div class="lbbtns">
+  <button class="ctrl okk" onclick="lbOpen(event)">Abrir / Reproducir</button>
+  <button class="ctrl" onclick="closeBig(event)">Cerrar</button>
+ </div>
+</div>
 </div><script>
 var p=new URLSearchParams(location.search);
 var code=document.getElementById('code'),st=document.getElementById('st'),q=document.getElementById('q');
-if(p.get('c')) code.value=p.get('c');
+function loadCode(){try{return localStorage.getItem('mw_code')||'';}catch(e){return '';}}
+function saveCode(){try{var c=code.value.trim();if(c.length===6)localStorage.setItem('mw_code',c);}catch(e){}}
+/* El codigo del QR (?c=) manda; si no, recuperamos el guardado. Asi aguanta
+   refrescos (pull-to-refresh) hasta que pongas otro. */
+if(p.get('c')) code.value=p.get('c'); else code.value=loadCode();
+saveCode();
+code.addEventListener('input',saveCode);
 function setMsg(t,cls){st.className=cls||'';st.textContent=t;}
 function getCode(){var c=code.value.trim();if(c.length<6){setMsg('Falta el codigo de 6 cifras','err');return null;}return c;}
 function post(body,okmsg){
@@ -1243,7 +1265,9 @@ function renderList(items){
   var row=document.createElement('div'); row.className='item';
   row.onclick=function(){openItem(i);};
   if(it.poster){var img=document.createElement('img');img.className='poster';img.loading='lazy';
-   img.src=it.poster;img.onerror=function(){img.style.visibility='hidden';};row.appendChild(img);}
+   img.src=it.poster;img.onerror=function(){img.style.visibility='hidden';};
+   img.onclick=function(e){e.stopPropagation();showBig(it.poster,it.label,i);};
+   row.appendChild(img);}
   else {var ph=document.createElement('div');ph.className='poster noimg';row.appendChild(ph);}
   var l=document.createElement('div');l.className='lbl';l.textContent=it.label||'';row.appendChild(l);
   var ch=document.createElement('div');ch.className='chev';ch.innerHTML=it.dir?'&#8250;':'&#9654;';row.appendChild(ch);
@@ -1275,6 +1299,14 @@ function loadList(){listTs=0;reqList();}   // boton Actualizar (forzar)
 function listBack(){var c=getCode();if(!c)return;post({code:c,cmd:'back'});}
 function openItem(i){var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
  post({code:c,cmd:'open',i:i});}
+/* ---- Caratula grande (lightbox) ---- */
+var lbIdx=-1;
+function showBig(poster,label,i){lbIdx=i;
+ document.getElementById('lbimg').src=poster||'';
+ document.getElementById('lblbl').textContent=label||'';
+ document.getElementById('lb').style.display='flex';}
+function closeBig(e){if(e)e.stopPropagation();document.getElementById('lb').style.display='none';}
+function lbOpen(e){if(e)e.stopPropagation();var i=lbIdx;closeBig();if(i>=0)openItem(i);}
 /* Pausar el sondeo cuando la pestaña/pantalla del movil no esta visible */
 document.addEventListener('visibilitychange',function(){
  if(document.hidden) stopLive();
