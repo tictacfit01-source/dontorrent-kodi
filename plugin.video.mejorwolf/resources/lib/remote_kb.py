@@ -6,6 +6,7 @@ busqueda y la envia. El servicio del addon sondea /kb/poll con ese codigo y
 abre los resultados en la tele.
 """
 import os
+import json
 import random
 import requests
 
@@ -18,6 +19,29 @@ except Exception:
     _PROFILE = ""
 
 _CODE_FILE = os.path.join(_PROFILE, "remote_code.txt") if _PROFILE else ""
+_SNAP_FILE = os.path.join(_PROFILE, "last_screen.json") if _PROFILE else ""
+
+
+def read_screen():
+    """Lee la 'foto' de la ultima pantalla pintada por el addon. Devuelve la
+    lista de items [{label, file, poster, dir}] (instantaneo, sin re-buscar)."""
+    if not _SNAP_FILE or not os.path.exists(_SNAP_FILE):
+        return []
+    try:
+        with open(_SNAP_FILE, "r", encoding="utf-8") as f:
+            return (json.load(f) or {}).get("items", [])
+    except Exception:
+        return []
+
+
+def snap_mtime():
+    """Fecha de modificacion de la 'foto' (para detectar cambios de pantalla)."""
+    try:
+        if _SNAP_FILE and os.path.exists(_SNAP_FILE):
+            return os.path.getmtime(_SNAP_FILE)
+    except Exception:
+        pass
+    return 0
 
 
 def get_code():

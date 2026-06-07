@@ -1072,7 +1072,7 @@ def _kb_clean(d):
 
 _KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
                     "volup", "voldown", "mute",
-                    "seek_fwd", "seek_back",
+                    "seek_fwd", "seek_back", "seekto",
                     "up", "down", "left", "right", "ok",
                     "list", "open"}
 
@@ -1159,6 +1159,11 @@ border-radius:10px;margin-bottom:8px;background:#161b22} .item:active{background
    <button class="ctrl" onclick="cmd('seek_back')">&#9194; -10s</button>
    <button class="ctrl" onclick="cmd('seek_fwd')">+30s &#9193;</button>
   </div>
+  <div style="display:flex;gap:10px;margin-top:10px">
+   <input id="mn" type="number" min="0" inputmode="numeric"
+    placeholder="pon el minuto al que quieres ir" style="flex:1">
+   <button class="ctrl" style="flex:none;width:96px" onclick="seekTo()">Saltar a</button>
+  </div>
   <div class="grid three" style="margin-top:10px">
    <button class="ctrl" onclick="cmd('voldown')">&#128265; Vol -</button>
    <button class="ctrl" onclick="cmd('mute')">&#128263; Silencio</button>
@@ -1211,6 +1216,9 @@ function send(){var c=getCode();if(!c)return;var query=q.value.trim();
  if(!query){setMsg('Escribe algo','err');return;}
  setMsg('Enviando...');post({code:c,query:query},'Enviado. Mira la tele');q.value='';}
 function cmd(x){var c=getCode();if(!c)return;post({code:c,cmd:x},'Enviado');}
+function seekTo(){var c=getCode();if(!c)return;var mn=document.getElementById('mn').value.trim();
+ if(mn===''){setMsg('Pon un minuto','err');return;}
+ post({code:c,cmd:'seekto',min:parseInt(mn,10)},'Saltando al minuto '+mn);}
 document.getElementById('go').onclick=send;
 q.addEventListener('keydown',function(e){if(e.key==='Enter')send();});
 
@@ -1259,7 +1267,7 @@ function loadList(){
 }
 function listBack(){var c=getCode();if(!c)return;post({code:c,cmd:'back'});setTimeout(loadList,800);}
 function openItem(i){var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
- post({code:c,cmd:'open',i:i});setTimeout(loadList,1500);}
+ post({code:c,cmd:'open',i:i});listTs=0;setTimeout(function(){pollList(0);},900);}
 </script></body></html>"""
 
 
@@ -1288,6 +1296,11 @@ def kb_send():
                 ev["i"] = int(body.get("i"))
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "indice invalido"}), 400
+        elif cmd == "seekto":
+            try:
+                ev["min"] = max(0, int(body.get("min")))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "minuto invalido"}), 400
     else:
         return jsonify({"ok": False, "error": "nada que enviar"}), 400
     d = _kb_clean(_kb_load())

@@ -62,6 +62,42 @@ def _last_search_save(q):
     except Exception:
         pass
 
+
+# ── Snapshot de pantalla para el Teclado Remoto (vista "Lista") ─────────────
+# En vez de que el servicio re-pregunte a Kodi por la pantalla (lo que re-
+# ejecutaba la busqueda), interceptamos addDirectoryItem y guardamos una "foto"
+# de cada pantalla al pintarla. La vista Lista del movil lee esa foto -> es
+# instantanea y NO vuelve a buscar.
+_SNAP = []
+_SNAP_FILE = os.path.join(_PROFILE, "last_screen.json")
+
+
+def _snap_save():
+    try:
+        os.makedirs(_PROFILE, exist_ok=True)
+        tmp = _SNAP_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"items": _SNAP, "ts": time.time()}, f)
+        os.replace(tmp, _SNAP_FILE)
+    except Exception:
+        pass
+
+
+_orig_add_dir = xbmcplugin.addDirectoryItem
+
+
+def _add_dir_hook(handle, url, listitem, isFolder=False, totalItems=0):
+    try:
+        poster = (listitem.getArt("poster") or listitem.getArt("thumb") or "")
+        _SNAP.append({"label": listitem.getLabel(), "file": url,
+                      "poster": poster, "dir": bool(isFolder)})
+    except Exception:
+        pass
+    return _orig_add_dir(handle, url, listitem, isFolder, totalItems)
+
+
+xbmcplugin.addDirectoryItem = _add_dir_hook
+
 # Kodi built-in icons — no necesitamos archivos custom
 IC = {
     "estrenos":    "DefaultRecentlyAddedMovies.png",
@@ -2145,6 +2181,8 @@ def open_settings():
 def router(qs):
     params = dict(parse_qsl(qs))
     action = params.get("action")
+    global _SNAP
+    _SNAP = []
     try:
         if   action is None:            home()
         elif action == "home":          home()
@@ -2194,6 +2232,10 @@ def router(qs):
         elif action == "settings":      open_settings()
         elif action == "diagnose":      diagnose()
         else:                           home()
+        # Guardar la "foto" de la pantalla para la vista Lista del movil
+        # (solo si esta accion ha pintado items; las de reproduccion no).
+        if _SNAP:
+            _snap_save()
     except Exception as e:
         import traceback
         xbmc.log(f"[MejorWolf] ROUTER ERROR: {e}\n{traceback.format_exc()}",
