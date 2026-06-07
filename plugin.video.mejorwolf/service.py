@@ -99,9 +99,76 @@ def _seek(seconds):
         xbmc.log(f"[MejorWolf/service] seek error: {e}", xbmc.LOGDEBUG)
 
 
+# Espejo de la pantalla: ultima lista leida (indice -> item con su 'file')
+_LAST_LIST = []
+
+
+def _unwrap_image(u):
+    """Convierte la URL de arte de Kodi (image://https%3a%2f...%2f) en la URL
+    real (https://...) para que el movil pueda cargarla."""
+    u = u or ""
+    if u.startswith("image://"):
+        from urllib.parse import unquote
+        u = unquote(u[len("image://"):])
+        if u.endswith("/"):
+            u = u[:-1]
+    return u
+
+
+def _read_screen_and_push():
+    """Lee la lista de la pantalla actual de Kodi y la sube al relay para que
+    el movil la muestre (pestaña Lista)."""
+    global _LAST_LIST
+    try:
+        import json
+        from resources.lib import remote_kb as rkb
+        path = xbmc.getInfoLabel("Container.FolderPath") or ""
+        if "plugin.video.mejorwolf" not in path:
+            _LAST_LIST = []
+            rkb.push_list([], "")   # no estamos en el addon
+            return
+        title = xbmc.getInfoLabel("Container.PluginCategory") or "MejorWolf"
+        req = {"jsonrpc": "2.0", "id": 1, "method": "Files.GetDirectory",
+               "params": {"directory": path, "media": "video",
+                          "properties": ["title", "art", "year"]}}
+        res = json.loads(xbmc.executeJSONRPC(json.dumps(req)))
+        files = (res.get("result") or {}).get("files") or []
+        _LAST_LIST = files
+        compact = []
+        for f in files:
+            art = f.get("art") or {}
+            poster = _unwrap_image(art.get("poster") or art.get("thumb") or "")
+            compact.append({"label": f.get("label", ""),
+                            "poster": poster,
+                            "dir": (f.get("filetype") == "directory")})
+        rkb.push_list(compact, title)
+        xbmc.log(f"[MejorWolf/service] Lista empujada: {len(compact)} items "
+                 f"({title})", xbmc.LOGINFO)
+    except Exception as e:
+        xbmc.log(f"[MejorWolf/service] leer pantalla error: {e}", xbmc.LOGDEBUG)
+
+
+def _open_index(i):
+    """Abre (o reproduce) el elemento N de la ultima lista, como pulsar OK."""
+    try:
+        i = int(i)
+        if not (0 <= i < len(_LAST_LIST)):
+            return
+        f = _LAST_LIST[i]
+        url = f.get("file") or ""
+        if not url:
+            return
+        if f.get("filetype") == "directory":
+            xbmc.executebuiltin('Container.Update("%s")' % url)
+        else:
+            xbmc.executebuiltin('PlayMedia("%s")' % url)
+    except Exception as e:
+        xbmc.log(f"[MejorWolf/service] abrir item error: {e}", xbmc.LOGDEBUG)
+
+
 def _poll_remote_kb():
     """Sondea el Teclado Remoto y ejecuta lo que el movil haya enviado:
-    busqueda (la abre en la tele), comandos, saltos o cruceta."""
+    busqueda, comandos, saltos, cruceta, o la vista Lista (espejo)."""
     try:
         from resources.lib import remote_kb as rkb
         events = rkb.poll(timeout=6)
@@ -117,6 +184,10 @@ def _poll_remote_kb():
                 xbmc.log(f"[MejorWolf/service] teclado remoto -> buscar '{q}'",
                          xbmc.LOGINFO)
                 xbmc.executebuiltin('ActivateWindow(videos,"%s",return)' % url)
+            elif c == "list":
+                _read_screen_and_push()
+            elif c == "open":
+                _open_index(ev.get("i"))
             elif c == "home":
                 xbmc.executebuiltin(_ADDON_HOME)
             elif c == "seek_fwd":

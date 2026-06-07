@@ -58,6 +58,20 @@ def qr_url():
     return f"{base}/kb/qr?c={get_code()}" if base else ""
 
 
+def push_list(items, title=""):
+    """Sube al relay la lista (espejo) de la pantalla actual para que el movil
+    la muestre. `items`: lista de dicts {label, poster, dir}."""
+    base = relay_base()
+    if not base:
+        return
+    try:
+        requests.post(f"{base}/kb/list",
+                      json={"code": get_code(), "items": items, "title": title},
+                      timeout=10)
+    except Exception:
+        pass
+
+
 def poll(timeout=10):
     """Devuelve los eventos pendientes del movil (y los consume).
 

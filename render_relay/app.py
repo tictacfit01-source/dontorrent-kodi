@@ -1073,24 +1073,50 @@ def _kb_clean(d):
 _KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
                     "volup", "voldown", "mute",
                     "seek_fwd", "seek_back",
-                    "up", "down", "left", "right", "ok"}
+                    "up", "down", "left", "right", "ok",
+                    "list", "open"}
+
+# Lista (espejo de la pantalla de Kodi) que el box empuja y el movil lee.
+_KB_LIST_FILE = "/tmp/mw_kb_list.json"
+_KB_LIST_TTL = 600
+
+
+def _kblist_load():
+    try:
+        with open(_KB_LIST_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _kblist_save(d):
+    try:
+        tmp = _KB_LIST_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _KB_LIST_FILE)
+    except Exception:
+        pass
 
 _KB_PAGE = """<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>MejorWolf - Teclado Remoto</title>
+<title>MejorWolf - Mando</title>
 <style>
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
 background:#0d1117;color:#e6edf3;display:flex;min-height:100vh;align-items:flex-start;justify-content:center}
-.card{width:100%;max-width:460px;padding:22px}
-h1{font-size:20px;margin:0 0 4px} .sub{color:#8b949e;font-size:13px;margin:0 0 16px}
-label{display:block;font-size:12px;color:#8b949e;margin:12px 0 6px}
+.card{width:100%;max-width:480px;padding:16px}
+.hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.tabs{display:flex;border:1px solid #30363d;border-radius:10px;overflow:hidden;flex:1}
+.tab{flex:1;padding:11px;background:#161b22;color:#8b949e;border:0;font-size:15px;font-weight:700}
+.tab.active{background:#2f81f7;color:#fff}
+.codein{width:92px;padding:11px;text-align:center;letter-spacing:2px;border-radius:10px;
+border:1px solid #30363d;background:#161b22;color:#e6edf3;outline:none;font-size:15px}
 input{width:100%;padding:14px;font-size:18px;border-radius:10px;border:1px solid #30363d;
 background:#161b22;color:#e6edf3;outline:none} input:focus{border-color:#2f81f7}
-#code{letter-spacing:3px;text-align:center}
-#go{width:100%;margin-top:16px;padding:15px;font-size:17px;font-weight:600;border:0;
+#go{width:100%;margin-top:12px;padding:15px;font-size:17px;font-weight:600;border:0;
 border-radius:10px;background:#2f81f7;color:#fff} #go:active{background:#1f6feb}
-.sec{margin-top:22px;border-top:1px solid #21262d;padding-top:14px}
+.sec{margin-top:18px;border-top:1px solid #21262d;padding-top:14px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid.three{grid-template-columns:1fr 1fr 1fr}
 .ctrl{padding:16px 8px;font-size:15px;font-weight:600;border:1px solid #30363d;
@@ -1100,71 +1126,140 @@ border-radius:10px;background:#161b22;color:#e6edf3} .ctrl:active{background:#21
 .dpad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;max-width:300px;margin:0 auto}
 .dpad .ctrl{padding:20px 8px;font-size:18px} .dpad .sp{visibility:hidden}
 .ctrl.okk{background:#2f81f7;border-color:#2f81f7;color:#fff}
-.hint{color:#8b949e;font-size:11px;text-align:center;margin:8px 0 0}
-#st{margin-top:16px;text-align:center;font-size:15px;min-height:22px}
+.hint{color:#8b949e;font-size:12px;text-align:center;margin:10px 0}
+.ltoolbar{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.ltitle{color:#8b949e;font-size:13px;margin:0 0 10px;min-height:16px}
+.item{display:flex;align-items:center;gap:12px;padding:8px;border:1px solid #21262d;
+border-radius:10px;margin-bottom:8px;background:#161b22} .item:active{background:#21262d}
+.poster{width:46px;height:69px;object-fit:cover;border-radius:6px;flex:none;background:#21262d}
+.poster.noimg{background:#21262d}
+.lbl{flex:1;font-size:14px;line-height:1.3}
+.chev{color:#8b949e;font-size:20px;flex:none}
+#st{margin-top:14px;text-align:center;font-size:15px;min-height:22px}
 .ok{color:#3fb950} .err{color:#f85149}
 </style></head><body><div class="card">
-<h1>MejorWolf - Teclado Remoto</h1>
-<p class="sub">Escribe y controla tu tele desde aqui.</p>
-<label>Que quieres buscar</label>
-<input id="q" autocomplete="off" placeholder="p.ej. El padrino" enterkeyhint="search">
-<label>Codigo del box (6 cifras)</label>
-<input id="code" inputmode="numeric" maxlength="6" placeholder="------">
-<button id="go">Buscar en la tele</button>
 
-<div class="sec">
- <div class="grid">
-  <button class="ctrl play" onclick="cmd('playpause')">&#9205; Play / Pausa</button>
-  <button class="ctrl stop" onclick="cmd('stop')">&#9209; Stop</button>
+<div class="hdr">
+ <div class="tabs">
+  <button id="tab-mando" class="tab active" onclick="showTab('mando')">Mando</button>
+  <button id="tab-lista" class="tab" onclick="showTab('lista')">Lista</button>
  </div>
- <div class="grid" style="margin-top:10px">
-  <button class="ctrl" onclick="cmd('seek_back')">&#9194; -10s</button>
-  <button class="ctrl" onclick="cmd('seek_fwd')">+30s &#9193;</button>
- </div>
- <div class="grid three" style="margin-top:10px">
-  <button class="ctrl" onclick="cmd('voldown')">&#128265; Vol -</button>
-  <button class="ctrl" onclick="cmd('mute')">&#128263; Silencio</button>
-  <button class="ctrl" onclick="cmd('volup')">&#128266; Vol +</button>
- </div>
+ <input id="code" class="codein" inputmode="numeric" maxlength="6" placeholder="codigo">
 </div>
 
-<div class="sec">
- <div class="dpad">
-  <div class="sp"></div>
-  <button class="ctrl" onclick="cmd('up')">&#9650;</button>
-  <div class="sp"></div>
-  <button class="ctrl" onclick="cmd('left')">&#9664;</button>
-  <button class="ctrl okk" onclick="cmd('ok')">OK</button>
-  <button class="ctrl" onclick="cmd('right')">&#9654;</button>
-  <div class="sp"></div>
-  <button class="ctrl" onclick="cmd('down')">&#9660;</button>
-  <div class="sp"></div>
+<section id="pane-mando">
+ <input id="q" autocomplete="off" placeholder="Buscar pelicula o serie..." enterkeyhint="search">
+ <button id="go">Buscar en la tele</button>
+ <div class="sec">
+  <div class="grid">
+   <button class="ctrl play" onclick="cmd('playpause')">&#9205; Play / Pausa</button>
+   <button class="ctrl stop" onclick="cmd('stop')">&#9209; Stop</button>
+  </div>
+  <div class="grid" style="margin-top:10px">
+   <button class="ctrl" onclick="cmd('seek_back')">&#9194; -10s</button>
+   <button class="ctrl" onclick="cmd('seek_fwd')">+30s &#9193;</button>
+  </div>
+  <div class="grid three" style="margin-top:10px">
+   <button class="ctrl" onclick="cmd('voldown')">&#128265; Vol -</button>
+   <button class="ctrl" onclick="cmd('mute')">&#128263; Silencio</button>
+   <button class="ctrl" onclick="cmd('volup')">&#128266; Vol +</button>
+  </div>
  </div>
- <p class="hint">Cruceta para toques sueltos (~1 s de retardo)</p>
- <div class="grid" style="margin-top:10px">
-  <button class="ctrl" onclick="cmd('home')">&#127968; Inicio</button>
-  <button class="ctrl" onclick="cmd('back')">&#8617; Atras</button>
+ <div class="sec">
+  <div class="dpad">
+   <div class="sp"></div>
+   <button class="ctrl" onclick="cmd('up')">&#9650;</button>
+   <div class="sp"></div>
+   <button class="ctrl" onclick="cmd('left')">&#9664;</button>
+   <button class="ctrl okk" onclick="cmd('ok')">OK</button>
+   <button class="ctrl" onclick="cmd('right')">&#9654;</button>
+   <div class="sp"></div>
+   <button class="ctrl" onclick="cmd('down')">&#9660;</button>
+   <div class="sp"></div>
+  </div>
+  <p class="hint">Cruceta para toques sueltos (~1 s de retardo)</p>
+  <div class="grid">
+   <button class="ctrl" onclick="cmd('home')">&#127968; Inicio</button>
+   <button class="ctrl" onclick="cmd('back')">&#8617; Atras</button>
+  </div>
  </div>
-</div>
+</section>
+
+<section id="pane-lista" style="display:none">
+ <div class="ltoolbar">
+  <button class="ctrl" onclick="listBack()">&#8617; Atras</button>
+  <button class="ctrl" onclick="loadList()">&#8635; Actualizar</button>
+ </div>
+ <div id="ltitle" class="ltitle"></div>
+ <div id="items"></div>
+</section>
+
 <div id="st"></div>
 </div><script>
-var p=new URLSearchParams(location.search); if(p.get('c')) document.getElementById('code').value=p.get('c');
-var q=document.getElementById('q'),code=document.getElementById('code'),st=document.getElementById('st');
-function getCode(){var c=code.value.trim();if(!c||c.length<6){st.className='err';st.textContent='Falta el codigo de 6 cifras';return null;}return c;}
+var p=new URLSearchParams(location.search);
+var code=document.getElementById('code'),st=document.getElementById('st'),q=document.getElementById('q');
+if(p.get('c')) code.value=p.get('c');
+function setMsg(t,cls){st.className=cls||'';st.textContent=t;}
+function getCode(){var c=code.value.trim();if(c.length<6){setMsg('Falta el codigo de 6 cifras','err');return null;}return c;}
 function post(body,okmsg){
- st.className='';st.textContent='Enviando...';
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()})
-  .then(function(j){ if(j&&j.ok){st.className='ok';st.textContent=okmsg;}
-    else {st.className='err';st.textContent=(j&&j.error)||'Error';}})
-  .catch(function(){st.className='err';st.textContent='Sin conexion';});
+  .then(function(j){ if(j&&j.ok){if(okmsg)setMsg(okmsg,'ok');} else {setMsg((j&&j.error)||'Error','err');}})
+  .catch(function(){setMsg('Sin conexion','err');});
 }
 function send(){var c=getCode();if(!c)return;var query=q.value.trim();
- if(!query){st.className='err';st.textContent='Escribe algo';return;}
- post({code:c,query:query},'Enviado. Mira la tele');q.value='';}
+ if(!query){setMsg('Escribe algo','err');return;}
+ setMsg('Enviando...');post({code:c,query:query},'Enviado. Mira la tele');q.value='';}
 function cmd(x){var c=getCode();if(!c)return;post({code:c,cmd:x},'Enviado');}
 document.getElementById('go').onclick=send;
 q.addEventListener('keydown',function(e){if(e.key==='Enter')send();});
+
+/* ---- Tabs ---- */
+function showTab(t){
+ document.getElementById('pane-mando').style.display=(t==='mando')?'block':'none';
+ document.getElementById('pane-lista').style.display=(t==='lista')?'block':'none';
+ document.getElementById('tab-mando').classList.toggle('active',t==='mando');
+ document.getElementById('tab-lista').classList.toggle('active',t==='lista');
+ if(t==='lista') loadList();
+}
+
+/* ---- Lista (espejo de la pantalla) ---- */
+var listTs=0;
+function renderList(items){
+ var cont=document.getElementById('items'); cont.innerHTML='';
+ if(!items||!items.length){
+  cont.innerHTML='<p class="hint">Abre una seccion en la tele (Estrenos, Cine, una busqueda...) y pulsa Actualizar.</p>';
+  return;
+ }
+ items.forEach(function(it,i){
+  var row=document.createElement('div'); row.className='item';
+  row.onclick=function(){openItem(i);};
+  if(it.poster){var img=document.createElement('img');img.className='poster';img.loading='lazy';
+   img.src=it.poster;img.onerror=function(){img.style.visibility='hidden';};row.appendChild(img);}
+  else {var ph=document.createElement('div');ph.className='poster noimg';row.appendChild(ph);}
+  var l=document.createElement('div');l.className='lbl';l.textContent=it.label||'';row.appendChild(l);
+  var ch=document.createElement('div');ch.className='chev';ch.innerHTML=it.dir?'&#8250;':'&#9654;';row.appendChild(ch);
+  cont.appendChild(row);
+ });
+}
+function pollList(n){
+ var c=code.value.trim(); if(c.length<6)return;
+ fetch('/kb/list?code='+c).then(function(r){return r.json()}).then(function(j){
+  if(j && j.ts && j.ts!==listTs){ listTs=j.ts; renderList(j.items);
+   document.getElementById('ltitle').textContent=j.title||''; }
+  if(n<10) setTimeout(function(){pollList(n+1);},600);
+ }).catch(function(){});
+}
+function loadList(){
+ var c=getCode(); if(!c)return;
+ setMsg('Cargando lista...');
+ post({code:c,cmd:'list'});
+ listTs=0; pollList(0);
+ setTimeout(function(){setMsg('');},1500);
+}
+function listBack(){var c=getCode();if(!c)return;post({code:c,cmd:'back'});setTimeout(loadList,800);}
+function openItem(i){var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
+ post({code:c,cmd:'open',i:i});setTimeout(loadList,1500);}
 </script></body></html>"""
 
 
@@ -1188,6 +1283,11 @@ def kb_send():
         ev = {"q": query}
     elif cmd in _KB_ALLOWED_CMDS:
         ev = {"c": cmd}
+        if cmd == "open":
+            try:
+                ev["i"] = int(body.get("i"))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "indice invalido"}), 400
     else:
         return jsonify({"ok": False, "error": "nada que enviar"}), 400
     d = _kb_clean(_kb_load())
@@ -1212,6 +1312,41 @@ def kb_poll():
         _kb_save(d)   # consumo: devolvemos los eventos pendientes y limpiamos
         return jsonify({"events": entry.get("ev", [])})
     return jsonify({"events": []})
+
+
+@app.post("/kb/list")
+def kb_list_push():
+    """El box sube la lista (espejo) de la pantalla actual de Kodi."""
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    code = re.sub(r"\D", "", str(body.get("code") or ""))[:6]
+    if len(code) != 6:
+        return jsonify({"ok": False}), 400
+    items = body.get("items") or []
+    if not isinstance(items, list):
+        items = []
+    d = _kblist_load()
+    now = _t.time()
+    d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _KB_LIST_TTL}
+    d[code] = {"items": items[:120], "title": (body.get("title") or "")[:80],
+               "ts": now}
+    _kblist_save(d)
+    return jsonify({"ok": True})
+
+
+@app.get("/kb/list")
+def kb_list_get():
+    """El movil lee la lista (espejo) actual."""
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    if len(code) != 6:
+        return jsonify({"items": [], "ts": 0})
+    d = _kblist_load()
+    entry = d.get(code) or {}
+    return jsonify({"items": entry.get("items", []),
+                    "title": entry.get("title", ""),
+                    "ts": entry.get("ts", 0)})
 
 
 @app.get("/kb/qr")
