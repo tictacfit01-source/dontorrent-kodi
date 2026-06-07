@@ -18,7 +18,9 @@ import time
 import xbmc
 
 PING_INTERVAL = 300         # keep-warm relay: cada 5 min
-TICK = 1                    # ciclo base (s): sondeo del teclado remoto agil
+MAIN_TICK = 5               # ciclo del bucle principal (FA + keep-warm)
+KB_POLL_GAP = 0.3           # sondeo del teclado remoto en su propio hilo:
+                            # rapido para que el mando responda agil (~0.5s)
 FA_GAP = 6                  # separacion entre notas FA (~10/min: ritmo humano)
 # Backoff EXPONENCIAL ante bloqueos de FA. Reintentar a menudo cuando FA ya
 # te bloquea solo PERPETUA el bloqueo (no deja recuperar la IP). Por eso al
@@ -130,6 +132,33 @@ def _poll_remote_kb():
     return False
 
 
+def _warm_dt():
+    """Pre-calienta la sesion Anubis de DonTorrent en el relay (1 peticion) para
+    que la PRIMERA busqueda no tenga que resolverla. Asi DonTorrent sale ya en
+    la primera, sin el 'despertando'."""
+    try:
+        base = _relay_base()
+        if not base:
+            return
+        import requests
+        requests.get(f"{base}/dtsearch", params={"q": "matrix"}, timeout=60)
+        xbmc.log("[MejorWolf/service] DonTorrent precalentado", xbmc.LOGINFO)
+    except Exception as e:
+        xbmc.log(f"[MejorWolf/service] warm DT error: {e}", xbmc.LOGDEBUG)
+
+
+def _kb_thread(monitor):
+    """Hilo dedicado al Teclado Remoto: sondea rapido para que el mando vaya
+    agil, sin que el bucle principal (FA/keep-warm) lo frene."""
+    while not monitor.abortRequested():
+        try:
+            _poll_remote_kb()
+        except Exception:
+            pass
+        if monitor.waitForAbort(KB_POLL_GAP):
+            break
+
+
 def main():
     monitor = xbmc.Monitor()
     xbmc.log("[MejorWolf/service] iniciado (keep-warm + notas FA + teclado "
@@ -138,17 +167,21 @@ def main():
     base = _relay_base()
     if base:
         _ping(base)
+
+    import threading
+    # Pre-calentar DonTorrent (Anubis) en segundo plano: 1a busqueda rapida.
+    threading.Thread(target=_warm_dt, daemon=True).start()
+    # Teclado Remoto en su propio hilo (sondeo rapido, respuesta agil).
+    threading.Thread(target=_kb_thread, args=(monitor,), daemon=True).start()
+
     last_ping = time.time()
     next_fa = 0.0          # cuando podemos resolver la proxima nota FA
     consec_blocks = 0      # bloqueos seguidos (para el backoff exponencial)
 
     while not monitor.abortRequested():
-        if monitor.waitForAbort(TICK):
+        if monitor.waitForAbort(MAIN_TICK):
             break
         now = time.time()
-
-        # 0) Teclado Remoto: si el movil envio una busqueda, abrirla ya
-        _poll_remote_kb()
 
         # 1) keep-warm relay
         if now - last_ping >= PING_INTERVAL:
