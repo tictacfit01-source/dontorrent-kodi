@@ -1228,6 +1228,39 @@ def kb_qr():
                     headers={"Cache-Control": "no-store"})
 
 
+# ===========================================================================
+# AUTO-KEEPALIVE: el relay se pinguea a si mismo para no dormirse
+# ===========================================================================
+# Render (free) duerme el servicio tras 15 min SIN peticiones ENTRANTES. Si el
+# propio servicio hace una peticion a su URL publica cada ~10 min, esa entra
+# por el router de Render y reinicia el contador -> nunca se duerme. Asi el QR
+# y las busquedas responden al instante aunque Kodi lleve horas apagado.
+# Sin cuentas externas ni Supabase. 24/7 ~= 730h/mes < 750h gratis de Render.
+import threading as _kth
+
+def _self_keepalive():
+    url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not url:
+        return   # solo en Render; en local no hace nada
+    while True:
+        try:
+            _t.sleep(600)   # 10 min (< 15 min de Render)
+            requests.get(url + "/", timeout=20,
+                         headers={"User-Agent": "mw-keepalive"})
+        except Exception:
+            pass
+
+
+def _start_keepalive():
+    try:
+        _kth.Thread(target=_self_keepalive, daemon=True).start()
+    except Exception:
+        pass
+
+
+_start_keepalive()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     app.run(host="0.0.0.0", port=port, debug=False)
