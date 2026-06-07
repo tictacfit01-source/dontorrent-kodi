@@ -19,26 +19,34 @@ except Exception:
     _PROFILE = ""
 
 _CODE_FILE = os.path.join(_PROFILE, "remote_code.txt") if _PROFILE else ""
-_SNAP_FILE = os.path.join(_PROFILE, "last_screen.json") if _PROFILE else ""
+_SCREENS_FILE = os.path.join(_PROFILE, "screens.json") if _PROFILE else ""
 
 
-def read_screen():
-    """Lee la 'foto' de la ultima pantalla pintada por el addon. Devuelve la
-    lista de items [{label, file, poster, dir}] (instantaneo, sin re-buscar)."""
-    if not _SNAP_FILE or not os.path.exists(_SNAP_FILE):
+def _norm_path(p):
+    return (p or "").rstrip("/")
+
+
+def read_screen(path):
+    """Lee la 'foto' de la pantalla con ESA ruta (instantaneo, sin re-buscar).
+    Devuelve [{label, file, poster, dir}] o [] si no hay foto para esa ruta."""
+    if not _SCREENS_FILE or not os.path.exists(_SCREENS_FILE):
         return []
     try:
-        with open(_SNAP_FILE, "r", encoding="utf-8") as f:
-            return (json.load(f) or {}).get("items", [])
+        with open(_SCREENS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        entry = data.get(_norm_path(path))
+        if entry:
+            return entry.get("items", [])
     except Exception:
-        return []
+        pass
+    return []
 
 
 def snap_mtime():
-    """Fecha de modificacion de la 'foto' (para detectar cambios de pantalla)."""
+    """Fecha de modificacion del fichero de fotos (para detectar cambios)."""
     try:
-        if _SNAP_FILE and os.path.exists(_SNAP_FILE):
-            return os.path.getmtime(_SNAP_FILE)
+        if _SCREENS_FILE and os.path.exists(_SCREENS_FILE):
+            return os.path.getmtime(_SCREENS_FILE)
     except Exception:
         pass
     return 0

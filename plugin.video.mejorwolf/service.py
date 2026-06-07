@@ -104,20 +104,21 @@ _LAST_LIST = []
 
 
 def _read_screen_and_push():
-    """Lee la 'foto' de la pantalla actual (que guarda el addon al pintar) y la
-    sube al relay. INSTANTANEO: no re-ejecuta la busqueda."""
+    """Lee la 'foto' de la pantalla ACTUAL (por su ruta) y la sube al relay.
+    INSTANTANEO y siempre en sync: usa la ruta real en pantalla."""
     global _LAST_LIST
     try:
         from resources.lib import remote_kb as rkb
-        items = rkb.read_screen()
+        path = xbmc.getInfoLabel("Container.FolderPath") or ""
+        items = rkb.read_screen(path) if "plugin.video.mejorwolf" in path else []
         _LAST_LIST = items
         compact = [{"label": it.get("label", ""),
                     "poster": it.get("poster", ""),
                     "dir": bool(it.get("dir"))} for it in items]
         title = xbmc.getInfoLabel("Container.PluginCategory") or "MejorWolf"
         rkb.push_list(compact, title)
-        xbmc.log(f"[MejorWolf/service] Lista empujada: {len(compact)} items",
-                 xbmc.LOGINFO)
+        xbmc.log(f"[MejorWolf/service] Lista empujada: {len(compact)} items "
+                 f"[{path[-40:]}]", xbmc.LOGINFO)
     except Exception as e:
         xbmc.log(f"[MejorWolf/service] leer pantalla error: {e}", xbmc.LOGDEBUG)
 
@@ -143,17 +144,24 @@ def _open_index(i):
     return False
 
 
-def _push_after_nav():
-    """Tras navegar a una carpeta, espera a que el addon pinte la nueva
-    pantalla (cambia la 'foto') y la empuja al movil. Asi la Lista se actualiza
-    sola al nuevo nivel."""
+def _push_after_nav(old_path):
+    """Tras navegar, espera a que la carpeta en pantalla CAMBIE y a que su foto
+    este lista, y la empuja. Robusto tanto si la carpeta es nueva (se pinta)
+    como si viene de cache (cambia la ruta pero no se re-pinta)."""
     try:
         from resources.lib import remote_kb as rkb
-        old = rkb.snap_mtime()
-        for _ in range(20):          # hasta ~4s
-            xbmc.sleep(200)
-            if rkb.snap_mtime() != old:
+        new_path = old_path
+        for _ in range(30):          # esperar cambio de carpeta (~hasta 4.5s)
+            xbmc.sleep(150)
+            cur = xbmc.getInfoLabel("Container.FolderPath") or ""
+            if cur and cur != old_path:
+                new_path = cur
                 break
+        # esperar a que exista la foto de la nueva ruta (primera visita: se pinta)
+        for _ in range(20):
+            if rkb.read_screen(new_path):
+                break
+            xbmc.sleep(150)
         _read_screen_and_push()
     except Exception:
         pass
@@ -201,8 +209,9 @@ def _poll_remote_kb():
             elif c == "list":
                 _read_screen_and_push()
             elif c == "open":
+                old_path = xbmc.getInfoLabel("Container.FolderPath") or ""
                 if _open_index(ev.get("i")):
-                    _push_after_nav()
+                    _push_after_nav(old_path)
             elif c == "home":
                 xbmc.executebuiltin(_ADDON_HOME)
             elif c == "seek_fwd":

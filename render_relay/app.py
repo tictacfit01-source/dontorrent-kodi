@@ -1228,15 +1228,15 @@ function showTab(t){
  document.getElementById('pane-lista').style.display=(t==='lista')?'block':'none';
  document.getElementById('tab-mando').classList.toggle('active',t==='mando');
  document.getElementById('tab-lista').classList.toggle('active',t==='lista');
- if(t==='lista') loadList();
+ if(t==='lista') startLive(); else stopLive();
 }
 
-/* ---- Lista (espejo de la pantalla) ---- */
-var listTs=0;
+/* ---- Lista (espejo de la pantalla, en vivo) ---- */
+var listTs=0, listLive=false, listReqTimer=null;
 function renderList(items){
  var cont=document.getElementById('items'); cont.innerHTML='';
  if(!items||!items.length){
-  cont.innerHTML='<p class="hint">Abre una seccion en la tele (Estrenos, Cine, una busqueda...) y pulsa Actualizar.</p>';
+  cont.innerHTML='<p class="hint">Abre una seccion en la tele (Estrenos, Cine, una busqueda...).</p>';
   return;
  }
  items.forEach(function(it,i){
@@ -1250,24 +1250,36 @@ function renderList(items){
   cont.appendChild(row);
  });
 }
-function pollList(n){
- var c=code.value.trim(); if(c.length<6)return;
- fetch('/kb/list?code='+c).then(function(r){return r.json()}).then(function(j){
-  if(j && j.ts && j.ts!==listTs){ listTs=j.ts; renderList(j.items);
-   document.getElementById('ltitle').textContent=j.title||''; }
-  if(n<10) setTimeout(function(){pollList(n+1);},600);
- }).catch(function(){});
+function fetchList(){
+ var c=code.value.trim(); if(c.length>=6){
+  fetch('/kb/list?code='+c).then(function(r){return r.json()}).then(function(j){
+   if(j && j.ts && j.ts!==listTs){ listTs=j.ts; renderList(j.items);
+    document.getElementById('ltitle').textContent=j.title||''; }
+  }).catch(function(){});
+ }
+ if(listLive) setTimeout(fetchList,600);
 }
-function loadList(){
+function reqList(){var c=code.value.trim(); if(c.length>=6) post({code:c,cmd:'list'});}
+function startLive(){
  var c=getCode(); if(!c)return;
- setMsg('Cargando lista...');
- post({code:c,cmd:'list'});
- listTs=0; pollList(0);
- setTimeout(function(){setMsg('');},1500);
+ if(listLive) return;
+ listLive=true; listTs=0; setMsg('');
+ reqList(); fetchList();
+ listReqTimer=setInterval(reqList,2000);   // re-pide la pantalla actual (sigue a la tele)
 }
-function listBack(){var c=getCode();if(!c)return;post({code:c,cmd:'back'});setTimeout(loadList,800);}
+function stopLive(){
+ listLive=false;
+ if(listReqTimer){clearInterval(listReqTimer);listReqTimer=null;}
+}
+function loadList(){listTs=0;reqList();}   // boton Actualizar (forzar)
+function listBack(){var c=getCode();if(!c)return;post({code:c,cmd:'back'});}
 function openItem(i){var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
- post({code:c,cmd:'open',i:i});listTs=0;setTimeout(function(){pollList(0);},900);}
+ post({code:c,cmd:'open',i:i});}
+/* Pausar el sondeo cuando la pestaña/pantalla del movil no esta visible */
+document.addEventListener('visibilitychange',function(){
+ if(document.hidden) stopLive();
+ else if(document.getElementById('pane-lista').style.display!=='none') startLive();
+});
 </script></body></html>"""
 
 

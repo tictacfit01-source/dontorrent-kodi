@@ -69,16 +69,33 @@ def _last_search_save(q):
 # de cada pantalla al pintarla. La vista Lista del movil lee esa foto -> es
 # instantanea y NO vuelve a buscar.
 _SNAP = []
-_SNAP_FILE = os.path.join(_PROFILE, "last_screen.json")
+# Guardamos una foto POR RUTA (no solo la ultima). Asi, al navegar hacia atras
+# o a una carpeta ya visitada (que Kodi muestra de su cache SIN re-pintar), la
+# Lista del movil encuentra la foto correcta de esa ruta -> nunca desincroniza.
+_SCREENS_FILE = os.path.join(_PROFILE, "screens.json")
 
 
-def _snap_save():
+def _snap_save(path):
     try:
+        path = (path or "").rstrip("/") or "plugin://plugin.video.mejorwolf"
+        data = {}
+        if os.path.exists(_SCREENS_FILE):
+            try:
+                with open(_SCREENS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}
+        data[path] = {"items": _SNAP, "ts": time.time()}
+        # Conservar solo las 30 pantallas mas recientes
+        if len(data) > 30:
+            old = sorted(data, key=lambda k: data[k].get("ts", 0))[:len(data) - 30]
+            for k in old:
+                data.pop(k, None)
         os.makedirs(_PROFILE, exist_ok=True)
-        tmp = _SNAP_FILE + ".tmp"
+        tmp = _SCREENS_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"items": _SNAP, "ts": time.time()}, f)
-        os.replace(tmp, _SNAP_FILE)
+            json.dump(data, f)
+        os.replace(tmp, _SCREENS_FILE)
     except Exception:
         pass
 
@@ -2232,10 +2249,10 @@ def router(qs):
         elif action == "settings":      open_settings()
         elif action == "diagnose":      diagnose()
         else:                           home()
-        # Guardar la "foto" de la pantalla para la vista Lista del movil
-        # (solo si esta accion ha pintado items; las de reproduccion no).
+        # Guardar la "foto" de la pantalla (por su ruta) para la vista Lista
+        # del movil (solo si esta accion ha pintado items).
         if _SNAP:
-            _snap_save()
+            _snap_save(BASE + ("?" + qs if qs else ""))
     except Exception as e:
         import traceback
         xbmc.log(f"[MejorWolf] ROUTER ERROR: {e}\n{traceback.format_exc()}",
