@@ -1036,6 +1036,184 @@ def dtpow():
 
 
 # ===========================================================================
+# DETECCION DE EMPAQUETADO (RAR) -> badge en la Lista del movil
+# ===========================================================================
+# El movil pregunta /dtpacked?c=<content_id>&tb=<tabla>. Resolvemos el .torrent
+# (PoW) UNA vez, miramos si trae el video en RAR/zip/7z, y cacheamos 30 dias
+# (los .torrent son estaticos). La cache es COMPARTIDA: si alguien ya lo resolvio,
+# el resto lo ve al instante. Asi el badge sale sin recargar ni saturar.
+
+def _bdecode(s):
+    def dec(i):
+        c = s[i:i + 1]
+        if c == b"i":
+            j = s.index(b"e", i)
+            return int(s[i + 1:j]), j + 1
+        if c == b"l":
+            i += 1
+            out = []
+            while s[i:i + 1] != b"e":
+                v, i = dec(i)
+                out.append(v)
+            return out, i + 1
+        if c == b"d":
+            i += 1
+            out = {}
+            while s[i:i + 1] != b"e":
+                k, i = dec(i)
+                v, i = dec(i)
+                out[k] = v
+            return out, i + 1
+        j = s.index(b":", i)
+        n = int(s[i:j])
+        return s[j + 1:j + 1 + n], j + 1 + n
+    v, _ = dec(0)
+    return v
+
+
+_PACK_RE_R = re.compile(rb"\.(?:rar|r\d{2,3}|part\d+\.rar|zip|7z|001)$", re.I)
+_VID_RE_R = re.compile(rb"\.(?:mkv|mp4|avi|m4v|mov|ts|mpg|mpeg|wmv|flv|webm)$",
+                       re.I)
+
+
+def _torrent_packed(data):
+    """True si el .torrent trae el video empaquetado (RAR/zip/7z) sin video
+    real suelto (ignora muestras y videos < 50 MB)."""
+    try:
+        meta = _bdecode(data)
+        info = meta.get(b"info") or {}
+        files = info.get(b"files")
+        entries = []
+        if isinstance(files, list):
+            for f in files:
+                p = f.get(b"path") if isinstance(f, dict) else None
+                if isinstance(p, list) and p and isinstance(p[-1],
+                                                            (bytes, bytearray)):
+                    entries.append((bytes(p[-1]),
+                                    int(f.get(b"length") or 0)))
+        else:
+            nm = info.get(b"name")
+            if isinstance(nm, (bytes, bytearray)):
+                entries.append((bytes(nm), int(info.get(b"length") or 0)))
+        if not entries:
+            return False
+        if not any(_PACK_RE_R.search(n) for n, _ in entries):
+            return False
+
+        def real_vid(n, sz):
+            low = n.lower()
+            if not _VID_RE_R.search(n):
+                return False
+            if b"sample" in low or b"muestra" in low:
+                return False
+            return sz == 0 or sz > 50 * 1024 * 1024
+
+        return not any(real_vid(n, sz) for n, sz in entries)
+    except Exception:
+        return False
+
+
+def _dt_download_url(domain, content_id, tabla):
+    """Resuelve la URL del .torrent (mismo PoW que /dtpow). Devuelve url o None."""
+    dom_candidates = []
+    if domain:
+        dom_candidates.append(domain)
+    for d in DT_FALLBACK:
+        if d not in dom_candidates:
+            dom_candidates.append(d)
+    for dom in dom_candidates[:6]:
+        try:
+            sess, _ = _dt_anubis_session(dom)
+            api = f"https://{dom}/api_validate_pow.php"
+            r1 = sess.post(api, json={"action": "generate",
+                                      "content_id": int(content_id),
+                                      "tabla": tabla}, timeout=20)
+            if r1.status_code in (404, 405):
+                continue
+            gen = r1.json()
+            challenge = gen.get("challenge")
+            if not gen.get("success") or not challenge:
+                continue
+            if isinstance(challenge, dict):
+                rand = challenge.get("randomData", "")
+                diff = challenge.get("difficulty", 3)
+            else:
+                rand = str(challenge)
+                diff = 3
+            _h, nonce, _e = _dt_solve_pow(rand, diff)
+            r2 = sess.post(api, json={"action": "validate",
+                                      "challenge": challenge,
+                                      "nonce": nonce}, timeout=20)
+            val = r2.json()
+            if not val.get("success") or not val.get("download_url"):
+                continue
+            url = val["download_url"]
+            if url.startswith("//"):
+                url = "https:" + url
+            elif url.startswith("/"):
+                url = f"https://{dom}{url}"
+            return url
+        except Exception:
+            continue
+    return None
+
+
+_DTPACKED_FILE = "/tmp/mw_dtpacked.json"
+_DTPACKED_TTL = 2592000   # 30 dias (los .torrent son estaticos)
+
+
+def _dtpacked_load():
+    try:
+        with open(_DTPACKED_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _dtpacked_save(d):
+    try:
+        tmp = _DTPACKED_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _DTPACKED_FILE)
+    except Exception:
+        pass
+
+
+@app.get("/dtpacked")
+def dtpacked():
+    cid = re.sub(r"\D", "", request.args.get("c", ""))[:12]
+    tb = re.sub(r"[^a-z0-9_]", "", request.args.get("tb", "").lower())[:24]
+    if not (cid and tb):
+        return jsonify({"packed": None})
+    key = f"{tb}:{cid}"
+    d = _dtpacked_load()
+    ent = d.get(key)
+    now = _t.time()
+    if ent and (now - ent.get("ts", 0) < _DTPACKED_TTL):
+        return jsonify({"packed": ent.get("p"), "cached": True})
+    url = _dt_download_url(request.args.get("domain", "").strip(), cid, tb)
+    if not url:
+        return jsonify({"packed": None})
+    packed = None
+    try:
+        from urllib.parse import urlparse
+        sess, _ = _dt_anubis_session(urlparse(url).hostname)
+        r = sess.get(url, timeout=25, allow_redirects=True)
+        if r.status_code == 200 and len(r.content) > 100:
+            packed = _torrent_packed(r.content)
+    except Exception:
+        packed = None
+    if packed is not None:
+        d[key] = {"p": bool(packed), "ts": now}
+        if len(d) > 3000:
+            for k in sorted(d, key=lambda k: d[k].get("ts", 0))[:len(d) - 3000]:
+                d.pop(k, None)
+        _dtpacked_save(d)
+    return jsonify({"packed": packed})
+
+
+# ===========================================================================
 # TECLADO REMOTO (escribir busquedas desde el movil)
 # ===========================================================================
 # El movil abre /kb (escaneando un QR que lleva el codigo del box), escribe la
@@ -1218,6 +1396,7 @@ box-shadow:0 6px 16px rgba(0,0,0,.5)}
 .tag{background:rgba(255,255,255,.08);border:1px solid var(--stroke);border-radius:7px;padding:2px 7px;
 font-size:11px;font-weight:600;color:#cfd6e4}
 .tag.q4k{color:#ffd479;border-color:rgba(255,212,121,.3)}
+.tag.rar{color:#ff9f6e;border-color:rgba(255,159,110,.42);background:rgba(255,159,110,.10)}
 .score{color:var(--green);font-weight:700}
 .chev{color:var(--sub);font-size:20px;flex:none;opacity:.7}
 .hint{color:var(--sub);font-size:13px;text-align:center;margin:24px 8px}
@@ -1382,6 +1561,28 @@ function parseLabel(label){
  t=t.replace(/[\s.\-:]+$/,'').trim();
  return {t:t||label,y:yr,q:qual};}
 function ph(){var d=document.createElement('div');d.className='poster noimg';return d;}
+// ---- Badge RAR (📦) en la Lista: resuelto perezosamente vía /dtpacked, cacheado ----
+var packedCache={},packedQueue=[],packedActive=0;
+function addRarBadge(sub){if(!sub||sub.querySelector('.tag.rar'))return;
+ var b=document.createElement('span');b.className='tag rar';b.textContent='📦 RAR';sub.appendChild(b);}
+function markPacked(sub,ref){
+ if(!ref||ref.a!=='dt'||!ref.c||!sub)return;
+ var key='dt:'+ref.tb+':'+ref.c;var v=packedCache[key];
+ if(v===true){addRarBadge(sub);return;}
+ if(v===false||v==='pending')return;
+ packedCache[key]='pending';packedQueue.push({sub:sub,key:key,c:ref.c,tb:ref.tb});pumpPacked();}
+function pumpPacked(){
+ while(packedActive<2&&packedQueue.length){
+  var job=packedQueue.shift();packedActive++;
+  (function(job){
+   fetch('/dtpacked?c='+encodeURIComponent(job.c)+'&tb='+encodeURIComponent(job.tb))
+    .then(function(r){return r.json()}).then(function(j){packedActive--;
+     if(j&&j.packed===true){packedCache[job.key]=true;if(job.sub&&job.sub.isConnected)addRarBadge(job.sub);}
+     else if(j&&j.packed===false){packedCache[job.key]=false;}
+     else{delete packedCache[job.key];}
+     pumpPacked();})
+    .catch(function(){packedActive--;delete packedCache[job.key];pumpPacked();});
+  })(job);}}
 function renderList(items){
  var cont=document.getElementById('items');cont.innerHTML='';
  if(!items||!items.length){cont.innerHTML='<p class="hint">Abre una sección en la tele (Estrenos, Cine, una búsqueda...).</p>';return;}
@@ -1400,10 +1601,11 @@ function renderList(items){
   if(pl.y){var ys=document.createElement('span');ys.textContent=pl.y;sub.appendChild(ys);}
   if(pl.q){var qs=document.createElement('span');qs.className='tag'+(/4k|2160/i.test(pl.q)?' q4k':'');qs.textContent=pl.q;sub.appendChild(qs);}
   if(it.rating&&it.rating>0){var sc=document.createElement('span');sc.className='score';sc.textContent='★ '+(''+it.rating).replace('.',',');sub.appendChild(sc);}
-  if(sub.childNodes.length)meta.appendChild(sub);
+  if(sub.childNodes.length||(it.ref&&it.ref.a==='dt'))meta.appendChild(sub);
   row.appendChild(meta);
   var ch=document.createElement('div');ch.className='chev';ch.innerHTML=it.dir?'&#8250;':'&#9654;';row.appendChild(ch);
-  cont.appendChild(row);});}
+  cont.appendChild(row);
+  if(it.ref&&it.ref.a==='dt')markPacked(sub,it.ref);});}
 function fetchList(){
  var c=code.value.trim();if(c.length>=6){
   fetch('/kb/list?code='+c).then(function(r){return r.json()}).then(function(j){
