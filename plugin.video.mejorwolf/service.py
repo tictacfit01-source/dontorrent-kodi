@@ -145,14 +145,27 @@ def _read_screen_and_push():
         xbmc.log(f"[MejorWolf/service] leer pantalla error: {e}", xbmc.LOGDEBUG)
 
 
-def _open_index(i):
+def _open_index(i, label=""):
     """Abre (o reproduce) el elemento N de la ultima lista, como pulsar OK.
-    Devuelve True si navego a una carpeta (hay nueva pantalla que reflejar)."""
+    VERIFICA la etiqueta para no abrir lo que no es si la pantalla cambio
+    justo al tocar (modo en vivo). Devuelve True si navego a una carpeta."""
     try:
         i = int(i)
-        if not (0 <= i < len(_LAST_LIST)):
+        it = None
+        if 0 <= i < len(_LAST_LIST):
+            cand = _LAST_LIST[i]
+            if not label or cand.get("label") == label:
+                it = cand
+        if it is None and label:
+            # el indice no casa (la pantalla cambio): buscar por etiqueta unica
+            matches = [x for x in _LAST_LIST if x.get("label") == label]
+            if len(matches) == 1:
+                it = matches[0]
+        if it is None:
+            xbmc.log("[MejorWolf/service] abrir: la lista cambio, ignorado "
+                     "(no abro lo que no es)", xbmc.LOGINFO)
+            _read_screen_and_push()   # re-sincronizar el movil
             return False
-        it = _LAST_LIST[i]
         url = it.get("file") or ""
         if not url:
             return False
@@ -232,7 +245,7 @@ def _poll_remote_kb():
                 _read_screen_and_push()
             elif c == "open":
                 old_path = xbmc.getInfoLabel("Container.FolderPath") or ""
-                if _open_index(ev.get("i")):
+                if _open_index(ev.get("i"), ev.get("label", "")):
                     _push_after_nav(old_path)
             elif c == "home":
                 _go_home()

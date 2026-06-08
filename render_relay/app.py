@@ -1226,7 +1226,10 @@ function saveCode(){try{var c=code.value.trim();if(c.length===6)localStorage.set
 if(p.get('c')) code.value=p.get('c'); else code.value=loadCode();
 saveCode();
 code.addEventListener('input',saveCode);
-function setMsg(t,cls){st.className=cls||'';st.textContent=t;}
+var msgTimer=null;
+function setMsg(t,cls){st.className=cls||'';st.textContent=t;
+ if(msgTimer){clearTimeout(msgTimer);msgTimer=null;}
+ if(t && cls!=='err'){msgTimer=setTimeout(function(){st.textContent='';st.className='';},2500);}}
 function getCode(){var c=code.value.trim();if(c.length<6){setMsg('Falta el codigo de 6 cifras','err');return null;}return c;}
 function post(body,okmsg){
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
@@ -1263,7 +1266,7 @@ function renderList(items){
  }
  items.forEach(function(it,i){
   var row=document.createElement('div'); row.className='item';
-  row.onclick=function(){openItem(i);};
+  row.onclick=function(){openItem(i,it.label);};
   if(it.poster){var img=document.createElement('img');img.className='poster';img.loading='lazy';
    img.src=it.poster;img.onerror=function(){img.style.visibility='hidden';};
    img.onclick=function(e){e.stopPropagation();showBig(it.poster,it.label,i);};
@@ -1297,16 +1300,16 @@ function stopLive(){
 }
 function loadList(){listTs=0;reqList();}   // boton Actualizar (forzar)
 function listBack(){var c=getCode();if(!c)return;post({code:c,cmd:'back'});}
-function openItem(i){var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
- post({code:c,cmd:'open',i:i});}
+function openItem(i,label){var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
+ post({code:c,cmd:'open',i:i,label:label||''});}
 /* ---- Caratula grande (lightbox) ---- */
-var lbIdx=-1;
-function showBig(poster,label,i){lbIdx=i;
+var lbIdx=-1,lbLabel='';
+function showBig(poster,label,i){lbIdx=i;lbLabel=label||'';
  document.getElementById('lbimg').src=poster||'';
  document.getElementById('lblbl').textContent=label||'';
  document.getElementById('lb').style.display='flex';}
 function closeBig(e){if(e)e.stopPropagation();document.getElementById('lb').style.display='none';}
-function lbOpen(e){if(e)e.stopPropagation();var i=lbIdx;closeBig();if(i>=0)openItem(i);}
+function lbOpen(e){if(e)e.stopPropagation();var i=lbIdx,l=lbLabel;closeBig();if(i>=0)openItem(i,l);}
 /* Pausar el sondeo cuando la pestaña/pantalla del movil no esta visible */
 document.addEventListener('visibilitychange',function(){
  if(document.hidden) stopLive();
@@ -1320,8 +1323,35 @@ def kb_page():
     return Response(_KB_PAGE, mimetype="text/html; charset=utf-8")
 
 
+# Limite de peticiones por IP en /kb/send (anti fuerza-bruta del codigo, sin
+# molestar al uso normal: en vivo se mandan ~1 'list'/2s). En memoria.
+_RL = {}
+_RL_MAX = 45
+_RL_WIN = 10.0
+
+
+def _rate_ok(ip):
+    now = _t.time()
+    q = _RL.get(ip)
+    if q is None:
+        q = []
+        _RL[ip] = q
+    while q and now - q[0] > _RL_WIN:
+        q.pop(0)
+    if len(q) >= _RL_MAX:
+        return False
+    q.append(now)
+    if len(_RL) > 800:        # poda para no crecer sin limite
+        _RL.clear()
+    return True
+
+
 @app.post("/kb/send")
 def kb_send():
+    ip = (request.headers.get("X-Forwarded-For", "")
+          or request.remote_addr or "?").split(",")[0].strip()
+    if not _rate_ok(ip):
+        return jsonify({"ok": False, "error": "demasiadas peticiones"}), 429
     try:
         body = request.get_json(silent=True) or {}
     except Exception:
@@ -1340,6 +1370,7 @@ def kb_send():
                 ev["i"] = int(body.get("i"))
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "indice invalido"}), 400
+            ev["label"] = (body.get("label") or "")[:160]   # para verificar
         elif cmd == "seekto":
             try:
                 ev["min"] = max(0, int(body.get("min")))
