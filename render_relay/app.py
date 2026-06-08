@@ -1753,7 +1753,10 @@ function shareItem(e){if(e)e.stopPropagation();
  else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){setMsg('Enlace copiado','ok');},function(){window.prompt('Copia el enlace y mándalo:',link);});}
  else{window.prompt('Copia el enlace y mándalo:',link);}}
 var recMode='ver',recRef=null;
-function recSearch(){var b=document.getElementById('recb');if(b)b.classList.add('hidden');send();}
+function recSearch(){var b=document.getElementById('recb');if(b)b.classList.add('hidden');
+ haptic();var c=getCode();if(!c)return;var query=((recRef&&recRef.t)||'').trim();
+ if(!query){setMsg('Nada que buscar','err');return;}
+ setMsg('Buscando en tu tele...','ok');post({code:c,query:query},'Buscado. Mira la tele');}
 function recPlay(){var b=document.getElementById('recb');if(b)b.classList.add('hidden');
  haptic();var c=getCode();if(!c)return;if(!recRef){return;}
  var body={code:c,cmd:'play_ref',a:recRef.a,t:recRef.t};
@@ -1765,13 +1768,12 @@ startNow();
  var play=p.get('play');
  if(play){var t=p.get('t')||'';var yr=p.get('yr')||'';
   recMode='play';recRef={a:play,t:t,c:p.get('ci')||'',tb:p.get('tb')||'',u:p.get('u')||''};
-  q.value=t;
   document.getElementById('rtit').textContent=t+(yr?' ('+yr+')':'');
   document.getElementById('recbtn').textContent='▶ Ver ahora en mi tele';
   document.getElementById('recb').classList.remove('hidden');
   showTab('mando');return;}
  var v=p.get('ver');if(!v)return;var yr2=p.get('yr')||'';
- recMode='ver';q.value=v;
+ recMode='ver';recRef={t:v};
  document.getElementById('rtit').textContent=v+(yr2?' ('+yr2+')':'');
  document.getElementById('recbtn').textContent='Buscar en mi tele';
  document.getElementById('recb').classList.remove('hidden');
