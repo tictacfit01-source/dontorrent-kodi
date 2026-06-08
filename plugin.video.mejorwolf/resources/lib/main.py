@@ -988,6 +988,20 @@ def play(torrent_url):
             sess = hs.make_session()
             r = hs.get(sess, torrent_url, timeout=30)
             data = r.content or b""
+            # Aviso RAR (sin red extra: leemos los bytes ya descargados).
+            if data and tparse.is_packed(data):
+                if not xbmcgui.Dialog().yesno(
+                        "MejorWolf",
+                        "Este contenido viene comprimido en RAR y puede que no "
+                        "se reproduzca.\n¿Intentar de todas formas?",
+                        nolabel="Cancelar", yeslabel="Intentar"):
+                    try:
+                        if progress:
+                            progress.close()
+                    except Exception:
+                        pass
+                    xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+                    return
             magnet = tparse.torrent_to_magnet(data)
             if magnet:
                 torrent_url = magnet
@@ -1097,6 +1111,23 @@ def dt_play(content_id, tabla, page_url=""):
                 torrent_data = r.content
             except Exception:
                 pass
+
+        # Aviso RAR: si el .torrent trae el video comprimido, Elementum no lo
+        # reproducira. Lo detectamos leyendo los bytes que YA tenemos (sin red)
+        # y dejamos elegir al usuario en vez de fallar en silencio.
+        if torrent_data and tparse.is_packed(torrent_data):
+            try:
+                if progress:
+                    progress.close()
+            except Exception:
+                pass
+            if not xbmcgui.Dialog().yesno(
+                    "MejorWolf",
+                    "Este contenido viene comprimido en RAR y puede que no se "
+                    "reproduzca.\n¿Intentar de todas formas?",
+                    nolabel="Cancelar", yeslabel="Intentar"):
+                xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+                return
 
         # Guardar .torrent en temp y pasar file:// a Elementum
         # Esto evita el problema de "Expired timeout for resolving magnet"

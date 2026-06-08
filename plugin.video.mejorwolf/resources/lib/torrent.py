@@ -15,6 +15,7 @@ Flow:
 """
 
 import hashlib
+import re
 from urllib.parse import quote
 
 
@@ -135,3 +136,49 @@ def torrent_to_magnet(data):
             seen.add(tr)
             parts.append("tr=" + quote(tr, safe=""))
     return parts[0] + ("&" + "&".join(parts[1:]) if len(parts) > 1 else "")
+
+
+# ---------------------------------------------------------------- packed (RAR)
+
+_VIDEO_EXT = (".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".mpg",
+              ".mpeg", ".wmv", ".flv", ".webm")
+# .rar, .r00-.r999, .partNN.rar, .zip, .7z, .001 (split)
+_PACK_RE = re.compile(r"\.(?:rar|r\d{2,3}|part\d+\.rar|zip|7z|001)$", re.I)
+
+
+def list_files(data):
+    """Nombres de los ficheros DENTRO del .torrent (o [name] si es single)."""
+    try:
+        meta = bdecode(data)
+    except Exception:
+        return []
+    info = meta.get(b"info") if isinstance(meta, dict) else None
+    if not isinstance(info, dict):
+        return []
+    out = []
+    files = info.get(b"files")
+    if isinstance(files, list):
+        for f in files:
+            path = f.get(b"path") if isinstance(f, dict) else None
+            if isinstance(path, list) and path:
+                seg = path[-1]
+                if isinstance(seg, (bytes, bytearray)):
+                    out.append(bytes(seg).decode("utf-8", "replace"))
+    else:
+        name = info.get(b"name")
+        if isinstance(name, (bytes, bytearray)):
+            out.append(bytes(name).decode("utf-8", "replace"))
+    return out
+
+
+def is_packed(data):
+    """True si el .torrent trae el video EMPAQUETADO (RAR/zip/7z) y por tanto
+    Elementum no podra reproducirlo en streaming. Heuristica: hay ficheros de
+    archivo comprimido y NINGUN video reproducible suelto. Sin red: solo lee
+    los bytes del .torrent que ya tenemos."""
+    files = list_files(data)
+    if not files:
+        return False
+    has_pack = any(_PACK_RE.search(f) for f in files)
+    has_video = any(f.lower().endswith(_VIDEO_EXT) for f in files)
+    return has_pack and not has_video

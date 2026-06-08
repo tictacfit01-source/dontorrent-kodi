@@ -1429,7 +1429,7 @@ function renderNow(){var box=document.getElementById('np');
  document.getElementById('npa').textContent=fmtDur(el)+(npData.total>0?' / '+fmtDur(npData.total):'');
  var f=document.getElementById('npf');
  if(npData.paused){f.textContent='En pausa';}
- else if(npData.total>0){var fin=new Date(Date.now()+(npData.total-el)*1000);f.textContent='Finaliza '+fmtClock(fin);}
+ else if(npData.total>0){var fin=new Date(Date.now()+(npData.total-el)*1000);f.textContent='Finaliza a las '+fmtClock(fin);}
  else{f.textContent='';}}
 function pollNow(){var c=code.value.trim();
  if(c.length>=6){fetch('/kb/now?code='+c).then(function(r){return r.json()}).then(function(j){
@@ -1454,7 +1454,7 @@ var rec=null;
   rec.onresult=function(e){try{q.value=e.results[0][0].transcript||'';}catch(_){}};
   rec.onerror=function(){setMsg('No te he oído','err');};
   rec.onend=function(){mic.classList.remove('rec');rec=null;
-   if(q.value.trim()){setMsg('');send();}else{setMsg('');}};
+   if(q.value.trim()){setMsg('Revisa y pulsa Buscar','ok');try{q.focus();}catch(_){}}else{setMsg('');}};
   try{rec.start();}catch(e){mic.classList.remove('rec');rec=null;}};
 })();
 

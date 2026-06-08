@@ -14,6 +14,7 @@ Dos tareas, mientras Kodi esta abierto:
 
 No depende de GitHub ni de cuentas externas: corre dentro de Kodi.
 """
+import re
 import time
 import xbmc
 
@@ -308,16 +309,35 @@ def _get_now_playing():
         total = _secs(pres.get("totaltime"))
         paused = (pres.get("speed", 1) == 0)
 
-        it = json.loads(xbmc.executeJSONRPC(json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "Player.GetItem",
-            "params": {"playerid": pid,
-                       "properties": ["title", "showtitle",
-                                      "season", "episode"]}})))
-        item = (it.get("result") or {}).get("item") or {}
-        title = (item.get("title") or "").strip()
-        show = (item.get("showtitle") or "").strip()
-        season = int(item.get("season") or 0)
-        ep = int(item.get("episode") or 0)
+        # Titulo: los infolabels del reproductor son los mas fiables durante la
+        # reproduccion (Elementum a menudo no rellena 'title' en GetItem).
+        def _int(s):
+            try:
+                return int(s)
+            except (TypeError, ValueError):
+                return 0
+
+        show = (xbmc.getInfoLabel("VideoPlayer.TVShowTitle") or "").strip()
+        title = (xbmc.getInfoLabel("VideoPlayer.Title") or "").strip()
+        season = _int(xbmc.getInfoLabel("VideoPlayer.Season"))
+        ep = _int(xbmc.getInfoLabel("VideoPlayer.Episode"))
+        if not (title or show):
+            # Ultimo recurso: lo que diga GetItem (label/title del ListItem).
+            it = json.loads(xbmc.executeJSONRPC(json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "Player.GetItem",
+                "params": {"playerid": pid,
+                           "properties": ["title", "showtitle",
+                                          "season", "episode"]}})))
+            item = (it.get("result") or {}).get("item") or {}
+            title = (item.get("title") or item.get("label") or "").strip()
+            show = show or (item.get("showtitle") or "").strip()
+            season = season or _int(item.get("season"))
+            ep = ep or _int(item.get("episode"))
+        # Si el titulo parece un nombre de fichero, lo dejamos legible.
+        if title and " " not in title and ("." in title or "_" in title):
+            title = re.sub(r"\.(mkv|mp4|avi|m4v|mov|ts)$", "", title,
+                           flags=re.I)
+            title = title.replace(".", " ").replace("_", " ").strip()
         if show and (season or ep):
             label = "%s · %dx%02d" % (show, season, ep)
         elif show:
