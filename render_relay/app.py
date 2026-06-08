@@ -1240,6 +1240,12 @@ border-radius:3px;transition:width .95s linear}
 .nprow{display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;font-size:12.5px;
 color:var(--sub);font-variant-numeric:tabular-nums}
 .nprow .npf{color:#cfd6e4;font-weight:600}
+.recb{background:linear-gradient(145deg,rgba(10,132,255,.18),rgba(10,132,255,.05));
+border:1px solid rgba(10,132,255,.38);border-radius:16px;padding:14px 16px;margin-bottom:16px}
+.recb.hidden{display:none}
+.recb .rlab{font-size:11px;color:#8fb6ff;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:4px}
+.recb .rtit{font-size:17px;font-weight:700;line-height:1.25;color:#eaf1ff}
+.recb .primary{margin-top:12px}
 </style></head><body><div class="wrap">
 
 <div class="top">
@@ -1253,6 +1259,11 @@ color:var(--sub);font-variant-numeric:tabular-nums}
 </div>
 
 <section id="pane-mando" class="pane">
+ <div id="recb" class="recb hidden">
+  <div class="rlab">&#128233; Te han recomendado</div>
+  <div id="rtit" class="rtit"></div>
+  <button class="primary" onclick="recSearch()">Buscar en mi tele</button>
+ </div>
  <div class="search">
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8a93a6" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
   <input id="q" autocomplete="off" placeholder="Buscar película o serie..." enterkeyhint="search">
@@ -1317,9 +1328,12 @@ color:var(--sub);font-variant-numeric:tabular-nums}
 <div id="lb" onclick="closeBig(event)" style="position:fixed;inset:0;background:rgba(0,0,0,.93);z-index:50;display:none;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:14px">
  <img id="lbimg" alt="" style="max-width:86%;max-height:64vh;border-radius:14px;object-fit:contain;box-shadow:0 12px 50px rgba(0,0,0,.7)">
  <div id="lblbl" style="color:#f4f6fb;text-align:center;font-size:16px;font-weight:600;max-width:92%"></div>
- <div style="display:flex;gap:10px;width:100%;max-width:380px">
-  <button class="primary" style="margin:0;flex:1" onclick="lbOpen(event)">Abrir / Reproducir</button>
-  <button class="pill" style="flex:none;width:108px" onclick="closeBig(event)">Cerrar</button>
+ <div style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:380px">
+  <button class="primary" style="margin:0" onclick="lbOpen(event)">Abrir / Reproducir</button>
+  <div style="display:flex;gap:10px">
+   <button class="pill" style="flex:1" onclick="shareItem(event)">&#128229; Compartir</button>
+   <button class="pill" style="flex:1" onclick="closeBig(event)">Cerrar</button>
+  </div>
  </div>
 </div>
 
@@ -1462,7 +1476,24 @@ document.addEventListener('visibilitychange',function(){
  if(document.hidden){stopLive();stopNow();}
  else{ if(!document.getElementById('pane-lista').classList.contains('hidden')) startLive();
        if(!document.getElementById('pane-mando').classList.contains('hidden')) startNow(); }});
+
+// ---- Compartir pelicula por enlace (sin guardar nada: el titulo va en el link) ----
+function shareItem(e){if(e)e.stopPropagation();
+ var pl=parseLabel(lbLabel||'');var t=(pl.t||lbLabel||'').trim();
+ if(!t){setMsg('No hay título para compartir','err');return;}
+ var link=location.origin+'/kb?ver='+encodeURIComponent(t)+(pl.y?'&yr='+encodeURIComponent(pl.y):'');
+ var nice=t+(pl.y?' ('+pl.y+')':'');
+ closeBig();
+ if(navigator.share){navigator.share({title:'MejorWolf',text:'Te recomiendo «'+nice+'» en MejorWolf',url:link}).then(function(){},function(){});}
+ else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){setMsg('Enlace copiado','ok');},function(){window.prompt('Copia el enlace y mándalo:',link);});}
+ else{window.prompt('Copia el enlace y mándalo:',link);}}
+function recSearch(){var b=document.getElementById('recb');if(b)b.classList.add('hidden');send();}
 startNow();
+(function handleShare(){var v=p.get('ver');if(!v)return;var yr=p.get('yr')||'';
+ q.value=v;
+ document.getElementById('rtit').textContent=v+(yr?' ('+yr+')':'');
+ var b=document.getElementById('recb');if(b)b.classList.remove('hidden');
+ showTab('mando');})();
 </script></body></html>"""
 
 
