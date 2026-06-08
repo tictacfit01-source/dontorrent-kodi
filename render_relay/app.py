@@ -1074,7 +1074,7 @@ _KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
                     "volup", "voldown", "mute",
                     "seek_fwd", "seek_back", "seekto",
                     "up", "down", "left", "right", "ok",
-                    "list", "open"}
+                    "list", "open", "play_ref"}
 
 # Lista (espejo de la pantalla de Kodi) que el box empuja y el movil lee.
 _KB_LIST_FILE = "/tmp/mw_kb_list.json"
@@ -1262,7 +1262,7 @@ border:1px solid rgba(10,132,255,.38);border-radius:16px;padding:14px 16px;margi
  <div id="recb" class="recb hidden">
   <div class="rlab">&#128233; Te han recomendado</div>
   <div id="rtit" class="rtit"></div>
-  <button class="primary" onclick="recSearch()">Buscar en mi tele</button>
+  <button id="recbtn" class="primary" onclick="recAction()">Buscar en mi tele</button>
  </div>
  <div class="search">
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8a93a6" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -1391,7 +1391,7 @@ function renderList(items){
   row.onclick=function(){openItem(i,it.label,it.dir);};
   if(it.poster){var img=document.createElement('img');img.className='poster';img.loading='lazy';img.src=it.poster;
    img.onerror=function(){var d=ph();if(img.parentNode)img.parentNode.replaceChild(d,img);};
-   img.onclick=function(e){e.stopPropagation();showBig(it.poster,it.label,i,it.dir);};
+   img.onclick=function(e){e.stopPropagation();showBig(it.poster,it.label,i,it.dir,it.ref);};
    row.appendChild(img);}
   else row.appendChild(ph());
   var meta=document.createElement('div');meta.className='meta';
@@ -1419,8 +1419,8 @@ function listBack(){haptic();var c=getCode();if(!c)return;post({code:c,cmd:'back
 function openItem(i,label,dir){haptic();var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
  post({code:c,cmd:'open',i:i,label:label||''});
  if(!dir){setTimeout(function(){showTab('mando');},450);}}
-var lbIdx=-1,lbLabel='',lbDir=false;
-function showBig(poster,label,i,dir){lbIdx=i;lbLabel=label||'';lbDir=!!dir;
+var lbIdx=-1,lbLabel='',lbDir=false,lbRef=null;
+function showBig(poster,label,i,dir,ref){lbIdx=i;lbLabel=label||'';lbDir=!!dir;lbRef=ref||null;
  document.getElementById('lbimg').src=poster||'';
  document.getElementById('lblbl').textContent=label||'';
  document.getElementById('lb').style.display='flex';}
@@ -1481,18 +1481,42 @@ document.addEventListener('visibilitychange',function(){
 function shareItem(e){if(e)e.stopPropagation();
  var pl=parseLabel(lbLabel||'');var t=(pl.t||lbLabel||'').trim();
  if(!t){setMsg('No hay título para compartir','err');return;}
- var link=location.origin+'/kb?ver='+encodeURIComponent(t)+(pl.y?'&yr='+encodeURIComponent(pl.y):'');
+ var link;
+ if(lbRef&&lbRef.a&&!lbDir){
+  link=location.origin+'/kb?play='+encodeURIComponent(lbRef.a)+'&t='+encodeURIComponent(t)+(pl.y?'&yr='+encodeURIComponent(pl.y):'');
+  if(lbRef.a==='dt'){link+='&c='+encodeURIComponent(lbRef.c)+'&tb='+encodeURIComponent(lbRef.tb);}
+  else if(lbRef.a==='pl'){link+='&u='+encodeURIComponent(lbRef.u);}
+ }else{
+  link=location.origin+'/kb?ver='+encodeURIComponent(t)+(pl.y?'&yr='+encodeURIComponent(pl.y):'');
+ }
  var nice=t+(pl.y?' ('+pl.y+')':'');
  closeBig();
  if(navigator.share){navigator.share({title:'MejorWolf',text:'Te recomiendo «'+nice+'» en MejorWolf',url:link}).then(function(){},function(){});}
  else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){setMsg('Enlace copiado','ok');},function(){window.prompt('Copia el enlace y mándalo:',link);});}
  else{window.prompt('Copia el enlace y mándalo:',link);}}
+var recMode='ver',recRef=null;
 function recSearch(){var b=document.getElementById('recb');if(b)b.classList.add('hidden');send();}
+function recPlay(){var b=document.getElementById('recb');if(b)b.classList.add('hidden');
+ haptic();var c=getCode();if(!c)return;if(!recRef){return;}
+ var body={code:c,cmd:'play_ref',a:recRef.a,t:recRef.t};
+ if(recRef.a==='dt'){body.c=recRef.c;body.tb=recRef.tb;}else{body.u=recRef.u;}
+ setMsg('Abriendo en tu tele...','ok');post(body,'Abriendo en tu tele');}
+function recAction(){if(recMode==='play')recPlay();else recSearch();}
 startNow();
-(function handleShare(){var v=p.get('ver');if(!v)return;var yr=p.get('yr')||'';
- q.value=v;
- document.getElementById('rtit').textContent=v+(yr?' ('+yr+')':'');
- var b=document.getElementById('recb');if(b)b.classList.remove('hidden');
+(function handleShare(){
+ var play=p.get('play');
+ if(play){var t=p.get('t')||'';var yr=p.get('yr')||'';
+  recMode='play';recRef={a:play,t:t,c:p.get('c')||'',tb:p.get('tb')||'',u:p.get('u')||''};
+  q.value=t;
+  document.getElementById('rtit').textContent=t+(yr?' ('+yr+')':'');
+  document.getElementById('recbtn').textContent='▶ Ver ahora en mi tele';
+  document.getElementById('recb').classList.remove('hidden');
+  showTab('mando');return;}
+ var v=p.get('ver');if(!v)return;var yr2=p.get('yr')||'';
+ recMode='ver';q.value=v;
+ document.getElementById('rtit').textContent=v+(yr2?' ('+yr2+')':'');
+ document.getElementById('recbtn').textContent='Buscar en mi tele';
+ document.getElementById('recb').classList.remove('hidden');
  showTab('mando');})();
 </script></body></html>"""
 
@@ -1555,6 +1579,27 @@ def kb_send():
                 ev["min"] = max(0, int(body.get("min")))
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "minuto inválido"}), 400
+        elif cmd == "play_ref":
+            a = (body.get("a") or "").strip().lower()[:4]
+            ev["a"] = a
+            ev["t"] = (body.get("t") or "")[:160]
+            if a == "dt":
+                ev["cid"] = re.sub(r"\D", "", str(body.get("c") or ""))[:12]
+                ev["tb"] = re.sub(r"[^a-z0-9_]", "",
+                                  str(body.get("tb") or "").lower())[:24]
+                if not (ev["cid"] and ev["tb"]):
+                    return jsonify({"ok": False,
+                                    "error": "referencia inválida"}), 400
+            elif a == "pl":
+                u = (body.get("u") or "").strip()
+                if not (u.startswith("magnet:") or u.startswith("http")
+                        or u.endswith(".torrent")):
+                    return jsonify({"ok": False,
+                                    "error": "enlace inválido"}), 400
+                ev["u"] = u[:2000]
+            else:
+                return jsonify({"ok": False,
+                                "error": "referencia inválida"}), 400
     else:
         return jsonify({"ok": False, "error": "nada que enviar"}), 400
     d = _kb_clean(_kb_load())

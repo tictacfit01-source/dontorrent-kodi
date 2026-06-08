@@ -127,6 +127,30 @@ def _seek(seconds):
 _LAST_LIST = []
 
 
+def _item_ref(file_url):
+    """Referencia de reproduccion de un item (para Compartir/badge), sacada de
+    su URL plugin://. Devuelve {a:'dt',c,tb} o {a:'pl',u} o None si no es
+    reproducible directo (carpeta/navegacion)."""
+    try:
+        from urllib.parse import urlparse, parse_qs
+        if not file_url or "plugin.video.mejorwolf" not in file_url:
+            return None
+        qs = parse_qs(urlparse(file_url).query)
+        action = (qs.get("action") or [""])[0]
+        if action == "dt_play":
+            cid = (qs.get("content_id") or [""])[0]
+            tb = (qs.get("tabla") or [""])[0]
+            if cid and tb:
+                return {"a": "dt", "c": cid, "tb": tb}
+        elif action == "play":
+            u = (qs.get("torrent") or [""])[0]
+            if u:
+                return {"a": "pl", "u": u}
+    except Exception:
+        pass
+    return None
+
+
 def _read_screen_and_push():
     """Lee la 'foto' de la pantalla ACTUAL (por su ruta) y la sube al relay.
     INSTANTANEO y siempre en sync: usa la ruta real en pantalla."""
@@ -136,10 +160,16 @@ def _read_screen_and_push():
         path = xbmc.getInfoLabel("Container.FolderPath") or ""
         items = rkb.read_screen(path) if "plugin.video.mejorwolf" in path else []
         _LAST_LIST = items
-        compact = [{"label": it.get("label", ""),
-                    "poster": it.get("poster", ""),
-                    "dir": bool(it.get("dir")),
-                    "rating": it.get("rating", 0)} for it in items]
+        compact = []
+        for it in items:
+            ci = {"label": it.get("label", ""),
+                  "poster": it.get("poster", ""),
+                  "dir": bool(it.get("dir")),
+                  "rating": it.get("rating", 0)}
+            ref = _item_ref(it.get("file", ""))
+            if ref:
+                ci["ref"] = ref
+            compact.append(ci)
         title = xbmc.getInfoLabel("Container.PluginCategory") or "MejorWolf"
         rkb.push_list(compact, title)
         xbmc.log(f"[MejorWolf/service] Lista empujada: {len(compact)} items "
@@ -250,6 +280,8 @@ def _poll_remote_kb():
                 old_path = xbmc.getInfoLabel("Container.FolderPath") or ""
                 if _open_index(ev.get("i"), ev.get("label", "")):
                     _push_after_nav(old_path)
+            elif c == "play_ref":
+                _play_ref(ev)
             elif c == "home":
                 _go_home()
             elif c == "seek_fwd":
@@ -265,6 +297,36 @@ def _poll_remote_kb():
     except Exception as e:
         xbmc.log(f"[MejorWolf/service] KB poll error: {e}", xbmc.LOGDEBUG)
     return False
+
+
+def _play_ref(ev):
+    """Reproduce DIRECTAMENTE una referencia compartida (enlace de un amigo):
+    lanza el plugin de play/dt_play -> Elementum, sin pasar por la busqueda."""
+    try:
+        from urllib.parse import quote
+        a = (ev.get("a") or "").strip()
+        t = (ev.get("t") or "").strip()
+        base = "plugin://plugin.video.mejorwolf/?action="
+        if a == "dt":
+            cid = re.sub(r"\D", "", str(ev.get("cid") or ""))
+            tb = re.sub(r"[^a-z0-9_]", "", str(ev.get("tb") or "").lower())
+            if not (cid and tb):
+                return
+            url = (base + "dt_play&content_id=%s&tabla=%s&t=%s"
+                   % (cid, tb, quote(t)))
+        elif a == "pl":
+            u = (ev.get("u") or "").strip()
+            if not (u.startswith("magnet:") or u.startswith("http")
+                    or u.endswith(".torrent")):
+                return
+            url = base + "play&torrent=%s&t=%s" % (quote(u, safe=""), quote(t))
+        else:
+            return
+        xbmc.log("[MejorWolf/service] play_ref -> %s" % url[:120],
+                 xbmc.LOGINFO)
+        xbmc.executebuiltin('PlayMedia("%s")' % url)
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] play_ref error: %s" % e, xbmc.LOGWARNING)
 
 
 def _warm_dt():
