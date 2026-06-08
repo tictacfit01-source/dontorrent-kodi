@@ -1098,6 +1098,31 @@ def _kblist_save(d):
     except Exception:
         pass
 
+
+# Estado de reproduccion ("Estas viendo ..."): el box lo sube mientras hay
+# video; el movil lo lee en la pestaña Mando. TTL corto: si el box deja de
+# subirlo (paro/Kodi cerrado) el panel desaparece solo.
+_KB_NOW_FILE = "/tmp/mw_kb_now.json"
+_KB_NOW_TTL = 20
+
+
+def _kbnow_load():
+    try:
+        with open(_KB_NOW_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _kbnow_save(d):
+    try:
+        tmp = _KB_NOW_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _KB_NOW_FILE)
+    except Exception:
+        pass
+
 _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -1200,6 +1225,21 @@ font-size:11px;font-weight:600;color:#cfd6e4}
 .ok{color:var(--green)}.err{color:var(--red)}
 .hidden{display:none}
 .foot{text-align:center;color:var(--sub);font-size:12px;margin-top:24px;opacity:.6}
+.micbtn{flex:none;border:0;background:transparent;color:var(--sub);width:36px;height:36px;border-radius:50%;
+display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s;margin:-6px -4px -6px 0}
+.micbtn:active{transform:scale(.9)}
+.micbtn.rec{color:#fff;background:var(--red);box-shadow:0 0 0 0 rgba(255,69,58,.5);animation:micpulse 1.2s infinite}
+@keyframes micpulse{0%{box-shadow:0 0 0 0 rgba(255,69,58,.5)}70%{box-shadow:0 0 0 12px rgba(255,69,58,0)}100%{box-shadow:0 0 0 0 rgba(255,69,58,0)}}
+.np{margin:2px 0 18px}
+.np.hidden{display:none}
+.np .nplab{font-size:11px;color:var(--sub);font-weight:600;letter-spacing:.4px;text-transform:uppercase;margin-bottom:5px}
+.np .npttl{font-size:17px;font-weight:700;line-height:1.25;margin-bottom:11px}
+.npbar{height:5px;border-radius:3px;background:rgba(255,255,255,.10);overflow:hidden}
+.npbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue2),var(--blue));
+border-radius:3px;transition:width .95s linear}
+.nprow{display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;font-size:12.5px;
+color:var(--sub);font-variant-numeric:tabular-nums}
+.nprow .npf{color:#cfd6e4;font-weight:600}
 </style></head><body><div class="wrap">
 
 <div class="top">
@@ -1216,11 +1256,18 @@ font-size:11px;font-weight:600;color:#cfd6e4}
  <div class="search">
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8a93a6" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
   <input id="q" autocomplete="off" placeholder="Buscar pelicula o serie..." enterkeyhint="search">
+  <button id="mic" class="micbtn" type="button" aria-label="Buscar por voz"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></svg></button>
  </div>
  <button id="go" class="primary">Buscar en la tele</button>
 
  <div class="card">
   <p class="ttl">Reproduccion</p>
+  <div id="np" class="np hidden">
+   <div class="nplab">Estas viendo</div>
+   <div id="npttl" class="npttl"></div>
+   <div class="npbar"><i id="npfill"></i></div>
+   <div class="nprow"><span id="npa"></span><span id="npf" class="npf"></span></div>
+  </div>
   <div class="media">
    <div class="rb sk" onclick="cmd('seek_back')">-10<small>s</small></div>
    <div class="rb stop" onclick="cmd('stop')"><svg width="22" height="22" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg></div>
@@ -1310,7 +1357,8 @@ function showTab(t){haptic();
  document.getElementById('pane-lista').classList.toggle('hidden',t!=='lista');
  document.getElementById('tab-mando').classList.toggle('on',t==='mando');
  document.getElementById('tab-lista').classList.toggle('on',t==='lista');
- if(t==='lista') startLive(); else stopLive();}
+ if(t==='lista') startLive(); else stopLive();
+ if(t==='mando') startNow(); else stopNow();}
 
 var listTs=0,listLive=false,listReqTimer=null;
 function parseLabel(label){
@@ -1326,10 +1374,10 @@ function renderList(items){
  items.forEach(function(it,i){
   var pl=parseLabel(it.label||'');
   var row=document.createElement('div');row.className='item';
-  row.onclick=function(){openItem(i,it.label);};
+  row.onclick=function(){openItem(i,it.label,it.dir);};
   if(it.poster){var img=document.createElement('img');img.className='poster';img.loading='lazy';img.src=it.poster;
    img.onerror=function(){var d=ph();if(img.parentNode)img.parentNode.replaceChild(d,img);};
-   img.onclick=function(e){e.stopPropagation();showBig(it.poster,it.label,i);};
+   img.onclick=function(e){e.stopPropagation();showBig(it.poster,it.label,i,it.dir);};
    row.appendChild(img);}
   else row.appendChild(ph());
   var meta=document.createElement('div');meta.className='meta';
@@ -1354,17 +1402,67 @@ function startLive(){var c=getCode();if(!c)return;if(listLive)return;
 function stopLive(){listLive=false;if(listReqTimer){clearInterval(listReqTimer);listReqTimer=null;}}
 function loadList(){haptic();listTs=0;reqList();}
 function listBack(){haptic();var c=getCode();if(!c)return;post({code:c,cmd:'back'});}
-function openItem(i,label){haptic();var c=getCode();if(!c)return;setMsg('Abriendo...','ok');post({code:c,cmd:'open',i:i,label:label||''});}
-var lbIdx=-1,lbLabel='';
-function showBig(poster,label,i){lbIdx=i;lbLabel=label||'';
+function openItem(i,label,dir){haptic();var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
+ post({code:c,cmd:'open',i:i,label:label||''});
+ if(!dir){setTimeout(function(){showTab('mando');},450);}}
+var lbIdx=-1,lbLabel='',lbDir=false;
+function showBig(poster,label,i,dir){lbIdx=i;lbLabel=label||'';lbDir=!!dir;
  document.getElementById('lbimg').src=poster||'';
  document.getElementById('lblbl').textContent=label||'';
  document.getElementById('lb').style.display='flex';}
 function closeBig(e){if(e)e.stopPropagation();document.getElementById('lb').style.display='none';}
-function lbOpen(e){if(e)e.stopPropagation();var i=lbIdx,l=lbLabel;closeBig();if(i>=0)openItem(i,l);}
+function lbOpen(e){if(e)e.stopPropagation();var i=lbIdx,l=lbLabel,dd=lbDir;closeBig();if(i>=0)openItem(i,l,dd);}
+// ---- Estas viendo (now playing) ----
+var npData=null,npLive=false,npPollT=null,npTick=null;
+function fmtDur(s){s=Math.max(0,Math.round(s));var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;
+ var mm=(h>0?String(m).padStart(2,'0'):String(m));
+ return (h>0?h+':':'')+mm+':'+String(x).padStart(2,'0');}
+function fmtClock(d){return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+function renderNow(){var box=document.getElementById('np');
+ if(!npData){box.classList.add('hidden');return;}
+ box.classList.remove('hidden');
+ var el=npData.elapsed; if(!npData.paused) el+=(Date.now()-npData.at)/1000;
+ if(npData.total>0&&el>npData.total) el=npData.total;
+ document.getElementById('npttl').textContent=npData.title||'Reproduciendo';
+ var pct=npData.total>0?Math.min(100,el/npData.total*100):0;
+ document.getElementById('npfill').style.width=pct+'%';
+ document.getElementById('npa').textContent=fmtDur(el)+(npData.total>0?' / '+fmtDur(npData.total):'');
+ var f=document.getElementById('npf');
+ if(npData.paused){f.textContent='En pausa';}
+ else if(npData.total>0){var fin=new Date(Date.now()+(npData.total-el)*1000);f.textContent='Finaliza '+fmtClock(fin);}
+ else{f.textContent='';}}
+function pollNow(){var c=code.value.trim();
+ if(c.length>=6){fetch('/kb/now?code='+c).then(function(r){return r.json()}).then(function(j){
+  if(j&&j.np){npData={title:j.np.title||'',elapsed:+j.np.elapsed||0,total:+j.np.total||0,paused:!!j.np.paused,at:Date.now()};}
+  else{npData=null;} renderNow();
+ }).catch(function(){});}
+ if(npLive) npPollT=setTimeout(pollNow,2000);}
+function startNow(){if(npLive)return;npLive=true;pollNow();npTick=setInterval(renderNow,1000);}
+function stopNow(){npLive=false;if(npPollT){clearTimeout(npPollT);npPollT=null;}if(npTick){clearInterval(npTick);npTick=null;}}
+
+// ---- Busqueda por voz (Web Speech API, gratis; Chrome Android) ----
+var rec=null;
+(function initVoice(){
+ var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ var mic=document.getElementById('mic');
+ if(!SR){mic.style.display='none';return;}
+ mic.onclick=function(){haptic();
+  if(rec){try{rec.stop();}catch(e){}rec=null;return;}
+  try{rec=new SR();}catch(e){return;}
+  rec.lang='es-ES';rec.interimResults=false;rec.maxAlternatives=1;
+  mic.classList.add('rec');setMsg('Escuchando...');
+  rec.onresult=function(e){try{q.value=e.results[0][0].transcript||'';}catch(_){}};
+  rec.onerror=function(){setMsg('No te he oido','err');};
+  rec.onend=function(){mic.classList.remove('rec');rec=null;
+   if(q.value.trim()){setMsg('');send();}else{setMsg('');}};
+  try{rec.start();}catch(e){mic.classList.remove('rec');rec=null;}};
+})();
+
 document.addEventListener('visibilitychange',function(){
- if(document.hidden) stopLive();
- else if(!document.getElementById('pane-lista').classList.contains('hidden')) startLive();});
+ if(document.hidden){stopLive();stopNow();}
+ else{ if(!document.getElementById('pane-lista').classList.contains('hidden')) startLive();
+       if(!document.getElementById('pane-mando').classList.contains('hidden')) startNow(); }});
+startNow();
 </script></body></html>"""
 
 
@@ -1485,6 +1583,45 @@ def kb_list_get():
     return jsonify({"items": entry.get("items", []),
                     "title": entry.get("title", ""),
                     "ts": entry.get("ts", 0)})
+
+
+@app.post("/kb/now")
+def kb_now_push():
+    """El box sube el estado de reproduccion actual (o null si nada suena)."""
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    code = re.sub(r"\D", "", str(body.get("code") or ""))[:6]
+    if len(code) != 6:
+        return jsonify({"ok": False}), 400
+    np = body.get("np")
+    d = _kbnow_load()
+    now = _t.time()
+    d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _KB_NOW_TTL}
+    if isinstance(np, dict):
+        d[code] = {"np": {"title": str(np.get("title", ""))[:120],
+                          "elapsed": int(np.get("elapsed", 0) or 0),
+                          "total": int(np.get("total", 0) or 0),
+                          "paused": bool(np.get("paused"))},
+                   "ts": now}
+    else:
+        d.pop(code, None)
+    _kbnow_save(d)
+    return jsonify({"ok": True})
+
+
+@app.get("/kb/now")
+def kb_now_get():
+    """El movil lee el estado de reproduccion actual."""
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    if len(code) != 6:
+        return jsonify({"np": None})
+    d = _kbnow_load()
+    entry = d.get(code) or {}
+    if entry and (_t.time() - entry.get("ts", 0)) < _KB_NOW_TTL:
+        return jsonify({"np": entry.get("np")})
+    return jsonify({"np": None})
 
 
 @app.get("/kb/qr")

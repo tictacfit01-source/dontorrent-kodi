@@ -104,6 +104,19 @@ def push_list(items, title=""):
         pass
 
 
+def push_now(np):
+    """Sube al relay el estado de reproduccion actual.
+    `np`: dict {title, elapsed, total, paused} o None para limpiar el panel."""
+    base = relay_base()
+    if not base:
+        return
+    try:
+        requests.post(f"{base}/kb/now",
+                      json={"code": get_code(), "np": np}, timeout=8)
+    except Exception:
+        pass
+
+
 def poll(timeout=10):
     """Devuelve los eventos pendientes del movil (y los consume).
 

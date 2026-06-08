@@ -21,6 +21,7 @@ PING_INTERVAL = 300         # keep-warm relay: cada 5 min
 MAIN_TICK = 5               # ciclo del bucle principal (FA + keep-warm)
 KB_POLL_GAP = 0.3           # sondeo del teclado remoto en su propio hilo:
                             # rapido para que el mando responda agil (~0.5s)
+NOW_GAP = 1.5               # cada cuanto subimos el estado "Estas viendo..."
 FA_GAP = 6                  # separacion entre notas FA (~10/min: ritmo humano)
 # Backoff EXPONENCIAL ante bloqueos de FA. Reintentar a menudo cuando FA ya
 # te bloquea solo PERPETUA el bloqueo (no deja recuperar la IP). Por eso al
@@ -280,12 +281,79 @@ def _warm_dt():
         xbmc.log(f"[MejorWolf/service] warm DT error: {e}", xbmc.LOGDEBUG)
 
 
+def _get_now_playing():
+    """Estado de reproduccion para el panel 'Estas viendo'. Devuelve
+    {title, elapsed, total, paused} o None si no hay video sonando."""
+    try:
+        import json
+        res = xbmc.executeJSONRPC(
+            '{"jsonrpc":"2.0","id":1,"method":"Player.GetActivePlayers"}')
+        players = (json.loads(res).get("result") or [])
+        vid = next((p for p in players if p.get("type") == "video"), None)
+        if not vid:
+            return None
+        pid = vid["playerid"]
+
+        def _secs(t):
+            t = t or {}
+            return (int(t.get("hours", 0)) * 3600 + int(t.get("minutes", 0)) * 60
+                    + int(t.get("seconds", 0)))
+
+        pr = json.loads(xbmc.executeJSONRPC(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "Player.GetProperties",
+            "params": {"playerid": pid,
+                       "properties": ["time", "totaltime", "speed"]}})))
+        pres = pr.get("result") or {}
+        elapsed = _secs(pres.get("time"))
+        total = _secs(pres.get("totaltime"))
+        paused = (pres.get("speed", 1) == 0)
+
+        it = json.loads(xbmc.executeJSONRPC(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "Player.GetItem",
+            "params": {"playerid": pid,
+                       "properties": ["title", "showtitle",
+                                      "season", "episode"]}})))
+        item = (it.get("result") or {}).get("item") or {}
+        title = (item.get("title") or "").strip()
+        show = (item.get("showtitle") or "").strip()
+        season = int(item.get("season") or 0)
+        ep = int(item.get("episode") or 0)
+        if show and (season or ep):
+            label = "%s · %dx%02d" % (show, season, ep)
+        elif show:
+            label = show
+        else:
+            label = title or "Reproduciendo"
+        return {"title": label, "elapsed": elapsed, "total": total,
+                "paused": paused}
+    except Exception:
+        return None
+
+
 def _kb_thread(monitor):
     """Hilo dedicado al Teclado Remoto: sondea rapido para que el mando vaya
-    agil, sin que el bucle principal (FA/keep-warm) lo frene."""
+    agil, sin que el bucle principal (FA/keep-warm) lo frene. Tambien sube el
+    estado 'Estas viendo...' al relay (throttled), solo cuando hay video."""
+    from resources.lib import remote_kb as rkb
+    last_now = 0.0
+    was_playing = False
     while not monitor.abortRequested():
         try:
             _poll_remote_kb()
+        except Exception:
+            pass
+        # 'Estas viendo': red solo cuando hay video (o un ultimo aviso al parar)
+        try:
+            t = time.time()
+            if t - last_now >= NOW_GAP:
+                last_now = t
+                np = _get_now_playing()
+                if np:
+                    rkb.push_now(np)
+                    was_playing = True
+                elif was_playing:
+                    rkb.push_now(None)
+                    was_playing = False
         except Exception:
             pass
         if monitor.waitForAbort(KB_POLL_GAP):
