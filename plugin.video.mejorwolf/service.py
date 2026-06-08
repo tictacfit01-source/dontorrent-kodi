@@ -282,6 +282,23 @@ def _warm_dt():
         xbmc.log(f"[MejorWolf/service] warm DT error: {e}", xbmc.LOGDEBUG)
 
 
+def _read_np_title():
+    """Titulo que el addon guardo al lanzar la reproduccion (special://temp).
+    Solo lo damos por bueno si es reciente (< 6h) para no mostrar restos."""
+    try:
+        import os
+        import xbmcvfs
+        p = xbmcvfs.translatePath("special://temp/mejorwolf_np.txt")
+        if not os.path.exists(p):
+            return ""
+        if time.time() - os.path.getmtime(p) > 6 * 3600:
+            return ""
+        with open(p, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
 def _get_now_playing():
     """Estado de reproduccion para el panel 'Estas viendo'. Devuelve
     {title, elapsed, total, paused} o None si no hay video sonando."""
@@ -321,7 +338,10 @@ def _get_now_playing():
         title = (xbmc.getInfoLabel("VideoPlayer.Title") or "").strip()
         season = _int(xbmc.getInfoLabel("VideoPlayer.Season"))
         ep = _int(xbmc.getInfoLabel("VideoPlayer.Episode"))
-        if not (title or show):
+        # Titulo que el addon guardo al lanzar la reproduccion: lo mas fiable
+        # para PELICULAS (Elementum no rellena VideoPlayer.Title de forma fiable).
+        file_title = _read_np_title()
+        if not (title or show or file_title):
             # Ultimo recurso: lo que diga GetItem (label/title del ListItem).
             it = json.loads(xbmc.executeJSONRPC(json.dumps({
                 "jsonrpc": "2.0", "id": 1, "method": "Player.GetItem",
@@ -343,7 +363,7 @@ def _get_now_playing():
         elif show:
             label = show
         else:
-            label = title or "Reproduciendo"
+            label = file_title or title or "Reproduciendo"
         return {"title": label, "elapsed": elapsed, "total": total,
                 "paused": paused}
     except Exception:

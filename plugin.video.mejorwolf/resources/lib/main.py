@@ -804,7 +804,7 @@ def _detail_dt(url, kind, title):
         xbmcplugin.addDirectoryItem(
             HANDLE,
             _u(action="dt_play", content_id=dl["content_id"],
-               tabla=dl["tabla"], page_url=url),
+               tabla=dl["tabla"], page_url=url, t=label),
             _li(label, info=item_info, art=art, playable=True),
             isFolder=False,
         )
@@ -842,7 +842,7 @@ def _detail_et(url, kind, title):
         item_info = dict(info_base, title=label, mediatype=_media_type(kind))
         xbmcplugin.addDirectoryItem(
             HANDLE,
-            _u(action="play", torrent=magnet),
+            _u(action="play", torrent=magnet, t=label),
             _li(label, info=item_info, art=art, playable=True),
             isFolder=False,
         )
@@ -899,7 +899,7 @@ def _detail_wf(url, kind, title):
         info = dict(info_base, title=label, mediatype=mtype)
         xbmcplugin.addDirectoryItem(
             HANDLE,
-            _u(action="play", torrent=dl["torrent_url"]),
+            _u(action="play", torrent=dl["torrent_url"], t=label),
             _li(label, info=info, art=art, playable=True),
             isFolder=False,
         )
@@ -953,7 +953,24 @@ def _check_elementum():
     return True
 
 
-def play(torrent_url):
+def _set_np_title(title):
+    """Guarda el titulo limpio de lo que se va a reproducir para que el panel
+    'Estas viendo' del mando muestre el nombre real. Elementum no rellena
+    VideoPlayer.Title de forma fiable, asi que lo dejamos aqui: el servicio lo
+    lee. Quitamos la [calidad] del final para que quede limpio."""
+    try:
+        import xbmcvfs
+        clean = re.sub(r"\s*\[[^\]]*\]\s*$", "", title or "").strip()
+        if not clean:
+            return
+        p = xbmcvfs.translatePath("special://temp/mejorwolf_np.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(clean)
+    except Exception:
+        pass
+
+
+def play(torrent_url, title=""):
     """Reproduce un magnet o URL de .torrent via Elementum."""
     if not torrent_url:
         _error("URL de torrent vacía")
@@ -1043,12 +1060,13 @@ def play(torrent_url):
     except Exception:
         pass
 
+    _set_np_title(title)
     item = xbmcgui.ListItem(path=play_url)
     item.setProperty("IsPlayable", "true")
     xbmcplugin.setResolvedUrl(HANDLE, True, item)
 
 
-def dt_play(content_id, tabla, page_url=""):
+def dt_play(content_id, tabla, page_url="", title=""):
     """Resuelve PoW de DonTorrent y reproduce."""
     if not content_id or not tabla:
         _error("Faltan datos de descarga")
@@ -1158,6 +1176,7 @@ def dt_play(content_id, tabla, page_url=""):
         except Exception:
             pass
 
+        _set_np_title(title)
         play_url = player.elementum_url(play_uri)
         item = xbmcgui.ListItem(path=play_url)
         item.setProperty("IsPlayable", "true")
@@ -2254,10 +2273,12 @@ def router(qs):
                                                params["url"],
                                                params.get("kind", "movie"),
                                                params.get("title", ""))
-        elif action == "play":          play(params.get("torrent", ""))
+        elif action == "play":          play(params.get("torrent", ""),
+                                             params.get("t", ""))
         elif action == "dt_play":       dt_play(params.get("content_id", ""),
                                                  params.get("tabla", ""),
-                                                 page_url=params.get("page_url", ""))
+                                                 page_url=params.get("page_url", ""),
+                                                 title=params.get("t", ""))
         elif action == "search":        search(filter_kind=params.get("filter_kind"))
         elif action == "remote_search": remote_search(params.get("q", ""))
         elif action == "remote_kb":

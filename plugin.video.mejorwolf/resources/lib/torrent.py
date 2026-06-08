@@ -147,7 +147,8 @@ _PACK_RE = re.compile(r"\.(?:rar|r\d{2,3}|part\d+\.rar|zip|7z|001)$", re.I)
 
 
 def list_files(data):
-    """Nombres de los ficheros DENTRO del .torrent (o [name] si es single)."""
+    """Lista de (nombre, tamaño) de los ficheros DENTRO del .torrent
+    (o [(name, length)] si es single-file)."""
     try:
         meta = bdecode(data)
     except Exception:
@@ -159,26 +160,46 @@ def list_files(data):
     files = info.get(b"files")
     if isinstance(files, list):
         for f in files:
-            path = f.get(b"path") if isinstance(f, dict) else None
+            if not isinstance(f, dict):
+                continue
+            path = f.get(b"path")
+            length = f.get(b"length")
             if isinstance(path, list) and path:
                 seg = path[-1]
                 if isinstance(seg, (bytes, bytearray)):
-                    out.append(bytes(seg).decode("utf-8", "replace"))
+                    out.append((bytes(seg).decode("utf-8", "replace"),
+                                int(length) if isinstance(length, int) else 0))
     else:
         name = info.get(b"name")
+        length = info.get(b"length")
         if isinstance(name, (bytes, bytearray)):
-            out.append(bytes(name).decode("utf-8", "replace"))
+            out.append((bytes(name).decode("utf-8", "replace"),
+                        int(length) if isinstance(length, int) else 0))
     return out
 
 
 def is_packed(data):
     """True si el .torrent trae el video EMPAQUETADO (RAR/zip/7z) y por tanto
     Elementum no podra reproducirlo en streaming. Heuristica: hay ficheros de
-    archivo comprimido y NINGUN video reproducible suelto. Sin red: solo lee
-    los bytes del .torrent que ya tenemos."""
+    archivo comprimido y NINGUN video reproducible REAL suelto (se ignoran las
+    'muestras'/'sample' y los videos diminutos < 50 MB). Sin red: solo lee los
+    bytes del .torrent que ya tenemos."""
     files = list_files(data)
     if not files:
         return False
-    has_pack = any(_PACK_RE.search(f) for f in files)
-    has_video = any(f.lower().endswith(_VIDEO_EXT) for f in files)
-    return has_pack and not has_video
+    has_pack = any(_PACK_RE.search(n) for n, _ in files)
+    if not has_pack:
+        return False
+
+    def _real_video(name, size):
+        low = name.lower()
+        if not low.endswith(_VIDEO_EXT):
+            return False
+        if "sample" in low or "muestra" in low:
+            return False
+        # tamaño 0 = desconocido (no arriesgamos: cuenta como video real);
+        # si se conoce, exigimos > 50 MB para no confundir con una muestra.
+        return size == 0 or size > 50 * 1024 * 1024
+
+    has_real_video = any(_real_video(n, s) for n, s in files)
+    return not has_real_video
