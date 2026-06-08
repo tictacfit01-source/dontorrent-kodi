@@ -1216,6 +1216,59 @@ def dtpacked():
 
 
 # ===========================================================================
+# PROBE: sondeo de viabilidad de fuentes (Anubis / Cloudflare-ligero / Turnstile)
+# ===========================================================================
+# Herramienta interna para evaluar candidatos a 4a fuente DESDE la IP del relay
+# (datacenter), que es el entorno real. Allowlist por marca para no abrir proxy.
+_PROBE_BRANDS = ("dontorrent", "mejortorrent", "wolfmax", "divxtotal",
+                 "grantorrent", "gran-torrent", "todotorrent", "torrentrapid",
+                 "pctmix", "pctnew", "newpct", "elitetorrent", "esdivx",
+                 "tomadivx", "descargas", "estrenos", "torrentlocura",
+                 "atomohd", "atomixhq", "todopelis", "pelisip", "cinecalidad")
+
+
+def _probe_detect(text):
+    t = (text or "")[:6000].lower()
+    if ("anubis" in t or "asegurándonos" in t or "asegurandonos" in t
+            or "making sure you" in t or ("difficulty" in t and "sha256" in t)):
+        return "anubis"
+    if ("just a moment" in t or "challenges.cloudflare.com" in t
+            or "cf-mitigated" in t or "/cdn-cgi/challenge" in t
+            or "turnstile" in t):
+        return "cloudflare-challenge"
+    n = len(re.findall(r"/(?:pelicula|serie|documental|descargar|torrent)s?/",
+                       t))
+    return "open" if n >= 3 else "unknown"
+
+
+@app.get("/probe")
+def probe():
+    u = (request.args.get("u") or "").strip()
+    if not u.startswith("http"):
+        return jsonify({"error": "bad u"}), 400
+    from urllib.parse import urlparse
+    host = (urlparse(u).hostname or "").lower()
+    if not any(b in host for b in _PROBE_BRANDS):
+        return jsonify({"error": "host not allowed", "host": host}), 403
+    out = {"host": host}
+    try:
+        r = requests.get(u, headers=BROWSER_HEADERS, timeout=20,
+                         allow_redirects=True)
+        out["plain"] = {"status": r.status_code, "final": r.url,
+                        "prot": _probe_detect(r.text), "bytes": len(r.text)}
+    except Exception as e:
+        out["plain"] = {"error": e.__class__.__name__}
+    try:
+        cs = _make_scraper()
+        r2 = cs.get(u, timeout=35, allow_redirects=True)
+        out["cs"] = {"status": r2.status_code, "final": r2.url,
+                     "prot": _probe_detect(r2.text), "bytes": len(r2.text)}
+    except Exception as e:
+        out["cs"] = {"error": e.__class__.__name__}
+    return jsonify(out)
+
+
+# ===========================================================================
 # TECLADO REMOTO (escribir busquedas desde el movil)
 # ===========================================================================
 # El movil abre /kb (escaneando un QR que lleva el codigo del box), escribe la
