@@ -223,15 +223,17 @@ def relay():
 
     body = request.get_data() if request.method not in ("GET", "HEAD") else None
     is_wolf = "wolfmax4k" in target.lower()
+    # MejorTorrent tambien esta tras Cloudflare -> cloudscraper (como WolfMax).
+    is_mt = "mejortorrent" in target.lower()
     try:
         if is_wolf and SCRAPERAPI_KEY:
             wrapped = _scraperapi_url(target, session_number=None)
             r = requests.request(request.method, wrapped, headers=fwd,
                                  data=body, timeout=60, allow_redirects=True)
-        elif is_wolf:
+        elif is_wolf or is_mt:
             cs = _make_scraper()
             r = cs.request(request.method, target, headers=fwd, data=body,
-                           timeout=25, allow_redirects=True)
+                           timeout=30, allow_redirects=True)
         else:
             r = requests.request(request.method, target, headers=fwd,
                                  data=body, timeout=25, allow_redirects=True,
