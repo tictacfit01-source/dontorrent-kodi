@@ -1244,7 +1244,7 @@ color:var(--sub);font-variant-numeric:tabular-nums}
 
 <div class="top">
  <div class="brand"><span class="dot">&#128058;</span> MejorWolf</div>
- <input id="code" class="code" inputmode="numeric" maxlength="6" placeholder="codigo">
+ <input id="code" class="code" inputmode="numeric" maxlength="6" placeholder="código">
 </div>
 
 <div class="seg">
@@ -1255,15 +1255,15 @@ color:var(--sub);font-variant-numeric:tabular-nums}
 <section id="pane-mando" class="pane">
  <div class="search">
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8a93a6" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-  <input id="q" autocomplete="off" placeholder="Buscar pelicula o serie..." enterkeyhint="search">
+  <input id="q" autocomplete="off" placeholder="Buscar película o serie..." enterkeyhint="search">
   <button id="mic" class="micbtn" type="button" aria-label="Buscar por voz"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></svg></button>
  </div>
  <button id="go" class="primary">Buscar en la tele</button>
 
  <div class="card">
-  <p class="ttl">Reproduccion</p>
+  <p class="ttl">Reproducción</p>
   <div id="np" class="np hidden">
-   <div class="nplab">Estas viendo</div>
+   <div class="nplab">Estás viendo</div>
    <div id="npttl" class="npttl"></div>
    <div class="npbar"><i id="npfill"></i></div>
    <div class="nprow"><span id="npa"></span><span id="npf" class="npf"></span></div>
@@ -1286,7 +1286,7 @@ color:var(--sub);font-variant-numeric:tabular-nums}
  </div>
 
  <div class="card">
-  <p class="ttl">Navegacion</p>
+  <p class="ttl">Navegación</p>
   <div class="padwrap"><div class="pad">
    <div class="arrow up" onclick="cmd('up')">&#9650;</div>
    <div class="arrow left" onclick="cmd('left')">&#9664;</div>
@@ -1296,7 +1296,7 @@ color:var(--sub);font-variant-numeric:tabular-nums}
   </div></div>
   <div class="navrow">
    <div class="pill" onclick="cmd('home')">&#127968; Inicio</div>
-   <div class="pill" onclick="cmd('back')">&#8617; Atras</div>
+   <div class="pill" onclick="cmd('back')">&#8617; Atrás</div>
   </div>
  </div>
 </section>
@@ -1336,12 +1336,12 @@ var msgTimer=null;
 function setMsg(t,cls){st.className=cls||'';st.textContent=t;
  if(msgTimer){clearTimeout(msgTimer);msgTimer=null;}
  if(t&&cls!=='err'){msgTimer=setTimeout(function(){st.textContent='';st.className='';},2500);}}
-function getCode(){var c=code.value.trim();if(c.length<6){setMsg('Falta el codigo de 6 cifras','err');return null;}return c;}
+function getCode(){var c=code.value.trim();if(c.length<6){setMsg('Falta el código de 6 cifras','err');return null;}return c;}
 function post(body,okmsg){
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()})
   .then(function(j){if(j&&j.ok){if(okmsg)setMsg(okmsg,'ok');}else{setMsg((j&&j.error)||'Error','err');}})
-  .catch(function(){setMsg('Sin conexion','err');});}
+  .catch(function(){setMsg('Sin conexión','err');});}
 function send(){haptic();var c=getCode();if(!c)return;var query=q.value.trim();
  if(!query){setMsg('Escribe algo','err');return;}
  setMsg('Enviando...');post({code:c,query:query},'Enviado. Mira la tele');q.value='';}
@@ -1370,7 +1370,7 @@ function parseLabel(label){
 function ph(){var d=document.createElement('div');d.className='poster noimg';return d;}
 function renderList(items){
  var cont=document.getElementById('items');cont.innerHTML='';
- if(!items||!items.length){cont.innerHTML='<p class="hint">Abre una seccion en la tele (Estrenos, Cine, una busqueda...).</p>';return;}
+ if(!items||!items.length){cont.innerHTML='<p class="hint">Abre una sección en la tele (Estrenos, Cine, una búsqueda...).</p>';return;}
  items.forEach(function(it,i){
   var pl=parseLabel(it.label||'');
   var row=document.createElement('div');row.className='item';
@@ -1452,7 +1452,7 @@ var rec=null;
   rec.lang='es-ES';rec.interimResults=false;rec.maxAlternatives=1;
   mic.classList.add('rec');setMsg('Escuchando...');
   rec.onresult=function(e){try{q.value=e.results[0][0].transcript||'';}catch(_){}};
-  rec.onerror=function(){setMsg('No te he oido','err');};
+  rec.onerror=function(){setMsg('No te he oído','err');};
   rec.onend=function(){mic.classList.remove('rec');rec=null;
    if(q.value.trim()){setMsg('');send();}else{setMsg('');}};
   try{rec.start();}catch(e){mic.classList.remove('rec');rec=null;}};
@@ -1506,7 +1506,7 @@ def kb_send():
         body = {}
     code = re.sub(r"\D", "", str(body.get("code") or ""))[:6]
     if len(code) != 6:
-        return jsonify({"ok": False, "error": "codigo invalido"}), 400
+        return jsonify({"ok": False, "error": "código inválido"}), 400
     query = (body.get("query") or "").strip()[:120]
     cmd = (body.get("cmd") or "").strip().lower()[:20]
     if query:
@@ -1517,13 +1517,13 @@ def kb_send():
             try:
                 ev["i"] = int(body.get("i"))
             except (TypeError, ValueError):
-                return jsonify({"ok": False, "error": "indice invalido"}), 400
+                return jsonify({"ok": False, "error": "índice inválido"}), 400
             ev["label"] = (body.get("label") or "")[:160]   # para verificar
         elif cmd == "seekto":
             try:
                 ev["min"] = max(0, int(body.get("min")))
             except (TypeError, ValueError):
-                return jsonify({"ok": False, "error": "minuto invalido"}), 400
+                return jsonify({"ok": False, "error": "minuto inválido"}), 400
     else:
         return jsonify({"ok": False, "error": "nada que enviar"}), 400
     d = _kb_clean(_kb_load())
