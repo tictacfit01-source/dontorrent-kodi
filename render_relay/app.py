@@ -1106,12 +1106,12 @@ _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 :root{--bg0:#06070c;--bg1:#0e1320;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);
 --txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158;--red:#ff453a;--glass:rgba(255,255,255,.07)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0}
+html,body{margin:0;background:#06070c}
 body{font-family:-apple-system,"SF Pro Display","SF Pro Text",system-ui,Segoe UI,Roboto,sans-serif;
-color:var(--txt);min-height:100vh;display:flex;justify-content:center;
+color:var(--txt);min-height:100vh;display:flex;justify-content:center;overscroll-behavior-y:contain;
 background:radial-gradient(1200px 700px at 50% -10%,#1b2740 0%,transparent 60%),
-radial-gradient(900px 600px at 90% 10%,#241a36 0%,transparent 55%),linear-gradient(180deg,var(--bg1),var(--bg0));
-background-attachment:fixed}
+radial-gradient(900px 600px at 90% 10%,#241a36 0%,transparent 55%),
+linear-gradient(180deg,var(--bg1),var(--bg0)) #06070c}
 .wrap{width:100%;max-width:460px;padding:22px 18px 40px}
 .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
 .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:19px;letter-spacing:.2px}
@@ -1121,14 +1121,14 @@ display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow
 color:var(--txt);text-align:center;background:var(--glass);border:1px solid var(--stroke);
 padding:9px 10px;border-radius:12px;outline:0}
 .seg{display:flex;background:rgba(255,255,255,.05);border:1px solid var(--stroke);border-radius:16px;
-padding:5px;margin-bottom:22px;backdrop-filter:blur(20px)}
+padding:5px;margin-bottom:22px}
 .seg button{flex:1;border:0;background:transparent;color:var(--sub);font-weight:600;font-size:15px;
 padding:11px;border-radius:12px;transition:.25s;cursor:pointer}
 .seg button.on{color:#0b1020;background:#f4f6fb;box-shadow:0 4px 14px rgba(0,0,0,.35)}
 .pane{animation:fade .35s ease}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .search{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--stroke);
-border-radius:16px;padding:14px 16px;backdrop-filter:blur(20px)}
+border-radius:16px;padding:14px 16px}
 .search svg{flex:none;opacity:.6}
 .search input{flex:1;background:transparent;border:0;outline:0;color:var(--txt);font-size:17px}
 .search input::placeholder{color:var(--sub)}
@@ -1136,21 +1136,23 @@ border-radius:16px;padding:14px 16px;backdrop-filter:blur(20px)}
 color:#fff;cursor:pointer;background:linear-gradient(145deg,var(--blue2),var(--blue));
 box-shadow:0 10px 26px rgba(10,132,255,.40);transition:.15s}
 .primary:active{transform:scale(.98);filter:brightness(.95)}
-.card{background:var(--card);border:1px solid var(--stroke);border-radius:22px;padding:18px;margin-top:18px;backdrop-filter:blur(22px)}
+.card{background:var(--card);border:1px solid var(--stroke);border-radius:22px;padding:18px;margin-top:18px}
 .card .ttl{font-size:13px;color:var(--sub);font-weight:600;margin:0 0 14px;letter-spacing:.3px;text-transform:uppercase}
-.media{display:flex;justify-content:center;align-items:center;gap:18px}
-.rb{width:62px;height:62px;border-radius:50%;border:1px solid var(--stroke);background:var(--glass);
-color:var(--txt);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s;backdrop-filter:blur(10px)}
+.media{display:flex;justify-content:center;align-items:center;gap:13px}
+.rb{width:58px;height:58px;border-radius:50%;border:1px solid var(--stroke);background:var(--glass);
+color:var(--txt);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}
 .rb:active{transform:scale(.92);background:rgba(255,255,255,.14)}
-.rb.play{width:74px;height:74px;background:linear-gradient(145deg,#3dd46a,#27c257);border-color:transparent;
+.rb.play{width:70px;height:70px;background:linear-gradient(145deg,#3dd46a,#27c257);border-color:transparent;
 box-shadow:0 8px 22px rgba(48,209,88,.40);color:#06140a}
 .rb.stop{color:var(--red)}
+.rb.sk{font-size:15px;font-weight:700;line-height:1}
+.rb.sk small{font-size:10px;font-weight:600;opacity:.75;margin-left:1px}
 .rb svg{display:block}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
 .row.three{grid-template-columns:1fr 1fr 1fr}
 .pill{border:1px solid var(--stroke);background:var(--glass);color:var(--txt);border-radius:14px;padding:14px;
 font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;
-transition:.15s;backdrop-filter:blur(10px)}
+transition:.15s}
 .pill:active{transform:scale(.97);background:rgba(255,255,255,.14)}
 .jump{display:flex;gap:10px;margin-top:14px}
 .jump input{flex:1;background:var(--glass);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);
@@ -1180,7 +1182,7 @@ cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,2
 .tools{display:flex;gap:8px}
 .tools .pill{padding:10px 14px;border-radius:12px;font-size:16px}
 .item{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--stroke);
-border-radius:18px;padding:10px;margin-bottom:11px;cursor:pointer;transition:.15s;backdrop-filter:blur(16px)}
+border-radius:18px;padding:10px;margin-bottom:11px;cursor:pointer;transition:.15s}
 .item:active{transform:scale(.99);background:rgba(255,255,255,.10)}
 .item .poster{width:56px;height:84px;border-radius:11px;object-fit:cover;flex:none;background:#21262d;
 box-shadow:0 6px 16px rgba(0,0,0,.5)}
@@ -1220,12 +1222,10 @@ font-size:11px;font-weight:600;color:#cfd6e4}
  <div class="card">
   <p class="ttl">Reproduccion</p>
   <div class="media">
+   <div class="rb sk" onclick="cmd('seek_back')">-10<small>s</small></div>
    <div class="rb stop" onclick="cmd('stop')"><svg width="22" height="22" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg></div>
    <div class="rb play" onclick="cmd('playpause')"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg></div>
-  </div>
-  <div class="row">
-   <div class="pill" onclick="cmd('seek_back')">&#9194; -10 s</div>
-   <div class="pill" onclick="cmd('seek_fwd')">+30 s &#9193;</div>
+   <div class="rb sk" onclick="cmd('seek_fwd')">+30<small>s</small></div>
   </div>
   <div class="jump">
    <input id="mn" type="number" min="0" inputmode="numeric" placeholder="ir al minuto exacto...">
