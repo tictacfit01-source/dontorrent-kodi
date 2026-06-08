@@ -1524,7 +1524,8 @@ var p=new URLSearchParams(location.search);
 var code=document.getElementById('code'),st=document.getElementById('st'),q=document.getElementById('q');
 function loadCode(){try{return localStorage.getItem('mw_code')||'';}catch(e){return '';}}
 function saveCode(){try{var c=code.value.trim();if(c.length===6)localStorage.setItem('mw_code',c);}catch(e){}}
-if(p.get('c')) code.value=p.get('c'); else code.value=loadCode();
+var _cp=(p.get('c')||'').replace(/\D/g,'');
+if(_cp.length===6) code.value=_cp; else code.value=loadCode();
 saveCode(); code.addEventListener('input',saveCode);
 function haptic(){try{if(navigator.vibrate)navigator.vibrate(9);}catch(e){}}
 var msgTimer=null;
@@ -1688,7 +1689,7 @@ function shareItem(e){if(e)e.stopPropagation();
  var link;
  if(lbRef&&lbRef.a&&!lbDir){
   link=location.origin+'/kb?play='+encodeURIComponent(lbRef.a)+'&t='+encodeURIComponent(t)+(pl.y?'&yr='+encodeURIComponent(pl.y):'');
-  if(lbRef.a==='dt'){link+='&c='+encodeURIComponent(lbRef.c)+'&tb='+encodeURIComponent(lbRef.tb);}
+  if(lbRef.a==='dt'){link+='&ci='+encodeURIComponent(lbRef.c)+'&tb='+encodeURIComponent(lbRef.tb);}
   else if(lbRef.a==='pl'){link+='&u='+encodeURIComponent(lbRef.u);}
  }else{
   link=location.origin+'/kb?ver='+encodeURIComponent(t)+(pl.y?'&yr='+encodeURIComponent(pl.y):'');
@@ -1710,7 +1711,7 @@ startNow();
 (function handleShare(){
  var play=p.get('play');
  if(play){var t=p.get('t')||'';var yr=p.get('yr')||'';
-  recMode='play';recRef={a:play,t:t,c:p.get('c')||'',tb:p.get('tb')||'',u:p.get('u')||''};
+  recMode='play';recRef={a:play,t:t,c:p.get('ci')||'',tb:p.get('tb')||'',u:p.get('u')||''};
   q.value=t;
   document.getElementById('rtit').textContent=t+(yr?' ('+yr+')':'');
   document.getElementById('recbtn').textContent='▶ Ver ahora en mi tele';
