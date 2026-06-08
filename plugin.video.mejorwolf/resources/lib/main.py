@@ -106,8 +106,14 @@ _orig_add_dir = xbmcplugin.addDirectoryItem
 def _add_dir_hook(handle, url, listitem, isFolder=False, totalItems=0):
     try:
         poster = (listitem.getArt("poster") or listitem.getArt("thumb") or "")
+        rating = 0.0
+        try:
+            rating = float(listitem.getVideoInfoTag().getRating() or 0.0)
+        except Exception:
+            rating = 0.0
         _SNAP.append({"label": listitem.getLabel(), "file": url,
-                      "poster": poster, "dir": bool(isFolder)})
+                      "poster": poster, "dir": bool(isFolder),
+                      "rating": round(rating, 1)})
     except Exception:
         pass
     return _orig_add_dir(handle, url, listitem, isFolder, totalItems)

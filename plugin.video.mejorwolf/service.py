@@ -136,7 +136,8 @@ def _read_screen_and_push():
         _LAST_LIST = items
         compact = [{"label": it.get("label", ""),
                     "poster": it.get("poster", ""),
-                    "dir": bool(it.get("dir"))} for it in items]
+                    "dir": bool(it.get("dir")),
+                    "rating": it.get("rating", 0)} for it in items]
         title = xbmc.getInfoLabel("Container.PluginCategory") or "MejorWolf"
         rkb.push_list(compact, title)
         xbmc.log(f"[MejorWolf/service] Lista empujada: {len(compact)} items "
