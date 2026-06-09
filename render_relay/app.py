@@ -1609,7 +1609,7 @@ function showTab(t){haptic();
  if(t==='lista') startLive(); else stopLive();
  if(t==='mando') startNow(); else stopNow();}
 
-var listTs=0,listLive=false,listReqTimer=null;
+var listTs=0,listLive=false,listReqTimer=null,listPollT=null;
 function parseLabel(label){
  var qual='';var m=label.match(/\[([^\]]+)\]/);if(m)qual=m[1];
  var yr='';var ym=label.match(/\b(19|20)\d{2}\b/);if(ym)yr=ym[0];
@@ -1667,11 +1667,13 @@ function fetchList(){
   fetch('/kb/list?code='+c).then(function(r){return r.json()}).then(function(j){
    if(j&&j.ts&&j.ts!==listTs){listTs=j.ts;renderList(j.items);document.getElementById('ltitle').textContent=j.title||'Lista';}
   }).catch(function(){});}
- if(listLive) setTimeout(fetchList,600);}
+ if(listLive) listPollT=setTimeout(fetchList,600);}
 function reqList(){var c=code.value.trim();if(c.length>=6) post({code:c,cmd:'list'});}
 function startLive(){var c=getCode();if(!c)return;if(listLive)return;
  listLive=true;listTs=0;setMsg('');reqList();fetchList();listReqTimer=setInterval(reqList,2000);}
-function stopLive(){listLive=false;if(listReqTimer){clearInterval(listReqTimer);listReqTimer=null;}}
+function stopLive(){listLive=false;
+ if(listReqTimer){clearInterval(listReqTimer);listReqTimer=null;}
+ if(listPollT){clearTimeout(listPollT);listPollT=null;}}
 function loadList(){haptic();listTs=0;reqList();}
 function listBack(){haptic();var c=getCode();if(!c)return;post({code:c,cmd:'back'});}
 function openItem(i,label,dir){haptic();var c=getCode();if(!c)return;setMsg('Abriendo...','ok');
