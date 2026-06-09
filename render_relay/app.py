@@ -85,6 +85,7 @@ ALLOWED_HOSTS = (
     "mejortorrent",
     "wolfmax4k",
     "dontorrent",
+    "divxtotal",
     "enlacito.com",
     "short-info.link",
     "acortador.es",
