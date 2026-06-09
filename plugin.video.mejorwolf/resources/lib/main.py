@@ -1022,6 +1022,23 @@ def _set_np_title(title):
         pass
 
 
+def _set_continue(title, a, ci="", tb="", u=""):
+    """Guarda QUÉ se está reproduciendo (título + referencia replayable) para
+    'Continuar viendo'. El servicio actualiza la posición (elapsed/total) y lo
+    sube al relay en el latido."""
+    try:
+        import xbmcvfs
+        clean = re.sub(r"\s*\[[^\]]*\]\s*$", "", title or "").strip()
+        rec = {"title": clean, "a": a, "ci": str(ci or ""),
+               "tb": str(tb or ""), "u": u or "",
+               "elapsed": 0, "total": 0, "ts": time.time()}
+        p = xbmcvfs.translatePath("special://temp/mejorwolf_continue.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+    except Exception:
+        pass
+
+
 def play(torrent_url, title=""):
     """Reproduce un magnet o URL de .torrent via Elementum."""
     if not torrent_url:
@@ -1128,6 +1145,7 @@ def play(torrent_url, title=""):
         pass
 
     _set_np_title(title)
+    _set_continue(title, "pl", u=torrent_url)
     item = xbmcgui.ListItem(path=play_url)
     item.setProperty("IsPlayable", "true")
     xbmcplugin.setResolvedUrl(HANDLE, True, item)
@@ -1244,6 +1262,7 @@ def dt_play(content_id, tabla, page_url="", title=""):
             pass
 
         _set_np_title(title)
+        _set_continue(title, "dt", ci=content_id, tb=tabla)
         play_url = player.elementum_url(play_uri)
         item = xbmcgui.ListItem(path=play_url)
         item.setProperty("IsPlayable", "true")

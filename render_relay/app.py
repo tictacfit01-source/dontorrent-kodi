@@ -1357,6 +1357,31 @@ def _kbnow_save(d):
     except Exception:
         pass
 
+
+# Estado del box: latido cada ~30s con version + (opcional) "Continuar viendo".
+# /tmp efimero: el estado caduca solo si el box deja de latir (Kodi cerrado),
+# que es justo lo que queremos para el "conectado hace Xs".
+_KB_STATUS_FILE = "/tmp/mw_kb_status.json"
+_KB_STATUS_TTL = 600
+
+
+def _kbstatus_load():
+    try:
+        with open(_KB_STATUS_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _kbstatus_save(d):
+    try:
+        tmp = _KB_STATUS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _KB_STATUS_FILE)
+    except Exception:
+        pass
+
 _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -1481,6 +1506,18 @@ border:1px solid rgba(10,132,255,.38);border-radius:16px;padding:14px 16px;margi
 .recb .rlab{font-size:11px;color:#8fb6ff;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:4px}
 .recb .rtit{font-size:17px;font-weight:700;line-height:1.25;color:#eaf1ff}
 .recb .primary{margin-top:12px}
+.contc{background:linear-gradient(145deg,rgba(48,209,88,.16),rgba(48,209,88,.05));
+border:1px solid rgba(48,209,88,.36);border-radius:16px;padding:14px 16px;margin-bottom:16px}
+.contc.hidden{display:none}
+.contc .clab{font-size:11px;color:#8fe0a6;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:4px}
+.contc .ctit{font-size:15px;font-weight:600;color:#eafff0;line-height:1.3}
+.contc .primary{margin-top:11px;background:linear-gradient(145deg,#3dd46a,#27c257);
+box-shadow:0 8px 22px rgba(48,209,88,.35);color:#06140a}
+.boxst{display:flex;align-items:center;justify-content:center;gap:7px;font-size:12px;
+color:var(--sub);margin-top:18px;min-height:16px}
+.boxst .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.boxst .dot.on{background:#30d158;box-shadow:0 0 7px rgba(48,209,88,.7)}
+.boxst .dot.off{background:#ff453a}
 </style></head><body><div class="wrap">
 
 <div class="top">
@@ -1498,6 +1535,11 @@ border:1px solid rgba(10,132,255,.38);border-radius:16px;padding:14px 16px;margi
   <div class="rlab">&#128233; Te han recomendado</div>
   <div id="rtit" class="rtit"></div>
   <button id="recbtn" class="primary" onclick="recAction()">Buscar en mi tele</button>
+ </div>
+ <div id="contc" class="contc hidden">
+  <div class="clab">&#9654; Continuar viendo</div>
+  <div id="contt" class="ctit"></div>
+  <button class="primary" onclick="contPlay()">Continuar en mi tele</button>
  </div>
  <div class="search">
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8a93a6" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -1572,6 +1614,7 @@ border:1px solid rgba(10,132,255,.38);border-radius:16px;padding:14px 16px;margi
  </div>
 </div>
 
+<div id="boxst" class="boxst"></div>
 <div class="foot">MejorWolf &middot; mando remoto</div>
 </div><script>
 var p=new URLSearchParams(location.search);
@@ -1608,7 +1651,7 @@ function showTab(t){haptic();
  document.getElementById('tab-mando').classList.toggle('on',t==='mando');
  document.getElementById('tab-lista').classList.toggle('on',t==='lista');
  if(t==='lista') startLive(); else stopLive();
- if(t==='mando') startNow(); else stopNow();}
+ if(t==='mando'){startNow();startStatus();}else{stopNow();stopStatus();}}
 
 var listTs=0,listLive=false,listReqTimer=null,listPollT=null;
 function parseLabel(label){
@@ -1715,6 +1758,32 @@ function pollNow(){var c=code.value.trim();
 function startNow(){if(npLive)return;npLive=true;pollNow();npTick=setInterval(renderNow,1000);}
 function stopNow(){npLive=false;if(npPollT){clearTimeout(npPollT);npPollT=null;}if(npTick){clearInterval(npTick);npTick=null;}}
 
+// ---- Estado del box (conectado/versión) + Continuar viendo ----
+var stLive=false,stPollT=null,contRef=null;
+function fmtMM(s){s=Math.max(0,Math.round(s));var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;
+ return (h>0?h+':':'')+(h>0?String(m).padStart(2,'0'):''+m)+':'+String(x).padStart(2,'0');}
+function renderStatus(j){
+ var el=document.getElementById('boxst'),cc=document.getElementById('contc');
+ if(!j){el.innerHTML='';cc.classList.add('hidden');contRef=null;return;}
+ var conn=!!j.connected;
+ el.innerHTML='<span class="dot '+(conn?'on':'off')+'"></span>'+(conn?('Tele conectada'+(j.v?' · MejorWolf '+j.v:'')):'Tele desconectada — abre Kodi en la tele');
+ var c=j.cont;
+ if(conn&&c&&c.total>0&&c.elapsed<c.total*0.92){
+  contRef=c;
+  document.getElementById('contt').textContent='«'+(c.title||'')+'»  ·  '+fmtMM(c.elapsed)+' / '+fmtMM(c.total);
+  cc.classList.remove('hidden');
+ }else{contRef=null;cc.classList.add('hidden');}}
+function pollStatus(){var c=code.value.trim();
+ if(c.length>=6){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(renderStatus).catch(function(){});}
+ if(stLive) stPollT=setTimeout(pollStatus,12000);}
+function startStatus(){if(stLive)return;stLive=true;pollStatus();}
+function stopStatus(){stLive=false;if(stPollT){clearTimeout(stPollT);stPollT=null;}}
+function contPlay(){var cc=document.getElementById('contc');if(cc)cc.classList.add('hidden');
+ haptic();var c=getCode();if(!c)return;if(!contRef)return;
+ var body={code:c,cmd:'play_ref',a:contRef.a,t:contRef.title||'',resume:contRef.elapsed};
+ if(contRef.a==='dt'){body.c=contRef.ci;body.tb=contRef.tb;}else{body.u=contRef.u;}
+ setMsg('Reanudando en tu tele...','ok');post(body,'Reanudando');}
+
 // ---- Busqueda por voz (Web Speech API, gratis; Chrome Android) ----
 var rec=null;
 (function initVoice(){
@@ -1734,9 +1803,9 @@ var rec=null;
 })();
 
 document.addEventListener('visibilitychange',function(){
- if(document.hidden){stopLive();stopNow();}
+ if(document.hidden){stopLive();stopNow();stopStatus();}
  else{ if(!document.getElementById('pane-lista').classList.contains('hidden')) startLive();
-       if(!document.getElementById('pane-mando').classList.contains('hidden')) startNow(); }});
+       if(!document.getElementById('pane-mando').classList.contains('hidden')){ startNow(); startStatus(); } }});
 
 // ---- Compartir pelicula por enlace (sin guardar nada: el titulo va en el link) ----
 function shareItem(e){if(e)e.stopPropagation();
@@ -1766,7 +1835,7 @@ function recPlay(){var b=document.getElementById('recb');if(b)b.classList.add('h
  if(recRef.a==='dt'){body.c=recRef.c;body.tb=recRef.tb;}else{body.u=recRef.u;}
  setMsg('Abriendo en tu tele...','ok');post(body,'Abriendo en tu tele');}
 function recAction(){if(recMode==='play')recPlay();else recSearch();}
-startNow();
+startNow();startStatus();
 (function handleShare(){
  var play=p.get('play');
  if(play){var t=p.get('t')||'';var yr=p.get('yr')||'';
@@ -1846,6 +1915,10 @@ def kb_send():
             a = (body.get("a") or "").strip().lower()[:4]
             ev["a"] = a
             ev["t"] = (body.get("t") or "")[:160]
+            try:
+                ev["resume"] = max(0, int(body.get("resume") or 0))
+            except (TypeError, ValueError):
+                ev["resume"] = 0
             if a == "dt":
                 ev["cid"] = re.sub(r"\D", "", str(body.get("c") or ""))[:12]
                 ev["tb"] = re.sub(r"[^a-z0-9_]", "",
@@ -1961,6 +2034,51 @@ def kb_now_get():
     if entry and (_t.time() - entry.get("ts", 0)) < _KB_NOW_TTL:
         return jsonify({"np": entry.get("np")})
     return jsonify({"np": None})
+
+
+@app.post("/kb/status")
+def kb_status_push():
+    """Latido del box: version + (opcional) 'Continuar viendo'."""
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    code = re.sub(r"\D", "", str(body.get("code") or ""))[:6]
+    if len(code) != 6:
+        return jsonify({"ok": False}), 400
+    now = _t.time()
+    d = _kbstatus_load()
+    d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _KB_STATUS_TTL}
+    entry = {"v": str(body.get("v", ""))[:16], "ts": now}
+    cont = body.get("cont")
+    if isinstance(cont, dict):
+        entry["cont"] = {
+            "title": str(cont.get("title", ""))[:120],
+            "a": str(cont.get("a", ""))[:4],
+            "ci": re.sub(r"\D", "", str(cont.get("ci", "")))[:12],
+            "tb": re.sub(r"[^a-z0-9_]", "",
+                         str(cont.get("tb", "")).lower())[:24],
+            "u": str(cont.get("u", ""))[:2000],
+            "elapsed": int(cont.get("elapsed", 0) or 0),
+            "total": int(cont.get("total", 0) or 0),
+        }
+    d[code] = entry
+    _kbstatus_save(d)
+    return jsonify({"ok": True})
+
+
+@app.get("/kb/status")
+def kb_status_get():
+    """El movil lee el estado del box (conectado, version, continuar)."""
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    if len(code) != 6:
+        return jsonify({"connected": False})
+    entry = _kbstatus_load().get(code)
+    if not entry:
+        return jsonify({"connected": False})
+    age = _t.time() - entry.get("ts", 0)
+    return jsonify({"connected": age < 90, "age": int(age),
+                    "v": entry.get("v", ""), "cont": entry.get("cont")})
 
 
 @app.get("/kb/qr")

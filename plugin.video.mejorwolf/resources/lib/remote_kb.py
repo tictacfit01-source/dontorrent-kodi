@@ -117,6 +117,20 @@ def push_now(np):
         pass
 
 
+def push_status(version, cont=None):
+    """Latido del box al relay: version del addon + (opcional) 'Continuar
+    viendo' (cont = dict con title/a/ci/tb/u/elapsed/total)."""
+    base = relay_base()
+    if not base:
+        return
+    try:
+        requests.post(f"{base}/kb/status",
+                      json={"code": get_code(), "v": version, "cont": cont},
+                      timeout=8)
+    except Exception:
+        pass
+
+
 def poll(timeout=10):
     """Devuelve los eventos pendientes del movil (y los consume).
 

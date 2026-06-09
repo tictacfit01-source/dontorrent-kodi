@@ -23,6 +23,7 @@ MAIN_TICK = 5               # ciclo del bucle principal (FA + keep-warm)
 KB_POLL_GAP = 0.3           # sondeo del teclado remoto en su propio hilo:
                             # rapido para que el mando responda agil (~0.5s)
 NOW_GAP = 1.5               # cada cuanto subimos el estado "Estas viendo..."
+HEARTBEAT_GAP = 30          # latido de estado (tele conectada + Continuar)
 FA_GAP = 6                  # separacion entre notas FA (~10/min: ritmo humano)
 # Backoff EXPONENCIAL ante bloqueos de FA. Reintentar a menudo cuando FA ya
 # te bloquea solo PERPETUA el bloqueo (no deja recuperar la IP). Por eso al
@@ -325,8 +326,62 @@ def _play_ref(ev):
         xbmc.log("[MejorWolf/service] play_ref -> %s" % url[:120],
                  xbmc.LOGINFO)
         xbmc.executebuiltin('PlayMedia("%s")' % url)
+        try:
+            resume = int(ev.get("resume") or 0)
+        except (TypeError, ValueError):
+            resume = 0
+        if resume > 5:
+            _resume_seek_async(resume)
     except Exception as e:
         xbmc.log("[MejorWolf/service] play_ref error: %s" % e, xbmc.LOGWARNING)
+
+
+def _resume_seek_async(resume):
+    """Tras lanzar la reproduccion, espera a que Elementum cargue y hace un
+    seek ABSOLUTO al segundo `resume` (para 'Continuar viendo'). Best-effort:
+    si no llega a tiempo, simplemente empieza desde el principio."""
+    import threading
+
+    def _worker():
+        try:
+            import json
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                xbmc.sleep(1000)
+                res = xbmc.executeJSONRPC(
+                    '{"jsonrpc":"2.0","id":1,'
+                    '"method":"Player.GetActivePlayers"}')
+                players = (json.loads(res).get("result") or [])
+                vid = next((p for p in players
+                            if p.get("type") == "video"), None)
+                if not vid:
+                    continue
+                pid = vid["playerid"]
+                pr = json.loads(xbmc.executeJSONRPC(json.dumps({
+                    "jsonrpc": "2.0", "id": 1,
+                    "method": "Player.GetProperties",
+                    "params": {"playerid": pid,
+                               "properties": ["totaltime"]}})))
+                tt = (pr.get("result") or {}).get("totaltime") or {}
+                total = (int(tt.get("hours", 0)) * 3600
+                         + int(tt.get("minutes", 0)) * 60
+                         + int(tt.get("seconds", 0)))
+                if total <= 0:
+                    continue   # aun cargando metadata
+                h, m, s = resume // 3600, (resume % 3600) // 60, resume % 60
+                xbmc.executeJSONRPC(json.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "Player.Seek",
+                    "params": {"playerid": pid,
+                               "value": {"time": {"hours": h, "minutes": m,
+                                                  "seconds": s}}}}))
+                xbmc.log("[MejorWolf/service] resume seek -> %ds" % resume,
+                         xbmc.LOGINFO)
+                return
+        except Exception as e:
+            xbmc.log("[MejorWolf/service] resume seek error: %s" % e,
+                     xbmc.LOGDEBUG)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _warm_dt():
@@ -359,6 +414,67 @@ def _read_np_title():
             return f.read().strip()
     except Exception:
         return ""
+
+
+_CONTINUE_FILE = "special://temp/mejorwolf_continue.json"
+
+
+def _addon_version():
+    try:
+        import xbmcaddon
+        return xbmcaddon.Addon("plugin.video.mejorwolf").getAddonInfo("version")
+    except Exception:
+        return ""
+
+
+def _update_continue(elapsed, total):
+    """Actualiza la posicion del fichero 'Continuar viendo' mientras se ve.
+    El fichero lo CREA el addon (play/dt_play) con titulo+referencia; aqui solo
+    refrescamos elapsed/total/ts."""
+    try:
+        import os
+        import json
+        import xbmcvfs
+        p = xbmcvfs.translatePath(_CONTINUE_FILE)
+        if not os.path.exists(p):
+            return
+        with open(p, "r", encoding="utf-8") as f:
+            rec = json.load(f) or {}
+        rec["elapsed"] = int(elapsed or 0)
+        rec["total"] = int(total or 0)
+        rec["ts"] = time.time()
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+    except Exception:
+        pass
+
+
+def _read_continue_push():
+    """Devuelve el 'Continuar viendo' para el latido, o None. Solo si es
+    reciente (< 14 dias), tiene duracion y NO esta casi terminado (>92%)."""
+    try:
+        import os
+        import json
+        import xbmcvfs
+        p = xbmcvfs.translatePath(_CONTINUE_FILE)
+        if not os.path.exists(p):
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            rec = json.load(f) or {}
+        total = int(rec.get("total", 0) or 0)
+        elapsed = int(rec.get("elapsed", 0) or 0)
+        ts = rec.get("ts", 0)
+        if total <= 0 or elapsed < 30:
+            return None
+        if time.time() - ts > 14 * 86400:
+            return None
+        if elapsed >= total * 0.92:       # practicamente terminado
+            return None
+        return {"title": rec.get("title", ""), "a": rec.get("a", ""),
+                "ci": rec.get("ci", ""), "tb": rec.get("tb", ""),
+                "u": rec.get("u", ""), "elapsed": elapsed, "total": total}
+    except Exception:
+        return None
 
 
 def _get_now_playing():
@@ -452,6 +568,7 @@ def _kb_thread(monitor):
                 np = _get_now_playing()
                 if np:
                     rkb.push_now(np)
+                    _update_continue(np.get("elapsed"), np.get("total"))
                     was_playing = True
                 elif was_playing:
                     rkb.push_now(None)
@@ -480,6 +597,9 @@ def main():
     last_ping = time.time()
     next_fa = 0.0          # cuando podemos resolver la proxima nota FA
     consec_blocks = 0      # bloqueos seguidos (para el backoff exponencial)
+    last_beat = 0.0        # ultimo latido de estado al relay
+    _addon_ver = _addon_version()
+    from resources.lib import remote_kb as rkb
 
     while not monitor.abortRequested():
         if monitor.waitForAbort(MAIN_TICK):
@@ -492,6 +612,14 @@ def main():
             if base:
                 _ping(base)
             last_ping = now
+
+        # 1b) latido de estado: 'tele conectada' + version + 'Continuar viendo'
+        if now - last_beat >= HEARTBEAT_GAP:
+            last_beat = now
+            try:
+                rkb.push_status(_addon_ver, _read_continue_push())
+            except Exception:
+                pass
 
         # 2) notas FilmAffinity, espaciadas (ritmo humano) con backoff
         if now >= next_fa:
