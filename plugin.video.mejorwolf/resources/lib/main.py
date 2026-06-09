@@ -22,6 +22,7 @@ import xbmcvfs
 from . import scraper_wolfmax as wf
 from . import scraper_elitetorrent as et
 from . import scraper_dontorrent as dt
+from . import scraper_divxtotal as dx
 from . import supabase_sync as sb
 from . import tmdb, player
 from . import filmaffinity as fa
@@ -150,7 +151,8 @@ KIND_LABEL = {
     "castellano":   "Castellano",
 }
 
-SOURCE_LABEL = {"dt": "DonTorrent", "et": "EliteTorrent", "wf": "WolfMax4K"}
+SOURCE_LABEL = {"dt": "DonTorrent", "et": "EliteTorrent", "wf": "WolfMax4K",
+                "dx": "DivxTotal"}
 _SCRAPERS    = {"wf": wf, "dt": dt}
 
 
@@ -757,6 +759,8 @@ def detail(src, url, kind, title):
         return _detail_dt(url, kind, title)
     if src == "et":
         return _detail_et(url, kind, title)
+    if src == "dx":
+        return _detail_dx(url, kind, title)
     return _detail_wf(url, kind, title)
 
 
@@ -848,6 +852,54 @@ def _detail_et(url, kind, title):
         )
 
     if not results:
+        _error("Sin enlaces de descarga.", xbmcgui.NOTIFICATION_WARNING, 6000)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _detail_dx(url, kind, title):
+    """Ficha DivxTotal: .torrent estático (sin PoW). play() lo baja vía relay."""
+    try:
+        d = dx.detail(url)
+    except Exception as e:
+        xbmc.log(f"[MejorWolf] dx detail error: {e}", xbmc.LOGERROR)
+        _error(f"Error DivxTotal: {type(e).__name__}")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    meta = tmdb.enrich(title, kind=_tmdb_kind(kind))
+    art = _build_art(meta, d)
+    info_base = _build_info_base(meta, d)
+    movie_label = d.get("title") or title or "Película"
+    has_episodes = any(dl.get("season") is not None for dl in d["downloads"])
+    year_str = f" ({meta.get('year') or d.get('year', '')})" if (
+        meta.get("year") or d.get("year")) else ""
+
+    for dl in d["downloads"]:
+        if has_episodes and dl.get("season") is None:
+            continue
+        quality = dl.get("quality", "")
+        if has_episodes:
+            label = dl.get("label", "Capítulo")
+            if quality and quality.lower() not in label.lower():
+                label = f"{label} [{quality}]"
+            mtype = "episode"
+        else:
+            label = movie_label + year_str
+            if quality and quality.lower() not in label.lower():
+                label = f"{label} [{quality}]"
+            mtype = "movie"
+        item_info = dict(info_base, title=label, mediatype=mtype)
+        if has_episodes and dl.get("season") is not None:
+            item_info["season"] = dl["season"]
+            item_info["episode"] = dl.get("episode", 0)
+        xbmcplugin.addDirectoryItem(
+            HANDLE,
+            _u(action="play", torrent=dl["torrent_url"], t=label),
+            _li(label, info=item_info, art=art, playable=True),
+            isFolder=False,
+        )
+
+    if not d["downloads"]:
         _error("Sin enlaces de descarga.", xbmcgui.NOTIFICATION_WARNING, 6000)
     xbmcplugin.endOfDirectory(HANDLE)
 
@@ -1002,9 +1054,24 @@ def play(torrent_url, title=""):
     # HTTP URL → fetch .torrent → magnet
     if low.startswith(("http://", "https://")):
         try:
-            sess = hs.make_session()
-            r = hs.get(sess, torrent_url, timeout=30)
-            data = r.content or b""
+            # Bajar el .torrent vía RELAY (IP de datacenter, sin bloqueo ISP):
+            # fuentes como DivxTotal están bloqueadas en directo desde el box.
+            data = b""
+            try:
+                relay_url = dt._render_relay_url()
+                if relay_url:
+                    import requests as _rq
+                    rr = _rq.get(f"{relay_url}/relay",
+                                 params={"u": torrent_url}, timeout=30)
+                    if rr.status_code == 200 and len(rr.content) > 100:
+                        data = rr.content
+            except Exception:
+                data = b""
+            # Fallback: directo (PC / redes sin bloqueo, o host no permitido).
+            if not data:
+                sess = hs.make_session()
+                r = hs.get(sess, torrent_url, timeout=30)
+                data = r.content or b""
             # Aviso RAR (sin red extra: leemos los bytes ya descargados).
             if data and tparse.is_packed(data):
                 if not xbmcgui.Dialog().yesno(
@@ -1478,7 +1545,7 @@ def _run_search(q, filter_kind=None):
     all_items = []
     source_counts = {}
     _results = {}                  # label -> [items]
-    _events = {lbl: threading.Event() for lbl in ("DT", "ET", "WF")}
+    _events = {lbl: threading.Event() for lbl in ("DT", "ET", "WF", "DX")}
 
     def _search_src(label, fn):
         try:
@@ -1498,7 +1565,8 @@ def _run_search(q, filter_kind=None):
 
     # 1) Lanzamos YA los hilos (la propia peticion de DT despierta el relay).
     start = time.time()
-    for lbl, fn in (("DT", dt.search), ("ET", et.search), ("WF", wf.search)):
+    for lbl, fn in (("DT", dt.search), ("ET", et.search), ("WF", wf.search),
+                    ("DX", dx.search)):
         threading.Thread(target=_search_src, args=(lbl, fn),
                          daemon=True).start()
 
@@ -1521,12 +1589,13 @@ def _run_search(q, filter_kind=None):
 
     # Deadline POR FUENTE. DT lleva el margen mayor (adaptativo segun calor);
     # ET y WF no deben hacer esperar.
-    PER_SOURCE_TIMEOUT = {"DT": dt_to, "ET": 8, "WF": 7}
+    PER_SOURCE_TIMEOUT = {"DT": dt_to, "ET": 8, "WF": 7, "DX": 8}
 
     # Diálogo de carga CENTRADO con barra de %. Va mostrando el estado de cada
     # fuente en vivo y se puede cancelar. No penaliza la velocidad: las fuentes
     # corren en hilos aparte; aqui solo refrescamos la UI cada 0.2s.
-    NAMES = {"DT": "DonTorrent", "ET": "EliteTorrent", "WF": "WolfMax4K"}
+    NAMES = {"DT": "DonTorrent", "ET": "EliteTorrent", "WF": "WolfMax4K",
+             "DX": "DivxTotal"}
     dlg = None
     try:
         dlg = xbmcgui.DialogProgress()
@@ -1541,7 +1610,7 @@ def _run_search(q, filter_kind=None):
         while True:
             now = time.time()
             elapsed = now - start
-            for lbl in ("DT", "ET", "WF"):
+            for lbl in ("DT", "ET", "WF", "DX"):
                 if lbl in done:
                     continue
                 if _events[lbl].is_set():
@@ -1557,11 +1626,11 @@ def _run_search(q, filter_kind=None):
                              xbmc.LOGWARNING)
             if dlg is not None:
                 # % combina fuentes completadas y tiempo transcurrido
-                pct = max(int(len(done) / 3.0 * 100),
+                pct = max(int(len(done) / 4.0 * 100),
                           int(min(95, elapsed / max_deadline * 90)))
-                pct = min(99, pct) if len(done) < 3 else 100
+                pct = min(99, pct) if len(done) < 4 else 100
                 lines = []
-                for lbl in ("DT", "ET", "WF"):
+                for lbl in ("DT", "ET", "WF", "DX"):
                     nm = NAMES[lbl]
                     if lbl not in done:
                         estado = ("despertando..." if (warmth == "cold"
@@ -1579,7 +1648,7 @@ def _run_search(q, filter_kind=None):
                     pass
                 if dlg.iscanceled():
                     break
-            if len(done) == 3:
+            if len(done) == 4:
                 break
             if elapsed > max_deadline + 1:
                 break
@@ -1595,6 +1664,7 @@ def _run_search(q, filter_kind=None):
     total_elapsed = time.time() - start
     xbmc.log(f"[MejorWolf] search totals: DT={source_counts.get('DT',0)} "
              f"ET={source_counts.get('ET',0)} WF={source_counts.get('WF',0)} "
+             f"DX={source_counts.get('DX',0)} "
              f"total_raw={len(all_items)} en {total_elapsed:.1f}s", xbmc.LOGINFO)
     # Aviso breve con el tiempo total (para tener controlado el rendimiento)
     try:
@@ -1634,7 +1704,7 @@ def _run_search(q, filter_kind=None):
     #   WolfMax4K (8 resultados)
     # Dentro de cada carpeta: peliculas y series agrupadas por nombre.
     cache_key = re.sub(r"[^a-zA-Z0-9]", "_", q.lower())[:40]
-    by_source = {"dt": [], "et": [], "wf": []}
+    by_source = {"dt": [], "et": [], "wf": [], "dx": []}
     for it in items:
         src = it.get("source", "dt")
         by_source.setdefault(src, []).append(it)
@@ -1646,7 +1716,8 @@ def _run_search(q, filter_kind=None):
     xbmcplugin.setPluginCategory(HANDLE, f"Búsqueda: {q}")
 
     # Orden: DT primero (mas catalogo), luego ET, luego WF
-    order = [("dt", "DonTorrent"), ("et", "EliteTorrent"), ("wf", "WolfMax4K")]
+    order = [("dt", "DonTorrent"), ("et", "EliteTorrent"),
+             ("dx", "DivxTotal"), ("wf", "WolfMax4K")]
     for src, src_label in order:
         src_items = by_source.get(src, [])
         if not src_items:
@@ -1715,7 +1786,7 @@ def show_source_results(src, cache_key, q=""):
     if not items_data and q:
         xbmc.log(f"[MejorWolf] source_results: cache miss, re-buscando "
                  f"{src} '{q}'", xbmc.LOGINFO)
-        scraper_map = {"dt": dt, "et": et, "wf": wf}
+        scraper_map = {"dt": dt, "et": et, "wf": wf, "dx": dx}
         scraper = scraper_map.get(src)
         if scraper:
             try:
