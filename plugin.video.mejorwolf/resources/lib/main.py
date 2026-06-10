@@ -863,8 +863,30 @@ def _detail_et(url, kind, title):
     xbmcplugin.endOfDirectory(HANDLE)
 
 
+def _add_dx_episodes(eps, info_base, art, show_label):
+    """Lista episodios DivxTotal (reproducibles) ordenados por temporada/cap."""
+    for dl in sorted(eps, key=lambda d: (d.get("season") or 0,
+                                         d.get("episode") or 0)):
+        s = dl.get("season") or 0
+        e = dl.get("episode") or 0
+        q = dl.get("quality", "")
+        label = "%dx%02d" % (s, e)
+        if q and q.lower() not in label.lower():
+            label = f"{label} [{q}]"
+        info = dict(info_base, title=label, mediatype="episode",
+                    season=s, episode=e)
+        xbmcplugin.addDirectoryItem(
+            HANDLE,
+            _u(action="play", torrent=dl["torrent_url"],
+               t="%s %dx%02d" % (show_label, s, e)),
+            _li(label, info=info, art=art, playable=True),
+            isFolder=False,
+        )
+
+
 def _detail_dx(url, kind, title):
-    """Ficha DivxTotal: .torrent estático (sin PoW). play() lo baja vía relay."""
+    """Ficha DivxTotal. Películas: ítem reproducible. Series: agrupadas por
+    TEMPORADA (igual que DonTorrent/WolfMax). play() baja el .torrent vía relay."""
     try:
         d = dx.detail(url)
     except Exception as e:
@@ -876,38 +898,73 @@ def _detail_dx(url, kind, title):
     meta = tmdb.enrich(title, kind=_tmdb_kind(kind))
     art = _build_art(meta, d)
     info_base = _build_info_base(meta, d)
-    movie_label = d.get("title") or title or "Película"
-    has_episodes = any(dl.get("season") is not None for dl in d["downloads"])
+    show_label = d.get("title") or title or "Película"
     year_str = f" ({meta.get('year') or d.get('year', '')})" if (
         meta.get("year") or d.get("year")) else ""
+    downloads = d.get("downloads", [])
+    eps = [dl for dl in downloads if dl.get("season") is not None]
 
-    for dl in d["downloads"]:
-        if has_episodes and dl.get("season") is None:
-            continue
-        quality = dl.get("quality", "")
-        if has_episodes:
-            label = dl.get("label", "Capítulo")
-            if quality and quality.lower() not in label.lower():
-                label = f"{label} [{quality}]"
-            mtype = "episode"
+    if eps:
+        # SERIE: una carpeta por temporada; si solo hay una, episodios directos.
+        seasons = sorted(set(dl["season"] for dl in eps))
+        xbmcplugin.setPluginCategory(HANDLE, show_label)
+        if len(seasons) > 1:
+            xbmcplugin.setContent(HANDLE, "seasons")
+            for s in seasons:
+                n = sum(1 for dl in eps if dl["season"] == s)
+                lab = f"Temporada {s}  ({n} cap.)"
+                info = dict(info_base, title=lab, mediatype="season", season=s)
+                xbmcplugin.addDirectoryItem(
+                    HANDLE,
+                    _u(action="dx_season", url=url, season=s, title=show_label),
+                    _li(lab, info=info, art=art),
+                    isFolder=True)
         else:
-            label = movie_label + year_str
-            if quality and quality.lower() not in label.lower():
-                label = f"{label} [{quality}]"
-            mtype = "movie"
-        item_info = dict(info_base, title=label, mediatype=mtype)
-        if has_episodes and dl.get("season") is not None:
-            item_info["season"] = dl["season"]
-            item_info["episode"] = dl.get("episode", 0)
-        xbmcplugin.addDirectoryItem(
-            HANDLE,
-            _u(action="play", torrent=dl["torrent_url"], t=label),
-            _li(label, info=item_info, art=art, playable=True),
-            isFolder=False,
-        )
+            xbmcplugin.setContent(HANDLE, "episodes")
+            _add_dx_episodes(eps, info_base, art, show_label)
+    else:
+        # PELÍCULA
+        xbmcplugin.setContent(HANDLE, "movies")
+        for dl in downloads:
+            q = dl.get("quality", "")
+            label = show_label + year_str
+            if q and q.lower() not in label.lower():
+                label = f"{label} [{q}]"
+            info = dict(info_base, title=label, mediatype="movie")
+            xbmcplugin.addDirectoryItem(
+                HANDLE,
+                _u(action="play", torrent=dl["torrent_url"], t=label),
+                _li(label, info=info, art=art, playable=True),
+                isFolder=False)
+        if not downloads:
+            _error("Sin enlaces de descarga.",
+                   xbmcgui.NOTIFICATION_WARNING, 6000)
+    xbmcplugin.endOfDirectory(HANDLE)
 
-    if not d["downloads"]:
-        _error("Sin enlaces de descarga.", xbmcgui.NOTIFICATION_WARNING, 6000)
+
+def dx_season(url, season, title=""):
+    """Episodios de UNA temporada de una serie DivxTotal (re-lee la ficha)."""
+    try:
+        season = int(season)
+    except (TypeError, ValueError):
+        season = 1
+    try:
+        d = dx.detail(url)
+    except Exception as e:
+        xbmc.log(f"[MejorWolf] dx_season error: {e}", xbmc.LOGERROR)
+        _error(f"Error DivxTotal: {type(e).__name__}")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+    show_label = d.get("title") or title or "Serie"
+    meta = tmdb.enrich(show_label, kind="tv")
+    art = _build_art(meta, d)
+    info_base = _build_info_base(meta, d)
+    eps = [dl for dl in d.get("downloads", []) if dl.get("season") == season]
+    xbmcplugin.setPluginCategory(HANDLE, f"{show_label} · Temporada {season}")
+    xbmcplugin.setContent(HANDLE, "episodes")
+    _add_dx_episodes(eps, info_base, art, show_label)
+    if not eps:
+        _error("Sin episodios.", xbmcgui.NOTIFICATION_WARNING, 5000)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -2372,6 +2429,9 @@ def router(qs):
                                                params.get("title", ""))
         elif action == "play":          play(params.get("torrent", ""),
                                              params.get("t", ""))
+        elif action == "dx_season":     dx_season(params.get("url", ""),
+                                                  params.get("season", "1"),
+                                                  params.get("title", ""))
         elif action == "dt_play":       dt_play(params.get("content_id", ""),
                                                  params.get("tabla", ""),
                                                  page_url=params.get("page_url", ""),

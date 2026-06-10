@@ -45,8 +45,10 @@ _SECTION = {"movie": "peliculas", "movie_hd": "peliculas",
 _QUALITY_RE = re.compile(
     r"\b(2160p|4K|1080p|720p|480p|BluRay|Blu-Ray|BDRemux|BDRip|BRRip|"
     r"WEB-?DL|WEBRip|HDRip|MicroHD|DVDRip|HDTV|HDR)\b", re.I)
-_EPISODE_RE = re.compile(
-    r"(\d{1,2})\s*[xX×]\s*(\d{1,3})|[Ss](\d{1,2})[Ee](\d{1,3})")
+# El marcador de episodio va al FINAL del contexto ("The Pitt2x12"), por eso lo
+# anclamos a $ para no confundirnos con numeros del titulo.
+_EP_END = re.compile(r"(\d{1,2})\s*[xX×]\s*(\d{1,3})\s*$")
+_EP_TAIL = re.compile(r"\s*\d{1,2}\s*[xX×]\s*\d{1,3}\s*$")
 _SLUG_RE = re.compile(r"/(peliculas|series)/[a-z0-9][a-z0-9\-]+/?$", re.I)
 
 
@@ -107,6 +109,10 @@ def _parse_listing(html, dom):
         title = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
         if not title or len(title) < 2:
             continue
+        # En series, el listado muestra "Show 2x12": quitamos el marcador para
+        # que quede el nombre limpio del show (la ficha agrupa los episodios).
+        if kind == "tvshow":
+            title = _EP_TAIL.sub("", title).strip() or title
         seen.add(url)
         items.append({"title": title, "url": url, "kind": kind,
                       "image": None, "quality": "", "source": SOURCE})
@@ -196,15 +202,12 @@ def detail(url):
             continue
         seen.add(turl)
         ctx = (a.find_parent("tr") or a.parent or a).get_text(" ", strip=True)
-        em = _EPISODE_RE.search(ctx)
+        em = _EP_END.search(ctx.strip())
         season = episode = None
         label = a.get_text(" ", strip=True) or (title or "Descargar")
         if em:
-            if em.group(1):
-                season, episode = int(em.group(1)), int(em.group(2))
-            else:
-                season, episode = int(em.group(3)), int(em.group(4))
-            label = "%02dx%02d" % (season, episode)
+            season, episode = int(em.group(1)), int(em.group(2))
+            label = "%dx%02d" % (season, episode)
         downloads.append({"torrent_url": turl, "label": label,
                           "season": season, "episode": episode,
                           "quality": quality})
