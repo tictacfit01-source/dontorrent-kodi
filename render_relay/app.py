@@ -1506,9 +1506,13 @@ border:1px solid rgba(10,132,255,.38);border-radius:16px;padding:14px 16px;margi
 .recb .rlab{font-size:11px;color:#8fb6ff;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:4px}
 .recb .rtit{font-size:17px;font-weight:700;line-height:1.25;color:#eaf1ff}
 .recb .primary{margin-top:12px}
-.contc{background:linear-gradient(145deg,rgba(48,209,88,.16),rgba(48,209,88,.05));
+.contc{position:relative;background:linear-gradient(145deg,rgba(48,209,88,.16),rgba(48,209,88,.05));
 border:1px solid rgba(48,209,88,.36);border-radius:16px;padding:14px 16px;margin-bottom:16px}
 .contc.hidden{display:none}
+.contc .cx{position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:50%;
+display:flex;align-items:center;justify-content:center;font-size:20px;line-height:1;color:var(--sub);
+cursor:pointer;transition:.15s;border:1px solid var(--stroke);background:rgba(255,255,255,.05)}
+.contc .cx:active{transform:scale(.9);background:rgba(255,255,255,.14)}
 .contc .clab{font-size:11px;color:#8fe0a6;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:4px}
 .contc .ctit{font-size:15px;font-weight:600;color:#eafff0;line-height:1.3}
 .contc .primary{margin-top:11px;background:linear-gradient(145deg,#3dd46a,#27c257);
@@ -1537,6 +1541,7 @@ color:var(--sub);margin-top:18px;min-height:16px}
   <button id="recbtn" class="primary" onclick="recAction()">Buscar en mi tele</button>
  </div>
  <div id="contc" class="contc hidden">
+  <div class="cx" onclick="contDismiss()" title="Descartar">&times;</div>
   <div class="clab">&#9654; Continuar viendo</div>
   <div id="contt" class="ctit"></div>
   <button class="primary" onclick="contPlay()">Continuar en mi tele</button>
@@ -1759,7 +1764,9 @@ function startNow(){if(npLive)return;npLive=true;pollNow();npTick=setInterval(re
 function stopNow(){npLive=false;if(npPollT){clearTimeout(npPollT);npPollT=null;}if(npTick){clearInterval(npTick);npTick=null;}}
 
 // ---- Estado del box (conectado/versión) + Continuar viendo ----
-var stLive=false,stPollT=null,contRef=null;
+var stLive=false,stPollT=null,contRef=null,contDismissed='';
+try{contDismissed=localStorage.getItem('mw_cont_dismiss')||'';}catch(e){}
+function contKey(c){return c?((c.a||'')+':'+(c.ci||c.u||'')+':'+(c.title||'')):'';}
 function fmtMM(s){s=Math.max(0,Math.round(s));var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;
  return (h>0?h+':':'')+(h>0?String(m).padStart(2,'0'):''+m)+':'+String(x).padStart(2,'0');}
 function renderStatus(j){
@@ -1768,7 +1775,7 @@ function renderStatus(j){
  var conn=!!j.connected;
  el.innerHTML='<span class="dot '+(conn?'on':'off')+'"></span>'+(conn?('Tele conectada'+(j.v?' · MejorWolf '+j.v:'')):'Tele desconectada — abre Kodi en la tele');
  var c=j.cont;
- if(conn&&c&&c.total>0&&c.elapsed<c.total*0.92){
+ if(conn&&c&&c.total>0&&c.elapsed<c.total*0.92&&contKey(c)!==contDismissed){
   contRef=c;
   document.getElementById('contt').textContent='«'+(c.title||'')+'»  ·  '+fmtMM(c.elapsed)+' / '+fmtMM(c.total);
   cc.classList.remove('hidden');
@@ -1783,6 +1790,9 @@ function contPlay(){var cc=document.getElementById('contc');if(cc)cc.classList.a
  var body={code:c,cmd:'play_ref',a:contRef.a,t:contRef.title||'',resume:contRef.elapsed};
  if(contRef.a==='dt'){body.c=contRef.ci;body.tb=contRef.tb;}else{body.u=contRef.u;}
  setMsg('Reanudando en tu tele...','ok');post(body,'Reanudando');}
+function contDismiss(){if(contRef)contDismissed=contKey(contRef);
+ try{localStorage.setItem('mw_cont_dismiss',contDismissed);}catch(e){}
+ var cc=document.getElementById('contc');if(cc)cc.classList.add('hidden');haptic();}
 
 // ---- Busqueda por voz (Web Speech API, gratis; Chrome Android) ----
 var rec=null;
@@ -1843,12 +1853,14 @@ startNow();startStatus();
   document.getElementById('rtit').textContent=t+(yr?' ('+yr+')':'');
   document.getElementById('recbtn').textContent='▶ Ver ahora en mi tele';
   document.getElementById('recb').classList.remove('hidden');
+  try{history.replaceState({},'',location.pathname);}catch(e){}
   showTab('mando');return;}
  var v=p.get('ver');if(!v)return;var yr2=p.get('yr')||'';
  recMode='ver';recRef={t:v};
  document.getElementById('rtit').textContent=v+(yr2?' ('+yr2+')':'');
  document.getElementById('recbtn').textContent='Buscar en mi tele';
  document.getElementById('recb').classList.remove('hidden');
+ try{history.replaceState({},'',location.pathname);}catch(e){}
  showTab('mando');})();
 </script></body></html>"""
 

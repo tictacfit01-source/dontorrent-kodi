@@ -2,15 +2,19 @@
 
 DivxTotal NO usa PoW ni el Cloudflare duro (Turnstile): pasa con requests plano
 desde el relay. Por eso TODO va por el proxy /relay del relay (la IP de datacenter
-no está bloqueada por el ISP, igual que con las otras fuentes).
+no esta bloqueada por el ISP, igual que con las otras fuentes).
 
 Estructura del sitio (dominio rota: divxtotal.foo hoy):
-  - Búsqueda:  GET /?s=<query>  -> tabla con <a href="/peliculas/<slug>/"> o
+  - Busqueda:  GET /?s=<query>  -> tabla con <a href="/peliculas/<slug>/"> o
                <a href="/series/<slug>/">.
-  - Ficha:     /peliculas/<slug>/  -> <h1> título, año/calidad en el texto, y
-               botón de descarga <a href="download_tt.php?u=<base64(url .torrent)>">.
-  - El .torrent es un fichero ESTÁTICO en el dominio (sin token). Lo baja el
+  - Listados:  /peliculas/ , /series/  (paginacion: /peliculas/page/N/).
+  - Ficha:     /peliculas/<slug>/  -> <h1> titulo, ano/calidad en el texto, y
+               boton <a href="download_tt.php?u=<base64(url .torrent)>">.
+  - El .torrent es un fichero ESTATICO en el dominio (sin token). Lo baja el
     relay y lo convierte a magnet con torrent.torrent_to_magnet (en play()).
+
+Velocidad: la busqueda hace UNA sola llamada al relay (sin sondear la home
+antes). Solo si esa llamada no trae resultados se prueban otros dominios.
 """
 import re
 import base64
@@ -33,6 +37,11 @@ _DOMAINS = ["divxtotal.foo", "divxtotal.gg", "divxtotal.cam", "divxtotal.fyi",
             "divxtotal.run", "divxtotal.one", "divxtotal.es"]
 _cached_domain = None
 
+# Seccion del sitio por 'kind' (estrenos/cine/series).
+_SECTION = {"movie": "peliculas", "movie_hd": "peliculas",
+            "movie_4k": "peliculas", "estrenos": "peliculas",
+            "tvshow": "series", "tvshow_hd": "series"}
+
 _QUALITY_RE = re.compile(
     r"\b(2160p|4K|1080p|720p|480p|BluRay|Blu-Ray|BDRemux|BDRip|BRRip|"
     r"WEB-?DL|WEBRip|HDRip|MicroHD|DVDRip|HDTV|HDR)\b", re.I)
@@ -49,8 +58,8 @@ def _relay_base():
         return ""
 
 
-def _relay_get(url, timeout=30, binary=False):
-    """GET vía el proxy /relay del relay (IP de datacenter, sin bloqueo ISP)."""
+def _relay_get(url, timeout=25, binary=False):
+    """GET via el proxy /relay del relay (IP de datacenter, sin bloqueo ISP)."""
     base = _relay_base()
     if not base:
         return None
@@ -64,23 +73,12 @@ def _relay_get(url, timeout=30, binary=False):
     return None
 
 
-def _base():
-    """Dominio activo de DivxTotal. Ajuste manual > caché > sondeo candidatos."""
-    global _cached_domain
+def _domain():
+    """Dominio a usar SIN sondear (rapido): ajuste > cache > primero."""
     setting = (_ADDON.getSetting("dx_base_url") or "").strip()
     if setting:
         return setting.replace("https://", "").replace("http://", "").rstrip("/")
-    if _cached_domain:
-        return _cached_domain
-    for d in _DOMAINS:
-        html = _relay_get(f"https://{d}/", timeout=15)
-        if html and ("divxtotal" in html.lower()
-                     or "/peliculas/" in html.lower()):
-            _cached_domain = d
-            _LOG(f"dominio activo: {d}")
-            return d
-    _cached_domain = _DOMAINS[0]
-    return _cached_domain
+    return _cached_domain or _DOMAINS[0]
 
 
 def _kind_from_href(href):
@@ -92,13 +90,8 @@ def _kind_from_href(href):
     return None
 
 
-def search(query):
-    """Devuelve [{title, url, kind, image, quality, source}]."""
-    dom = _base()
-    html = _relay_get(f"https://{dom}/?s={quote(query)}")
-    if not html:
-        _LOG("search: sin HTML")
-        return []
+def _parse_listing(html, dom):
+    """Saca los items (peliculas/series) de una pagina de listado o busqueda."""
     soup = BeautifulSoup(html, "html.parser")
     items, seen = [], set()
     for a in soup.find_all("a", href=True):
@@ -117,7 +110,52 @@ def search(query):
         seen.add(url)
         items.append({"title": title, "url": url, "kind": kind,
                       "image": None, "quality": "", "source": SOURCE})
-    _LOG(f"search '{query}' -> {len(items)} items (dom {dom})")
+    return items
+
+
+def _fetch_listing(make_url):
+    """Prueba el dominio por defecto (1 llamada); si NO trae items, prueba los
+    demas candidatos. `make_url(dom)` construye la URL. Cachea el que funcione."""
+    global _cached_domain
+    primary = _domain()
+    candidates = [primary] + [d for d in _DOMAINS if d != primary]
+    tried = []
+    for dom in candidates[:4]:
+        if dom in tried:
+            continue
+        tried.append(dom)
+        html = _relay_get(make_url(dom))
+        if not html:
+            continue
+        items = _parse_listing(html, dom)
+        if items:
+            _cached_domain = dom
+            return items
+    return []
+
+
+def search(query):
+    """Devuelve [{title, url, kind, image, quality, source}]."""
+    items = _fetch_listing(lambda d: f"https://{d}/?s={quote(query)}")
+    _LOG(f"search '{query}' -> {len(items)} items")
+    return items
+
+
+def latest(kind="movie", page=1):
+    """Listado de estrenos/cine/series (para navegar)."""
+    section = _SECTION.get(kind, "peliculas")
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 1
+
+    def mk(d):
+        if page <= 1:
+            return f"https://{d}/{section}/"
+        return f"https://{d}/{section}/page/{page}/"
+
+    items = _fetch_listing(mk)
+    _LOG(f"latest {kind} p{page} -> {len(items)} items")
     return items
 
 

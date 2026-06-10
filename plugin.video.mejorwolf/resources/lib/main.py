@@ -539,6 +539,7 @@ def estrenos():
     entries = [
         ("DonTorrent",    _u(action="list", src="dt", kind="estrenos", page=1),  IC["estrenos"]),
         ("EliteTorrent",  _u(action="list", src="et", kind="estrenos", page=1),  IC["estrenos"]),
+        ("DivxTotal",     _u(action="list", src="dx", kind="movie", page=1),     IC["estrenos"]),
         ("WolfMax4K",     _u(action="list", src="wf", kind="movie", page=1),     IC["estrenos"]),
     ]
     for lab, url, ic in entries:
@@ -560,6 +561,7 @@ def section(kind):
         entries = [
             ("DonTorrent",    _u(action="src_movie", src="dt"), ic),
             ("EliteTorrent",  _u(action="src_movie", src="et"), ic),
+            ("DivxTotal",     _u(action="src_movie", src="dx"), ic),
             ("WolfMax4K",     _u(action="src_movie", src="wf"), ic),
             ("Buscar pelicula", _u(action="search", filter_kind="movie"), IC["search"]),
         ]
@@ -568,6 +570,7 @@ def section(kind):
         entries = [
             ("DonTorrent",    _u(action="src_tvshow", src="dt"), ic),
             ("EliteTorrent",  _u(action="src_tvshow", src="et"), ic),
+            ("DivxTotal",     _u(action="src_tvshow", src="dx"), ic),
             ("WolfMax4K",     _u(action="src_tvshow", src="wf"), ic),
             ("Buscar serie",  _u(action="search", filter_kind="tvshow"), IC["search"]),
         ]
@@ -590,12 +593,14 @@ _SRC_MOVIE_QUALITIES = {
     "et": [("Estrenos", "estrenos"), ("Películas 720p", "movie_720p"),
            ("Películas HDRip", "movie_hdrip"), ("Películas MicroHD", "movie_micro")],
     "wf": [("Películas 1080p", "movie_hd"), ("Películas 4K", "movie_4k")],
+    "dx": [("Películas", "movie")],
 }
 _SRC_TVSHOW_QUALITIES = {
     "dt": [("Series", "tvshow"), ("Series HD", "tvshow_hd"),
            ("Series 4K", "tvshow_4k")],
     "et": [("Series", "tvshow")],
     "wf": [("Series 1080p", "tvshow_hd"), ("Series 4K", "tvshow_4k")],
+    "dx": [("Series", "tvshow")],
 }
 
 
@@ -662,6 +667,8 @@ def list_items(src, kind, page=1):
                 items = result[0] if isinstance(result, tuple) else result
             elif src == "wf":
                 items = wf.latest(kind=kind, page=page)
+            elif src == "dx":
+                items = dx.latest(kind=kind, page=page)
             else:
                 items = []
         except CloudflareChallengeError:
