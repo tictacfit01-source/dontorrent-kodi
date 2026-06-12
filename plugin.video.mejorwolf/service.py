@@ -20,9 +20,12 @@ import xbmc
 
 PING_INTERVAL = 300         # keep-warm relay: cada 5 min
 MAIN_TICK = 5               # ciclo del bucle principal (FA + keep-warm)
-KB_POLL_GAP = 0.3           # sondeo del teclado remoto en su propio hilo:
-                            # rapido para que el mando responda agil (~0.5s)
-NOW_GAP = 1.5               # cada cuanto subimos el estado "Estas viendo..."
+KB_POLL_GAP = 0.3           # sondeo del teclado remoto al NAVEGAR: agil
+KB_POLL_GAP_PLAYING = 0.5   # al REPRODUCIR: un pelin mas espaciado para no
+                            # robarle CPU/red al reproductor (evita micro-cortes)
+NOW_GAP = 3                 # cada cuanto subimos "Estas viendo" (la web interpola
+                            # los segundos localmente, asi que se ve igual de fino)
+CONT_GAP = 15               # cada cuanto guardamos la posicion de 'Continuar'
 HEARTBEAT_GAP = 30          # latido de estado (tele conectada + Continuar)
 FA_GAP = 6                  # separacion entre notas FA (~10/min: ritmo humano)
 # Backoff EXPONENCIAL ante bloqueos de FA. Reintentar a menudo cuando FA ya
@@ -477,60 +480,45 @@ def _read_continue_push():
         return None
 
 
+def _secs_from_clock(s):
+    """'1:23:45' o '23:45' o '45' -> segundos."""
+    s = (s or "").strip()
+    if not s:
+        return 0
+    tot = 0
+    for part in s.split(":"):
+        if not part.isdigit():
+            return 0
+        tot = tot * 60 + int(part)
+    return tot
+
+
 def _get_now_playing():
-    """Estado de reproduccion para el panel 'Estas viendo'. Devuelve
-    {title, elapsed, total, paused} o None si no hay video sonando."""
+    """Estado de reproduccion para 'Estas viendo'. Usa INFOLABELS (NO JSON-RPC):
+    leen info ya cacheada por Kodi y NO bloquean el reproductor, asi que no
+    provocan micro-cortes de audio/video durante la peli. Devuelve
+    {title, elapsed, total, paused} o None si no hay video."""
     try:
-        import json
-        res = xbmc.executeJSONRPC(
-            '{"jsonrpc":"2.0","id":1,"method":"Player.GetActivePlayers"}')
-        players = (json.loads(res).get("result") or [])
-        vid = next((p for p in players if p.get("type") == "video"), None)
-        if not vid:
+        if not xbmc.getCondVisibility("Player.HasVideo"):
             return None
-        pid = vid["playerid"]
 
-        def _secs(t):
-            t = t or {}
-            return (int(t.get("hours", 0)) * 3600 + int(t.get("minutes", 0)) * 60
-                    + int(t.get("seconds", 0)))
-
-        pr = json.loads(xbmc.executeJSONRPC(json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "Player.GetProperties",
-            "params": {"playerid": pid,
-                       "properties": ["time", "totaltime", "speed"]}})))
-        pres = pr.get("result") or {}
-        elapsed = _secs(pres.get("time"))
-        total = _secs(pres.get("totaltime"))
-        paused = (pres.get("speed", 1) == 0)
-
-        # Titulo: los infolabels del reproductor son los mas fiables durante la
-        # reproduccion (Elementum a menudo no rellena 'title' en GetItem).
         def _int(s):
             try:
                 return int(s)
             except (TypeError, ValueError):
                 return 0
 
+        elapsed = _secs_from_clock(xbmc.getInfoLabel("VideoPlayer.Time"))
+        total = _secs_from_clock(xbmc.getInfoLabel("VideoPlayer.Duration"))
+        paused = xbmc.getCondVisibility("Player.Paused")
+
         show = (xbmc.getInfoLabel("VideoPlayer.TVShowTitle") or "").strip()
         title = (xbmc.getInfoLabel("VideoPlayer.Title") or "").strip()
         season = _int(xbmc.getInfoLabel("VideoPlayer.Season"))
         ep = _int(xbmc.getInfoLabel("VideoPlayer.Episode"))
-        # Titulo que el addon guardo al lanzar la reproduccion: lo mas fiable
-        # para PELICULAS (Elementum no rellena VideoPlayer.Title de forma fiable).
+        # El addon guarda el titulo limpio al lanzar (fiable para PELICULAS,
+        # donde Elementum no rellena VideoPlayer.Title de forma fiable).
         file_title = _read_np_title()
-        if not (title or show or file_title):
-            # Ultimo recurso: lo que diga GetItem (label/title del ListItem).
-            it = json.loads(xbmc.executeJSONRPC(json.dumps({
-                "jsonrpc": "2.0", "id": 1, "method": "Player.GetItem",
-                "params": {"playerid": pid,
-                           "properties": ["title", "showtitle",
-                                          "season", "episode"]}})))
-            item = (it.get("result") or {}).get("item") or {}
-            title = (item.get("title") or item.get("label") or "").strip()
-            show = show or (item.get("showtitle") or "").strip()
-            season = season or _int(item.get("season"))
-            ep = ep or _int(item.get("episode"))
         # Si el titulo parece un nombre de fichero, lo dejamos legible.
         if title and " " not in title and ("." in title or "_" in title):
             title = re.sub(r"\.(mkv|mp4|avi|m4v|mov|ts)$", "", title,
@@ -554,12 +542,14 @@ def _kb_thread(monitor):
     estado 'Estas viendo...' al relay (throttled), solo cuando hay video."""
     from resources.lib import remote_kb as rkb
     last_now = 0.0
+    last_cont = 0.0
     was_playing = False
     while not monitor.abortRequested():
         try:
             _poll_remote_kb()
         except Exception:
             pass
+        playing = xbmc.getCondVisibility("Player.HasVideo")
         # 'Estas viendo': red solo cuando hay video (o un ultimo aviso al parar)
         try:
             t = time.time()
@@ -568,14 +558,17 @@ def _kb_thread(monitor):
                 np = _get_now_playing()
                 if np:
                     rkb.push_now(np)
-                    _update_continue(np.get("elapsed"), np.get("total"))
                     was_playing = True
+                    if t - last_cont >= CONT_GAP:
+                        last_cont = t
+                        _update_continue(np.get("elapsed"), np.get("total"))
                 elif was_playing:
                     rkb.push_now(None)
                     was_playing = False
         except Exception:
             pass
-        if monitor.waitForAbort(KB_POLL_GAP):
+        # Al reproducir, sondeo un pelin mas espaciado (menos carga -> sin cortes)
+        if monitor.waitForAbort(KB_POLL_GAP_PLAYING if playing else KB_POLL_GAP):
             break
 
 

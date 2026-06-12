@@ -10,6 +10,12 @@ import json
 import random
 import requests
 
+# Sesion HTTP PERSISTENTE (keep-alive): reutiliza la conexion TCP/TLS con el
+# relay en vez de abrir una nueva (handshake TLS) en CADA sondeo. El mando se
+# sondea cada ~0.3-0.5s, asi que esto ahorra muchisima CPU/red en el box y
+# evita que el reproductor sufra micro-cortes durante la peli.
+_SESSION = requests.Session()
+
 try:
     import xbmcvfs
     import xbmcaddon
@@ -97,7 +103,7 @@ def push_list(items, title=""):
     if not base:
         return
     try:
-        requests.post(f"{base}/kb/list",
+        _SESSION.post(f"{base}/kb/list",
                       json={"code": get_code(), "items": items, "title": title},
                       timeout=10)
     except Exception:
@@ -111,7 +117,7 @@ def push_now(np):
     if not base:
         return
     try:
-        requests.post(f"{base}/kb/now",
+        _SESSION.post(f"{base}/kb/now",
                       json={"code": get_code(), "np": np}, timeout=8)
     except Exception:
         pass
@@ -124,7 +130,7 @@ def push_status(version, cont=None):
     if not base:
         return
     try:
-        requests.post(f"{base}/kb/status",
+        _SESSION.post(f"{base}/kb/status",
                       json={"code": get_code(), "v": version, "cont": cont},
                       timeout=8)
     except Exception:
@@ -141,7 +147,7 @@ def poll(timeout=10):
     if not base:
         return []
     try:
-        r = requests.get(f"{base}/kb/poll", params={"code": get_code()},
+        r = _SESSION.get(f"{base}/kb/poll", params={"code": get_code()},
                          timeout=timeout)
         if r.status_code == 200:
             return r.json().get("events") or []
