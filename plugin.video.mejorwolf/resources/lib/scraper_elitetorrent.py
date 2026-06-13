@@ -284,6 +284,10 @@ def search(query):
         r = hs.get(s, url)
         soup = BeautifulSoup(r.text, "html.parser")
         items = _parse_listing(soup, r.url)
+        # EliteTorrent a veces devuelve coincidencias flojas (o "ultimos" si no
+        # hay match): filtramos por relevancia (como DonTorrent ya es exacto).
+        from . import relevance
+        items = relevance.filter_items(items, query)
         _LOG(f"search -> {len(items)} results")
         return items
     except Exception as e:
