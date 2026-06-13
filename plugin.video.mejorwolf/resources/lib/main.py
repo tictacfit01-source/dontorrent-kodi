@@ -10,7 +10,7 @@ import re
 import json
 import time
 import unicodedata
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, urlencode, quote
 from concurrent.futures import ThreadPoolExecutor
 
 import xbmc
@@ -1133,7 +1133,10 @@ def play(torrent_url, title=""):
     low = torrent_url.lower()
 
     # HTTP URL → fetch .torrent → magnet
+    orig_http = None          # URL .torrent original (para dársela a Elementum)
+    relay_torrent_src = None  # .torrent servido por el relay (con metadatos)
     if low.startswith(("http://", "https://")):
+        orig_http = torrent_url
         try:
             # Bajar el .torrent vía RELAY (IP de datacenter, sin bloqueo ISP):
             # fuentes como DivxTotal están bloqueadas en directo desde el box.
@@ -1146,6 +1149,12 @@ def play(torrent_url, title=""):
                                  params={"u": torrent_url}, timeout=30)
                     if rr.status_code == 200 and len(rr.content) > 100:
                         data = rr.content
+                        # Si el relay sirve el .torrent, se lo damos a Elementum
+                        # POR AQUÍ: baja el .torrent COMPLETO (metadatos al
+                        # instante) -> no se cuelga en "resolviendo" cuando hay
+                        # pocas/ninguna semilla (problema típico de DivxTotal).
+                        relay_torrent_src = (
+                            f"{relay_url}/relay?u={quote(orig_http, safe='')}")
             except Exception:
                 data = b""
             # Fallback: directo (PC / redes sin bloqueo, o host no permitido).
@@ -1190,7 +1199,8 @@ def play(torrent_url, title=""):
         except Exception as e:
             xbmc.log(f"[MejorWolf] torrent fetch: {e}", xbmc.LOGWARNING)
 
-    if not (low.startswith("magnet:") or low.endswith(".torrent")
+    if not relay_torrent_src and not (
+            low.startswith("magnet:") or low.endswith(".torrent")
             or low.startswith("file://")):
         try:
             if progress:
@@ -1201,7 +1211,10 @@ def play(torrent_url, title=""):
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
 
-    play_url = player.elementum_url(torrent_url)
+    # Preferimos darle a Elementum el .torrent COMPLETO vía relay (trae los
+    # metadatos = no se cuelga en "resolviendo"); si no hubo relay, el magnet.
+    elem_src = relay_torrent_src or torrent_url
+    play_url = player.elementum_url(elem_src)
     try:
         if progress:
             progress.close()
