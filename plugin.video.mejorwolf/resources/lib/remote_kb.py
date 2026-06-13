@@ -123,15 +123,16 @@ def push_now(np):
         pass
 
 
-def push_status(version, cont=None):
+def push_status(version, cont=None, diag=None):
     """Latido del box al relay: version del addon + (opcional) 'Continuar
-    viendo' (cont = dict con title/a/ci/tb/u/elapsed/total)."""
+    viendo' + (opcional) telemetria de reproduccion (diag)."""
     base = relay_base()
     if not base:
         return
     try:
         _SESSION.post(f"{base}/kb/status",
-                      json={"code": get_code(), "v": version, "cont": cont},
+                      json={"code": get_code(), "v": version, "cont": cont,
+                            "diag": diag},
                       timeout=8)
     except Exception:
         pass

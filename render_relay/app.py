@@ -2062,6 +2062,10 @@ def kb_status_push():
     d = _kbstatus_load()
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _KB_STATUS_TTL}
     entry = {"v": str(body.get("v", ""))[:16], "ts": now}
+    diag = body.get("diag")
+    if isinstance(diag, dict):
+        entry["diag"] = {k: (str(v)[:40] if v is not None else None)
+                         for k, v in list(diag.items())[:10]}
     cont = body.get("cont")
     if isinstance(cont, dict):
         entry["cont"] = {
@@ -2090,7 +2094,8 @@ def kb_status_get():
         return jsonify({"connected": False})
     age = _t.time() - entry.get("ts", 0)
     return jsonify({"connected": age < 90, "age": int(age),
-                    "v": entry.get("v", ""), "cont": entry.get("cont")})
+                    "v": entry.get("v", ""), "cont": entry.get("cont"),
+                    "diag": entry.get("diag")})
 
 
 @app.get("/kb/qr")

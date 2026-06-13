@@ -572,6 +572,79 @@ def _kb_thread(monitor):
             break
 
 
+def _settings_get(setting):
+    """Lee un ajuste de Kodi por JSON-RPC. Solo se usa al ARRANCAR (no en bucle
+    ni durante la reproduccion)."""
+    import json
+    try:
+        res = xbmc.executeJSONRPC(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "Settings.GetSettingValue",
+            "params": {"setting": setting}}))
+        return (json.loads(res).get("result") or {}).get("value")
+    except Exception:
+        return None
+
+
+def _settings_set(setting, value):
+    import json
+    try:
+        xbmc.executeJSONRPC(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "Settings.SetSettingValue",
+            "params": {"setting": setting, "value": value}}))
+        return True
+    except Exception:
+        return False
+
+
+# Config optima de reproduccion para que el video vaya a SUS fps (sin judder ni
+# audio "ondeando"):
+#  - adjustrefreshrate=2 (Al iniciar/detener): la pantalla iguala su Hz al video.
+#  - usedisplayasclock=False: sincroniza por audio, NO lo resamplea (no ondea).
+# Se aplica de forma IDEMPOTENTE al arrancar -> cero toques del usuario, y vale
+# para todos los boxes (tuyo y de tus amigos).
+_OPTIMAL_PLAYER = {
+    "videoplayer.adjustrefreshrate": 2,
+    "videoplayer.usedisplayasclock": False,
+}
+_PLAYER_CFG = {}    # valores aplicados (para la telemetria)
+
+
+def _ensure_playback_settings():
+    """Deja la config de reproduccion optima. Idempotente: solo escribe si
+    difiere. Devuelve los cambios hechos."""
+    changed = {}
+    for setting, want in _OPTIMAL_PLAYER.items():
+        cur = _settings_get(setting)
+        if cur is None:
+            continue   # ese ajuste no existe en este Kodi -> lo ignoramos
+        if cur != want and _settings_set(setting, want):
+            changed[setting] = [cur, want]
+            cur = want
+        _PLAYER_CFG[setting] = cur
+    if changed:
+        xbmc.log("[MejorWolf/service] reproduccion ajustada: %s" % changed,
+                 xbmc.LOGINFO)
+    return changed
+
+
+def _playback_diag():
+    """Telemetria de reproduccion (solo si hay video) con INFOLABELS baratos +
+    los ajustes ya cacheados. Para confirmar/diagnosticar con datos reales."""
+    if not xbmc.getCondVisibility("Player.HasVideo"):
+        return None
+    g = xbmc.getInfoLabel
+    return {
+        "fps": (g("Player.Process(videofps)")
+                or g("VideoPlayer.VideoFps") or ""),
+        "dec": g("Player.Process(videodecoder)") or "",
+        "res": (g("Player.Process(videowidth)") + "x"
+                + g("Player.Process(videoheight)")),
+        "cache": g("VideoPlayer.CacheLevel") or "",
+        "arr": _PLAYER_CFG.get("videoplayer.adjustrefreshrate"),
+        "clk": _PLAYER_CFG.get("videoplayer.usedisplayasclock"),
+    }
+
+
 def main():
     monitor = xbmc.Monitor()
     xbmc.log("[MejorWolf/service] iniciado (keep-warm + notas FA + teclado "
@@ -592,12 +665,21 @@ def main():
     consec_blocks = 0      # bloqueos seguidos (para el backoff exponencial)
     last_beat = 0.0        # ultimo latido de estado al relay
     _addon_ver = _addon_version()
+    cfg_done = False       # ajustes de reproduccion aplicados (una vez)
     from resources.lib import remote_kb as rkb
 
     while not monitor.abortRequested():
         if monitor.waitForAbort(MAIN_TICK):
             break
         now = time.time()
+
+        # 0) Al arrancar (Kodi ya listo): dejar la reproduccion a sus fps.
+        if not cfg_done:
+            cfg_done = True
+            try:
+                _ensure_playback_settings()
+            except Exception:
+                pass
 
         # 1) keep-warm relay
         if now - last_ping >= PING_INTERVAL:
@@ -610,12 +692,14 @@ def main():
         if now - last_beat >= HEARTBEAT_GAP:
             last_beat = now
             try:
-                rkb.push_status(_addon_ver, _read_continue_push())
+                rkb.push_status(_addon_ver, _read_continue_push(),
+                                _playback_diag())
             except Exception:
                 pass
 
-        # 2) notas FilmAffinity, espaciadas (ritmo humano) con backoff
-        if now >= next_fa:
+        # 2) notas FilmAffinity: espaciadas y NUNCA durante la reproduccion
+        #    (para no robarle CPU/red al reproductor). Si hay video, se aplaza.
+        if now >= next_fa and not xbmc.getCondVisibility("Player.HasVideo"):
             status = _drain_fa()
             if status == "blocked":
                 consec_blocks += 1
