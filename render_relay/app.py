@@ -1270,6 +1270,94 @@ def probe():
 
 
 # ===========================================================================
+# DIVXTOTAL: busqueda solida (multi-dominio + TODAS las paginas), como DonTorrent
+# ===========================================================================
+# El box hace UNA sola llamada a /dxsearch?q=...; aqui resolvemos el dominio
+# activo (cacheado y COMPARTIDO entre todos los boxes), traemos todas las paginas
+# de resultados en paralelo, y devolvemos el HTML concatenado para que el addon
+# lo parsee. requests plano (DivxTotal pasa); si detecta challenge -> cloudscraper.
+_DX_DOMAINS = ["divxtotal.foo", "divxtotal.gg", "divxtotal.cam",
+               "divxtotal.fyi", "divxtotal.run", "divxtotal.one",
+               "divxtotal.es", "divxtotal.mov"]
+_DX_DOM_CACHE = {"dom": None, "ts": 0.0}
+_DX_DOM_TTL = 3600
+
+
+def _dx_get(url):
+    """HTML de una URL de DivxTotal: requests plano y, si hay challenge de
+    Cloudflare, reintenta con cloudscraper. None si no se pudo."""
+    try:
+        r = requests.get(url, headers=BROWSER_HEADERS, timeout=20,
+                         allow_redirects=True)
+        t = r.text
+        low = t[:4000].lower()
+        if (r.status_code == 200 and "just a moment" not in low
+                and "challenge-platform" not in low and "cf-mitigated" not in low):
+            return t
+    except Exception:
+        pass
+    try:
+        cs = _make_scraper()
+        r2 = cs.get(url, timeout=35, allow_redirects=True)
+        if r2.status_code == 200:
+            return r2.text
+    except Exception:
+        pass
+    return None
+
+
+def _dx_domain():
+    now = _t.time()
+    if _DX_DOM_CACHE["dom"] and now - _DX_DOM_CACHE["ts"] < _DX_DOM_TTL:
+        return _DX_DOM_CACHE["dom"]
+    for d in _DX_DOMAINS:
+        t = _dx_get(f"https://{d}/")
+        if t and "/peliculas/" in t.lower():
+            _DX_DOM_CACHE["dom"] = d
+            _DX_DOM_CACHE["ts"] = now
+            return d
+    return _DX_DOM_CACHE["dom"] or _DX_DOMAINS[0]
+
+
+@app.route("/dxsearch", methods=["GET", "POST"])
+def dxsearch():
+    if request.method == "POST":
+        q = ((request.get_json(silent=True) or {}).get("q") or "").strip()
+    else:
+        q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"error": "missing q"}), 400
+    from urllib.parse import quote as _q
+    dom = _dx_domain()
+    qq = _q(q)
+    html1 = _dx_get(f"https://{dom}/?s={qq}")
+    if not html1:
+        # un reintento resolviendo dominio de cero (por si rotó)
+        _DX_DOM_CACHE["ts"] = 0.0
+        dom = _dx_domain()
+        html1 = _dx_get(f"https://{dom}/?s={qq}")
+    if not html1:
+        return Response("", status=502,
+                        headers={"X-MW-Dx-Domain": dom or ""})
+    nums = [int(n) for n in re.findall(r"/page/(\d+)/", html1)]
+    max_page = min(max(nums), 6) if nums else 1
+    parts = [html1]
+    if max_page > 1:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        def _fp(p):
+            return _dx_get(f"https://{dom}/page/{p}/?s={qq}") or ""
+
+        with _TPE(max_workers=min(5, max_page - 1)) as ex:
+            parts.extend(ex.map(_fp, range(2, max_page + 1)))
+    return Response("\n".join(parts),
+                    headers={"Content-Type": "text/html; charset=utf-8",
+                             "Access-Control-Allow-Origin": "*",
+                             "X-MW-Dx-Domain": dom or "",
+                             "X-MW-Dx-Pages": str(max_page)})
+
+
+# ===========================================================================
 # TECLADO REMOTO (escribir busquedas desde el movil)
 # ===========================================================================
 # El movil abre /kb (escaneando un QR que lleva el codigo del box), escribe la

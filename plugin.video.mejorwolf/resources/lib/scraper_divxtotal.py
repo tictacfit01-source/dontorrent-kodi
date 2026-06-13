@@ -37,6 +37,43 @@ _DOMAINS = ["divxtotal.foo", "divxtotal.gg", "divxtotal.cam", "divxtotal.fyi",
             "divxtotal.run", "divxtotal.one", "divxtotal.es"]
 _cached_domain = None
 
+# Persistencia del dominio activo (sobrevive reinicios), como el cache de DT.
+import os
+try:
+    import xbmcvfs as _xbmcvfs
+    _DOMAIN_FILE = _xbmcvfs.translatePath(
+        "special://profile/addon_data/plugin.video.mejorwolf/dx_domain.txt")
+except Exception:
+    _DOMAIN_FILE = ""
+
+
+def _save_domain(dom):
+    try:
+        if _DOMAIN_FILE and dom:
+            os.makedirs(os.path.dirname(_DOMAIN_FILE), exist_ok=True)
+            with open(_DOMAIN_FILE, "w", encoding="utf-8") as f:
+                f.write(dom)
+    except Exception:
+        pass
+
+
+def _load_domain():
+    try:
+        if _DOMAIN_FILE and os.path.exists(_DOMAIN_FILE):
+            with open(_DOMAIN_FILE, "r", encoding="utf-8") as f:
+                return (f.read().strip() or None)
+    except Exception:
+        pass
+    return None
+
+
+def _remember_domain(dom):
+    global _cached_domain
+    if dom and dom != _cached_domain:
+        _cached_domain = dom
+        _save_domain(dom)
+
+
 # Seccion del sitio por 'kind' (estrenos/cine/series).
 _SECTION = {"movie": "peliculas", "movie_hd": "peliculas",
             "movie_4k": "peliculas", "estrenos": "peliculas",
@@ -76,10 +113,13 @@ def _relay_get(url, timeout=25, binary=False):
 
 
 def _domain():
-    """Dominio a usar SIN sondear (rapido): ajuste > cache > primero."""
+    """Dominio: ajuste manual > cache memoria > cache disco > primer candidato."""
+    global _cached_domain
     setting = (_ADDON.getSetting("dx_base_url") or "").strip()
     if setting:
         return setting.replace("https://", "").replace("http://", "").rstrip("/")
+    if not _cached_domain:
+        _cached_domain = _load_domain()
     return _cached_domain or _DOMAINS[0]
 
 
@@ -121,29 +161,43 @@ def _parse_listing(html, dom):
 
 def _fetch_listing(make_url):
     """Prueba el dominio por defecto (1 llamada); si NO trae items, prueba los
-    demas candidatos. `make_url(dom)` construye la URL. Cachea el que funcione."""
-    global _cached_domain
+    demas candidatos. `make_url(dom)` construye la URL. Cachea el que funcione.
+    Para NAVEGAR (listados de una pagina)."""
     primary = _domain()
     candidates = [primary] + [d for d in _DOMAINS if d != primary]
-    tried = []
-    for dom in candidates[:4]:
-        if dom in tried:
-            continue
-        tried.append(dom)
+    for dom in candidates[:5]:
         html = _relay_get(make_url(dom))
         if not html:
             continue
         items = _parse_listing(html, dom)
         if items:
-            _cached_domain = dom
+            _remember_domain(dom)
             return items
     return []
 
 
 def search(query):
-    """Devuelve [{title, url, kind, image, quality, source}]."""
+    """Busqueda SOLIDA (como DonTorrent): el relay /dxsearch resuelve el dominio
+    activo y trae TODAS las paginas; aqui solo parseamos. Si /dxsearch falla,
+    caemos a la busqueda directa de 1 pagina."""
+    base = _relay_base()
+    if base:
+        try:
+            import requests
+            r = requests.get(f"{base}/dxsearch", params={"q": query},
+                             timeout=35)
+            if r.status_code == 200 and len(r.content) > 200:
+                dom = r.headers.get("X-MW-Dx-Domain") or _domain()
+                _remember_domain(dom)
+                items = _parse_listing(r.text, dom)
+                _LOG(f"search '{query}' -> {len(items)} items "
+                     f"(dxsearch, {r.headers.get('X-MW-Dx-Pages', '?')} pag)")
+                return items
+        except Exception as e:
+            _LOG(f"dxsearch error: {e}; fallback 1 pagina")
+    # Fallback: 1 pagina via /relay (por si /dxsearch no esta o falla)
     items = _fetch_listing(lambda d: f"https://{d}/?s={quote(query)}")
-    _LOG(f"search '{query}' -> {len(items)} items")
+    _LOG(f"search '{query}' -> {len(items)} items (fallback)")
     return items
 
 

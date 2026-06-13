@@ -605,6 +605,10 @@ def _settings_set(setting, value):
 _OPTIMAL_PLAYER = {
     "videoplayer.adjustrefreshrate": 2,
     "videoplayer.usedisplayasclock": False,
+    # Decodificacion por hardware (para que el HD no tire de CPU -> sin lag).
+    # Es el valor por defecto en Android; lo aseguramos. NO tocamos la variante
+    # 'surface' (forzarla puede romper subtitulos/OSD en algun box).
+    "videoplayer.usemediacodec": True,
 }
 _PLAYER_CFG = {}    # valores aplicados (para la telemetria)
 
