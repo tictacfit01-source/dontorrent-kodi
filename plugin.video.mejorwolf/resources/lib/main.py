@@ -1668,11 +1668,14 @@ def _run_search(q, filter_kind=None):
     elif warmth == "down":
         dt_to = 10     # relay no disponible: no esperes de balde
     else:
-        dt_to = 12
+        dt_to = 7      # caliente: DT responde ~2-4s; 7 da margen sin pasarnos
 
-    # Deadline POR FUENTE. DT lleva el margen mayor (adaptativo segun calor);
-    # ET y WF no deben hacer esperar.
-    PER_SOURCE_TIMEOUT = {"DT": dt_to, "ET": 8, "WF": 7, "DX": 8}
+    # Deadline POR FUENTE. Objetivo: en CALIENTE la busqueda cierra en 5-7s.
+    # El deadline es un MAXIMO para rezagados; en cuanto las 4 responden salimos
+    # (lo normal son ~5s). DT lleva el margen mayor (innegociable); ET/WF/DX no
+    # deben hacer esperar mas de ~6-7s. En FRIO solo esperamos a DT (raro: el
+    # relay se mantiene caliente con auto-ping).
+    PER_SOURCE_TIMEOUT = {"DT": dt_to, "ET": 6, "WF": 6, "DX": 7}
 
     # Diálogo de carga CENTRADO con barra de %. Va mostrando el estado de cada
     # fuente en vivo y se puede cancelar. No penaliza la velocidad: las fuentes

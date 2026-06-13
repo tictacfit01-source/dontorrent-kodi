@@ -255,6 +255,21 @@ def detail(url):
     ym = re.search(r"\b(19|20)\d{2}\b", body)
     year = ym.group(0) if ym else None
 
+    # Poster propio de DivxTotal (solo existe en la ficha, no en los listados):
+    # es la unica <img> de /wp-content/uploads/. Sirve de RESPALDO cuando TMDB
+    # no encuentra el titulo (las demas img son logo/tema/banderas). Se sirve via
+    # el proxy /relay porque el dominio de DivxTotal lo bloquea el ISP del box
+    # (igual que el HTML); asi la caratula carga en la tele.
+    image = None
+    for im in soup.find_all("img"):
+        src = (im.get("src") or im.get("data-src") or "").strip()
+        if "/wp-content/uploads/" in src:
+            raw_img = urljoin(url, src)
+            rb = _relay_base()
+            image = (f"{rb}/relay?u={quote(raw_img, safe='')}"
+                     if rb else raw_img)
+            break
+
     downloads, seen = [], set()
     for a in soup.find_all("a", href=True):
         if "download_tt.php" not in a["href"]:
@@ -277,6 +292,7 @@ def detail(url):
         downloads.append({"torrent_url": turl, "label": label,
                           "season": season, "episode": episode,
                           "quality": quality})
-    _LOG(f"detail '{title}' -> {len(downloads)} descargas")
+    _LOG(f"detail '{title}' -> {len(downloads)} descargas"
+         f"{' +poster' if image else ''}")
     return {"title": title, "year": year,
-            "image": None, "downloads": downloads}
+            "image": image, "downloads": downloads}
