@@ -18,6 +18,7 @@ antes). Solo si esa llamada no trae resultados se prueban otros dominios.
 """
 import re
 import base64
+import unicodedata
 from urllib.parse import quote, urljoin, urlparse, parse_qs
 
 import xbmc
@@ -82,6 +83,40 @@ _SECTION = {"movie": "peliculas", "movie_hd": "peliculas",
 _QUALITY_RE = re.compile(
     r"\b(2160p|4K|1080p|720p|480p|BluRay|Blu-Ray|BDRemux|BDRip|BRRip|"
     r"WEB-?DL|WEBRip|HDRip|MicroHD|DVDRip|HDTV|HDR)\b", re.I)
+# Calidad desde el NOMBRE del .torrent (fiable). Sin \b a la derecha porque a
+# veces va pegada ("HDTVCap.302"). Orden: lo mas especifico primero.
+_Q_FILE = re.compile(
+    r"(2160p|1080p|720p|480p|bdremux|blu-?ray|brrip|bdrip|web-?dl|webrip|"
+    r"hdrip|microhd|dvdrip|hdtv|4k|hdr)", re.I)
+
+# Filtro de relevancia (DivxTotal devuelve coincidencias flojas en la busqueda).
+_STOP = {"el", "la", "los", "las", "de", "del", "y", "a", "en", "un", "una",
+         "the", "of", "to", "lo", "su", "al", "o"}
+
+
+def _norm_txt(s):
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    return re.sub(r"[^a-z0-9 ]", " ", s)
+
+
+def _relevance_filter(items, query):
+    """Quita resultados que no tienen que ver con la busqueda. Prioriza los que
+    contienen TODAS las palabras (significativas); si ninguno, los que tienen
+    alguna; si tampoco, devuelve todo (mejor algo que nada)."""
+    toks = [t for t in _norm_txt(query).split() if len(t) > 1 and t not in _STOP]
+    if not toks:
+        return items
+
+    def score(it):
+        words = set(_norm_txt(it.get("title", "")).split())
+        return sum(1 for t in toks if t in words)
+
+    full = [it for it in items if score(it) == len(toks)]
+    if full:
+        return full
+    partial = [it for it in items if score(it) >= 1]
+    return partial or items
 # El marcador de episodio va al FINAL del contexto ("The Pitt2x12"), por eso lo
 # anclamos a $ para no confundirnos con numeros del titulo.
 _EP_END = re.compile(r"(\d{1,2})\s*[xX×]\s*(\d{1,3})\s*$")
@@ -189,15 +224,17 @@ def search(query):
             if r.status_code == 200 and len(r.content) > 200:
                 dom = r.headers.get("X-MW-Dx-Domain") or _domain()
                 _remember_domain(dom)
-                items = _parse_listing(r.text, dom)
-                _LOG(f"search '{query}' -> {len(items)} items "
+                raw = _parse_listing(r.text, dom)
+                items = _relevance_filter(raw, query)
+                _LOG(f"search '{query}' -> {len(items)}/{len(raw)} items "
                      f"(dxsearch, {r.headers.get('X-MW-Dx-Pages', '?')} pag)")
                 return items
         except Exception as e:
             _LOG(f"dxsearch error: {e}; fallback 1 pagina")
     # Fallback: 1 pagina via /relay (por si /dxsearch no esta o falla)
-    items = _fetch_listing(lambda d: f"https://{d}/?s={quote(query)}")
-    _LOG(f"search '{query}' -> {len(items)} items (fallback)")
+    raw = _fetch_listing(lambda d: f"https://{d}/?s={quote(query)}")
+    items = _relevance_filter(raw, query)
+    _LOG(f"search '{query}' -> {len(items)}/{len(raw)} items (fallback)")
     return items
 
 
@@ -244,8 +281,6 @@ def detail(url):
     body = soup.get_text(" ", strip=True)
     ym = re.search(r"\b(19|20)\d{2}\b", body)
     year = ym.group(0) if ym else None
-    qm = _QUALITY_RE.search(body)
-    quality = qm.group(1) if qm else ""
 
     downloads, seen = [], set()
     for a in soup.find_all("a", href=True):
@@ -255,6 +290,10 @@ def detail(url):
         if not turl or turl in seen:
             continue
         seen.add(turl)
+        # CALIDAD: del nombre del .torrent (fiable), NO del body (pillaba el
+        # "4K" de un menu). Ej: "...HDTVCap.302.avi" -> HDTV.
+        qm = _Q_FILE.search(turl.rsplit("/", 1)[-1])
+        quality = qm.group(1) if qm else ""
         ctx = (a.find_parent("tr") or a.parent or a).get_text(" ", strip=True)
         em = _EP_END.search(ctx.strip())
         season = episode = None
@@ -266,5 +305,5 @@ def detail(url):
                           "season": season, "episode": episode,
                           "quality": quality})
     _LOG(f"detail '{title}' -> {len(downloads)} descargas")
-    return {"title": title, "year": year, "quality": quality,
+    return {"title": title, "year": year,
             "image": None, "downloads": downloads}
