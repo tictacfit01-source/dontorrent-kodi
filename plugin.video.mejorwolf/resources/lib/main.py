@@ -1685,7 +1685,7 @@ def _run_search(q, filter_kind=None):
     dlg = None
     try:
         dlg = xbmcgui.DialogProgress()
-        dlg.create("MejorWolf", f"Buscando '{q}'...")
+        dlg.create(f"MejorWolf · {q}", "Buscando...")
     except Exception:
         dlg = None
 
@@ -1715,21 +1715,25 @@ def _run_search(q, filter_kind=None):
                 pct = max(int(len(done) / 4.0 * 100),
                           int(min(95, elapsed / max_deadline * 90)))
                 pct = min(99, pct) if len(done) < 4 else 100
+                # OJO: DialogProgress solo muestra ~4 lineas. Con 4 fuentes NO
+                # cabe ademas una cabecera aparte (cortaba la 5a linea =
+                # DivxTotal). Solucion: 1 linea por fuente (4 justas), el tiempo
+                # pegado a cada fuente en curso y la query va en el TITULO.
                 lines = []
-                for lbl in ("DT", "ET", "WF", "DX"):
+                for lbl in ("DT", "ET", "DX", "WF"):
                     nm = NAMES[lbl]
                     if lbl not in done:
-                        estado = ("despertando..." if (warmth == "cold"
-                                  and lbl == "DT") else "buscando...")
+                        base = ("despertando" if (warmth == "cold"
+                                and lbl == "DT") else "buscando")
+                        estado = f"{base}... {elapsed:.0f}s"
                     elif source_counts.get(lbl, 0) >= 0:
                         n = len(_results.get(lbl, []))
                         estado = f"listo ({n}) en {done_time[lbl]:.1f}s"
                     else:
                         estado = f"sin respuesta ({done_time[lbl]:.0f}s)"
                     lines.append(f"{nm}: {estado}")
-                head = f"Buscando '{q}'   —   {elapsed:.1f}s"
                 try:
-                    dlg.update(pct, head + "\n" + "\n".join(lines))
+                    dlg.update(pct, "\n".join(lines))
                 except Exception:
                     pass
                 if dlg.iscanceled():
