@@ -4,7 +4,12 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT --timeout 60 app:app
+    # 2 procesos (uno libre para el mando mientras el otro resuelve PoW de
+    # DonTorrent, que es CPU/GIL) + 4 hilos cada uno = 8 peticiones a la vez.
+    # Antes (-w 2 sync) solo 2 a la vez: una búsqueda (DT+ET+WF+DX) ocupaba
+    # ambos workers y el sondeo del mando /kb/poll se quedaba en cola (hasta
+    # 37s medidos). El trabajo es I/O (esperar a las webs) -> ideal para hilos.
+    startCommand: gunicorn -w 2 --threads 4 -k gthread -b 0.0.0.0:$PORT --timeout 120 app:app
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
