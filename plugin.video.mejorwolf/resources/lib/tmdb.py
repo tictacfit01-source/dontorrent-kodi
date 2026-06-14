@@ -328,8 +328,7 @@ def enrich(title, kind="movie", alt_title_fn=None):
         "year": (top.get("release_date") or top.get("first_air_date") or "")[:4],
         "rating": top.get("vote_average"),
         "title": top.get("title") or top.get("name"),
-        # Titulo original (ingles normalmente): util como candidato alternativo
-        # para FilmAffinity cuando el titulo español no casa.
+        # Titulo original (ingles normalmente): util como candidato alternativo.
         "original": top.get("original_title") or top.get("original_name"),
     }
     _cache_put(cache_key, out)

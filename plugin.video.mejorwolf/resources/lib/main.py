@@ -25,7 +25,6 @@ from . import scraper_dontorrent as dt
 from . import scraper_divxtotal as dx
 from . import supabase_sync as sb
 from . import tmdb, player
-from . import filmaffinity as fa
 from . import remote_kb as rkb
 from . import http_session as hs
 from . import dns_doh
@@ -343,28 +342,14 @@ def _enrich_one(it):
         if qm:
             it["quality"] = qm.group(1)
     plot = meta.get("plot") or ""
-    # Cabecera de NOTAS. TMDB siempre (gratis, instantaneo, sin bloqueos; para
-    # pelis conocidas va en linea con IMDb). FilmAffinity como extra cuando ya
-    # esta en cache (NO se consulta aqui: seria una rafaga y FA bloquea la IP;
-    # lo que falte se encola para que el servicio lo resuelva despacio).
+    # Cabecera de NOTAS: SOLO TMDB (gratis, instantaneo, sin bloqueos). Antes se
+    # anadia FilmAffinity, pero FA bloquea la IP al recibir peticiones -> quitado
+    # de todo el sistema.
     ratings = []
     try:
         tmdb_r = meta.get("rating")
         if tmdb_r and float(tmdb_r) > 0:
             ratings.append("TMDB " + ("%.1f" % float(tmdb_r)).replace(".", ","))
-    except Exception:
-        pass
-    try:
-        fa_candidates = [
-            meta.get("title"),
-            meta.get("original"),
-            tmdb._clean_title(raw_t),
-        ]
-        fa_rt = fa.cached_str_best(fa_candidates, year)
-        if fa_rt:
-            ratings.append(f"FilmAffinity {fa_rt}")
-        else:
-            fa.enqueue(fa_candidates, year)
     except Exception:
         pass
     if ratings:

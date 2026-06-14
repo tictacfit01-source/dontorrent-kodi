@@ -6,11 +6,9 @@ Dos tareas, mientras Kodi esta abierto:
    inactividad y la 1a busqueda tras dormir tarda ~50s en arrancar. Pingueando
    cada 5 min, el relay no se duerme durante la sesion -> DonTorrent rapido.
 
-2) NOTAS de FilmAffinity a RITMO HUMANO. FilmAffinity bloquea rafagas de
-   peticiones (incluso desde IP residencial), asi que el plugin NO consulta al
-   pintar listas: solo encola los titulos que faltan. Aqui los resolvemos uno
-   a uno, espaciados, de forma que la cobertura crece sin disparar el anti-bot.
-   Lo que se resuelve queda en cache y aparece en las siguientes navegaciones.
+2) TECLADO/MANDO REMOTO: sondea el relay (/kb/poll) y ejecuta las ordenes del
+   movil (buscar, navegar, reproducir, controlar el reproductor), sube la "foto"
+   de la pantalla y el "Estas viendo", y manda el latido de estado.
 
 No depende de GitHub ni de cuentas externas: corre dentro de Kodi.
 """
@@ -19,7 +17,7 @@ import time
 import xbmc
 
 PING_INTERVAL = 300         # keep-warm relay: cada 5 min
-MAIN_TICK = 5               # ciclo del bucle principal (FA + keep-warm)
+MAIN_TICK = 5               # ciclo del bucle principal (keep-warm)
 KB_POLL_GAP = 0.3           # sondeo del teclado remoto al NAVEGAR: agil
 KB_POLL_GAP_PLAYING = 0.5   # al REPRODUCIR: un pelin mas espaciado para no
                             # robarle CPU/red al reproductor (evita micro-cortes)
@@ -27,14 +25,6 @@ NOW_GAP = 3                 # cada cuanto subimos "Estas viendo" (la web interpo
                             # los segundos localmente, asi que se ve igual de fino)
 CONT_GAP = 15               # cada cuanto guardamos la posicion de 'Continuar'
 HEARTBEAT_GAP = 30          # latido de estado (tele conectada + Continuar)
-FA_GAP = 6                  # separacion entre notas FA (~10/min: ritmo humano)
-# Backoff EXPONENCIAL ante bloqueos de FA. Reintentar a menudo cuando FA ya
-# te bloquea solo PERPETUA el bloqueo (no deja recuperar la IP). Por eso al
-# primer bloqueo esperamos 10 min, y se duplica con cada bloqueo seguido hasta
-# 2h. Asi la IP tiene tiempo real de recuperarse.
-FA_BACKOFF_BASE = 600       # 10 min al primer bloqueo
-FA_BACKOFF_MAX = 7200       # tope 2h
-FA_GAP_EMPTY = 30           # cola vacia: revisar en 30s
 
 
 def _relay_base():
@@ -54,16 +44,6 @@ def _ping(base):
                  f"{r.status_code}", xbmc.LOGINFO)
     except Exception as e:
         xbmc.log(f"[MejorWolf/service] ping error: {e}", xbmc.LOGDEBUG)
-
-
-def _drain_fa():
-    """Resuelve un titulo encolado. Devuelve el estado ('ok'/'empty'/'blocked')."""
-    try:
-        from resources.lib import filmaffinity as fa
-        return fa.drain_one()
-    except Exception as e:
-        xbmc.log(f"[MejorWolf/service] FA drain error: {e}", xbmc.LOGDEBUG)
-        return "empty"
 
 
 # Comando del movil -> builtin de Kodi (acciones de un disparo)
@@ -651,8 +631,8 @@ def _playback_diag():
 
 def main():
     monitor = xbmc.Monitor()
-    xbmc.log("[MejorWolf/service] iniciado (keep-warm + notas FA + teclado "
-             "remoto)", xbmc.LOGINFO)
+    xbmc.log("[MejorWolf/service] iniciado (keep-warm + teclado remoto)",
+             xbmc.LOGINFO)
 
     base = _relay_base()
     if base:
@@ -665,8 +645,6 @@ def main():
     threading.Thread(target=_kb_thread, args=(monitor,), daemon=True).start()
 
     last_ping = time.time()
-    next_fa = 0.0          # cuando podemos resolver la proxima nota FA
-    consec_blocks = 0      # bloqueos seguidos (para el backoff exponencial)
     last_beat = 0.0        # ultimo latido de estado al relay
     _addon_ver = _addon_version()
     cfg_done = False       # ajustes de reproduccion aplicados (una vez)
@@ -700,24 +678,6 @@ def main():
                                 _playback_diag())
             except Exception:
                 pass
-
-        # 2) notas FilmAffinity: espaciadas y NUNCA durante la reproduccion
-        #    (para no robarle CPU/red al reproductor). Si hay video, se aplaza.
-        if now >= next_fa and not xbmc.getCondVisibility("Player.HasVideo"):
-            status = _drain_fa()
-            if status == "blocked":
-                consec_blocks += 1
-                wait = min(FA_BACKOFF_MAX,
-                           FA_BACKOFF_BASE * (2 ** (consec_blocks - 1)))
-                next_fa = now + wait
-                xbmc.log(f"[MejorWolf/service] FA bloqueado (x{consec_blocks}); "
-                         f"reintento en {int(wait // 60)} min", xbmc.LOGINFO)
-            elif status == "ok":
-                consec_blocks = 0
-                next_fa = now + FA_GAP
-            else:   # 'empty'
-                consec_blocks = 0
-                next_fa = now + FA_GAP_EMPTY
 
     xbmc.log("[MejorWolf/service] detenido", xbmc.LOGINFO)
 
