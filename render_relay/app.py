@@ -892,6 +892,60 @@ def dtsearch():
         return jsonify({"error": str(e), "_diag": diag}), 502
 
 
+@app.route("/dtsdbg", methods=["GET"])
+def dtsdbg():
+    """TEMPORAL: diagnostico del buscador DonTorrent (quitar tras arreglar)."""
+    from urllib.parse import quote as _q
+    q = (request.args.get("q") or "batman").strip()
+    domain = (request.args.get("domain") or "dontorrent.review").strip()
+    pat = r"/(?:pelicula|serie|documental)/\d+/"
+    out = {"q": q, "domain": domain}
+
+    def items(t):
+        return len(set(_re_dt.findall(pat, t)))
+    try:
+        sess, solved = _dt_anubis_session(domain)
+        out["anubis_solved"] = solved
+        try:
+            r = sess.post(f"https://{domain}/buscar",
+                          data={"valor": q, "Buscar": "Buscar"},
+                          timeout=30, allow_redirects=True)
+            out["post_follow"] = {"st": r.status_code, "url": r.url,
+                                  "hist": [h.status_code for h in r.history],
+                                  "items": items(r.text), "len": len(r.text)}
+        except Exception as e:
+            out["post_follow"] = "ERR %s" % e
+        try:
+            r = sess.post(f"https://{domain}/buscar",
+                          data={"valor": q, "Buscar": "Buscar"},
+                          timeout=30, allow_redirects=False)
+            out["post_noredir"] = {"st": r.status_code,
+                                   "loc": r.headers.get("Location"),
+                                   "items": items(r.text)}
+        except Exception as e:
+            out["post_noredir"] = "ERR %s" % e
+        try:
+            r = sess.post(f"https://{domain}/buscar",
+                          data={"valor": q, "Buscar": "Buscar"},
+                          headers={"X-Requested-With": "XMLHttpRequest",
+                                   "Referer": f"https://{domain}/"},
+                          timeout=30, allow_redirects=True)
+            out["post_xhr"] = {"st": r.status_code, "url": r.url,
+                               "items": items(r.text), "len": len(r.text)}
+        except Exception as e:
+            out["post_xhr"] = "ERR %s" % e
+        try:
+            r = sess.get(f"https://{domain}/buscar/{_q(q)}",
+                         timeout=30, allow_redirects=True)
+            out["get_path"] = {"st": r.status_code, "url": r.url,
+                               "items": items(r.text)}
+        except Exception as e:
+            out["get_path"] = "ERR %s" % e
+    except Exception as e:
+        out["error"] = str(e)
+    return jsonify(out)
+
+
 @app.route("/dtfetch", methods=["GET"])
 def dtfetch():
     """Proxy GET para DonTorrent con Anubis solver automatico.
