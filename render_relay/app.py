@@ -651,9 +651,9 @@ from urllib.parse import quote as _uq
 
 
 DT_FALLBACK = [
-    "dontorrent.support", "dontorrent.science", "dontorrent.irish",
-    "dontorrent.club", "dontorrent.info", "dontorrent.istanbul",
-    "dontorrent.lighting", "dontorrent.reisen",
+    "dontorrent.review", "dontorrent.support", "dontorrent.science",
+    "dontorrent.irish", "dontorrent.club", "dontorrent.info",
+    "dontorrent.istanbul", "dontorrent.lighting", "dontorrent.reisen",
 ]
 
 # Cache de cookies Anubis en memoria (proceso). Funciona porque Render mantiene
@@ -786,21 +786,38 @@ def dtsearch():
         dom_candidates = []
         if preferred:
             dom_candidates.append(preferred)
-        # dontorrent.support va primero en fallback (mirror mas completo)
-        for d in ["dontorrent.support"] + DT_FALLBACK:
+        # dontorrent.review va primero: es el dominio OFICIAL actual; los demas
+        # (support, science...) hacen 301 hacia el.
+        for d in ["dontorrent.review"] + DT_FALLBACK:
             if d not in dom_candidates:
                 dom_candidates.append(d)
+
+        from urllib.parse import urlparse as _urlparse
 
         def _post_page_on(domain, sess, page):
             data = {"valor": q, "Buscar": "Buscar"}
             if page > 1:
                 data["p"] = str(page)
+            # NO seguir el redirect del POST: un dominio deprecado hace 301 a
+            # otro (p.ej. support -> review) y seguirlo convierte el POST en GET,
+            # PERDIENDO el termino (-> "Busqueda: -", 0 resultados). En su lugar
+            # re-POSTeamos directo al dominio destino (robusto ante rotaciones).
             rr = sess.post(f"https://{domain}/buscar", data=data,
-                           timeout=30, allow_redirects=True)
+                           timeout=30, allow_redirects=False)
+            if rr.status_code in (301, 302, 303, 307, 308):
+                newdom = _urlparse(rr.headers.get("Location") or "").hostname
+                if newdom and newdom != domain:
+                    ns, _ = _dt_anubis_session(newdom)
+                    rr = ns.post(f"https://{newdom}/buscar", data=data,
+                                 timeout=30, allow_redirects=False)
+                else:
+                    rr = sess.post(f"https://{domain}/buscar", data=data,
+                                   timeout=30, allow_redirects=True)
             if "anubis_challenge" in rr.text:
                 _DT_COOKIES.pop(domain, None)
                 ns, _ = _dt_anubis_session(domain)
-                rr = ns.post(f"https://{domain}/buscar", data=data, timeout=30)
+                rr = ns.post(f"https://{domain}/buscar", data=data, timeout=30,
+                             allow_redirects=False)
             return rr
 
         domain = None
@@ -890,60 +907,6 @@ def dtsearch():
     except Exception as e:
         diag["error"] = e.__class__.__name__ + ": " + str(e)
         return jsonify({"error": str(e), "_diag": diag}), 502
-
-
-@app.route("/dtsdbg", methods=["GET"])
-def dtsdbg():
-    """TEMPORAL: diagnostico del buscador DonTorrent (quitar tras arreglar)."""
-    from urllib.parse import quote as _q
-    q = (request.args.get("q") or "batman").strip()
-    domain = (request.args.get("domain") or "dontorrent.review").strip()
-    pat = r"/(?:pelicula|serie|documental)/\d+/"
-    out = {"q": q, "domain": domain}
-
-    def items(t):
-        return len(set(_re_dt.findall(pat, t)))
-    try:
-        sess, solved = _dt_anubis_session(domain)
-        out["anubis_solved"] = solved
-        try:
-            r = sess.post(f"https://{domain}/buscar",
-                          data={"valor": q, "Buscar": "Buscar"},
-                          timeout=30, allow_redirects=True)
-            out["post_follow"] = {"st": r.status_code, "url": r.url,
-                                  "hist": [h.status_code for h in r.history],
-                                  "items": items(r.text), "len": len(r.text)}
-        except Exception as e:
-            out["post_follow"] = "ERR %s" % e
-        try:
-            r = sess.post(f"https://{domain}/buscar",
-                          data={"valor": q, "Buscar": "Buscar"},
-                          timeout=30, allow_redirects=False)
-            out["post_noredir"] = {"st": r.status_code,
-                                   "loc": r.headers.get("Location"),
-                                   "items": items(r.text)}
-        except Exception as e:
-            out["post_noredir"] = "ERR %s" % e
-        try:
-            r = sess.post(f"https://{domain}/buscar",
-                          data={"valor": q, "Buscar": "Buscar"},
-                          headers={"X-Requested-With": "XMLHttpRequest",
-                                   "Referer": f"https://{domain}/"},
-                          timeout=30, allow_redirects=True)
-            out["post_xhr"] = {"st": r.status_code, "url": r.url,
-                               "items": items(r.text), "len": len(r.text)}
-        except Exception as e:
-            out["post_xhr"] = "ERR %s" % e
-        try:
-            r = sess.get(f"https://{domain}/buscar/{_q(q)}",
-                         timeout=30, allow_redirects=True)
-            out["get_path"] = {"st": r.status_code, "url": r.url,
-                               "items": items(r.text)}
-        except Exception as e:
-            out["get_path"] = "ERR %s" % e
-    except Exception as e:
-        out["error"] = str(e)
-    return jsonify(out)
 
 
 @app.route("/dtfetch", methods=["GET"])
