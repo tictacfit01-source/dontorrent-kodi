@@ -656,6 +656,67 @@ DT_FALLBACK = [
     "dontorrent.istanbul", "dontorrent.lighting", "dontorrent.reisen",
 ]
 
+# --- Auto-deteccion del dominio oficial vigente (AUTO-CURATIVO) --------------
+# DonTorrent rota de dominio cada cierto tiempo; los viejos hacen 301 al nuevo y
+# CADA pagina lleva el dominio oficial en su schema.org. Tras una busqueda CON
+# resultados lo extraemos y lo recordamos en /tmp -> la proxima vez vamos
+# directos. En arranque en frio (/tmp vacio) se re-descubre en la 1a busqueda.
+# Asi, cuando roten de dominio, el buscador se arregla solo sin tocar nada.
+_DT_DOMAIN_FILE = "/tmp/mw_dt_domain.txt"
+_DT_HOST_RE = _re_dt.compile(r"^(?:www\.)?(dontorrent\.[a-z]{2,12})$", _re_dt.I)
+
+
+def _dt_valid_host(host):
+    """Solo acepta el apex 'dontorrent.<tld>' (con o sin www). Rechaza clones
+    tipo 'dontorrent.evil.com' y hosts ajenos (imagenes, CDNs, etc.)."""
+    if not host:
+        return None
+    m = _DT_HOST_RE.match(host.strip().lower())
+    return m.group(1) if m else None
+
+
+def _dt_load_domain():
+    try:
+        with open(_DT_DOMAIN_FILE, "r", encoding="utf-8") as f:
+            return _dt_valid_host(f.read().strip())
+    except Exception:
+        return None
+
+
+def _dt_save_domain(host):
+    host = _dt_valid_host(host)
+    if not host:
+        return
+    try:
+        tmp = _DT_DOMAIN_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(host)
+        os.replace(tmp, _DT_DOMAIN_FILE)
+    except Exception:
+        pass
+
+
+def _dt_discover_canonical(html):
+    """Extrae el dominio oficial actual del HTML de una pagina de DonTorrent.
+    Señales, de mas a menos fiable: target del SearchAction (schema.org), url del
+    WebSite (schema.org), <link rel=canonical>, og:url. Devuelve 'dontorrent.X' o
+    None. Cada candidato se valida con _dt_valid_host; ademas solo se llama sobre
+    paginas que YA dieron resultados, asi que no puede adoptar un dominio basura."""
+    if not html:
+        return None
+    for pat in (
+        r'"target"\s*:\s*"https?://([^/"]+)/buscar',
+        r'"url"\s*:\s*"https?://([^/"]+?)/?"',
+        r'rel=["\']canonical["\'][^>]*href=["\']https?://([^/"\']+)',
+        r'property=["\']og:url["\'][^>]*content=["\']https?://([^/"\']+)',
+    ):
+        for host in _re_dt.findall(pat, html, _re_dt.I):
+            valid = _dt_valid_host(host)
+            if valid:
+                return valid
+    return None
+
+
 # Cache de cookies Anubis en memoria (proceso). Funciona porque Render mantiene
 # la misma IP de salida — las cookies IP-bound siguen siendo validas.
 _DT_COOKIES = {}   # domain -> {"cookies": {}, "ts": ...}
@@ -786,10 +847,12 @@ def dtsearch():
         dom_candidates = []
         if preferred:
             dom_candidates.append(preferred)
-        # dontorrent.review va primero: es el dominio OFICIAL actual; los demas
-        # (support, science...) hacen 301 hacia el.
-        for d in ["dontorrent.review"] + DT_FALLBACK:
-            if d not in dom_candidates:
+        # El dominio APRENDIDO (auto-detectado en la ultima busqueda con
+        # resultados) va primero: es el oficial vigente. Luego las semillas.
+        # Aunque la semilla este obsoleta, el 301->re-POST y la auto-deteccion
+        # (schema.org) acaban llevandonos al dominio bueno y lo recordamos.
+        for d in [_dt_load_domain()] + DT_FALLBACK:
+            if d and d not in dom_candidates:
                 dom_candidates.append(d)
 
         from urllib.parse import urlparse as _urlparse
@@ -826,6 +889,7 @@ def dtsearch():
         r = None
         full_html = ""
         tried = []
+        got_results = False
         for cand in dom_candidates[:5]:
             try:
                 s2, sv = _dt_anubis_session(cand)
@@ -837,6 +901,7 @@ def dtsearch():
                 tried.append(f"{cand}:{n_items}")
                 if n_items > 0:
                     domain, sess, solved, r, full_html = cand, s2, sv, rr, html
+                    got_results = True
                     break
                 # Guardar el primero como fallback aunque sea 0
                 if domain is None:
@@ -844,7 +909,18 @@ def dtsearch():
             except Exception as e:
                 tried.append(f"{cand}:ERR")
                 continue
+
+        # AUTO-CURATIVO: si hubo resultados, aprende el dominio oficial vigente
+        # del schema.org de la pagina (donde de verdad sirvio, tras posibles 301)
+        # y recuerdalo para la proxima busqueda. Fallback: el candidato que
+        # funciono. Solo se persiste tras resultados reales -> nunca un clon.
+        learned = None
+        if got_results:
+            learned = _dt_discover_canonical(full_html) or _dt_valid_host(domain)
+            if learned:
+                _dt_save_domain(learned)
         diag["domain"] = domain
+        diag["learned"] = learned
         diag["tried"] = tried
         diag["anubis_solved"] = solved
         diag["phase"] = "search"
@@ -896,7 +972,8 @@ def dtsearch():
         headers = {
             "Content-Type": "text/html; charset=utf-8",
             "Access-Control-Allow-Origin": "*",
-            "X-MW-Dt-Domain": domain,
+            "X-MW-Dt-Domain": domain or "?",
+            "X-MW-Dt-Learned": learned or "",
             "X-MW-Dt-Status": str(r.status_code),
             "X-MW-Dt-Bytes": str(len(full_html)),
             "X-MW-Dt-Anubis-Solved": "1" if solved else "0",
