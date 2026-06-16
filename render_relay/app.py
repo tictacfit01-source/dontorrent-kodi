@@ -86,6 +86,7 @@ ALLOWED_HOSTS = (
     "wolfmax4k",
     "dontorrent",
     "divxtotal",
+    "elitetorrent",
     "enlacito.com",
     "short-info.link",
     "acortador.es",
@@ -2423,7 +2424,34 @@ def _cat_dt_session_get(path):
 
 _CAT_QRE = _re_dt.compile(
     r"\b(4K|2160p|1080p|720p|HDRip|BluRay|BDRemux|BDRip|WEB-?DL|WEBRip|"
-    r"MicroHD|HDTV|DVDRip|Remux)\b", _re_dt.I)
+    r"MicroHD|HDTV|DVDRip|Remux|UHD)\b", _re_dt.I)
+
+_CAT_KIND_MAP = {"pelicula": "movie", "serie": "serie", "documental": "doc"}
+_CAT_KIND_TABLA = {"movie": "peliculas", "doc": "documentales"}
+
+
+def _cat_norm_quality(qraw):
+    """Normaliza un token de calidad para mostrar (4K / 1080p / 720p / BluRay...)."""
+    t = (qraw or "").strip().lower()
+    if t in ("4k", "2160p", "uhd"):
+        return "4K"
+    if t == "1080p":
+        return "1080p"
+    if t == "720p":
+        return "720p"
+    return (qraw or "").strip().upper() if t in (
+        "hdrip", "hdtv", "dvdrip") else (qraw or "").strip()
+
+
+def _cat_clean_quality(title):
+    """DonTorrent mete la calidad en el titulo (p.ej. 'Matrix [4K]'). Devuelve
+    (titulo_limpio_para_mostrar, calidad_normalizada)."""
+    m = _CAT_QRE.search(title or "")
+    q = _cat_norm_quality(m.group(1)) if m else ""
+    clean = _re_dt.sub(r"\[[^\]]*\]", "", title or "")   # quita [4K], [1080p AC3]
+    clean = _CAT_QRE.sub("", clean)
+    clean = _re_dt.sub(r"\s{2,}", " ", clean).strip(" .-·")
+    return (clean or (title or "").strip()), q
 
 
 def _cat_parse_items(html):
@@ -2435,11 +2463,11 @@ def _cat_parse_items(html):
     for m in _re_dt.finditer(r"<a\b([^>]*)>(.*?)</a>", html, _re_dt.S | _re_dt.I):
         attrs, inner = m.group(1), m.group(2)
         hm = _re_dt.search(
-            r'''href=["']/(pelicula|serie)/(\d+)((?:/[^"'#?]*)?)["']''',
+            r'''href=["']/(pelicula|serie|documental)/(\d+)((?:/[^"'#?]*)?)["']''',
             attrs, _re_dt.I)
         if not hm:
             continue
-        kind = "movie" if hm.group(1).lower() == "pelicula" else "serie"
+        kind = _CAT_KIND_MAP.get(hm.group(1).lower(), "movie")
         cid, rest = hm.group(2), (hm.group(3) or "")
         tm = _re_dt.search(r'''title=["']([^"']+)["']''', attrs)
         itxt = _re_dt.sub(r"\s+", " ", _re_dt.sub(r"<[^>]+>", " ", inner)).strip()
@@ -2483,12 +2511,13 @@ def _cat_parse_items(html):
     for k in order:
         kind, cid = k
         e = best[k]
-        it = {"title": e["title"], "content_id": cid, "kind": kind,
-              "thumb": e["thumb"]}
-        if kind == "movie":
-            it["tabla"] = "peliculas"   # plural: lo que espera la API de descarga
-        else:
+        disp, qual = _cat_clean_quality(e["title"])
+        it = {"title": disp, "content_id": cid, "kind": kind,
+              "thumb": e["thumb"], "quality": qual, "source": "dt"}
+        if kind == "serie":
             it["path"] = e["path"] or f"/serie/{cid}/"
+        else:   # movie / doc -> descarga directa con su tabla
+            it["tabla"] = _CAT_KIND_TABLA.get(kind, "peliculas")
         out.append(it)
     return out
 
@@ -2511,15 +2540,200 @@ def _cat_enrich(items, limit=36):
         return items
 
 
+# === EliteTorrent (catalogo: 2a fuente, peliculas) =========================
+_ET_BASE = "https://www.elitetorrent.com"
+
+
+def _et_session():
+    try:
+        return cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows",
+                     "mobile": False})
+    except Exception:
+        s = requests.Session()
+        s.headers.update(BROWSER_HEADERS)
+        return s
+
+
+def _et_rot13(t):
+    out = []
+    for c in t:
+        if "a" <= c <= "z":
+            out.append(chr((ord(c) - 97 + 13) % 26 + 97))
+        elif "A" <= c <= "Z":
+            out.append(chr((ord(c) - 65 + 13) % 26 + 65))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def _et_decode_link(enc):
+    """Enlace ET = base64 anidado (+ROT13) -> magnet / .torrent."""
+    import base64
+    data = (enc or "").strip()
+    for _ in range(20):
+        try:
+            pad = len(data) % 4
+            dd = data + ("=" * (4 - pad) if pad else "")
+            dec = base64.b64decode(dd).decode("utf-8", "replace").strip()
+            if dec.startswith(("magnet:", "zntarg:", "http", "uggc")):
+                data = dec
+                break
+            data = dec
+        except Exception:
+            break
+    if data.startswith("zntarg:") or data.startswith("uggc"):
+        data = _et_rot13(data)
+    return data if data.startswith(("magnet:", "http")) else None
+
+
+def _et_norm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", (s or "").lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return _re_dt.sub(r"\s+", " ", _re_dt.sub(r"[^a-z0-9 ]", " ", s)).strip()
+
+
+def _et_relevant(title, q):
+    nt, nq = _et_norm(title), _et_norm(q)
+    if nq and nq in nt:
+        return True
+    toks = [w for w in nq.split() if len(w) > 2]
+    if not toks:
+        return bool(nq) and nq in nt
+    hit = sum(1 for w in toks if w in nt)
+    return hit >= max(1, len(toks) - 1)
+
+
+def _et_search(q):
+    """Peliculas de EliteTorrent para la busqueda combinada. Best-effort: si ET
+    cae o bloquea la IP de Render, devuelve [] (DonTorrent sigue mandando)."""
+    try:
+        s = _et_session()
+        r = s.get(_ET_BASE + "/?s=" + urlquote(q), timeout=16)
+        html = r.text or ""
+        if "miniboxs" not in html and "class=\"nombre" not in html:
+            return []
+        out, seen = [], set()
+        for lim in _re_dt.finditer(r"(?is)<li\b[^>]*>(.*?)</li>", html):
+            li = lim.group(1)
+            am = _re_dt.search(
+                r'''<a[^>]*class=["'][^"']*\bnombre\b[^"']*["'][^>]*'''
+                r'''href=["']([^"']+)["'][^>]*>(.*?)</a>''', li,
+                _re_dt.I | _re_dt.S)
+            if not am:
+                am = _re_dt.search(
+                    r'''<a[^>]*href=["']([^"']+)["'][^>]*'''
+                    r'''title=["']([^"']+)["']''', li, _re_dt.I)
+            if not am:
+                continue
+            href = am.group(1)
+            tlm = _re_dt.search(r'''title=["']([^"']+)["']''', li)
+            title = (tlm.group(1) if tlm
+                     else _re_dt.sub(r"<[^>]+>", " ", am.group(2)))
+            title = _re_dt.sub(r"\s+", " ", title or "").strip()
+            if not title or not href:
+                continue
+            url = href if href.startswith("http") else (
+                _ET_BASE + ("" if href.startswith("/") else "/") + href)
+            if "/serie" in url or "/series" in url:
+                continue   # de momento ET solo aporta peliculas
+            if url in seen or not _et_relevant(title, q):
+                continue
+            seen.add(url)
+            im = _re_dt.search(
+                r'''<img[^>]+(?:data-src|src)=["']([^"']+)["']''', li, _re_dt.I)
+            thumb = im.group(1) if im else None
+            if thumb and thumb.startswith("//"):
+                thumb = "https:" + thumb
+            qm = _re_dt.search(
+                r'''class=["'][^"']*marca[^"']*["'][^>]*>\s*<i[^>]*>([^<]+)''',
+                li, _re_dt.I)
+            tdisp, tq = _cat_clean_quality(title)
+            qual = _cat_norm_quality(qm.group(1).strip()) if qm else tq
+            out.append({"title": tdisp, "content_id": url, "kind": "movie",
+                        "source": "et", "url": url, "thumb": thumb,
+                        "quality": qual, "tabla": "et"})
+        return out[:24]
+    except Exception:
+        return []
+
+
+def _et_resolve(url):
+    """Ficha ET -> mejor enlace (magnet preferido, si no .torrent). '' si nada."""
+    try:
+        s = _et_session()
+        html = s.get(url, timeout=16).text or ""
+        cands = []
+        for hm in _re_dt.finditer(
+                r'''<a[^>]*class=["'][^"']*enlace_torrent[^"']*["']'''
+                r'''[^>]*href=["']([^"']+)["']''', html, _re_dt.I):
+            mm = _re_dt.search(r"[?&]i=([A-Za-z0-9+/=]+)", hm.group(1))
+            if not mm:
+                continue
+            link = _et_decode_link(mm.group(1))
+            if link:
+                cands.append(link)
+        if not cands:   # VIP: a.linktorrent[data-src] (base64 simple)
+            import base64
+            for dm in _re_dt.finditer(
+                    r'''<a[^>]*class=["'][^"']*linktorrent[^"']*["']'''
+                    r'''[^>]*data-src=["']([^"']+)["']''', html, _re_dt.I):
+                try:
+                    dec = base64.b64decode(dm.group(1)).decode("utf-8")
+                    if dec.startswith("magnet:"):
+                        cands.append(dec)
+                except Exception:
+                    pass
+        for c in cands:
+            if c.startswith("magnet:"):
+                return c
+        return cands[0] if cands else ""
+    except Exception:
+        return ""
+
+
+def _cat_merge(dt_items, et_items):
+    """DonTorrent manda; EliteTorrent solo añade lo que DonTorrent no tiene."""
+    keys = {_et_norm(it.get("title")) for it in dt_items}
+    out = list(dt_items)
+    for it in et_items:
+        k = _et_norm(it.get("title"))
+        if k and k in keys:
+            continue
+        keys.add(k)
+        out.append(it)
+    return out
+
+
 @app.get("/catsearch")
 def catsearch():
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify({"items": []})
-    html = _cat_dt_html(q)
-    if not html:
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=2) as ex:
+        f_et = ex.submit(_et_search, q)
+        f_dt = ex.submit(lambda: _cat_parse_items(_cat_dt_html(q)))
+        try:
+            dt_items = f_dt.result() or []
+        except Exception:
+            dt_items = []
+        try:
+            et_items = f_et.result() or []
+        except Exception:
+            et_items = []
+    if not dt_items and not et_items:
         return jsonify({"items": []})
-    return jsonify({"items": _cat_enrich(_cat_parse_items(html))})
+    return jsonify({"items": _cat_enrich(_cat_merge(dt_items, et_items))})
+
+
+@app.get("/catetresolve")
+def catetresolve():
+    u = (request.args.get("u") or "").strip()
+    if "elitetorrent" not in u.lower():
+        return jsonify({"link": ""}), 400
+    return jsonify({"link": _et_resolve(u) or ""})
 
 
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
@@ -2550,7 +2764,9 @@ def catdetail():
     if not html:
         return jsonify({"episodes": []})
     tm = _re_dt.search(r"<title>([^<]*)</title>", html)
-    title = (tm.group(1).split(" - ")[0].strip() if tm else "Serie")
+    raw = (tm.group(1).split(" - ")[0].strip() if tm else "Serie")
+    # El H1/title viene como 'Descargar Ted Lasso' -> sin ese prefijo TMDB acierta.
+    title = _re_dt.sub(r"^\s*Descargar\s+", "", raw, flags=_re_dt.I).strip() or raw
     eps = []
     for m in _re_dt.finditer(r"<tr\b.*?</tr>", html, _re_dt.S | _re_dt.I):
         row = m.group(0)
@@ -2566,15 +2782,20 @@ def catdetail():
             if not dm:
                 continue
             cid, tabla = dm.group(2), dm.group(1)
+        cells = _re_dt.findall(r"<td\b[^>]*>(.*?)</td>", row, _re_dt.S | _re_dt.I)
+        # 1a celda = columna 'Episodios' (conserva rangos reales: '1x01 al 1x03')
+        cell0 = (_re_dt.sub(r"\s+", " ", _re_dt.sub(r"<[^>]+>", " ", cells[0]))
+                 .strip() if cells else "")
         text = _re_dt.sub(r"\s+", " ", _re_dt.sub(r"<[^>]+>", " ", row)).strip()
-        sm = _re_dt.search(r"\b(\d{1,2})\s*x\s*(\d{1,3})\b", text)
+        sm = _re_dt.search(r"\b(\d{1,2})\s*x\s*(\d{1,3})\b", cell0 or text)
         season = int(sm.group(1)) if sm else 0
         episode = int(sm.group(2)) if sm else 0
         qm = _CAT_QRE.search(text)
-        label = ("%dx%02d" % (season, episode)) if sm else (text[:36] or "Descargar")
+        label = cell0.rstrip(". ") or (
+            ("%dx%02d" % (season, episode)) if sm else "Descargar")
         eps.append({"content_id": cid, "tabla": tabla, "label": label,
                     "season": season, "episode": episode,
-                    "quality": (qm.group(1) if qm else "")})
+                    "quality": (_cat_norm_quality(qm.group(1)) if qm else "")})
     meta = _cat_tmdb(title, "tv")
     return jsonify({"title": title, "poster": meta.get("poster"),
                     "year": meta.get("year"), "rating": meta.get("rating"),
@@ -2699,6 +2920,23 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .navrow2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
 .rar{color:#ff9f6e;font-size:13px;font-weight:600;margin:0 0 12px}
 .ovfav{border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:12px;padding:9px 13px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
+/* etiquetas tipo / fuente en la tarjeta */
+.card .kindtag{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.6);border:1px solid var(--stroke);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700;color:#dfe6f2}
+.card .srctag{position:absolute;bottom:6px;right:6px;background:rgba(255,159,110,.92);border-radius:6px;padding:2px 6px;font-size:9px;font-weight:800;color:#1a0d06;letter-spacing:.3px}
+/* salto a minuto en el mando */
+.jump{display:flex;gap:10px;margin:2px 0 6px}
+.jump input{flex:1;background:rgba(255,255,255,.07);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);padding:15px;font-size:16px;outline:0;text-align:center}
+.jump input::placeholder{color:var(--sub);font-size:13px}
+.jump .jbtn{width:120px;flex:none;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--blue2),var(--blue));color:#fff;border-radius:14px;font-weight:700;font-size:15px;cursor:pointer}
+.jump .jbtn:active{transform:scale(.97)}
+.rb svg{display:block}
+/* episodios: ojo de visto */
+.ep{display:flex;align-items:center;gap:10px}
+.ep .epmain{flex:1;min-width:0}
+.ep .eye{flex:none;width:48px;height:48px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--sub);font-size:19px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.12s}
+.ep .eye:active{transform:scale(.9)}
+.ep.seen{opacity:.55}
+.ep.seen .eye{color:var(--green);border-color:rgba(48,209,88,.45);background:rgba(48,209,88,.13)}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -2759,9 +2997,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   </div>
   <div class="media">
    <div class="rb sk" onclick="cmd('seek_back')">-10<small>s</small></div>
-   <div class="rb stop" onclick="cmd('stop')">■</div>
-   <div class="rb play" id="rm-pp" onclick="cmd('playpause')">⏸</div>
+   <div class="rb stop" onclick="cmd('stop')"><svg width="22" height="22" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg></div>
+   <div class="rb play" id="rm-pp" onclick="cmd('playpause')"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg></div>
    <div class="rb sk" onclick="cmd('seek_fwd')">+30<small>s</small></div>
+  </div>
+  <div class="jump">
+   <input id="rm-min" type="number" min="0" inputmode="numeric" placeholder="ir al minuto exacto...">
+   <div class="jbtn" onclick="seekTo()">Saltar a</div>
   </div>
   <div class="row3">
    <div class="pill" onclick="cmd('voldown')">🔉</div>
@@ -2784,12 +3026,19 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 <div class="toast" id="toast"></div>
 <script>
 var $=function(s){return document.getElementById(s)};
+var SVG_PLAY='<svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg>';
+var SVG_PAUSE='<svg width="28" height="28" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg>';
 var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='', lastPlayTs=0;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
 code.value=localStorage.getItem('mw_code')||'';
 code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value)};
 try{favs=JSON.parse(localStorage.getItem('mw_fav')||'[]')||[]}catch(e){favs=[]}
 function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catch(e){}}
+var seen=[];try{seen=JSON.parse(localStorage.getItem('mw_seen')||'[]')||[]}catch(e){seen=[]}
+function saveSeen(){try{localStorage.setItem('mw_seen',JSON.stringify(seen))}catch(e){}}
+function isSeen(id){return seen.indexOf(String(id))>=0}
+function toggleSeen(id){id=String(id);var i=seen.indexOf(id);if(i>=0)seen.splice(i,1);else seen.unshift(id);saveSeen()}
+function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
 function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
 function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating})}saveFavs()}
@@ -2811,22 +3060,33 @@ function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';
  items.forEach(function(x,i){
   var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
   var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
-  var tag=x.kind==='serie'?'<div class="q">Serie</div>':'';
-  h+='<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+tag+
+  var q=x.quality?('<div class="q">'+esc(x.quality)+'</div>'):'';
+  var kt='<div class="kindtag">'+kindLabel(x.kind)+'</div>';
+  var src=(x.source==='et')?'<div class="srctag">ET</div>':'';
+  h+='<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+q+kt+src+
      '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
      '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';
  });h+='</div>';el.className='';el.innerHTML=h}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
- $('sh-t').textContent=x.title;$('sh-y').textContent=star(x);$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sheet').classList.add('on');
- fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
+ var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(x.source==='et')sy+=' · EliteTorrent';
+ $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sheet').classList.add('on');
+ if(x.source!=='et')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
-function play(){if(sendPlay({c:sel.content_id,tb:sel.tabla,t:sel.title}))closeSheet()}
+function play(){if(!sel)return;
+ if(sel.source==='et'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
+  toast('Resolviendo enlace…');
+  fetch('/catetresolve?u='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo obtener el enlace de EliteTorrent')}}).catch(function(){toast('No se pudo obtener el enlace')});
+  return}
+ if(sendPlay({a:'dt',c:sel.content_id,tb:sel.tabla,t:sel.title}))closeSheet()}
 function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
+ var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
+ if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
  toast('Enviando a la tele...');
- fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'play_ref',a:'dt',c:ref.c,tb:ref.tb,t:ref.t})})
+ fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
 function openSeries(x){SHOW=x.title;EPS={};$('ov').classList.add('on');$('ov-title').textContent=x.title;
@@ -2838,18 +3098,22 @@ function openSeries(x){SHOW=x.title;EPS={};$('ov').classList.add('on');$('ov-tit
   var ph=poster?(' style="background-image:url('+poster+')"'):'';
   h+='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button></div></div>';
   keys.forEach(function(s){if(keys.length>1||s>0)h+='<div class="seas">Temporada '+(s||'?')+'</div>';
-   seasons[s].forEach(function(e){var id='e'+e.content_id;EPS[id]=e;
-    h+='<div class="ep" onclick="playEp(\''+id+'\')"><div class="epl">▶ '+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</div></div>'});
+   seasons[s].forEach(function(e){var id='e'+e.content_id;EPS[id]=e;var sc=isSeen(e.content_id)?' seen':'';
+    h+='<div class="ep'+sc+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl">▶ '+esc(e.label)+'</span>'+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</div><div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">👁</div></div>'});
   });$('ov-body').innerHTML=h;
  }).catch(function(){$('ov-body').innerHTML='<div class="msg">Error de conexión.</div>'})}
 function closeOv(){$('ov').classList.remove('on')}
-function playEp(id){var e=EPS[id];if(!e)return;if(sendPlay({c:e.content_id,tb:e.tabla,t:(SHOW+' '+e.label).trim()}))closeOv()}
+function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var row=$('row-'+id);if(row)row.classList.toggle('seen',isSeen(e.content_id))}
+function playEp(id){var e=EPS[id];if(!e)return;if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:(SHOW+' '+e.label).trim()}))closeOv()}
+function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
+ var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
+ fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}
 function fmt(s){s=Math.max(0,s||0);var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60);return (h?h+':':'')+(h?('0'+m).slice(-2):m)+':'+('0'+x).slice(-2)}
 function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000);return}
  fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(d){var np=d&&d.np;var bar=$('npbar');
   if(np&&np.title){bar.classList.add('on');$('np-t').textContent=np.title;var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
    $('np-prog').style.width=pct+'%';$('np-pp').textContent=np.paused?'▶':'⏸';
-   $('rm-t').textContent=np.title;$('rm-cur').textContent=fmt(np.elapsed);$('rm-tot').textContent=fmt(np.total);$('rm-prog').style.width=pct+'%';$('rm-pp').textContent=np.paused?'▶':'⏸';}
+   $('rm-t').textContent=np.title;$('rm-cur').textContent=fmt(np.elapsed);$('rm-tot').textContent=fmt(np.total);$('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
   else{bar.classList.remove('on');if($('remote').classList.contains('on'))$('rm-t').textContent='Preparando en la tele…';}
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
  }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
