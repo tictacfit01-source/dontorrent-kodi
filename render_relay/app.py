@@ -3041,7 +3041,7 @@ function toggleSeen(id){id=String(id);var i=seen.indexOf(id);if(i>=0)seen.splice
 function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
 function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
-function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating})}saveFavs()}
+function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality})}saveFavs()}
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
