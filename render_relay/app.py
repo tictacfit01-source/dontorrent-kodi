@@ -2450,6 +2450,8 @@ def _cat_clean_quality(title):
     q = _cat_norm_quality(m.group(1)) if m else ""
     clean = _re_dt.sub(r"\[[^\]]*\]", "", title or "")   # quita [4K], [1080p AC3]
     clean = _CAT_QRE.sub("", clean)
+    clean = _re_dt.sub(r"\(\s*[-–—]\s*", "(", clean)     # "( - IMAX" -> "(IMAX"
+    clean = _re_dt.sub(r"\(\s*\)|\[\s*\]", "", clean)    # parentesis/corchetes vacios
     clean = _re_dt.sub(r"\s{2,}", " ", clean).strip(" .-·")
     return (clean or (title or "").strip()), q
 
@@ -2734,6 +2736,34 @@ def catetresolve():
     if "elitetorrent" not in u.lower():
         return jsonify({"link": ""}), 400
     return jsonify({"link": _et_resolve(u) or ""})
+
+
+@app.get("/etdbg")
+def etdbg():
+    """TEMPORAL: diagnostica si Render alcanza EliteTorrent (Cloudflare/IP) y si
+    el parser engancha. Eliminar tras depurar."""
+    q = (request.args.get("q") or "matrix").strip()
+    out = {"q": q}
+    try:
+        s = _et_session()
+        r = s.get(_ET_BASE + "/?s=" + urlquote(q), timeout=22)
+        html = r.text or ""
+        low = html.lower()
+        out["status"] = r.status_code
+        out["len"] = len(html)
+        out["final_url"] = str(r.url)
+        out["has_miniboxs"] = "miniboxs" in html
+        out["has_nombre"] = 'class="nombre' in html
+        out["cf_challenge"] = ("just a moment" in low or "challenge-platform"
+                               in low or "cf-chl" in low)
+        first = _re_dt.search(r"(?is)<li\b[^>]*>(.*?)</li>", html)
+        out["first_li"] = (_re_dt.sub(r"\s+", " ", first.group(1))[:400]
+                           if first else "")
+        out["parsed"] = len(_et_search(q))
+        out["sample_head"] = _re_dt.sub(r"\s+", " ", html[:300])
+    except Exception as e:
+        out["error"] = e.__class__.__name__ + ": " + str(e)
+    return jsonify(out)
 
 
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
