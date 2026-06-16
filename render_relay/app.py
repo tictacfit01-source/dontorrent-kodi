@@ -1132,6 +1132,43 @@ def dtpow():
                     "phase": "all-domains-failed"}), 502
 
 
+@app.route("/dtpowdbg", methods=["GET"])
+def dtpowdbg():
+    """TEMPORAL: diagnostico del PoW de descarga DonTorrent (quitar tras fix)."""
+    cid = request.args.get("c") or "13700"
+    tabla = request.args.get("tb") or "pelicula"
+    dom = request.args.get("domain") or "dontorrent.review"
+    out = {"domain": dom, "content_id": cid, "tabla": tabla}
+    try:
+        sess, solved = _dt_anubis_session(dom)
+        out["anubis_solved"] = solved
+        api = f"https://{dom}/api_validate_pow.php"
+        r1 = sess.post(api, json={"action": "generate",
+                                  "content_id": int(cid), "tabla": tabla},
+                       timeout=20)
+        out["gen_status"] = r1.status_code
+        out["gen_ctype"] = r1.headers.get("content-type")
+        out["gen_body"] = r1.text[:700]
+        try:
+            gen = r1.json()
+            out["gen_keys"] = list(gen.keys())
+            ch = gen.get("challenge")
+            if gen.get("success") and ch:
+                rand = ch.get("randomData", "") if isinstance(ch, dict) else str(ch)
+                diff = ch.get("difficulty", 3) if isinstance(ch, dict) else 3
+                h, nonce, el = _dt_solve_pow(rand, diff)
+                r2 = sess.post(api, json={"action": "validate",
+                                          "challenge": ch, "nonce": nonce},
+                               timeout=20)
+                out["val_status"] = r2.status_code
+                out["val_body"] = r2.text[:700]
+        except Exception as e:
+            out["gen_parse_err"] = repr(e)
+    except Exception as e:
+        out["error"] = repr(e)
+    return jsonify(out)
+
+
 # ===========================================================================
 # DETECCION DE EMPAQUETADO (RAR) -> badge en la Lista del movil
 # ===========================================================================
