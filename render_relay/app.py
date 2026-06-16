@@ -2305,34 +2305,42 @@ _CAT_TMDB_KEY = "f090bb54758cabf231fb605d3e3e0468"   # misma key publica del add
 _CAT_TMDB_CACHE = {}
 
 
-def _cat_tmdb(title):
-    """Poster/año/nota de TMDB para un titulo de DonTorrent. Cache en memoria."""
-    clean = _re_dt.sub(r"[\(\[].*?[\)\]]", " ", title)
-    clean = _re_dt.sub(r"\b(1080p|720p|480p|2160p|4k|bluray|blu-?ray|brrip|bdrip|"
-                       r"web-?dl|webrip|hdtv|microhd|dvdrip|hdrip|x264|x265|hevc|"
-                       r"dual|castellano|latino|vose?)\b.*", "", clean, flags=_re_dt.I)
+def _cat_clean_title(title):
+    t = _re_dt.sub(r"[\(\[].*?[\)\]]", " ", title)
+    t = _re_dt.sub(r"\b(temporada|parte|cap\w*|capitulo|\d{1,2}\s*x\s*\d{1,3})\b.*",
+                   "", t, flags=_re_dt.I)
+    t = _re_dt.sub(r"\b(1080p|720p|480p|2160p|4k|bluray|blu-?ray|brrip|bdrip|"
+                   r"web-?dl|webrip|hdtv|microhd|dvdrip|hdrip|x264|x265|hevc|"
+                   r"dual|castellano|latino|vose?)\b.*", "", t, flags=_re_dt.I)
+    return t
+
+
+def _cat_tmdb(title, kind="movie"):
+    """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria."""
+    clean = _cat_clean_title(title)
     ym = _re_dt.search(r"\b(19|20)\d{2}\b", title)
     year = ym.group(0) if ym else None
     clean = _re_dt.sub(r"\b(19|20)\d{2}\b", "", clean)
     clean = _re_dt.sub(r"\s+", " ", clean).strip(" -.:")
-    ckey = (clean.lower(), year or "")
+    ckey = (kind, clean.lower(), year or "")
     if ckey in _CAT_TMDB_CACHE:
         return _CAT_TMDB_CACHE[ckey]
     out = {"poster": None, "year": year, "rating": None}
     try:
+        ep = "tv" if kind == "tv" else "movie"
         params = {"api_key": _CAT_TMDB_KEY, "language": "es-ES",
                   "query": clean, "include_adult": "false"}
-        if year:
+        if year and ep == "movie":
             params["year"] = year
-        r = requests.get("https://api.themoviedb.org/3/search/movie",
+        r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
                          params=params, timeout=8)
         res = (r.json() or {}).get("results") or []
         if res:
             top = res[0]
             pp = top.get("poster_path")
+            d = top.get("release_date") or top.get("first_air_date") or ""
             out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
-                   "year": (top.get("release_date") or "")[:4] or year,
-                   "rating": top.get("vote_average")}
+                   "year": d[:4] or year, "rating": top.get("vote_average")}
     except Exception:
         pass
     _CAT_TMDB_CACHE[ckey] = out
@@ -2369,6 +2377,80 @@ def _cat_dt_html(q):
     return ""
 
 
+def _cat_dt_session_get(path):
+    """GET a una ruta de DonTorrent (dominio APRENDIDO) con sesion Anubis.
+    Devuelve (html, domain) o ('', None). Para listados y fichas de serie."""
+    for dom in [_dt_load_domain()] + DT_FALLBACK:
+        if not dom:
+            continue
+        try:
+            s, _ = _dt_anubis_session(dom)
+            rr = s.get(f"https://{dom}{path}", timeout=30, allow_redirects=True)
+            if "anubis_challenge" in rr.text:
+                _DT_COOKIES.pop(dom, None)
+                s, _ = _dt_anubis_session(dom)
+                rr = s.get(f"https://{dom}{path}", timeout=30)
+            if rr.status_code == 200 and _re_dt.search(
+                    r"/(?:pelicula|serie|documental)/\d+/", rr.text):
+                return rr.text, dom
+        except Exception:
+            continue
+    return "", None
+
+
+_CAT_QRE = _re_dt.compile(
+    r"\b(4K|2160p|1080p|720p|HDRip|BluRay|BDRemux|BDRip|WEB-?DL|WEBRip|"
+    r"MicroHD|HDTV|DVDRip|Remux)\b", _re_dt.I)
+
+
+def _cat_parse_items(html):
+    """Peliculas y series (con su path de ficha) del HTML de un listado/busqueda."""
+    seen, items = set(), []
+    for m in _re_dt.finditer(r"<a\b([^>]*)>(.*?)</a>", html, _re_dt.S | _re_dt.I):
+        attrs, inner = m.group(1), m.group(2)
+        hm = _re_dt.search(r'''href=["']/(pelicula|serie)/(\d+)/([^"'#?]*)["']''',
+                           attrs, _re_dt.I)
+        if not hm:
+            continue
+        kind = "movie" if hm.group(1).lower() == "pelicula" else "serie"
+        cid, slug = hm.group(2), hm.group(3)
+        key = (kind, cid)
+        if key in seen:
+            continue
+        seen.add(key)
+        tm = _re_dt.search(r'''title=["']([^"']*)["']''', attrs)
+        title = (tm.group(1).strip() if tm else "")
+        if not title:
+            title = _re_dt.sub(r"<[^>]+>", " ", inner)
+        if not title.strip():
+            title = slug.rstrip("/").replace("-", " ")
+        title = _re_dt.sub(r"\s+", " ", title).strip()
+        if not title:
+            continue
+        it = {"title": title, "content_id": cid, "kind": kind}
+        if kind == "movie":
+            it["tabla"] = "peliculas"   # plural: lo que espera la API de descarga
+        else:
+            it["path"] = f"/serie/{cid}/{slug}"
+        items.append(it)
+    return items
+
+
+def _cat_enrich(items, limit=36):
+    items = items[:limit]
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    def _go(it):
+        it.update(_cat_tmdb(it["title"],
+                            "tv" if it.get("kind") == "serie" else "movie"))
+        return it
+    try:
+        with _TPE(max_workers=8) as ex:
+            return list(ex.map(_go, items))
+    except Exception:
+        return items
+
+
 @app.get("/catsearch")
 def catsearch():
     q = (request.args.get("q") or "").strip()
@@ -2377,58 +2459,89 @@ def catsearch():
     html = _cat_dt_html(q)
     if not html:
         return jsonify({"items": []})
-    seen, raw = set(), []
-    for m in _re_dt.finditer(r"<a\b([^>]*)>(.*?)</a>", html, _re_dt.S | _re_dt.I):
-        attrs, inner = m.group(1), m.group(2)
-        hm = _re_dt.search(r'''href=["']/(pelicula)/(\d+)/([^"'#?]*)["']''',
-                           attrs, _re_dt.I)
-        if not hm:
-            continue
-        cid = hm.group(2)
-        if cid in seen:
-            continue
-        seen.add(cid)
-        tm = _re_dt.search(r'''title=["']([^"']*)["']''', attrs)
-        title = (tm.group(1).strip() if tm else "")
-        if not title:
-            title = _re_dt.sub(r"<[^>]+>", " ", inner)
-        if not title.strip():
-            title = hm.group(3).rstrip("/").replace("-", " ")
-        title = _re_dt.sub(r"\s+", " ", title).strip()
-        if not title:
-            continue
-        # OJO: la API de descarga (api_validate_pow.php) espera el `tabla` del
-        # boton (data-tabla), que es PLURAL "peliculas" — no el "pelicula" del
-        # path de la URL (eso da "Tabla no valida" -> no resuelve el torrent).
-        raw.append({"title": title, "content_id": cid, "tabla": "peliculas"})
-    raw = raw[:30]
-    from concurrent.futures import ThreadPoolExecutor as _TPE
+    return jsonify({"items": _cat_enrich(_cat_parse_items(html))})
 
-    def _go(it):
-        it.update(_cat_tmdb(it["title"]))
-        return it
+
+_CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
+
+
+@app.get("/catbrowse")
+def catbrowse():
+    kind = (request.args.get("kind") or "estrenos").strip().lower()
     try:
-        with _TPE(max_workers=8) as ex:
-            items = list(ex.map(_go, raw))
+        page = max(1, int(request.args.get("page") or 1))
     except Exception:
-        items = raw
-    return jsonify({"items": items})
+        page = 1
+    bp = _CAT_BROWSE.get(kind, "/")
+    path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
+    html, _d = _cat_dt_session_get(path)
+    if not html:
+        return jsonify({"items": []})
+    return jsonify({"items": _cat_enrich(_cat_parse_items(html))})
+
+
+@app.get("/catdetail")
+def catdetail():
+    """Episodios de una serie DonTorrent. path=/serie/ID/slug -> JSON."""
+    path = (request.args.get("path") or "").strip()
+    if not _re_dt.match(r"^/serie/\d+/", path):
+        return jsonify({"error": "bad path", "episodes": []}), 400
+    html, _d = _cat_dt_session_get(path)
+    if not html:
+        return jsonify({"episodes": []})
+    tm = _re_dt.search(r"<title>([^<]*)</title>", html)
+    title = (tm.group(1).split(" - ")[0].strip() if tm else "Serie")
+    eps = []
+    for m in _re_dt.finditer(r"<tr\b.*?</tr>", html, _re_dt.S | _re_dt.I):
+        row = m.group(0)
+        dm = _re_dt.search(
+            r'data-content-id=["\'](\d+)["\'][^>]*data-tabla=["\']([^"\']+)["\']',
+            row)
+        if dm:
+            cid, tabla = dm.group(1), dm.group(2)
+        else:
+            dm = _re_dt.search(
+                r'data-tabla=["\']([^"\']+)["\'][^>]*data-content-id=["\'](\d+)["\']',
+                row)
+            if not dm:
+                continue
+            cid, tabla = dm.group(2), dm.group(1)
+        text = _re_dt.sub(r"\s+", " ", _re_dt.sub(r"<[^>]+>", " ", row)).strip()
+        sm = _re_dt.search(r"\b(\d{1,2})\s*x\s*(\d{1,3})\b", text)
+        season = int(sm.group(1)) if sm else 0
+        episode = int(sm.group(2)) if sm else 0
+        qm = _CAT_QRE.search(text)
+        label = ("%dx%02d" % (season, episode)) if sm else (text[:36] or "Descargar")
+        eps.append({"content_id": cid, "tabla": tabla, "label": label,
+                    "season": season, "episode": episode,
+                    "quality": (qm.group(1) if qm else "")})
+    meta = _cat_tmdb(title, "tv")
+    return jsonify({"title": title, "poster": meta.get("poster"),
+                    "year": meta.get("year"), "rating": meta.get("rating"),
+                    "episodes": eps})
 
 
 _CAT_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
-<title>MejorWolf · Catálogo</title>
+<title>MejorWolf</title>
 <style>
-:root{--bg:#06070c;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff}
+:root{--bg:#06070c;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif}
 body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b2740 0,transparent 60%),var(--bg)}
-.wrap{max-width:680px;margin:0 auto;padding:16px 14px 60px}
-.top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
-.brand{font-weight:700;font-size:18px;display:flex;align-items:center;gap:8px}
-.brand .d{width:24px;height:24px;border-radius:8px;background:linear-gradient(145deg,var(--blue2),var(--blue));display:flex;align-items:center;justify-content:center;font-size:14px}
+.wrap{max-width:760px;margin:0 auto;padding:16px 14px 96px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.brand{font-weight:800;font-size:19px;display:flex;align-items:center;gap:8px;letter-spacing:.3px}
+.brand .d{width:26px;height:26px;border-radius:9px;background:linear-gradient(145deg,var(--blue2),var(--blue));display:flex;align-items:center;justify-content:center;font-size:15px}
 .code{width:96px;letter-spacing:3px;text-align:center;font-weight:600;background:rgba(255,255,255,.07);border:1px solid var(--stroke);color:var(--txt);border-radius:12px;padding:9px 8px;outline:0}
+.tabs{display:flex;background:rgba(255,255,255,.05);border:1px solid var(--stroke);border-radius:14px;padding:4px;margin-bottom:14px}
+.tab{flex:1;border:0;background:transparent;color:var(--sub);font-weight:600;font-size:14px;padding:9px;border-radius:10px;cursor:pointer}
+.tab.on{color:#0b1020;background:#f4f6fb}
+.pane.hidden{display:none}
+.chips{display:flex;gap:8px;margin-bottom:14px}
+.chip{border:1px solid var(--stroke);background:var(--card);color:var(--txt);font-weight:600;font-size:13px;padding:8px 14px;border-radius:999px;cursor:pointer}
+.chip.on{background:linear-gradient(145deg,var(--blue2),var(--blue));border-color:transparent;color:#fff}
 .search{display:flex;gap:8px;margin-bottom:16px}
 .search input{flex:1;background:var(--card);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);font-size:16px;padding:13px 14px;outline:0}
 .search button{border:0;border-radius:14px;padding:0 16px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue))}
@@ -2436,85 +2549,200 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 @media(max-width:430px){.grid{grid-template-columns:repeat(2,1fr)}}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden;transition:.15s}
 .card:active{transform:scale(.97)}
-.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320 center/cover no-repeat}
+.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320 center/cover no-repeat;cursor:pointer}
 .card .noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:8px;text-align:center;font-size:12px;color:var(--sub)}
-.card .q{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.65);border-radius:6px;padding:2px 6px;font-size:10px;font-weight:700}
-.card .m{padding:8px 9px}
+.card .q{position:absolute;top:6px;left:6px;background:rgba(10,132,255,.85);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700}
+.card .fav{position:absolute;top:4px;right:4px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;background:rgba(0,0,0,.4);border-radius:50%;cursor:pointer}
+.card .m{padding:8px 9px;cursor:pointer}
 .card .t{font-size:12.5px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .y{font-size:11px;color:var(--sub);margin-top:2px}
 .msg{color:var(--sub);text-align:center;padding:34px 10px;font-size:14px}
 .sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:30}
 .sheet.on{display:flex}
-.sheet .box{width:100%;max-width:680px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));animation:up .2s ease}
+.sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));animation:up .2s ease}
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
 .sheet h3{margin:0 0 4px;font-size:17px}
 .sheet .sy{color:var(--sub);font-size:13px;margin-bottom:14px}
 .btn{display:block;width:100%;border:0;border-radius:14px;padding:15px;font-size:16px;font-weight:700;margin-top:10px;cursor:pointer}
 .btn.play{color:#06140a;background:linear-gradient(145deg,#3dd46a,#27c257)}
-.btn.cancel{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
-.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:40;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%}
+.btn.fav{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
+.btn.cancel{background:transparent;color:var(--sub)}
+.ov{position:fixed;inset:0;background:var(--bg);z-index:35;overflow-y:auto;display:none;padding-bottom:96px}
+.ov.on{display:block}
+.remote{position:fixed;inset:0;background:radial-gradient(900px 500px at 50% -10%,#1b2740 0,transparent 60%),var(--bg);z-index:38;display:none}
+.remote.on{display:block}
+.ovbar{display:flex;align-items:center;gap:10px;padding:14px;position:sticky;top:0;background:rgba(6,7,12,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--stroke)}
+.ovback{border:0;background:transparent;color:var(--blue2);font-size:16px;font-weight:600;cursor:pointer}
+.ovt{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#ov-body{padding:14px}
+.ovhead{display:flex;gap:14px;margin-bottom:16px}
+.ovposter{width:96px;height:144px;border-radius:12px;background:#0e1320 center/cover;flex:none;border:1px solid var(--stroke)}
+.ovh-t{font-size:18px;font-weight:700}
+.ovh-y{color:var(--sub);font-size:13px;margin-top:4px}
+.seas{font-size:13px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;margin:16px 0 8px}
+.ep{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:14px;margin-bottom:8px;cursor:pointer;transition:.12s}
+.ep:active{transform:scale(.98);background:rgba(255,255,255,.12)}
+.epl{font-size:15px;font-weight:600}
+.epq{font-size:11px;color:var(--sub);font-weight:600;margin-left:6px}
+.rmwrap{padding:30px 22px;text-align:center;max-width:520px;margin:0 auto}
+.rm-t{font-size:20px;font-weight:700;margin-top:10px}
+.rm-time{color:var(--sub);font-size:13px;margin:10px 0 6px}
+.prog{height:5px;background:rgba(255,255,255,.12);border-radius:5px;overflow:hidden}
+.prog>i{display:block;height:100%;background:linear-gradient(90deg,var(--blue2),var(--blue));width:0;border-radius:5px;transition:width .5s}
+.prog.big{height:7px}
+.rmctl{display:flex;align-items:center;justify-content:center;gap:18px;margin:28px 0}
+.rmctl button{border:1px solid var(--stroke);background:var(--glass,rgba(255,255,255,.07));color:var(--txt);border-radius:50%;width:64px;height:64px;font-size:14px;font-weight:700;cursor:pointer}
+.rmctl button.big{width:82px;height:82px;font-size:26px;background:linear-gradient(145deg,var(--blue2),var(--blue));border:0;color:#fff}
+.npbar{position:fixed;left:0;right:0;bottom:0;z-index:20;background:rgba(14,19,32,.96);backdrop-filter:blur(10px);border-top:1px solid var(--stroke);display:none;cursor:pointer}
+.npbar.on{display:block}
+.np-prog-wrap{height:3px;background:rgba(255,255,255,.1)}
+.np-prog{height:100%;width:0;background:linear-gradient(90deg,var(--blue2),var(--blue));transition:width .5s}
+.np-row{display:flex;align-items:center;gap:10px;padding:11px 14px calc(11px + env(safe-area-inset-bottom))}
+.np-t{flex:1;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.np-pp{border:0;background:var(--blue);color:#fff;width:38px;height:38px;border-radius:50%;font-size:15px;cursor:pointer;flex:none}
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:45;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%}
 .toast.on{opacity:1;transform:translateX(-50%)}
 .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px}
 @keyframes r{to{transform:rotate(360deg)}}
-</style></head><body><div class="wrap">
+</style></head><body>
+<div class="wrap">
  <div class="top">
-  <div class="brand"><span class="d">🐺</span> Catálogo</div>
+  <div class="brand"><span class="d">🐺</span> MejorWolf</div>
   <input id="code" class="code" inputmode="numeric" maxlength="6" placeholder="código">
  </div>
- <div class="search">
-  <input id="q" type="search" placeholder="Buscar película..." autocomplete="off">
-  <button onclick="go()">Buscar</button>
+ <div class="tabs">
+  <button id="tab-inicio" class="tab on" onclick="setView('inicio')">Inicio</button>
+  <button id="tab-buscar" class="tab" onclick="setView('buscar')">Buscar</button>
+  <button id="tab-lista" class="tab" onclick="setView('lista')">Mi lista</button>
  </div>
- <div id="out" class="msg">Busca una película y envíala a tu tele 📺<br><br><small>En pruebas · solo DonTorrent · solo películas</small></div>
+ <section id="pane-inicio" class="pane">
+  <div class="chips">
+   <button class="chip on" data-k="estrenos" onclick="chip('estrenos')">Estrenos</button>
+   <button class="chip" data-k="peliculas" onclick="chip('peliculas')">Cine</button>
+   <button class="chip" data-k="series" onclick="chip('series')">Series</button>
+  </div>
+  <div id="inicio-grid" class="msg"></div>
+ </section>
+ <section id="pane-buscar" class="pane hidden">
+  <div class="search">
+   <input id="q" type="search" placeholder="Buscar película o serie..." autocomplete="off">
+   <button onclick="go()">Buscar</button>
+  </div>
+  <div id="buscar-grid" class="msg">Busca pelis y series y envíalas a tu tele 📺</div>
+ </section>
+ <section id="pane-lista" class="pane hidden">
+  <div id="lista-grid" class="msg"></div>
+ </section>
+</div>
+<div class="npbar" id="npbar" onclick="openRemote()">
+ <div class="np-prog-wrap"><div class="np-prog" id="np-prog"></div></div>
+ <div class="np-row"><div class="np-t" id="np-t"></div>
+  <button class="np-pp" id="np-pp" onclick="event.stopPropagation();cmd('playpause')">⏸</button></div>
 </div>
 <div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
  <div class="box">
   <h3 id="sh-t"></h3><div class="sy" id="sh-y"></div>
   <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
+  <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Añadir a mi lista</button>
   <button class="btn cancel" onclick="closeSheet()">Cancelar</button>
+ </div>
+</div>
+<div class="ov" id="ov">
+ <div class="ovbar"><button class="ovback" onclick="closeOv()">‹ Volver</button>
+  <div class="ovt" id="ov-title"></div></div>
+ <div id="ov-body"></div>
+</div>
+<div class="remote" id="remote">
+ <div class="ovbar"><button class="ovback" onclick="closeRemote()">‹ Volver</button>
+  <div class="ovt">Estás viendo</div></div>
+ <div class="rmwrap">
+  <div class="rm-t" id="rm-t"></div>
+  <div class="rm-time" id="rm-time"></div>
+  <div class="prog big"><i id="rm-prog"></i></div>
+  <div class="rmctl">
+   <button onclick="cmd('seek_back')">-10s</button>
+   <button class="big" id="rm-pp" onclick="cmd('playpause')">⏸</button>
+   <button onclick="cmd('seek_fwd')">+30s</button>
+  </div>
+  <button class="btn cancel" onclick="cmd('stop')">⏹ Parar</button>
  </div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
 var $=function(s){return document.getElementById(s)};
-var code=$('code'), out=$('out'), sel=null, cat=[];
+var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='';
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
 code.value=localStorage.getItem('mw_code')||'';
 code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value)};
-function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
+try{favs=JSON.parse(localStorage.getItem('mw_fav')||'[]')||[]}catch(e){favs=[]}
+function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catch(e){}}
+function fk(x){return x.kind+':'+x.content_id}
+function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
+function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating})}saveFavs()}
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-function go(){
- var q=$('q').value.trim();if(!q)return;
- out.className='msg';out.innerHTML='<span class="spin"></span> Buscando en DonTorrent...';
+function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
+function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
+function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs()}
+function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
+ var g=$('inicio-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Cargando...';
+ fetch('/catbrowse?kind='+kind).then(function(r){return r.json()}).then(function(d){
+  LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';return}renderGrid(g,'inicio');
+ }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
+function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Buscando...';
  fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
-  cat=(d&&d.items)||[];
-  if(!cat.length){out.className='msg';out.textContent='Sin resultados para "'+q+'".';return}
-  var h='<div class="grid">';
-  cat.forEach(function(x,i){
-   var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
-   var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
-   var meta=(x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'');
-   h+='<div class="card" onclick="pick('+i+')"><div class="ph"'+bg+'>'+noimg+'</div>'+
-      '<div class="m"><div class="t">'+esc(x.title)+'</div><div class="y">'+meta+'</div></div></div>';
-  });
-  h+='</div>';out.className='';out.innerHTML=h;
- }).catch(function(){out.className='msg';out.textContent='Error de conexión. Reintenta.'});
-}
-function pick(i){sel=cat[i];$('sh-t').textContent=sel.title;
- $('sh-y').textContent=(sel.year||'')+(sel.rating?(' · ★'+(Math.round(sel.rating*10)/10)):'');
- $('sheet').classList.add('on')}
+  LISTS.buscar=(d&&d.items)||[];if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';return}renderGrid(g,'buscar');
+ }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
+function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';return}renderGrid(g,'lista')}
+function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';
+ items.forEach(function(x,i){
+  var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
+  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
+  var tag=x.kind==='serie'?'<div class="q">Serie</div>':'';
+  h+='<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+tag+
+     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
+     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';
+ });h+='</div>';el.className='';el.innerHTML=h}
+function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
+function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
+ $('sh-t').textContent=x.title;$('sh-y').textContent=star(x);$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sheet').classList.add('on')}
+function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
-function play(){
- var cd=(code.value||'').replace(/\D/g,'');
- if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
- if(!sel)return;
- var body={code:cd,cmd:'play_ref',a:'dt',c:sel.content_id,tb:sel.tabla,t:sel.title};
- closeSheet();toast('Enviando a la tele...');
- fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-  .then(function(r){return r.json()}).then(function(d){toast(d&&d.ok?'En la tele 📺 — mira la pantalla':'Error: '+((d&&d.error)||'?'))})
-  .catch(function(){toast('No se pudo enviar')});
-}
+function play(){if(sendPlay({c:sel.content_id,tb:sel.tabla,t:sel.title}))closeSheet()}
+function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
+ toast('Enviando a la tele...');
+ fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'play_ref',a:'dt',c:ref.c,tb:ref.tb,t:ref.t})})
+  .then(function(r){return r.json()}).then(function(d){toast(d&&d.ok?'En la tele 📺':'Error: '+((d&&d.error)||'?'));if(d&&d.ok)setTimeout(pollNow,2500)}).catch(function(){toast('No se pudo enviar')});
+ return true}
+function openSeries(x){SHOW=x.title;EPS={};$('ov').classList.add('on');$('ov-title').textContent=x.title;
+ $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
+ fetch('/catdetail?path='+encodeURIComponent(x.path||'')).then(function(r){return r.json()}).then(function(d){
+  var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios.</div>';return}
+  var poster=(d&&d.poster)||x.poster;var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
+  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});var h='';
+  if(poster)h+='<div class="ovhead"><div class="ovposter" style="background-image:url('+poster+')"></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div></div></div>';
+  keys.forEach(function(s){if(keys.length>1||s>0)h+='<div class="seas">Temporada '+(s||'?')+'</div>';
+   seasons[s].forEach(function(e){var id='e'+e.content_id;EPS[id]=e;
+    h+='<div class="ep" onclick="playEp(\''+id+'\')"><div class="epl">▶ '+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</div></div>'});
+  });$('ov-body').innerHTML=h;
+ }).catch(function(){$('ov-body').innerHTML='<div class="msg">Error de conexión.</div>'})}
+function closeOv(){$('ov').classList.remove('on')}
+function playEp(id){var e=EPS[id];if(!e)return;if(sendPlay({c:e.content_id,tb:e.tabla,t:(SHOW+' '+e.label).trim()}))closeOv()}
+function fmt(s){s=Math.max(0,s||0);var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60);return (h?h+':':'')+(h?('0'+m).slice(-2):m)+':'+('0'+x).slice(-2)}
+function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000);return}
+ fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(d){var np=d&&d.np;var bar=$('npbar');
+  if(np&&np.title){bar.classList.add('on');$('np-t').textContent=np.title;var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
+   $('np-prog').style.width=pct+'%';$('np-pp').textContent=np.paused?'▶':'⏸';
+   $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+' / '+fmt(np.total);$('rm-prog').style.width=pct+'%';$('rm-pp').textContent=np.paused?'▶':'⏸';}
+  else{bar.classList.remove('on');if($('remote').classList.contains('on'))closeRemote();}
+  clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
+ }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
+function openRemote(){$('remote').classList.add('on')}
+function closeRemote(){$('remote').classList.remove('on')}
+function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
+ fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
+ if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
 $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
+chip('estrenos');pollNow();
 </script></body></html>"""
 
 
