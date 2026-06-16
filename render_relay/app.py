@@ -2801,7 +2801,7 @@ def catdetail():
         season = int(sm.group(1)) if sm else 0
         episode = int(sm.group(2)) if sm else 0
         qm = _CAT_QRE.search(text)
-        label = cell0.rstrip(". ") or (
+        label = cell0.strip(" .-–—") or (
             ("%dx%02d" % (season, episode)) if sm else "Descargar")
         eps.append({"content_id": cid, "tabla": tabla, "label": label,
                     "season": season, "episode": episode,
