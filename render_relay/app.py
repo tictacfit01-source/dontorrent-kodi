@@ -2295,6 +2295,232 @@ def kb_qr():
 
 
 # ===========================================================================
+# CATALOGO (web EN PRUEBAS, aparte): buscar en el movil y enviar a la tele
+# ===========================================================================
+# Totalmente aislado de /kb y /dtsearch: si esto falla, el mando y el box
+# siguen igual. MVP (fase 1): DonTorrent PELICULAS -> JSON con poster TMDB +
+# referencia (content_id, tabla). El boton "Reproducir en la tele" REUSA
+# /kb/send (play_ref a=dt), que ya esta probado. Sin coste (TMDB free).
+_CAT_TMDB_KEY = "f090bb54758cabf231fb605d3e3e0468"   # misma key publica del addon
+_CAT_TMDB_CACHE = {}
+
+
+def _cat_tmdb(title):
+    """Poster/año/nota de TMDB para un titulo de DonTorrent. Cache en memoria."""
+    clean = _re_dt.sub(r"[\(\[].*?[\)\]]", " ", title)
+    clean = _re_dt.sub(r"\b(1080p|720p|480p|2160p|4k|bluray|blu-?ray|brrip|bdrip|"
+                       r"web-?dl|webrip|hdtv|microhd|dvdrip|hdrip|x264|x265|hevc|"
+                       r"dual|castellano|latino|vose?)\b.*", "", clean, flags=_re_dt.I)
+    ym = _re_dt.search(r"\b(19|20)\d{2}\b", title)
+    year = ym.group(0) if ym else None
+    clean = _re_dt.sub(r"\b(19|20)\d{2}\b", "", clean)
+    clean = _re_dt.sub(r"\s+", " ", clean).strip(" -.:")
+    ckey = (clean.lower(), year or "")
+    if ckey in _CAT_TMDB_CACHE:
+        return _CAT_TMDB_CACHE[ckey]
+    out = {"poster": None, "year": year, "rating": None}
+    try:
+        params = {"api_key": _CAT_TMDB_KEY, "language": "es-ES",
+                  "query": clean, "include_adult": "false"}
+        if year:
+            params["year"] = year
+        r = requests.get("https://api.themoviedb.org/3/search/movie",
+                         params=params, timeout=8)
+        res = (r.json() or {}).get("results") or []
+        if res:
+            top = res[0]
+            pp = top.get("poster_path")
+            out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
+                   "year": (top.get("release_date") or "")[:4] or year,
+                   "rating": top.get("vote_average")}
+    except Exception:
+        pass
+    _CAT_TMDB_CACHE[ckey] = out
+    return out
+
+
+def _cat_dt_html(q):
+    """POST de busqueda a DonTorrent (dominio APRENDIDO) -> HTML. Reusa la sesion
+    Anubis y el auto-curativo de dominio. Aislado de /dtsearch."""
+    from urllib.parse import urlparse as _up
+    for dom in [_dt_load_domain()] + DT_FALLBACK:
+        if not dom:
+            continue
+        try:
+            data = {"valor": q, "Buscar": "Buscar"}
+            s, _ = _dt_anubis_session(dom)
+            rr = s.post(f"https://{dom}/buscar", data=data, timeout=30,
+                        allow_redirects=False)
+            if rr.status_code in (301, 302, 303, 307, 308):
+                nd = _up(rr.headers.get("Location") or "").hostname
+                if nd and nd != dom:
+                    s, _ = _dt_anubis_session(nd)
+                    rr = s.post(f"https://{nd}/buscar", data=data, timeout=30,
+                                allow_redirects=False)
+            if "anubis_challenge" in rr.text:
+                _DT_COOKIES.pop(dom, None)
+                s, _ = _dt_anubis_session(dom)
+                rr = s.post(f"https://{dom}/buscar", data=data, timeout=30,
+                            allow_redirects=False)
+            if _re_dt.search(r"/(?:pelicula|serie|documental)/\d+/", rr.text):
+                return rr.text
+        except Exception:
+            continue
+    return ""
+
+
+@app.get("/catsearch")
+def catsearch():
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"items": []})
+    html = _cat_dt_html(q)
+    if not html:
+        return jsonify({"items": []})
+    seen, raw = set(), []
+    for m in _re_dt.finditer(r"<a\b([^>]*)>(.*?)</a>", html, _re_dt.S | _re_dt.I):
+        attrs, inner = m.group(1), m.group(2)
+        hm = _re_dt.search(r'''href=["']/(pelicula)/(\d+)/([^"'#?]*)["']''',
+                           attrs, _re_dt.I)
+        if not hm:
+            continue
+        cid = hm.group(2)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        tm = _re_dt.search(r'''title=["']([^"']*)["']''', attrs)
+        title = (tm.group(1).strip() if tm else "")
+        if not title:
+            title = _re_dt.sub(r"<[^>]+>", " ", inner)
+        if not title.strip():
+            title = hm.group(3).rstrip("/").replace("-", " ")
+        title = _re_dt.sub(r"\s+", " ", title).strip()
+        if not title:
+            continue
+        raw.append({"title": title, "content_id": cid, "tabla": "pelicula"})
+    raw = raw[:30]
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    def _go(it):
+        it.update(_cat_tmdb(it["title"]))
+        return it
+    try:
+        with _TPE(max_workers=8) as ex:
+            items = list(ex.map(_go, raw))
+    except Exception:
+        items = raw
+    return jsonify({"items": items})
+
+
+_CAT_PAGE = r"""<!doctype html><html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>MejorWolf · Catálogo</title>
+<style>
+:root{--bg:#06070c;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b2740 0,transparent 60%),var(--bg)}
+.wrap{max-width:680px;margin:0 auto;padding:16px 14px 60px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
+.brand{font-weight:700;font-size:18px;display:flex;align-items:center;gap:8px}
+.brand .d{width:24px;height:24px;border-radius:8px;background:linear-gradient(145deg,var(--blue2),var(--blue));display:flex;align-items:center;justify-content:center;font-size:14px}
+.code{width:96px;letter-spacing:3px;text-align:center;font-weight:600;background:rgba(255,255,255,.07);border:1px solid var(--stroke);color:var(--txt);border-radius:12px;padding:9px 8px;outline:0}
+.search{display:flex;gap:8px;margin-bottom:16px}
+.search input{flex:1;background:var(--card);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);font-size:16px;padding:13px 14px;outline:0}
+.search button{border:0;border-radius:14px;padding:0 16px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue))}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+@media(max-width:430px){.grid{grid-template-columns:repeat(2,1fr)}}
+.card{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden;transition:.15s}
+.card:active{transform:scale(.97)}
+.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320 center/cover no-repeat}
+.card .noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:8px;text-align:center;font-size:12px;color:var(--sub)}
+.card .q{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.65);border-radius:6px;padding:2px 6px;font-size:10px;font-weight:700}
+.card .m{padding:8px 9px}
+.card .t{font-size:12.5px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .y{font-size:11px;color:var(--sub);margin-top:2px}
+.msg{color:var(--sub);text-align:center;padding:34px 10px;font-size:14px}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:30}
+.sheet.on{display:flex}
+.sheet .box{width:100%;max-width:680px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));animation:up .2s ease}
+@keyframes up{from{transform:translateY(30px)}to{transform:none}}
+.sheet h3{margin:0 0 4px;font-size:17px}
+.sheet .sy{color:var(--sub);font-size:13px;margin-bottom:14px}
+.btn{display:block;width:100%;border:0;border-radius:14px;padding:15px;font-size:16px;font-weight:700;margin-top:10px;cursor:pointer}
+.btn.play{color:#06140a;background:linear-gradient(145deg,#3dd46a,#27c257)}
+.btn.cancel{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:40;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px}
+@keyframes r{to{transform:rotate(360deg)}}
+</style></head><body><div class="wrap">
+ <div class="top">
+  <div class="brand"><span class="d">🐺</span> Catálogo</div>
+  <input id="code" class="code" inputmode="numeric" maxlength="6" placeholder="código">
+ </div>
+ <div class="search">
+  <input id="q" type="search" placeholder="Buscar película..." autocomplete="off">
+  <button onclick="go()">Buscar</button>
+ </div>
+ <div id="out" class="msg">Busca una película y envíala a tu tele 📺<br><br><small>En pruebas · solo DonTorrent · solo películas</small></div>
+</div>
+<div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
+ <div class="box">
+  <h3 id="sh-t"></h3><div class="sy" id="sh-y"></div>
+  <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
+  <button class="btn cancel" onclick="closeSheet()">Cancelar</button>
+ </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+var $=function(s){return document.getElementById(s)};
+var code=$('code'), out=$('out'), sel=null, cat=[];
+try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
+code.value=localStorage.getItem('mw_code')||'';
+code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value)};
+function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
+function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function go(){
+ var q=$('q').value.trim();if(!q)return;
+ out.className='msg';out.innerHTML='<span class="spin"></span> Buscando en DonTorrent...';
+ fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+  cat=(d&&d.items)||[];
+  if(!cat.length){out.className='msg';out.textContent='Sin resultados para "'+q+'".';return}
+  var h='<div class="grid">';
+  cat.forEach(function(x,i){
+   var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
+   var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
+   var meta=(x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'');
+   h+='<div class="card" onclick="pick('+i+')"><div class="ph"'+bg+'>'+noimg+'</div>'+
+      '<div class="m"><div class="t">'+esc(x.title)+'</div><div class="y">'+meta+'</div></div></div>';
+  });
+  h+='</div>';out.className='';out.innerHTML=h;
+ }).catch(function(){out.className='msg';out.textContent='Error de conexión. Reintenta.'});
+}
+function pick(i){sel=cat[i];$('sh-t').textContent=sel.title;
+ $('sh-y').textContent=(sel.year||'')+(sel.rating?(' · ★'+(Math.round(sel.rating*10)/10)):'');
+ $('sheet').classList.add('on')}
+function closeSheet(){$('sheet').classList.remove('on')}
+function play(){
+ var cd=(code.value||'').replace(/\D/g,'');
+ if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
+ if(!sel)return;
+ var body={code:cd,cmd:'play_ref',a:'dt',c:sel.content_id,tb:sel.tabla,t:sel.title};
+ closeSheet();toast('Enviando a la tele...');
+ fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(function(r){return r.json()}).then(function(d){toast(d&&d.ok?'En la tele 📺 — mira la pantalla':'Error: '+((d&&d.error)||'?'))})
+  .catch(function(){toast('No se pudo enviar')});
+}
+$('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
+</script></body></html>"""
+
+
+@app.get("/cat")
+def cat_page():
+    return Response(_CAT_PAGE, mimetype="text/html; charset=utf-8")
+
+
+# ===========================================================================
 # AUTO-KEEPALIVE: el relay se pinguea a si mismo para no dormirse
 # ===========================================================================
 # Render (free) duerme el servicio tras 15 min SIN peticiones ENTRANTES. Si el
