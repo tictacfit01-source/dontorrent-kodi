@@ -2306,7 +2306,9 @@ _CAT_TMDB_CACHE = {}
 
 
 def _cat_clean_title(title):
-    t = _re_dt.sub(r"[\(\[].*?[\)\]]", " ", title)
+    t = (title or "").split(" - ")[0]   # "Show - 1ª Temporada [720p]" -> "Show"
+    t = _re_dt.sub(r"[\(\[].*?[\)\]]", " ", t)
+    t = _re_dt.sub(r"\b\d{1,2}\s*[ªºoa]\b", " ", t)   # ordinales sueltos (1ª, 2º)
     t = _re_dt.sub(r"\b(temporada|parte|cap\w*|capitulo|\d{1,2}\s*x\s*\d{1,3})\b.*",
                    "", t, flags=_re_dt.I)
     t = _re_dt.sub(r"\b(1080p|720p|480p|2160p|4k|bluray|blu-?ray|brrip|bdrip|"
@@ -2348,30 +2350,51 @@ def _cat_tmdb(title, kind="movie"):
 
 
 def _cat_dt_html(q):
-    """POST de busqueda a DonTorrent (dominio APRENDIDO) -> HTML. Reusa la sesion
-    Anubis y el auto-curativo de dominio. Aislado de /dtsearch."""
+    """POST de busqueda a DonTorrent (dominio APRENDIDO) -> HTML de TODAS las
+    paginas concatenado (asi salen TODAS las temporadas, no solo la 1a pagina).
+    Reusa Anubis + auto-curativo. Aislado de /dtsearch."""
     from urllib.parse import urlparse as _up
+    data = {"valor": q, "Buscar": "Buscar"}
     for dom in [_dt_load_domain()] + DT_FALLBACK:
         if not dom:
             continue
         try:
-            data = {"valor": q, "Buscar": "Buscar"}
             s, _ = _dt_anubis_session(dom)
-            rr = s.post(f"https://{dom}/buscar", data=data, timeout=30,
-                        allow_redirects=False)
-            if rr.status_code in (301, 302, 303, 307, 308):
-                nd = _up(rr.headers.get("Location") or "").hostname
+
+            def _post(page, _s=s, _dom=dom):
+                dd = dict(data)
+                if page > 1:
+                    dd["p"] = str(page)
+                rr = _s.post(f"https://{_dom}/buscar", data=dd, timeout=30,
+                             allow_redirects=False)
+                if "anubis_challenge" in rr.text:
+                    _DT_COOKIES.pop(_dom, None)
+                    ns, _ = _dt_anubis_session(_dom)
+                    rr = ns.post(f"https://{_dom}/buscar", data=dd, timeout=30,
+                                 allow_redirects=False)
+                return rr
+
+            r1 = _post(1)
+            if r1.status_code in (301, 302, 303, 307, 308):
+                nd = _up(r1.headers.get("Location") or "").hostname
                 if nd and nd != dom:
-                    s, _ = _dt_anubis_session(nd)
-                    rr = s.post(f"https://{nd}/buscar", data=data, timeout=30,
-                                allow_redirects=False)
-            if "anubis_challenge" in rr.text:
-                _DT_COOKIES.pop(dom, None)
-                s, _ = _dt_anubis_session(dom)
-                rr = s.post(f"https://{dom}/buscar", data=data, timeout=30,
-                            allow_redirects=False)
-            if _re_dt.search(r"/(?:pelicula|serie|documental)/\d+/", rr.text):
-                return rr.text
+                    continue   # dominio viejo: deja que el bucle pruebe el actual
+            if not _re_dt.search(r"/(?:pelicula|serie|documental)/\d+/", r1.text):
+                continue
+            full = r1.text
+            pgs = [int(n) for n in _re_dt.findall(r"buscarPagina\((\d+)\)", full)]
+            mx = min(max(pgs) if pgs else 1, 12)   # tope de seguridad
+            if mx > 1:
+                from concurrent.futures import ThreadPoolExecutor as _TPE
+
+                def _pg(p):
+                    try:
+                        return _post(p).text
+                    except Exception:
+                        return ""
+                with _TPE(max_workers=min(8, mx - 1)) as ex:
+                    full += "".join(ex.map(_pg, range(2, mx + 1)))
+            return full
         except Exception:
             continue
     return ""
@@ -2404,36 +2427,70 @@ _CAT_QRE = _re_dt.compile(
 
 
 def _cat_parse_items(html):
-    """Peliculas y series (con su path de ficha) del HTML de un listado/busqueda."""
-    seen, items = set(), []
+    """Peliculas y series (con su path de ficha) del HTML de un listado/busqueda.
+    Por cada content_id se queda con el MEJOR titulo: atributo title (limpio) >
+    texto del enlace > alt de la imagen > slug. Asi en los listados (donde el 1er
+    enlace es la imagen sin titulo) no salen titulos basura tipo '127509/Tro...'."""
+    best, order = {}, []
     for m in _re_dt.finditer(r"<a\b([^>]*)>(.*?)</a>", html, _re_dt.S | _re_dt.I):
         attrs, inner = m.group(1), m.group(2)
-        hm = _re_dt.search(r'''href=["']/(pelicula|serie)/(\d+)/([^"'#?]*)["']''',
-                           attrs, _re_dt.I)
+        hm = _re_dt.search(
+            r'''href=["']/(pelicula|serie)/(\d+)((?:/[^"'#?]*)?)["']''',
+            attrs, _re_dt.I)
         if not hm:
             continue
         kind = "movie" if hm.group(1).lower() == "pelicula" else "serie"
-        cid, slug = hm.group(2), hm.group(3)
-        key = (kind, cid)
-        if key in seen:
-            continue
-        seen.add(key)
-        tm = _re_dt.search(r'''title=["']([^"']*)["']''', attrs)
-        title = (tm.group(1).strip() if tm else "")
-        if not title:
-            title = _re_dt.sub(r"<[^>]+>", " ", inner)
-        if not title.strip():
-            title = slug.rstrip("/").replace("-", " ")
+        cid, rest = hm.group(2), (hm.group(3) or "")
+        tm = _re_dt.search(r'''title=["']([^"']+)["']''', attrs)
+        itxt = _re_dt.sub(r"\s+", " ", _re_dt.sub(r"<[^>]+>", " ", inner)).strip()
+        am = _re_dt.search(r'''alt=["']([^"']+)["']''', attrs + " " + inner)
+        if tm and tm.group(1).strip():
+            title, score = tm.group(1).strip(), 3
+        elif itxt:
+            title, score = itxt, 2
+        elif am and am.group(1).strip():
+            title, score = am.group(1).strip(), 1
+        else:
+            title, score = rest.rstrip("/").split("/")[-1].replace("-", " "), 0
         title = _re_dt.sub(r"\s+", " ", title).strip()
         if not title:
             continue
-        it = {"title": title, "content_id": cid, "kind": kind}
+        # Caratula PROPIA de DonTorrent (img dentro del enlace, via weserv CDN):
+        # respaldo cuando TMDB no encuentra el titulo -> toda tarjeta tiene foto.
+        thumb = None
+        im = _re_dt.search(r'''<img[^>]+(?:data-src|src)=["']([^"']+)["']''',
+                           inner, _re_dt.I)
+        if im:
+            thumb = im.group(1)
+            if thumb.startswith("//"):
+                thumb = "https:" + thumb
+            thumb = _re_dt.sub(r"w=\d+&h=\d+", "w=342&h=513", thumb)
+        key = (kind, cid)
+        path = (f"/serie/{cid}{rest}" if (kind == "serie" and rest) else None)
+        e = best.get(key)
+        if e is None:
+            order.append(key)
+            best[key] = {"title": title, "score": score, "path": path,
+                         "thumb": thumb}
+        else:
+            if score > e["score"]:
+                e["title"], e["score"] = title, score
+            if path and not e["path"]:
+                e["path"] = path
+            if thumb and not e["thumb"]:
+                e["thumb"] = thumb
+    out = []
+    for k in order:
+        kind, cid = k
+        e = best[k]
+        it = {"title": e["title"], "content_id": cid, "kind": kind,
+              "thumb": e["thumb"]}
         if kind == "movie":
             it["tabla"] = "peliculas"   # plural: lo que espera la API de descarga
         else:
-            it["path"] = f"/serie/{cid}/{slug}"
-        items.append(it)
-    return items
+            it["path"] = e["path"] or f"/serie/{cid}/"
+        out.append(it)
+    return out
 
 
 def _cat_enrich(items, limit=36):
@@ -2441,8 +2498,11 @@ def _cat_enrich(items, limit=36):
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
     def _go(it):
-        it.update(_cat_tmdb(it["title"],
-                            "tv" if it.get("kind") == "serie" else "movie"))
+        meta = _cat_tmdb(it["title"],
+                         "tv" if it.get("kind") == "serie" else "movie")
+        it["poster"] = meta.get("poster") or it.get("thumb")   # TMDB > DT propia
+        it["year"] = meta.get("year") or it.get("year")
+        it["rating"] = meta.get("rating")
         return it
     try:
         with _TPE(max_workers=8) as ex:
@@ -2569,7 +2629,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .btn.cancel{background:transparent;color:var(--sub)}
 .ov{position:fixed;inset:0;background:var(--bg);z-index:35;overflow-y:auto;display:none;padding-bottom:96px}
 .ov.on{display:block}
-.remote{position:fixed;inset:0;background:radial-gradient(900px 500px at 50% -10%,#1b2740 0,transparent 60%),var(--bg);z-index:38;display:none}
+.remote{position:fixed;inset:0;background:radial-gradient(900px 500px at 50% -10%,#1b2740 0,transparent 60%),var(--bg);z-index:38;display:none;overflow-y:auto}
 .remote.on{display:block}
 .ovbar{display:flex;align-items:center;gap:10px;padding:14px;position:sticky;top:0;background:rgba(6,7,12,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--stroke)}
 .ovback{border:0;background:transparent;color:var(--blue2);font-size:16px;font-weight:600;cursor:pointer}
@@ -2604,6 +2664,41 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .toast.on{opacity:1;transform:translateX(-50%)}
 .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px}
 @keyframes r{to{transform:rotate(360deg)}}
+/* botones mas grandes (movil) */
+.tab{padding:11px;font-size:15px}
+.chip{padding:10px 18px;font-size:14px}
+.search input{padding:15px 16px}
+.search button{padding:0 20px;font-size:15px}
+.card .fav{width:36px;height:36px;font-size:19px;top:5px;right:5px}
+.btn{padding:16px}
+/* modo MANDO (igual disposicion que el mando /kb) */
+.rmwrap{padding:8px 18px 50px;max-width:520px;margin:0 auto}
+.rnp{margin:8px 0 18px}
+.rnp .nplab{font-size:11px;color:var(--sub);font-weight:700;letter-spacing:.5px;margin-bottom:6px}
+.rnp .npttl{font-size:18px;font-weight:700;line-height:1.3;margin-bottom:12px}
+.rmbar{height:6px;border-radius:4px;background:rgba(255,255,255,.1);overflow:hidden}
+.rmbar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue2),var(--blue));transition:width .9s linear}
+.nprow{display:flex;justify-content:space-between;margin-top:8px;font-size:13px;color:var(--sub);font-variant-numeric:tabular-nums}
+.media{display:flex;justify-content:center;align-items:center;gap:16px;margin:8px 0 18px}
+.rb{width:64px;height:64px;border-radius:50%;border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:17px;transition:.15s}
+.rb:active{transform:scale(.92);background:rgba(255,255,255,.16)}
+.rb.play{width:82px;height:82px;background:linear-gradient(145deg,#3dd46a,#27c257);border-color:transparent;box-shadow:0 8px 22px rgba(48,209,88,.4);color:#06140a;font-size:30px}
+.rb.stop{color:#ff453a;font-size:22px}
+.rb.sk{font-size:15px;font-weight:700;line-height:1}.rb.sk small{font-size:10px;opacity:.75}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:4px}
+.pill{border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:14px;padding:16px;font-size:18px;text-align:center;cursor:pointer;font-weight:600}
+.pill:active{transform:scale(.97);background:rgba(255,255,255,.14)}
+.padwrap{display:flex;justify-content:center;margin:22px 0 8px}
+.pad{position:relative;width:240px;height:240px;border-radius:50%;border:1px solid var(--stroke);background:radial-gradient(circle at 50% 32%,rgba(255,255,255,.10),transparent 55%),conic-gradient(from 0deg,rgba(255,255,255,.05),rgba(255,255,255,.02),rgba(255,255,255,.05));box-shadow:inset 0 -20px 40px rgba(0,0,0,.5),0 18px 40px rgba(0,0,0,.45)}
+.arrow{position:absolute;color:var(--sub);font-size:22px;width:58px;height:58px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%}
+.arrow:active{background:rgba(255,255,255,.12);color:#fff}
+.arrow.up{top:8px;left:50%;transform:translateX(-50%)}.arrow.down{bottom:8px;left:50%;transform:translateX(-50%)}
+.arrow.left{left:8px;top:50%;transform:translateY(-50%)}.arrow.right{right:8px;top:50%;transform:translateY(-50%)}
+.ok{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:106px;height:106px;border-radius:50%;border:1px solid var(--stroke);background:radial-gradient(circle at 50% 35%,#2a3346,#161c2a);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;letter-spacing:1px;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,.5)}
+.ok:active{transform:translate(-50%,-50%) scale(.95)}
+.navrow2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+.rar{color:#ff9f6e;font-size:13px;font-weight:600;margin:0 0 12px}
+.ovfav{border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:12px;padding:9px 13px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -2642,6 +2737,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 <div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
  <div class="box">
   <h3 id="sh-t"></h3><div class="sy" id="sh-y"></div>
+  <div class="rar" id="sh-rar"></div>
   <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
   <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Añadir a mi lista</button>
   <button class="btn cancel" onclick="closeSheet()">Cancelar</button>
@@ -2653,24 +2749,42 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <div id="ov-body"></div>
 </div>
 <div class="remote" id="remote">
- <div class="ovbar"><button class="ovback" onclick="closeRemote()">‹ Volver</button>
-  <div class="ovt">Estás viendo</div></div>
+ <div class="ovbar"><button class="ovback" onclick="closeRemote()">‹ Catálogo</button>
+  <div class="ovt">Mando</div></div>
  <div class="rmwrap">
-  <div class="rm-t" id="rm-t"></div>
-  <div class="rm-time" id="rm-time"></div>
-  <div class="prog big"><i id="rm-prog"></i></div>
-  <div class="rmctl">
-   <button onclick="cmd('seek_back')">-10s</button>
-   <button class="big" id="rm-pp" onclick="cmd('playpause')">⏸</button>
-   <button onclick="cmd('seek_fwd')">+30s</button>
+  <div class="rnp"><div class="nplab">ESTÁS VIENDO</div>
+   <div class="npttl" id="rm-t">—</div>
+   <div class="rmbar"><i id="rm-prog"></i></div>
+   <div class="nprow"><span id="rm-cur">0:00</span><span id="rm-tot">0:00</span></div>
   </div>
-  <button class="btn cancel" onclick="cmd('stop')">⏹ Parar</button>
+  <div class="media">
+   <div class="rb sk" onclick="cmd('seek_back')">-10<small>s</small></div>
+   <div class="rb stop" onclick="cmd('stop')">■</div>
+   <div class="rb play" id="rm-pp" onclick="cmd('playpause')">⏸</div>
+   <div class="rb sk" onclick="cmd('seek_fwd')">+30<small>s</small></div>
+  </div>
+  <div class="row3">
+   <div class="pill" onclick="cmd('voldown')">🔉</div>
+   <div class="pill" onclick="cmd('mute')">🔇</div>
+   <div class="pill" onclick="cmd('volup')">🔊</div>
+  </div>
+  <div class="padwrap"><div class="pad">
+   <div class="arrow up" onclick="cmd('up')">▲</div>
+   <div class="arrow left" onclick="cmd('left')">◀</div>
+   <div class="ok" onclick="cmd('ok')">OK</div>
+   <div class="arrow right" onclick="cmd('right')">▶</div>
+   <div class="arrow down" onclick="cmd('down')">▼</div>
+  </div></div>
+  <div class="navrow2">
+   <div class="pill" onclick="cmd('home')">🏠 Inicio</div>
+   <div class="pill" onclick="cmd('back')">↩ Atrás</div>
+  </div>
  </div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
 var $=function(s){return document.getElementById(s)};
-var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='';
+var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='', lastPlayTs=0;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
 code.value=localStorage.getItem('mw_code')||'';
 code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value)};
@@ -2704,14 +2818,16 @@ function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';
  });h+='</div>';el.className='';el.innerHTML=h}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
- $('sh-t').textContent=x.title;$('sh-y').textContent=star(x);$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sheet').classList.add('on')}
+ $('sh-t').textContent=x.title;$('sh-y').textContent=star(x);$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sheet').classList.add('on');
+ fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
+function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
 function play(){if(sendPlay({c:sel.content_id,tb:sel.tabla,t:sel.title}))closeSheet()}
 function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
  toast('Enviando a la tele...');
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'play_ref',a:'dt',c:ref.c,tb:ref.tb,t:ref.t})})
-  .then(function(r){return r.json()}).then(function(d){toast(d&&d.ok?'En la tele 📺':'Error: '+((d&&d.error)||'?'));if(d&&d.ok)setTimeout(pollNow,2500)}).catch(function(){toast('No se pudo enviar')});
+  .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
 function openSeries(x){SHOW=x.title;EPS={};$('ov').classList.add('on');$('ov-title').textContent=x.title;
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
@@ -2719,7 +2835,8 @@ function openSeries(x){SHOW=x.title;EPS={};$('ov').classList.add('on');$('ov-tit
   var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios.</div>';return}
   var poster=(d&&d.poster)||x.poster;var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
   var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});var h='';
-  if(poster)h+='<div class="ovhead"><div class="ovposter" style="background-image:url('+poster+')"></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div></div></div>';
+  var ph=poster?(' style="background-image:url('+poster+')"'):'';
+  h+='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button></div></div>';
   keys.forEach(function(s){if(keys.length>1||s>0)h+='<div class="seas">Temporada '+(s||'?')+'</div>';
    seasons[s].forEach(function(e){var id='e'+e.content_id;EPS[id]=e;
     h+='<div class="ep" onclick="playEp(\''+id+'\')"><div class="epl">▶ '+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</div></div>'});
@@ -2732,8 +2849,8 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
  fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(d){var np=d&&d.np;var bar=$('npbar');
   if(np&&np.title){bar.classList.add('on');$('np-t').textContent=np.title;var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
    $('np-prog').style.width=pct+'%';$('np-pp').textContent=np.paused?'▶':'⏸';
-   $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+' / '+fmt(np.total);$('rm-prog').style.width=pct+'%';$('rm-pp').textContent=np.paused?'▶':'⏸';}
-  else{bar.classList.remove('on');if($('remote').classList.contains('on'))closeRemote();}
+   $('rm-t').textContent=np.title;$('rm-cur').textContent=fmt(np.elapsed);$('rm-tot').textContent=fmt(np.total);$('rm-prog').style.width=pct+'%';$('rm-pp').textContent=np.paused?'▶':'⏸';}
+  else{bar.classList.remove('on');if($('remote').classList.contains('on')&&Date.now()-lastPlayTs>20000)closeRemote();}
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
  }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
 function openRemote(){$('remote').classList.add('on')}
