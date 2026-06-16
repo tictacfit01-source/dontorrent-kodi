@@ -2850,7 +2850,7 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
   if(np&&np.title){bar.classList.add('on');$('np-t').textContent=np.title;var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
    $('np-prog').style.width=pct+'%';$('np-pp').textContent=np.paused?'▶':'⏸';
    $('rm-t').textContent=np.title;$('rm-cur').textContent=fmt(np.elapsed);$('rm-tot').textContent=fmt(np.total);$('rm-prog').style.width=pct+'%';$('rm-pp').textContent=np.paused?'▶':'⏸';}
-  else{bar.classList.remove('on');if($('remote').classList.contains('on')&&Date.now()-lastPlayTs>20000)closeRemote();}
+  else{bar.classList.remove('on');if($('remote').classList.contains('on'))$('rm-t').textContent='Preparando en la tele…';}
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
  }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
 function openRemote(){$('remote').classList.add('on')}
