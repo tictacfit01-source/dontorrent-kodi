@@ -2544,6 +2544,12 @@ def _cat_enrich(items, limit=36):
 
 # === EliteTorrent (catalogo: 2a fuente, peliculas) =========================
 _ET_BASE = "https://www.elitetorrent.com"
+# Render (IP de datacenter) recibe el reto Cloudflare "Just a moment" de ET y
+# cloudscraper NO lo resuelve (challenge nuevo tipo Turnstile). El box, con IP
+# residencial de casa, sí puede. Hasta enrutar ET por el box (o un proxy
+# residencial), se deja APAGADO por defecto -> la busqueda combinada usa solo
+# DonTorrent. Poner ET_ENABLED=1 en el entorno para reactivarlo.
+_ET_ENABLED = os.environ.get("ET_ENABLED", "").strip() == "1"
 
 
 def _et_session():
@@ -2610,6 +2616,8 @@ def _et_relevant(title, q):
 def _et_search(q):
     """Peliculas de EliteTorrent para la busqueda combinada. Best-effort: si ET
     cae o bloquea la IP de Render, devuelve [] (DonTorrent sigue mandando)."""
+    if not _ET_ENABLED:
+        return []
     try:
         s = _et_session()
         r = s.get(_ET_BASE + "/?s=" + urlquote(q), timeout=16)
@@ -2736,34 +2744,6 @@ def catetresolve():
     if "elitetorrent" not in u.lower():
         return jsonify({"link": ""}), 400
     return jsonify({"link": _et_resolve(u) or ""})
-
-
-@app.get("/etdbg")
-def etdbg():
-    """TEMPORAL: diagnostica si Render alcanza EliteTorrent (Cloudflare/IP) y si
-    el parser engancha. Eliminar tras depurar."""
-    q = (request.args.get("q") or "matrix").strip()
-    out = {"q": q}
-    try:
-        s = _et_session()
-        r = s.get(_ET_BASE + "/?s=" + urlquote(q), timeout=22)
-        html = r.text or ""
-        low = html.lower()
-        out["status"] = r.status_code
-        out["len"] = len(html)
-        out["final_url"] = str(r.url)
-        out["has_miniboxs"] = "miniboxs" in html
-        out["has_nombre"] = 'class="nombre' in html
-        out["cf_challenge"] = ("just a moment" in low or "challenge-platform"
-                               in low or "cf-chl" in low)
-        first = _re_dt.search(r"(?is)<li\b[^>]*>(.*?)</li>", html)
-        out["first_li"] = (_re_dt.sub(r"\s+", " ", first.group(1))[:400]
-                           if first else "")
-        out["parsed"] = len(_et_search(q))
-        out["sample_head"] = _re_dt.sub(r"\s+", " ", html[:300])
-    except Exception as e:
-        out["error"] = e.__class__.__name__ + ": " + str(e)
-    return jsonify(out)
 
 
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
