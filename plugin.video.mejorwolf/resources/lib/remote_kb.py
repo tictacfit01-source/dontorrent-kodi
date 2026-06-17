@@ -138,6 +138,20 @@ def push_status(version, cont=None, diag=None):
         pass
 
 
+def push_etjob(out):
+    """Sube al relay el resultado de un trabajo de EliteTorrent pedido por el
+    catalogo web (busqueda o resolucion de enlace). `out`: {job, op, items|link}."""
+    base = relay_base()
+    if not base:
+        return
+    try:
+        body = dict(out)
+        body["code"] = get_code()
+        _SESSION.post(f"{base}/catjob/done", json=body, timeout=25)
+    except Exception:
+        pass
+
+
 def poll(timeout=10):
     """Devuelve los eventos pendientes del movil (y los consume).
 

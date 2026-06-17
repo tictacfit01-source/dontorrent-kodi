@@ -2746,6 +2746,104 @@ def catetresolve():
     return jsonify({"link": _et_resolve(u) or ""})
 
 
+# === EliteTorrent via BOX (IP residencial) =================================
+# Render esta bloqueado por el Cloudflare de ET, pero el box (IP de casa) SI
+# entra. El movil pide /catetbox?code=&q= -> encolamos un evento 'etjob' (mismo
+# canal que el mando) -> el box scrapea ET y POSTea el resultado a /catjob/done
+# -> aqui hacemos long-poll hasta tenerlo (o timeout -> [] y manda DonTorrent).
+_CATJOB_FILE = "/tmp/mw_catjob.json"
+_CATJOB_TTL = 120
+
+
+def _catjob_load():
+    try:
+        with open(_CATJOB_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _catjob_save(d):
+    try:
+        tmp = _CATJOB_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _CATJOB_FILE)
+    except Exception:
+        pass
+
+
+def _kb_enqueue(code, ev):
+    """Mete un evento en la cola del box (la que consume /kb/poll)."""
+    d = _kb_clean(_kb_load())
+    entry = d.get(code) or {"ev": [], "ts": _t.time()}
+    evs = entry.get("ev", [])
+    evs.append(ev)
+    entry["ev"] = evs[-20:]
+    entry["ts"] = _t.time()
+    d[code] = entry
+    _kb_save(d)
+
+
+def _catjob_wait(job, secs):
+    end = _t.time() + secs
+    while _t.time() < end:
+        d = _catjob_load()
+        if job in d:
+            r = d.pop(job, None)
+            _catjob_save(d)
+            return r
+        _t.sleep(0.4)
+    return None
+
+
+@app.get("/catetbox")
+def catetbox():
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    q = (request.args.get("q") or "").strip()
+    if len(code) != 6 or not q:
+        return jsonify({"items": [], "off": True})
+    job = "et" + os.urandom(5).hex()
+    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "search", "q": q})
+    res = _catjob_wait(job, 13.0)
+    if res is None:
+        return jsonify({"items": [], "timeout": True})
+    items = res.get("items") or []
+    if items:
+        items = _cat_enrich(items)
+    return jsonify({"items": items})
+
+
+@app.get("/catetboxresolve")
+def catetboxresolve():
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    url = (request.args.get("url") or "").strip()
+    if len(code) != 6 or "elitetorrent" not in url.lower():
+        return jsonify({"link": ""}), 400
+    job = "et" + os.urandom(5).hex()
+    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "resolve", "url": url})
+    res = _catjob_wait(job, 18.0)
+    return jsonify({"link": (res or {}).get("link", "") or ""})
+
+
+@app.post("/catjob/done")
+def catjob_done():
+    """El box deja aqui el resultado de un etjob (busqueda o resolucion)."""
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    job = (str(body.get("job") or ""))[:40]
+    if not job:
+        return jsonify({"ok": False}), 400
+    d = _catjob_load()
+    now = _t.time()
+    d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
+    d[job] = {"items": body.get("items"), "link": body.get("link"), "ts": now}
+    _catjob_save(d)
+    return jsonify({"ok": True})
+
+
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
 
 
@@ -2940,13 +3038,23 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .jump .jbtn{width:120px;flex:none;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--blue2),var(--blue));color:#fff;border-radius:14px;font-weight:700;font-size:15px;cursor:pointer}
 .jump .jbtn:active{transform:scale(.97)}
 .rb svg{display:block}
-/* episodios: ojo de visto */
-.ep{display:flex;align-items:center;gap:10px}
+/* episodios: marcar visto (elegante) */
+.ep{display:flex;align-items:center;gap:10px;position:relative;overflow:hidden;transition:opacity .2s}
 .ep .epmain{flex:1;min-width:0}
-.ep .eye{flex:none;width:48px;height:48px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--sub);font-size:19px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.12s}
-.ep .eye:active{transform:scale(.9)}
-.ep.seen{opacity:.55}
-.ep.seen .eye{color:var(--green);border-color:rgba(48,209,88,.45);background:rgba(48,209,88,.13)}
+.ep .epl .chk{color:var(--green);margin-right:7px;font-weight:800;display:none}
+.ep .eye{flex:none;width:44px;height:44px;border-radius:11px;border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--sub);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}
+.ep .eye svg{display:block}
+.ep .eye:active{transform:scale(.86)}
+.ep.seen{opacity:.62}
+.ep.seen::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green)}
+.ep.seen .epl{text-decoration:line-through;text-decoration-color:rgba(48,209,88,.55)}
+.ep.seen .epl .chk{display:inline}
+.ep.seen .eye{color:var(--green);border-color:rgba(48,209,88,.5);background:rgba(48,209,88,.14)}
+.seas{display:flex;align-items:center;justify-content:space-between}
+.seasmark{color:var(--blue2);font-size:12px;font-weight:600;text-transform:none;letter-spacing:0;cursor:pointer;padding:5px 10px;border-radius:9px;border:1px solid var(--stroke);background:rgba(255,255,255,.04)}
+.seasmark:active{transform:scale(.95)}
+.nprow .npf{color:#cfd6e4;font-weight:600}
+.morebar{text-align:center;color:var(--sub);font-size:13px;padding:18px 10px}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -3003,7 +3111,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div class="rnp"><div class="nplab">ESTÁS VIENDO</div>
    <div class="npttl" id="rm-t">—</div>
    <div class="rmbar"><i id="rm-prog"></i></div>
-   <div class="nprow"><span id="rm-cur">0:00</span><span id="rm-tot">0:00</span></div>
+   <div class="nprow"><span id="rm-time">0:00</span><span id="rm-fin" class="npf"></span></div>
   </div>
   <div class="media">
    <div class="rb sk" onclick="cmd('seek_back')">-10<small>s</small></div>
@@ -3038,7 +3146,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 var $=function(s){return document.getElementById(s)};
 var SVG_PLAY='<svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg>';
 var SVG_PAUSE='<svg width="28" height="28" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg>';
+var EYE_OFF='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+var EYE_ON='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C6 4.5 2.2 11.2 2.05 11.5a1 1 0 0 0 0 .9C2.2 12.8 6 19.5 12 19.5s9.8-6.7 9.95-7a1 1 0 0 0 0-.9C21.8 11.2 18 4.5 12 4.5Zm0 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>';
+function clk(d){return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
 var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='', lastPlayTs=0;
+var INI={kind:'estrenos',page:1,loading:false,more:true}, OVDATA=null;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
 code.value=localStorage.getItem('mw_code')||'';
 code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value)};
@@ -3057,26 +3169,52 @@ function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTi
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
 function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs()}
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
+ INI={kind:kind,page:1,loading:false,more:true};
  var g=$('inicio-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Cargando...';
- fetch('/catbrowse?kind='+kind).then(function(r){return r.json()}).then(function(d){
-  LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';return}renderGrid(g,'inicio');
+ fetch('/catbrowse?kind='+kind+'&page=1').then(function(r){return r.json()}).then(function(d){
+  LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';INI.more=false;return}renderGrid(g,'inicio');
  }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
+function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
+ fetch('/catbrowse?kind='+INI.kind+'&page='+next).then(function(r){return r.json()}).then(function(d){
+  var items=(d&&d.items)||[];var have={};LISTS.inicio.forEach(function(x){have[x.kind+':'+x.content_id]=1});
+  var fresh=items.filter(function(x){var k=x.kind+':'+x.content_id;if(have[k])return false;have[k]=1;return true});
+  if(!fresh.length){INI.more=false;INI.loading=false;return}
+  var from=LISTS.inicio.length;LISTS.inicio=LISTS.inicio.concat(fresh);INI.page=next;
+  appendGrid($('inicio-grid'),'inicio',from);INI.loading=false;
+ }).catch(function(){INI.loading=false})}
+window.addEventListener('scroll',function(){
+ if($('pane-inicio').classList.contains('hidden'))return;
+ if($('ov').classList.contains('on')||$('remote').classList.contains('on')||$('sheet').classList.contains('on'))return;
+ if(window.innerHeight+window.scrollY>=document.body.offsetHeight-700)loadMoreInicio();});
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Buscando...';
+ var cd=(code.value||'').replace(/\D/g,'');
  fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
-  LISTS.buscar=(d&&d.items)||[];if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';return}renderGrid(g,'buscar');
+  LISTS.buscar=(d&&d.items)||[];
+  if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';}else renderGrid(g,'buscar');
+  if(cd.length===6)fetchET(q,g);
  }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
+function fetchET(q,g){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
+ fetch('/catetbox?code='+cd+'&q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+  var ets=(d&&d.items)||[];if(!ets.length)return;
+  var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
+  var have={};LISTS.buscar.forEach(function(x){have[norm(x.title)]=1});
+  var fresh=ets.filter(function(x){var k=norm(x.title);if(!k||have[k])return false;have[k]=1;return true});
+  if(!fresh.length)return;
+  var from=LISTS.buscar.length;LISTS.buscar=LISTS.buscar.concat(fresh);
+  if(g.querySelector('.grid'))appendGrid(g,'buscar',from);else renderGrid(g,'buscar');
+ }).catch(function(){})}
 function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';return}renderGrid(g,'lista')}
-function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';
- items.forEach(function(x,i){
-  var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
-  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
-  var q=x.quality?('<div class="q">'+esc(x.quality)+'</div>'):'';
-  var kt='<div class="kindtag">'+kindLabel(x.kind)+'</div>';
-  var src=(x.source==='et')?'<div class="srctag">ET</div>':'';
-  h+='<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+q+kt+src+
-     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
-     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';
- });h+='</div>';el.className='';el.innerHTML=h}
+function cardHTML(x,list,i){
+ var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
+ var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
+ var q=x.quality?('<div class="q">'+esc(x.quality)+'</div>'):'';
+ var kt='<div class="kindtag">'+kindLabel(x.kind)+'</div>';
+ var src=(x.source==='et')?'<div class="srctag">ET</div>':'';
+ return '<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+q+kt+src+
+    '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
+    '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
+function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';for(var i=0;i<items.length;i++)h+=cardHTML(items[i],list,i);h+='</div>';el.className='';el.innerHTML=h}
+function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';for(var i=from;i<items.length;i++)h+=cardHTML(items[i],list,i);g.insertAdjacentHTML('beforeend',h)}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(x.source==='et')sy+=' · EliteTorrent';
@@ -3087,9 +3225,9 @@ function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?
 function closeSheet(){$('sheet').classList.remove('on')}
 function play(){if(!sel)return;
  if(sel.source==='et'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
-  toast('Resolviendo enlace…');
-  fetch('/catetresolve?u='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
-   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo obtener el enlace de EliteTorrent')}}).catch(function(){toast('No se pudo obtener el enlace')});
+  toast('Resolviendo en tu box…');
+  fetch('/catetboxresolve?code='+cd+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
  if(sendPlay({a:'dt',c:sel.content_id,tb:sel.tabla,t:sel.title}))closeSheet()}
 function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
@@ -3099,21 +3237,30 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
-function openSeries(x){SHOW=x.title;EPS={};$('ov').classList.add('on');$('ov-title').textContent=x.title;
+function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');$('ov-title').textContent=x.title;
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
  fetch('/catdetail?path='+encodeURIComponent(x.path||'')).then(function(r){return r.json()}).then(function(d){
   var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios.</div>';return}
-  var poster=(d&&d.poster)||x.poster;var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
-  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});var h='';
-  var ph=poster?(' style="background-image:url('+poster+')"'):'';
-  h+='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button></div></div>';
-  keys.forEach(function(s){if(keys.length>1||s>0)h+='<div class="seas">Temporada '+(s||'?')+'</div>';
-   seasons[s].forEach(function(e){var id='e'+e.content_id;EPS[id]=e;var sc=isSeen(e.content_id)?' seen':'';
-    h+='<div class="ep'+sc+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl">▶ '+esc(e.label)+'</span>'+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</div><div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">👁</div></div>'});
-  });$('ov-body').innerHTML=h;
+  OVDATA={d:d,x:x};renderEpisodes();
  }).catch(function(){$('ov-body').innerHTML='<div class="msg">Error de conexión.</div>'})}
+function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};
+ var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
+ var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
+ var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});
+ var ph=poster?(' style="background-image:url('+poster+')"'):'';
+ var h='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button></div></div>';
+ keys.forEach(function(s){var list=seasons[s];var allseen=list.every(function(e){return isSeen(e.content_id)});
+  if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
+  list.forEach(function(e){var id='e'+e.content_id;EPS[id]=e;var sn=isSeen(e.content_id);
+   h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</span></div>'+
+     '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
+ });$('ov-body').innerHTML=h;}
 function closeOv(){$('ov').classList.remove('on')}
-function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var row=$('row-'+id);if(row)row.classList.toggle('seen',isSeen(e.content_id))}
+function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var row=$('row-'+id);
+ if(row){var sn=isSeen(e.content_id);row.classList.toggle('seen',sn);var ey=row.querySelector('.eye');if(ey)ey.innerHTML=sn?EYE_ON:EYE_OFF;}}
+function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(function(e){return (e.season||0)===s});
+ var allseen=eps.every(function(e){return isSeen(e.content_id)});
+ eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
 function playEp(id){var e=EPS[id];if(!e)return;if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:(SHOW+' '+e.label).trim()}))closeOv()}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
@@ -3121,10 +3268,14 @@ function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){to
 function fmt(s){s=Math.max(0,s||0);var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60);return (h?h+':':'')+(h?('0'+m).slice(-2):m)+':'+('0'+x).slice(-2)}
 function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000);return}
  fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(d){var np=d&&d.np;var bar=$('npbar');
-  if(np&&np.title){bar.classList.add('on');$('np-t').textContent=np.title;var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
+  if(np&&np.title){bar.classList.add('on');var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
+   var fin='';if(!np.paused&&np.total>0)fin=clk(new Date(Date.now()+(np.total-np.elapsed)*1000));
+   $('np-t').textContent=np.title+(fin?(' · Finaliza '+fin):'');
    $('np-prog').style.width=pct+'%';$('np-pp').textContent=np.paused?'▶':'⏸';
-   $('rm-t').textContent=np.title;$('rm-cur').textContent=fmt(np.elapsed);$('rm-tot').textContent=fmt(np.total);$('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
-  else{bar.classList.remove('on');if($('remote').classList.contains('on'))$('rm-t').textContent='Preparando en la tele…';}
+   $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+(np.total?(' / '+fmt(np.total)):'');
+   $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');
+   $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
+  else{bar.classList.remove('on');if($('remote').classList.contains('on')){$('rm-t').textContent='Preparando en la tele…';$('rm-time').textContent='';$('rm-fin').textContent='';}}
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
  }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
 function openRemote(){$('remote').classList.add('on')}

@@ -266,6 +266,8 @@ def _poll_remote_kb():
                     _push_after_nav(old_path)
             elif c == "play_ref":
                 _play_ref(ev)
+            elif c == "etjob":
+                _do_etjob(ev)
             elif c == "home":
                 _go_home()
             elif c == "seek_fwd":
@@ -281,6 +283,54 @@ def _poll_remote_kb():
     except Exception as e:
         xbmc.log(f"[MejorWolf/service] KB poll error: {e}", xbmc.LOGDEBUG)
     return False
+
+
+def _et_item_compact(it):
+    """Mapea un item del scraper de EliteTorrent al formato del catalogo web."""
+    return {"title": it.get("title", ""),
+            "kind": "serie" if it.get("kind") == "tvshow" else "movie",
+            "source": "et", "url": it.get("url", ""),
+            "content_id": it.get("url", ""),
+            "thumb": it.get("thumb") or None,
+            "quality": it.get("quality") or "", "tabla": "et"}
+
+
+def _do_etjob(ev):
+    """El catalogo web pide buscar/resolver en EliteTorrent. Render no puede
+    (Cloudflare bloquea su IP) pero el box SI (IP residencial). Lo hacemos en un
+    hilo aparte para no frenar el mando y subimos el resultado al relay."""
+    import threading
+
+    def _run():
+        try:
+            from resources.lib import scraper_elitetorrent as et
+            from resources.lib import remote_kb as rkb
+            op = (ev.get("op") or "").strip()
+            out = {"job": ev.get("job") or "", "op": op}
+            if op == "search":
+                q = (ev.get("q") or "").strip()
+                items = et.search(q) if q else []
+                items = [i for i in items if i.get("kind") != "tvshow"]  # pelis
+                out["items"] = [_et_item_compact(i) for i in items[:24]]
+            elif op == "resolve":
+                url = (ev.get("url") or "").strip()
+                results, _info = et.detail(url) if url else ([], {})
+                link = ""
+                for r in results:
+                    if r.get("is_magnet"):
+                        link = r.get("magnet")
+                        break
+                if not link and results:
+                    link = results[0].get("magnet") or ""
+                out["link"] = link
+            else:
+                return
+            rkb.push_etjob(out)
+            xbmc.log("[MejorWolf/service] etjob %s -> ok" % op, xbmc.LOGINFO)
+        except Exception as e:
+            xbmc.log("[MejorWolf/service] etjob error: %s" % e, xbmc.LOGWARNING)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _play_ref(ev):
