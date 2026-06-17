@@ -3323,7 +3323,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});
  var ph=poster?(' style="background-image:url('+poster+')"'):'';
  var h='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button></div></div>';
- keys.forEach(function(s){var list=seasons[s];var allseen=list.every(function(e){return isSeen(e.content_id)});
+ keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</span></div>'+
