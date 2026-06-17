@@ -2815,6 +2815,11 @@ def catetbox():
     if res is None:
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
+    for it in items:   # titulos de fuentes-box pueden venir verbosos (WolfMax)
+        disp, ql = _cat_clean_quality(it.get("title", ""))
+        it["title"] = disp
+        if not it.get("quality"):
+            it["quality"] = ql
     if items:
         items = _cat_enrich(items, limit=60)
     return jsonify({"items": items})
@@ -2862,7 +2867,8 @@ def catjob_done():
     d = _catjob_load()
     now = _t.time()
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
-    d[job] = {"items": body.get("items"), "link": body.get("link"), "ts": now}
+    d[job] = {"items": body.get("items"), "link": body.get("link"),
+              "rar": body.get("rar"), "ts": now}
     _catjob_save(d)
     return jsonify({"ok": True})
 
