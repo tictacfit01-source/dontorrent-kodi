@@ -3036,9 +3036,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .msg{color:var(--sub);text-align:center;padding:34px 10px;font-size:14px}
 .sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:30}
 .sheet.on{display:flex}
-.sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));animation:up .2s ease}
+.sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));animation:up .2s ease;max-height:92vh;overflow-y:auto}
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
-.sheet h3{margin:0 0 4px;font-size:17px}
+.sh-poster{width:170px;aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 10px 30px rgba(0,0,0,.55)}
+.sh-poster.hidden{display:none}
+.sheet h3{margin:0 0 4px;font-size:17px;text-align:center}
+.sheet .sy{text-align:center}
 .sheet .sy{color:var(--sub);font-size:13px;margin-bottom:14px}
 .btn{display:block;width:100%;border:0;border-radius:14px;padding:15px;font-size:16px;font-weight:700;margin-top:10px;cursor:pointer}
 .btn.play{color:#06140a;background:linear-gradient(145deg,#3dd46a,#27c257)}
@@ -3061,7 +3064,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ovt{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #ov-body{padding:14px}
 .ovhead{display:flex;gap:14px;margin-bottom:16px}
-.ovposter{width:96px;height:144px;border-radius:12px;background:#0e1320 center/cover;flex:none;border:1px solid var(--stroke)}
+.ovposter{width:120px;height:180px;border-radius:12px;background:#0e1320 center/cover;flex:none;border:1px solid var(--stroke);box-shadow:0 8px 22px rgba(0,0,0,.5)}
 .ovh-t{font-size:18px;font-weight:700}
 .ovh-y{color:var(--sub);font-size:13px;margin-top:4px}
 .seas{font-size:13px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;margin:16px 0 8px}
@@ -3211,6 +3214,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 </div>
 <div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
  <div class="box">
+  <div class="sh-poster hidden" id="sh-poster"></div>
   <h3 id="sh-t"></h3><div class="sy" id="sh-y"></div>
   <div class="rar" id="sh-rar"></div>
   <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
@@ -3371,6 +3375,7 @@ function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
+ var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sheet').classList.add('on');
  if((x.source||'dt')==='dt')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
