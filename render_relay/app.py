@@ -2050,7 +2050,9 @@ startNow();startStatus();
 
 @app.get("/kb")
 def kb_page():
-    return Response(_KB_PAGE, mimetype="text/html; charset=utf-8")
+    r = Response(_KB_PAGE, mimetype="text/html; charset=utf-8")
+    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return r
 
 
 # Limite de peticiones por IP en /kb/send (anti fuerza-bruta del codigo, sin
@@ -3337,7 +3339,9 @@ chip('estrenos');pollNow();
 
 @app.get("/cat")
 def cat_page():
-    return Response(_CAT_PAGE, mimetype="text/html; charset=utf-8")
+    r = Response(_CAT_PAGE, mimetype="text/html; charset=utf-8")
+    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return r
 
 
 # ===========================================================================
