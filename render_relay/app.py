@@ -3301,16 +3301,18 @@ function mergeResults(list,g,items){
  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Buscando...';
  var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];
- var more=$('buscar-more');var pend=(cd.length===6)?3:1;
- function done(){pend--;if(pend>0){if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
-  if(more)more.textContent='';
-  if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';}}
+ var more=$('buscar-more');var pend=(cd.length===6)?3:1;var boxAdded=0;var boxTO=false;
+ function done(r){if(r){if(r.timeout)boxTO=true;if(r.added)boxAdded+=r.added;}
+  pend--;if(pend>0){if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
+  if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';if(more)more.textContent='';return;}
+  if(boxTO&&!boxAdded&&cd.length===6){if(more)more.innerHTML='💡 Enciende tu Kodi ('+cd+') para ver EliteTorrent · DivxTotal · WolfMax';}
+  else if(more)more.textContent='';}
  // DonTorrent (relay) y fuentes-box (tu Kodi) EN PARALELO -> salen antes
  fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){mergeResults('buscar',g,(d&&d.items)||[]);done()}).catch(function(){done()});
  if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx',done);boxMerge('buscar',g,'search',q,'wf',done);}}
-function boxMerge(list,g,op,q,srcs,cb){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb();return;}
+function boxMerge(list,g,op,q,srcs,cb){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
- fetch(u).then(function(r){return r.json()}).then(function(d){mergeResults(list,g,(d&&d.items)||[]);if(cb)cb()}).catch(function(){if(cb)cb()})}
+ fetch(u).then(function(r){return r.json()}).then(function(d){var b=LISTS[list].length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b})}).catch(function(){if(cb)cb({})})}
 function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';return}renderGrid(g,'lista')}
 function cardHTML(x,list,i){
  var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
