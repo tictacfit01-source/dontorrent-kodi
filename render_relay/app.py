@@ -1339,6 +1339,28 @@ def dtpacked():
     return jsonify({"packed": packed, "quality": quality})
 
 
+@app.get("/dtpowdbg")
+def dtpowdbg():
+    """TEMPORAL: ver por que falla el PoW de descarga desde Render."""
+    cid = int(re.sub(r"\D", "", request.args.get("c", "4449")) or "4449")
+    tb = (request.args.get("tb") or "peliculas")
+    dom = (request.args.get("dom") or _dt_load_domain()
+           or "dontorrent.review")
+    out = {"dom": dom, "cid": cid, "tb": tb}
+    try:
+        sess, solved = _dt_anubis_session(dom)
+        out["anubis_solved"] = solved
+        api = f"https://{dom}/api_validate_pow.php"
+        r1 = sess.post(api, json={"action": "generate", "content_id": cid,
+                                  "tabla": tb}, timeout=20)
+        out["gen_status"] = r1.status_code
+        out["gen_ct"] = r1.headers.get("Content-Type", "")
+        out["gen_body"] = (r1.text or "")[:600]
+    except Exception as e:
+        out["err"] = e.__class__.__name__ + ": " + str(e)
+    return jsonify(out)
+
+
 # ===========================================================================
 # PROBE: sondeo de viabilidad de fuentes (Anubis / Cloudflare-ligero / Turnstile)
 # ===========================================================================
