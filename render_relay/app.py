@@ -777,7 +777,7 @@ def _dt_anubis_session(domain):
 
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS)
-    r = s.get(f"https://{domain}/", timeout=10)
+    r = s.get(f"https://{domain}/", timeout=6)
     if "anubis_challenge" not in r.text:
         # No hay Anubis activo
         _DT_COOKIES[domain] = {"cookies": dict(s.cookies), "ts": _t.time()}
@@ -2367,10 +2367,11 @@ def _cat_dt_html(q):
     Reusa Anubis + auto-curativo. Aislado de /dtsearch."""
     from urllib.parse import urlparse as _up
     data = {"valor": q, "Buscar": "Buscar"}
-    # Solo 2 dominios y timeout corto: si DonTorrent va lento, fallamos rapido en
-    # vez de colgar 60s y saturar los hilos del relay.
+    # Solo el dominio aprendido y timeout corto: si DonTorrent no responde
+    # (p.ej. rate-limit a la IP de Render), fallamos en ~6s en vez de colgar
+    # 30-60s y saturar los hilos. Las fuentes-box siguen apareciendo igual.
     for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
-                if d][:2]:
+                if d][:1]:
         try:
             s, _ = _dt_anubis_session(dom)
 
@@ -2378,12 +2379,12 @@ def _cat_dt_html(q):
                 dd = dict(data)
                 if page > 1:
                     dd["p"] = str(page)
-                rr = _s.post(f"https://{_dom}/buscar", data=dd, timeout=8,
+                rr = _s.post(f"https://{_dom}/buscar", data=dd, timeout=6,
                              allow_redirects=False)
                 if "anubis_challenge" in rr.text:
                     _DT_COOKIES.pop(_dom, None)
                     ns, _ = _dt_anubis_session(_dom)
-                    rr = ns.post(f"https://{_dom}/buscar", data=dd, timeout=8,
+                    rr = ns.post(f"https://{_dom}/buscar", data=dd, timeout=6,
                                  allow_redirects=False)
                 return rr
 
@@ -2417,14 +2418,14 @@ def _cat_dt_session_get(path):
     """GET a una ruta de DonTorrent (dominio APRENDIDO) con sesion Anubis.
     Devuelve (html, domain) o ('', None). Para listados y fichas de serie."""
     for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
-                if d][:2]:
+                if d][:1]:
         try:
             s, _ = _dt_anubis_session(dom)
-            rr = s.get(f"https://{dom}{path}", timeout=8, allow_redirects=True)
+            rr = s.get(f"https://{dom}{path}", timeout=6, allow_redirects=True)
             if "anubis_challenge" in rr.text:
                 _DT_COOKIES.pop(dom, None)
                 s, _ = _dt_anubis_session(dom)
-                rr = s.get(f"https://{dom}{path}", timeout=8)
+                rr = s.get(f"https://{dom}{path}", timeout=6)
             if rr.status_code == 200 and _re_dt.search(
                     r"/(?:pelicula|serie|documental)/\d+/", rr.text):
                 return rr.text, dom
