@@ -437,7 +437,7 @@ def _dt_meta(content_id, tabla):
         from resources.lib import scraper_dontorrent as dt
         from resources.lib import torrent as tparse
         from resources.lib import http_session as hs
-        url = dt.resolve_torrent(content_id, tabla)
+        url = dt.resolve_torrent(content_id, tabla, prefer_direct=True)
         if not url:
             return out
         m = _DTQ_RE.search(url.encode("utf-8", "ignore"))

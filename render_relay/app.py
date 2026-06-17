@@ -1057,7 +1057,7 @@ def dtpow():
 
     last_err = "unknown"
     tried = []
-    for dom in dom_candidates[:6]:
+    for dom in dom_candidates[:2]:   # el validate falla desde Render; no perder 28s
         try:
             sess, _ = _dt_anubis_session(dom)
             api = f"https://{dom}/api_validate_pow.php"
@@ -1244,7 +1244,7 @@ def _dt_download_url(domain, content_id, tabla):
     for d in DT_FALLBACK:
         if d not in dom_candidates:
             dom_candidates.append(d)
-    for dom in dom_candidates[:6]:
+    for dom in dom_candidates[:2]:   # el validate falla desde Render; no perder 28s
         try:
             sess, _ = _dt_anubis_session(dom)
             api = f"https://{dom}/api_validate_pow.php"

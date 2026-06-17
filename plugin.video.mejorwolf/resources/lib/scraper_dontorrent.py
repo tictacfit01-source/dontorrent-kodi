@@ -1299,8 +1299,8 @@ def _render_resolve_torrent(content_id, tabla, domain=""):
             "domain": domain,
             "content_id": int(content_id),
             "tabla": tabla,
-        }, timeout=60, headers={"Content-Type": "application/json",
-                                 "User-Agent": UA})
+        }, timeout=8, headers={"Content-Type": "application/json",
+                                "User-Agent": UA})
         if r.status_code == 200:
             data = r.json()
             if data.get("success") and data.get("download_url"):
@@ -1312,23 +1312,26 @@ def _render_resolve_torrent(content_id, tabla, domain=""):
     return None
 
 
-def resolve_torrent(content_id, tabla, page_url=None):
+def resolve_torrent(content_id, tabla, page_url=None, prefer_direct=False):
     """Devuelve la URL del .torrent, usando cache en disco si esta disponible.
 
     El .torrent es estatico, asi que un acierto de cache evita repetir el PoW
     por completo (reproduccion casi instantanea en re-visionados/reintentos).
-    """
+    prefer_direct=True salta el relay (que ya no puede con el PoW desde su IP) e
+    intenta directo desde el box, util para el catalogo (calidad/RAR)."""
     cached = _resolve_cache_get(content_id, tabla)
     if cached:
         _LOG(f"resolve_torrent: cache HIT {tabla}:{content_id}")
         return cached
-    url = _resolve_torrent_uncached(content_id, tabla, page_url=page_url)
+    url = _resolve_torrent_uncached(content_id, tabla, page_url=page_url,
+                                    prefer_direct=prefer_direct)
     if url:
         _resolve_cache_put(content_id, tabla, url)
     return url
 
 
-def _resolve_torrent_uncached(content_id, tabla, page_url=None):
+def _resolve_torrent_uncached(content_id, tabla, page_url=None,
+                              prefer_direct=False):
     """Ejecuta el handshake PoW para obtener la URL del .torrent.
 
     Estrategia 0: Render relay (Python sin limites de CPU).
@@ -1336,10 +1339,12 @@ def _resolve_torrent_uncached(content_id, tabla, page_url=None):
     """
     host = resolve_domain()
 
-    # Estrategia 0: Render relay (sin Anubis IP issues)
-    url = _render_resolve_torrent(content_id, tabla, domain=host)
-    if url:
-        return url
+    # Estrategia 0: Render relay (sin Anubis IP issues). Se salta con
+    # prefer_direct (el PoW de descarga falla desde la IP de Render).
+    if not prefer_direct:
+        url = _render_resolve_torrent(content_id, tabla, domain=host)
+        if url:
+            return url
 
     api_url = f"https://{host}{API}"
 
