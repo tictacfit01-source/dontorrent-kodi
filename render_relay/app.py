@@ -3487,20 +3487,36 @@ def cat_page():
 import threading as _kth
 import datetime as _kdt
 
+def _warm_dt():
+    """Mantiene la sesion Anubis de DonTorrent SIEMPRE lista en ESTE worker, asi
+    el usuario nunca paga el ~13s de re-resolver Anubis (tras deploy o expiracion).
+    Refresca proactivamente a las ~5h (antes del TTL de 6h)."""
+    try:
+        dom = _dt_load_domain() or (DT_FALLBACK[0] if DT_FALLBACK
+                                    else "dontorrent.review")
+        ent = _DT_COOKIES.get(dom)
+        if ent and (_t.time() - ent.get("ts", 0)) > 3600 * 5:
+            _DT_COOKIES.pop(dom, None)
+        _dt_anubis_session(dom)
+    except Exception:
+        pass
+
+
 def _self_keepalive():
+    # 1) Anubis de DonTorrent siempre caliente (en proceso, por worker).
+    # 2) self-ping a /ping cada 8 min para que Render NO se duerma (24/7 ~=
+    #    730h/mes < 750h gratis) -> nunca arranque en frio (~50s).
+    # Asi la web nunca se queda "colgada" ni "cargando" mucho.
     url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if not url:
-        return   # solo en Render; en local no hace nada
-    # 24/7 cada 8 min (< 15 de Render) -> NUNCA se duerme -> nunca arranque en
-    # frio (~50s) -> la web nunca se queda "colgada". 24/7 ~= 730h/mes < 750h
-    # gratis de Render. Pinguea /ping (ligero), no el catalogo de 42KB.
     while True:
-        try:
-            _t.sleep(480)
-            requests.get(url + "/ping", timeout=20,
-                         headers={"User-Agent": "mw-keepalive"})
-        except Exception:
-            pass
+        _warm_dt()
+        if url:
+            try:
+                requests.get(url + "/ping", timeout=20,
+                             headers={"User-Agent": "mw-keepalive"})
+            except Exception:
+                pass
+        _t.sleep(480)
 
 
 def _start_keepalive():
