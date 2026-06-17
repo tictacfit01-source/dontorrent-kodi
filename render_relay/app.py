@@ -141,13 +141,24 @@ def host_allowed(target_url: str) -> bool:
         return False
 
 
+def _serve_page(html):
+    """HTML sin cache (para que los cambios se vean al recargar)."""
+    r = Response(html, mimetype="text/html; charset=utf-8")
+    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return r
+
+
 @app.get("/")
 def root():
-    return Response(
-        "MejorWolf Render relay OK. ScraperAPI=" +
-        ("ON" if SCRAPERAPI_KEY else "OFF"),
-        mimetype="text/plain",
-    )
+    # La app principal (el catalogo) vive en la raiz. El keepalive pinguea aqui
+    # e ignora el cuerpo, asi que servir HTML es inofensivo.
+    return _serve_page(_CAT_PAGE)
+
+
+@app.get("/ping")
+def ping():
+    return Response("MejorWolf relay OK. ScraperAPI=" +
+                    ("ON" if SCRAPERAPI_KEY else "OFF"), mimetype="text/plain")
 
 
 # === Kodi repo proxy =======================================================
@@ -2043,9 +2054,14 @@ startNow();startStatus();
 
 @app.get("/kb")
 def kb_page():
-    r = Response(_KB_PAGE, mimetype="text/html; charset=utf-8")
-    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return r
+    # La web del mando ahora sirve el CATALOGO (app principal). El QR del box
+    # apunta aqui, asi que abre la app completa. El mando clasico: /kb/clasico.
+    return _serve_page(_CAT_PAGE)
+
+
+@app.get("/kb/clasico")
+def kb_page_clasico():
+    return _serve_page(_KB_PAGE)
 
 
 # Limite de peticiones por IP en /kb/send (anti fuerza-bruta del codigo, sin
@@ -3143,6 +3159,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .seasmark:active{transform:scale(.95)}
 .nprow .npf{color:#cfd6e4;font-weight:600}
 .morebar{text-align:center;color:var(--sub);font-size:13px;padding:18px 10px}
+.appfoot{text-align:center;color:var(--sub);font-size:12px;opacity:.6;padding:26px 10px 10px}
+.appfoot a{color:var(--blue2);text-decoration:none}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -3184,6 +3202,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <section id="pane-lista" class="pane hidden">
   <div id="lista-grid" class="msg"></div>
  </section>
+ <div class="appfoot">MejorWolf · <a href="/kb/clasico">Mando clásico</a></div>
 </div>
 <div class="npbar" id="npbar" onclick="openRemote()">
  <div class="np-prog-wrap"><div class="np-prog" id="np-prog"></div></div>
@@ -3453,9 +3472,7 @@ chip('estrenos');pollNow();
 
 @app.get("/cat")
 def cat_page():
-    r = Response(_CAT_PAGE, mimetype="text/html; charset=utf-8")
-    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return r
+    return _serve_page(_CAT_PAGE)   # alias del catalogo (compat con links viejos)
 
 
 # ===========================================================================
