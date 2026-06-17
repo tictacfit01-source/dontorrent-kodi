@@ -800,7 +800,7 @@ def _dt_anubis_session(domain):
         f"?response={h}&nonce={nonce}&id={_uq(cid, safe='')}"
         f"&elapsedTime={int(elapsed*1000)}&redir=/"
     )
-    s.get(pass_url, timeout=15, allow_redirects=False)
+    s.get(pass_url, timeout=8, allow_redirects=False)
 
     if "browser-pow-auth" not in s.cookies:
         raise RuntimeError("Anubis: pass-challenge no devolvio cookie auth")
@@ -2361,15 +2361,30 @@ def _cat_tmdb(title, kind="movie"):
     return out
 
 
+# Circuit breaker DonTorrent: si DonTorrent no responde (rate-limit a la IP de
+# Render), se SALTA al instante durante un rato en vez de colgar cada peticion.
+# Asi la web responde YA (con las fuentes-box) y reintenta DonTorrent cada 90s.
+_DT_DOWN_UNTIL = [0.0]
+_DT_DOWN_COOLDOWN = 90
+
+
+def _dt_is_down():
+    return _t.time() < _DT_DOWN_UNTIL[0]
+
+
+def _dt_mark(ok):
+    _DT_DOWN_UNTIL[0] = 0.0 if ok else (_t.time() + _DT_DOWN_COOLDOWN)
+
+
 def _cat_dt_html(q):
     """POST de busqueda a DonTorrent (dominio APRENDIDO) -> HTML de TODAS las
-    paginas concatenado (asi salen TODAS las temporadas, no solo la 1a pagina).
-    Reusa Anubis + auto-curativo. Aislado de /dtsearch."""
+    paginas concatenado. Reusa Anubis. Circuit breaker: si DonTorrent esta caido
+    desde Render, devuelve '' al instante (las fuentes-box siguen igual)."""
+    if _dt_is_down():
+        return ""
     from urllib.parse import urlparse as _up
     data = {"valor": q, "Buscar": "Buscar"}
-    # Solo el dominio aprendido y timeout corto: si DonTorrent no responde
-    # (p.ej. rate-limit a la IP de Render), fallamos en ~6s en vez de colgar
-    # 30-60s y saturar los hilos. Las fuentes-box siguen apareciendo igual.
+    got = False
     for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
                 if d][:1]:
         try:
@@ -2389,15 +2404,16 @@ def _cat_dt_html(q):
                 return rr
 
             r1 = _post(1)
+            got = True   # DonTorrent respondio (aunque no haya match)
             if r1.status_code in (301, 302, 303, 307, 308):
                 nd = _up(r1.headers.get("Location") or "").hostname
                 if nd and nd != dom:
-                    continue   # dominio viejo: deja que el bucle pruebe el actual
+                    continue
             if not _re_dt.search(r"/(?:pelicula|serie|documental)/\d+/", r1.text):
                 continue
             full = r1.text
             pgs = [int(n) for n in _re_dt.findall(r"buscarPagina\((\d+)\)", full)]
-            mx = min(max(pgs) if pgs else 1, 12)   # tope de seguridad
+            mx = min(max(pgs) if pgs else 1, 12)
             if mx > 1:
                 from concurrent.futures import ThreadPoolExecutor as _TPE
 
@@ -2408,29 +2424,38 @@ def _cat_dt_html(q):
                         return ""
                 with _TPE(max_workers=min(8, mx - 1)) as ex:
                     full += "".join(ex.map(_pg, range(2, mx + 1)))
+            _dt_mark(True)
             return full
         except Exception:
             continue
+    _dt_mark(got)   # si respondio pero sin match, no es "caido"
     return ""
 
 
 def _cat_dt_session_get(path):
     """GET a una ruta de DonTorrent (dominio APRENDIDO) con sesion Anubis.
-    Devuelve (html, domain) o ('', None). Para listados y fichas de serie."""
+    Devuelve (html, domain) o ('', None). Circuit breaker: si DonTorrent esta
+    caido desde Render, devuelve al instante (no cuelga)."""
+    if _dt_is_down():
+        return "", None
+    got = False
     for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
                 if d][:1]:
         try:
             s, _ = _dt_anubis_session(dom)
             rr = s.get(f"https://{dom}{path}", timeout=6, allow_redirects=True)
+            got = True
             if "anubis_challenge" in rr.text:
                 _DT_COOKIES.pop(dom, None)
                 s, _ = _dt_anubis_session(dom)
                 rr = s.get(f"https://{dom}{path}", timeout=6)
             if rr.status_code == 200 and _re_dt.search(
                     r"/(?:pelicula|serie|documental)/\d+/", rr.text):
+                _dt_mark(True)
                 return rr.text, dom
         except Exception:
             continue
+    _dt_mark(got)
     return "", None
 
 
