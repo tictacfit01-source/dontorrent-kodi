@@ -2799,18 +2799,23 @@ def _catjob_wait(job, secs):
 
 @app.get("/catetbox")
 def catetbox():
+    """Busqueda/estrenos en fuentes que necesitan el box (EliteTorrent, DivxTotal,
+    WolfMax). op=search|latest, srcs=csv (et,dx,wf)."""
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     q = (request.args.get("q") or "").strip()
-    if len(code) != 6 or not q:
+    op = (request.args.get("op") or "search").strip()
+    srcs = (request.args.get("srcs") or "et").strip()
+    if len(code) != 6 or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
     job = "et" + os.urandom(5).hex()
-    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "search", "q": q})
-    res = _catjob_wait(job, 13.0)
+    _kb_enqueue(code, {"c": "etjob", "job": job, "op": op, "q": q,
+                       "srcs": srcs})
+    res = _catjob_wait(job, 14.0)
     if res is None:
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
     if items:
-        items = _cat_enrich(items)
+        items = _cat_enrich(items, limit=60)
     return jsonify({"items": items})
 
 
@@ -2818,10 +2823,12 @@ def catetbox():
 def catetboxresolve():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     url = (request.args.get("url") or "").strip()
-    if len(code) != 6 or "elitetorrent" not in url.lower():
+    src = (request.args.get("src") or "et").strip()
+    if len(code) != 6 or not url.lower().startswith("http"):
         return jsonify({"link": ""}), 400
     job = "et" + os.urandom(5).hex()
-    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "resolve", "url": url})
+    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "resolve",
+                       "src": src, "url": url})
     res = _catjob_wait(job, 18.0)
     return jsonify({"link": (res or {}).get("link", "") or ""})
 
@@ -2940,7 +2947,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .card:active{transform:scale(.97)}
 .card .ph{position:relative;aspect-ratio:2/3;background:#0e1320 center/cover no-repeat;cursor:pointer}
 .card .noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:8px;text-align:center;font-size:12px;color:var(--sub)}
-.card .q{position:absolute;top:6px;left:6px;background:rgba(10,132,255,.85);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700}
+.card .tl{position:absolute;top:6px;left:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-start;z-index:1}
+.card .q{background:rgba(10,132,255,.85);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700}
+.card .rartag{background:rgba(255,159,110,.95);color:#1a0d06;border-radius:6px;padding:2px 7px;font-size:10px;font-weight:800;letter-spacing:.2px}
 .card .fav{position:absolute;top:4px;right:4px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;background:rgba(0,0,0,.4);border-radius:50%;cursor:pointer}
 .card .m{padding:8px 9px;cursor:pointer}
 .card .t{font-size:12.5px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -3172,7 +3181,9 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  INI={kind:kind,page:1,loading:false,more:true};
  var g=$('inicio-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Cargando...';
  fetch('/catbrowse?kind='+kind+'&page=1').then(function(r){return r.json()}).then(function(d){
-  LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';INI.more=false;return}renderGrid(g,'inicio');
+  LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';INI.more=false;return}
+  renderGrid(g,'inicio');
+  if(kind==='estrenos')boxMerge('inicio',g,'latest','');
  }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
  fetch('/catbrowse?kind='+INI.kind+'&page='+next).then(function(r){return r.json()}).then(function(d){
@@ -3191,42 +3202,52 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
   LISTS.buscar=(d&&d.items)||[];
   if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';}else renderGrid(g,'buscar');
-  if(cd.length===6)fetchET(q,g);
+  if(cd.length===6)boxMerge('buscar',g,'search',q);
  }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
-function fetchET(q,g){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
- fetch('/catetbox?code='+cd+'&q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
-  var ets=(d&&d.items)||[];if(!ets.length)return;
+function boxMerge(list,g,op,q){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
+ var u='/catetbox?code='+cd+'&op='+op+'&srcs=et,dx'+(q?('&q='+encodeURIComponent(q)):'');
+ fetch(u).then(function(r){return r.json()}).then(function(d){
+  var ex=(d&&d.items)||[];if(!ex.length)return;
   var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
-  var have={};LISTS.buscar.forEach(function(x){have[norm(x.title)]=1});
-  var fresh=ets.filter(function(x){var k=norm(x.title);if(!k||have[k])return false;have[k]=1;return true});
+  var have={};LISTS[list].forEach(function(x){have[norm(x.title)]=1});
+  var fresh=ex.filter(function(x){var k=norm(x.title);if(!k||have[k])return false;have[k]=1;return true});
   if(!fresh.length)return;
-  var from=LISTS.buscar.length;LISTS.buscar=LISTS.buscar.concat(fresh);
-  if(g.querySelector('.grid'))appendGrid(g,'buscar',from);else renderGrid(g,'buscar');
+  var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
+  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);
  }).catch(function(){})}
 function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';return}renderGrid(g,'lista')}
 function cardHTML(x,list,i){
  var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
- var q=x.quality?('<div class="q">'+esc(x.quality)+'</div>'):'';
+ var q='<div class="tl">'+(x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'')+'</div>';
  var kt='<div class="kindtag">'+kindLabel(x.kind)+'</div>';
- var src=(x.source==='et')?'<div class="srctag">ET</div>':'';
+ var SL={et:'ET',dx:'DX',wf:'WF'};
+ var src=(x.source&&x.source!=='dt')?('<div class="srctag">'+(SL[x.source]||x.source.toUpperCase())+'</div>'):'';
  return '<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+q+kt+src+
     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
-function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';for(var i=0;i<items.length;i++)h+=cardHTML(items[i],list,i);h+='</div>';el.className='';el.innerHTML=h}
-function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';for(var i=from;i<items.length;i++)h+=cardHTML(items[i],list,i);g.insertAdjacentHTML('beforeend',h)}
+function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';for(var i=0;i<items.length;i++)h+=cardHTML(items[i],list,i);h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0)}
+function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';for(var i=from;i<items.length;i++)h+=cardHTML(items[i],list,i);g.insertAdjacentHTML('beforeend',h);lazyRar(el,list,from)}
+// ---- Badge RAR (📦) perezoso para items de DonTorrent (vía /dtpacked) ----
+var _rarCache={},_rarQ=[],_rarActive=0;
+function lazyRar(el,list,from){var items=LISTS[list];for(var i=from;i<items.length;i++){var x=items[i];if((x.source||'dt')!=='dt'||x.kind!=='movie')continue;_rarQ.push({el:el,list:list,i:i,c:x.content_id,tb:x.tabla||'peliculas'})}pumpRar()}
+function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();var key='dt:'+job.tb+':'+job.c;
+ if(_rarCache[key]!==undefined){if(_rarCache[key])rarBadge(job);continue}
+ _rarActive++;(function(job,key){fetch('/dtpacked?c='+encodeURIComponent(job.c)+'&tb='+encodeURIComponent(job.tb)).then(function(r){return r.json()}).then(function(p){_rarActive--;_rarCache[key]=!!(p&&p.packed===true);if(_rarCache[key])rarBadge(job);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job,key)}}
+function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
- var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(x.source==='et')sy+=' · EliteTorrent';
+ var SL={et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};
+ var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(x.source&&SL[x.source])sy+=' · '+SL[x.source];
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sheet').classList.add('on');
- if(x.source!=='et')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
+ if((x.source||'dt')==='dt')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
 function play(){if(!sel)return;
- if(sel.source==='et'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
+ if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
   toast('Resolviendo en tu box…');
-  fetch('/catetboxresolve?code='+cd+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
+  fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
  if(sendPlay({a:'dt',c:sel.content_id,tb:sel.tabla,t:sel.title}))closeSheet()}

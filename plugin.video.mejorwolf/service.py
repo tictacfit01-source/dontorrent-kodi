@@ -285,50 +285,102 @@ def _poll_remote_kb():
     return False
 
 
-def _et_item_compact(it):
-    """Mapea un item del scraper de EliteTorrent al formato del catalogo web."""
-    return {"title": it.get("title", ""),
-            "kind": "serie" if it.get("kind") == "tvshow" else "movie",
-            "source": "et", "url": it.get("url", ""),
-            "content_id": it.get("url", ""),
-            "thumb": it.get("thumb") or None,
-            "quality": it.get("quality") or "", "tabla": "et"}
+def _src_mod(src):
+    """Modulo scraper para una fuente del catalogo (et/dx/wf)."""
+    from resources.lib import scraper_elitetorrent as et
+    from resources.lib import scraper_divxtotal as dx
+    from resources.lib import scraper_wolfmax as wf
+    return {"et": et, "dx": dx, "wf": wf}.get(src)
+
+
+def _src_item_compact(it, src):
+    """Mapea un item de cualquier scraper al formato del catalogo web (la web
+    enriquece luego con TMDB). De momento el catalogo solo muestra PELICULAS de
+    estas fuentes (las series usan la ficha de DonTorrent)."""
+    return {"title": it.get("title", ""), "kind": "movie", "source": src,
+            "url": it.get("url", ""), "content_id": it.get("url", ""),
+            "thumb": it.get("thumb") or it.get("image") or None,
+            "quality": it.get("quality") or "", "tabla": src}
+
+
+def _src_resolve(src, url):
+    """Ficha de la fuente -> mejor enlace (magnet o .torrent). '' si nada."""
+    mod = _src_mod(src)
+    if not mod or not url:
+        return ""
+    try:
+        if src == "et":
+            results, _info = mod.detail(url)
+            for r in results:
+                if r.get("is_magnet"):
+                    return r.get("magnet") or ""
+            return (results[0].get("magnet") if results else "") or ""
+        if src == "dx":
+            d = mod.detail(url)
+            dls = (d or {}).get("downloads") or []
+            return (dls[0].get("torrent_url") if dls else "") or ""
+        if src == "wf":
+            d = mod.detail(url)
+            if isinstance(d, dict):
+                dls = d.get("downloads") or d.get("links") or []
+                if dls:
+                    return (dls[0].get("torrent_url")
+                            or dls[0].get("magnet") or "") or ""
+                return d.get("magnet") or d.get("torrent_url") or ""
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] resolve %s err: %s" % (src, e),
+                 xbmc.LOGWARNING)
+    return ""
 
 
 def _do_etjob(ev):
-    """El catalogo web pide buscar/resolver en EliteTorrent. Render no puede
-    (Cloudflare bloquea su IP) pero el box SI (IP residencial). Lo hacemos en un
-    hilo aparte para no frenar el mando y subimos el resultado al relay."""
+    """El catalogo web pide buscar/listar/resolver en fuentes que Render no
+    alcanza (Cloudflare/ISP). El box SI (IP residencial). En hilo aparte para no
+    frenar el mando; sube el resultado al relay. op: search|latest|resolve.
+    srcs: csv de fuentes (et,dx,wf); por compat, vacio = solo 'et'."""
     import threading
 
     def _run():
         try:
-            from resources.lib import scraper_elitetorrent as et
             from resources.lib import remote_kb as rkb
-            op = (ev.get("op") or "").strip()
+            op = (ev.get("op") or "search").strip()
             out = {"job": ev.get("job") or "", "op": op}
-            if op == "search":
+            if op in ("search", "latest"):
+                srcs = [s for s in (ev.get("srcs") or "et").split(",") if s]
                 q = (ev.get("q") or "").strip()
-                items = et.search(q) if q else []
-                items = [i for i in items if i.get("kind") != "tvshow"]  # pelis
-                out["items"] = [_et_item_compact(i) for i in items[:24]]
+                allit = []
+                for src in srcs:
+                    mod = _src_mod(src)
+                    if not mod:
+                        continue
+                    try:
+                        if op == "search":
+                            items = mod.search(q) if q else []
+                        else:
+                            items = mod.latest("movie", 1)
+                            if isinstance(items, tuple):
+                                items = items[0]
+                    except Exception as e:
+                        xbmc.log("[MejorWolf/service] %s/%s err: %s"
+                                 % (op, src, e), xbmc.LOGWARNING)
+                        items = []
+                    for it in (items or []):
+                        k = (it.get("kind") or "movie")
+                        if k.startswith("tvshow") or k == "serie":
+                            continue   # de momento solo pelis de estas fuentes
+                        allit.append(_src_item_compact(it, src))
+                out["items"] = allit[:60]
             elif op == "resolve":
-                url = (ev.get("url") or "").strip()
-                results, _info = et.detail(url) if url else ([], {})
-                link = ""
-                for r in results:
-                    if r.get("is_magnet"):
-                        link = r.get("magnet")
-                        break
-                if not link and results:
-                    link = results[0].get("magnet") or ""
-                out["link"] = link
+                src = (ev.get("src") or "et").strip()
+                out["link"] = _src_resolve(src, (ev.get("url") or "").strip())
             else:
                 return
             rkb.push_etjob(out)
-            xbmc.log("[MejorWolf/service] etjob %s -> ok" % op, xbmc.LOGINFO)
+            xbmc.log("[MejorWolf/service] srcjob %s -> ok (%d)"
+                     % (op, len(out.get("items", []))), xbmc.LOGINFO)
         except Exception as e:
-            xbmc.log("[MejorWolf/service] etjob error: %s" % e, xbmc.LOGWARNING)
+            xbmc.log("[MejorWolf/service] srcjob error: %s" % e,
+                     xbmc.LOGWARNING)
 
     threading.Thread(target=_run, daemon=True).start()
 
