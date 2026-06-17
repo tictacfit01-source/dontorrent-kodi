@@ -419,6 +419,61 @@ def _src_meta(src, url):
     return out
 
 
+_DTQ_RE = None
+
+
+def _dt_meta(content_id, tabla):
+    """Calidad + RAR de un item DonTorrent, resueltos por el BOX (la IP de Render
+    no puede con el PoW de descarga). Resuelve el .torrent (cacheado) y lee sus
+    bytes: is_packed -> RAR, y busca el token de calidad en el nombre."""
+    global _DTQ_RE
+    import re as _re
+    if _DTQ_RE is None:
+        _DTQ_RE = _re.compile(
+            rb"(4K|2160p|1080p|720p|HDRip|BluRay|BDRemux|BDRip|WEB-?DL|WEBRip|"
+            rb"MicroHD|HDTV|DVDRip|Remux|UHD)", _re.I)
+    out = {"rar": False, "quality": ""}
+    try:
+        from resources.lib import scraper_dontorrent as dt
+        from resources.lib import torrent as tparse
+        from resources.lib import http_session as hs
+        url = dt.resolve_torrent(content_id, tabla)
+        if not url:
+            return out
+        m = _DTQ_RE.search(url.encode("utf-8", "ignore"))
+        if m:
+            out["quality"] = _dt_norm_q(m.group(1).decode("ascii", "ignore"))
+        try:
+            sess = hs.make_session()
+            data = hs.get(sess, url, timeout=25).content
+        except Exception:
+            data = None
+        if data:
+            try:
+                out["rar"] = bool(tparse.is_packed(data))
+            except Exception:
+                pass
+            if not out["quality"]:
+                bm = _DTQ_RE.search(data)
+                if bm:
+                    out["quality"] = _dt_norm_q(
+                        bm.group(1).decode("ascii", "ignore"))
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] dtmeta err: %s" % e, xbmc.LOGWARNING)
+    return out
+
+
+def _dt_norm_q(q):
+    t = (q or "").lower()
+    if t in ("4k", "2160p", "uhd"):
+        return "4K"
+    if t == "1080p":
+        return "1080p"
+    if t == "720p":
+        return "720p"
+    return (q or "").upper() if t in ("hdrip", "hdtv", "dvdrip") else q
+
+
 def _do_etjob(ev):
     """El catalogo web pide buscar/listar/resolver en fuentes que Render no
     alcanza (Cloudflare/ISP). El box SI (IP residencial). En hilo aparte para no
@@ -468,6 +523,12 @@ def _do_etjob(ev):
             elif op == "episodes":
                 src = (ev.get("src") or "").strip()
                 out["eps"] = _src_episodes(src, (ev.get("url") or "").strip())
+            elif op == "dtmeta":
+                cid = re.sub(r"\D", "", str(ev.get("cid") or ""))
+                tb = (ev.get("tb") or "peliculas").strip()
+                m = _dt_meta(cid, tb) if cid else {"rar": False, "quality": ""}
+                out["rar"] = m["rar"]
+                out["quality"] = m["quality"]
             else:
                 return
             rkb.push_etjob(out)

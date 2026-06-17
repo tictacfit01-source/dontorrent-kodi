@@ -1339,26 +1339,40 @@ def dtpacked():
     return jsonify({"packed": packed, "quality": quality})
 
 
-@app.get("/dtpowdbg")
-def dtpowdbg():
-    """TEMPORAL: ver por que falla el PoW de descarga desde Render."""
-    cid = int(re.sub(r"\D", "", request.args.get("c", "4449")) or "4449")
-    tb = (request.args.get("tb") or "peliculas")
-    dom = (request.args.get("dom") or _dt_load_domain()
-           or "dontorrent.review")
-    out = {"dom": dom, "cid": cid, "tb": tb}
-    try:
-        sess, solved = _dt_anubis_session(dom)
-        out["anubis_solved"] = solved
-        api = f"https://{dom}/api_validate_pow.php"
-        r1 = sess.post(api, json={"action": "generate", "content_id": cid,
-                                  "tabla": tb}, timeout=20)
-        out["gen_status"] = r1.status_code
-        out["gen_ct"] = r1.headers.get("Content-Type", "")
-        out["gen_body"] = (r1.text or "")[:600]
-    except Exception as e:
-        out["err"] = e.__class__.__name__ + ": " + str(e)
-    return jsonify(out)
+@app.get("/catdtmeta")
+def catdtmeta():
+    """Calidad + RAR de un item DonTorrent, resueltos por el BOX (la IP de Render
+    no puede con el PoW de descarga). Cache compartida con /dtpacked."""
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    cid = re.sub(r"\D", "", request.args.get("c", ""))[:12]
+    tb = re.sub(r"[^a-z0-9_]", "",
+                request.args.get("tb", "").lower())[:24] or "peliculas"
+    if not cid:
+        return jsonify({"rar": False, "quality": ""})
+    key = f"{tb}:{cid}"
+    d = _dtpacked_load()
+    ent = d.get(key)
+    now = _t.time()
+    if ent and (now - ent.get("ts", 0) < _DTPACKED_TTL) and ("q" in ent):
+        return jsonify({"rar": bool(ent.get("p")),
+                        "quality": ent.get("q", ""), "cached": True})
+    if len(code) != 6:
+        return jsonify({"rar": False, "quality": ""})
+    job = "et" + os.urandom(5).hex()
+    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dtmeta",
+                       "cid": cid, "tb": tb})
+    res = _catjob_wait(job, 22.0)
+    if res is None:
+        return jsonify({"rar": False, "quality": "", "timeout": True})
+    rar = bool(res.get("rar"))
+    q = res.get("quality") or ""
+    d = _dtpacked_load()
+    d[key] = {"p": rar, "q": q, "ts": now}
+    if len(d) > 3000:
+        for k in sorted(d, key=lambda k: d[k].get("ts", 0))[:len(d) - 3000]:
+            d.pop(k, None)
+    _dtpacked_save(d)
+    return jsonify({"rar": rar, "quality": q})
 
 
 # ===========================================================================
@@ -3385,7 +3399,7 @@ function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderG
 var _rarCache={},_rarQ=[],_rarActive=0;
 function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').replace(/\D/g,'');
  for(var i=from;i<items.length;i++){var x=items[i];if(x.kind!=='movie')continue;var s=x.source||'dt';
-  if(s==='dt')_rarQ.push({el:el,list:list,i:i,key:'dt:'+(x.tabla||'peliculas')+':'+x.content_id,f:'packed',url:'/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')});
+  if(s==='dt'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dt:'+(x.tabla||'peliculas')+':'+x.content_id,f:'rar',url:'/catdtmeta?code='+cd+'&c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')});
   else if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
  pumpRar()}
 function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
