@@ -252,7 +252,7 @@ def _poll_remote_kb():
         for ev in events:
             q = (ev.get("q") or "").strip()
             c = (ev.get("c") or "").strip()
-            if q:
+            if q and not c:
                 url = ("plugin://plugin.video.mejorwolf/?action=remote_search"
                        "&q=" + quote(q))
                 xbmc.log(f"[MejorWolf/service] teclado remoto -> buscar '{q}'",
