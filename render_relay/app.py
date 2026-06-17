@@ -2807,10 +2807,11 @@ def catetbox():
     srcs = (request.args.get("srcs") or "et").strip()
     if len(code) != 6 or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
+    wait = 26.0 if "wf" in srcs else 14.0   # WolfMax es lento (catalogo->brave)
     job = "et" + os.urandom(5).hex()
     _kb_enqueue(code, {"c": "etjob", "job": job, "op": op, "q": q,
                        "srcs": srcs})
-    res = _catjob_wait(job, 14.0)
+    res = _catjob_wait(job, wait)
     if res is None:
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
@@ -2831,6 +2832,21 @@ def catetboxresolve():
                        "src": src, "url": url})
     res = _catjob_wait(job, 18.0)
     return jsonify({"link": (res or {}).get("link", "") or ""})
+
+
+@app.get("/catboxrar")
+def catboxrar():
+    """¿Un item de fuente-box (DivxTotal) viene en RAR? Lo decide el box."""
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    url = (request.args.get("url") or "").strip()
+    src = (request.args.get("src") or "dx").strip()
+    if len(code) != 6 or not url.lower().startswith("http"):
+        return jsonify({"rar": False}), 400
+    job = "et" + os.urandom(5).hex()
+    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "rarcheck",
+                       "src": src, "url": url})
+    res = _catjob_wait(job, 16.0)
+    return jsonify({"rar": bool((res or {}).get("rar"))})
 
 
 @app.post("/catjob/done")
@@ -3183,7 +3199,7 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  fetch('/catbrowse?kind='+kind+'&page=1').then(function(r){return r.json()}).then(function(d){
   LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';INI.more=false;return}
   renderGrid(g,'inicio');
-  if(kind==='estrenos')boxMerge('inicio',g,'latest','');
+  if(kind==='estrenos'){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');}
  }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
  fetch('/catbrowse?kind='+INI.kind+'&page='+next).then(function(r){return r.json()}).then(function(d){
@@ -3202,10 +3218,10 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
   LISTS.buscar=(d&&d.items)||[];
   if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';}else renderGrid(g,'buscar');
-  if(cd.length===6)boxMerge('buscar',g,'search',q);
+  if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx');boxMerge('buscar',g,'search',q,'wf');}
  }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
-function boxMerge(list,g,op,q){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
- var u='/catetbox?code='+cd+'&op='+op+'&srcs=et,dx'+(q?('&q='+encodeURIComponent(q)):'');
+function boxMerge(list,g,op,q,srcs){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
+ var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  fetch(u).then(function(r){return r.json()}).then(function(d){
   var ex=(d&&d.items)||[];if(!ex.length)return;
   var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
@@ -3230,10 +3246,14 @@ function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';fo
 function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';for(var i=from;i<items.length;i++)h+=cardHTML(items[i],list,i);g.insertAdjacentHTML('beforeend',h);lazyRar(el,list,from)}
 // ---- Badge RAR (📦) perezoso para items de DonTorrent (vía /dtpacked) ----
 var _rarCache={},_rarQ=[],_rarActive=0;
-function lazyRar(el,list,from){var items=LISTS[list];for(var i=from;i<items.length;i++){var x=items[i];if((x.source||'dt')!=='dt'||x.kind!=='movie')continue;_rarQ.push({el:el,list:list,i:i,c:x.content_id,tb:x.tabla||'peliculas'})}pumpRar()}
-function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();var key='dt:'+job.tb+':'+job.c;
- if(_rarCache[key]!==undefined){if(_rarCache[key])rarBadge(job);continue}
- _rarActive++;(function(job,key){fetch('/dtpacked?c='+encodeURIComponent(job.c)+'&tb='+encodeURIComponent(job.tb)).then(function(r){return r.json()}).then(function(p){_rarActive--;_rarCache[key]=!!(p&&p.packed===true);if(_rarCache[key])rarBadge(job);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job,key)}}
+function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').replace(/\D/g,'');
+ for(var i=from;i<items.length;i++){var x=items[i];if(x.kind!=='movie')continue;var s=x.source||'dt';
+  if(s==='dt')_rarQ.push({el:el,list:list,i:i,key:'dt:'+(x.tabla||'peliculas')+':'+x.content_id,f:'packed',url:'/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')});
+  else if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
+ pumpRar()}
+function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
+ if(_rarCache[job.key]!==undefined){if(_rarCache[job.key])rarBadge(job);continue}
+ _rarActive++;(function(job){fetch(job.url).then(function(r){return r.json()}).then(function(p){_rarActive--;_rarCache[job.key]=!!(p&&p[job.f]===true);if(_rarCache[job.key])rarBadge(job);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job)}}
 function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}

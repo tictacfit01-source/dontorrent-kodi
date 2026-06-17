@@ -333,6 +333,24 @@ def _src_resolve(src, url):
     return ""
 
 
+def _src_rar(src, url):
+    """¿El item viene comprimido (RAR)? DivxTotal lo marca en el nombre del
+    .torrent (p.ej. 'Pelicula-(ARCHIVO).torrent'). Barato: solo abre la ficha."""
+    if src != "dx" or not url:
+        return False
+    try:
+        mod = _src_mod("dx")
+        d = mod.detail(url) if mod else {}
+        dls = (d or {}).get("downloads") or []
+        if not dls:
+            return False
+        name = (dls[0].get("torrent_url") or "").lower()
+        return ("comprimido" in name or "(archivo" in name
+                or "-archivo" in name or name.endswith(".rar"))
+    except Exception:
+        return False
+
+
 def _do_etjob(ev):
     """El catalogo web pide buscar/listar/resolver en fuentes que Render no
     alcanza (Cloudflare/ISP). El box SI (IP residencial). En hilo aparte para no
@@ -373,6 +391,9 @@ def _do_etjob(ev):
             elif op == "resolve":
                 src = (ev.get("src") or "et").strip()
                 out["link"] = _src_resolve(src, (ev.get("url") or "").strip())
+            elif op == "rarcheck":
+                src = (ev.get("src") or "").strip()
+                out["rar"] = _src_rar(src, (ev.get("url") or "").strip())
             else:
                 return
             rkb.push_etjob(out)
