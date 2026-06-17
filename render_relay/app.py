@@ -1375,6 +1375,39 @@ def catdtmeta():
     return jsonify({"rar": rar, "quality": q})
 
 
+@app.get("/dtvaldbg")
+def dtvaldbg():
+    """TEMPORAL: flujo completo del PoW de descarga (generate+solve+validate)."""
+    cid = int(re.sub(r"\D", "", request.args.get("c", "30614")) or "30614")
+    tb = request.args.get("tb") or "peliculas"
+    dom = request.args.get("dom") or _dt_load_domain() or "dontorrent.review"
+    out = {"dom": dom, "cid": cid, "tb": tb}
+    try:
+        sess, _ = _dt_anubis_session(dom)
+        api = f"https://{dom}/api_validate_pow.php"
+        r1 = sess.post(api, json={"action": "generate", "content_id": cid,
+                                  "tabla": tb}, timeout=20)
+        out["gen_status"] = r1.status_code
+        gen = r1.json()
+        out["gen"] = gen
+        ch = gen.get("challenge")
+        if isinstance(ch, dict):
+            rand, diff = ch.get("randomData", ""), ch.get("difficulty", 3)
+        else:
+            rand, diff = str(ch), 3
+        t0 = _t.time()
+        h, nonce, _el = _dt_solve_pow(rand, diff)
+        out["solve"] = {"nonce": nonce, "hash": h[:16],
+                        "sec": round(_t.time() - t0, 2), "diff": diff}
+        r2 = sess.post(api, json={"action": "validate", "challenge": ch,
+                                  "nonce": nonce}, timeout=20)
+        out["val_status"] = r2.status_code
+        out["val_body"] = (r2.text or "")[:700]
+    except Exception as e:
+        out["err"] = e.__class__.__name__ + ": " + str(e)
+    return jsonify(out)
+
+
 # ===========================================================================
 # PROBE: sondeo de viabilidad de fuentes (Anubis / Cloudflare-ligero / Turnstile)
 # ===========================================================================
