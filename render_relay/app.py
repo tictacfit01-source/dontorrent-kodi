@@ -777,7 +777,7 @@ def _dt_anubis_session(domain):
 
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS)
-    r = s.get(f"https://{domain}/", timeout=30)
+    r = s.get(f"https://{domain}/", timeout=10)
     if "anubis_challenge" not in r.text:
         # No hay Anubis activo
         _DT_COOKIES[domain] = {"cookies": dict(s.cookies), "ts": _t.time()}
@@ -2367,9 +2367,10 @@ def _cat_dt_html(q):
     Reusa Anubis + auto-curativo. Aislado de /dtsearch."""
     from urllib.parse import urlparse as _up
     data = {"valor": q, "Buscar": "Buscar"}
-    for dom in [_dt_load_domain()] + DT_FALLBACK:
-        if not dom:
-            continue
+    # Solo 2 dominios y timeout corto: si DonTorrent va lento, fallamos rapido en
+    # vez de colgar 60s y saturar los hilos del relay.
+    for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
+                if d][:2]:
         try:
             s, _ = _dt_anubis_session(dom)
 
@@ -2377,12 +2378,12 @@ def _cat_dt_html(q):
                 dd = dict(data)
                 if page > 1:
                     dd["p"] = str(page)
-                rr = _s.post(f"https://{_dom}/buscar", data=dd, timeout=30,
+                rr = _s.post(f"https://{_dom}/buscar", data=dd, timeout=8,
                              allow_redirects=False)
                 if "anubis_challenge" in rr.text:
                     _DT_COOKIES.pop(_dom, None)
                     ns, _ = _dt_anubis_session(_dom)
-                    rr = ns.post(f"https://{_dom}/buscar", data=dd, timeout=30,
+                    rr = ns.post(f"https://{_dom}/buscar", data=dd, timeout=8,
                                  allow_redirects=False)
                 return rr
 
@@ -2415,16 +2416,15 @@ def _cat_dt_html(q):
 def _cat_dt_session_get(path):
     """GET a una ruta de DonTorrent (dominio APRENDIDO) con sesion Anubis.
     Devuelve (html, domain) o ('', None). Para listados y fichas de serie."""
-    for dom in [_dt_load_domain()] + DT_FALLBACK:
-        if not dom:
-            continue
+    for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
+                if d][:2]:
         try:
             s, _ = _dt_anubis_session(dom)
-            rr = s.get(f"https://{dom}{path}", timeout=30, allow_redirects=True)
+            rr = s.get(f"https://{dom}{path}", timeout=8, allow_redirects=True)
             if "anubis_challenge" in rr.text:
                 _DT_COOKIES.pop(dom, None)
                 s, _ = _dt_anubis_session(dom)
-                rr = s.get(f"https://{dom}{path}", timeout=30)
+                rr = s.get(f"https://{dom}{path}", timeout=8)
             if rr.status_code == 200 and _re_dt.search(
                     r"/(?:pelicula|serie|documental)/\d+/", rr.text):
                 return rr.text, dom
@@ -2931,6 +2931,8 @@ def catjob_done():
 
 
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
+_CATBROWSE_CACHE = {}      # "kind:page" -> {"items": [...], "ts": ...}
+_CATBROWSE_TTL = 900       # 15 min: los listados cambian despacio
 
 
 @app.get("/catbrowse")
@@ -2940,12 +2942,22 @@ def catbrowse():
         page = max(1, int(request.args.get("page") or 1))
     except Exception:
         page = 1
+    key = f"{kind}:{page}"
+    ent = _CATBROWSE_CACHE.get(key)
+    now = _t.time()
+    if ent and (now - ent["ts"]) < _CATBROWSE_TTL:
+        return jsonify({"items": ent["items"], "cached": True})
     bp = _CAT_BROWSE.get(kind, "/")
     path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
     html, _d = _cat_dt_session_get(path)
     if not html:
+        # si falla pero hay cache vieja, sirvela (mejor algo que nada)
+        if ent:
+            return jsonify({"items": ent["items"], "stale": True})
         return jsonify({"items": []})
-    return jsonify({"items": _cat_enrich(_cat_parse_items(html))})
+    items = _cat_enrich(_cat_parse_items(html))
+    _CATBROWSE_CACHE[key] = {"items": items, "ts": now}
+    return jsonify({"items": items})
 
 
 @app.get("/catdetail")
