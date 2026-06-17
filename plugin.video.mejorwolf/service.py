@@ -489,11 +489,15 @@ def _do_etjob(ev):
             if op in ("search", "latest"):
                 srcs = [s for s in (ev.get("srcs") or "et").split(",") if s]
                 q = (ev.get("q") or "").strip()
-                allit = []
-                for src in srcs:
+                # Cada fuente en su propio hilo -> EliteTorrent y DivxTotal en
+                # PARALELO (antes secuencial). Mas rapido.
+                res = {}
+
+                def _one(src):
                     mod = _src_mod(src)
                     if not mod:
-                        continue
+                        res[src] = []
+                        return
                     try:
                         if op == "search":
                             items = mod.search(q) if q else []
@@ -505,7 +509,16 @@ def _do_etjob(ev):
                         xbmc.log("[MejorWolf/service] %s/%s err: %s"
                                  % (op, src, e), xbmc.LOGWARNING)
                         items = []
-                    for it in (items or []):
+                    res[src] = items or []
+
+                ths = [threading.Thread(target=_one, args=(s,)) for s in srcs]
+                for t in ths:
+                    t.start()
+                for t in ths:
+                    t.join(timeout=22)
+                allit = []
+                for src in srcs:
+                    for it in res.get(src, []):
                         k = (it.get("kind") or "movie")
                         is_serie = k.startswith("tvshow") or k == "serie"
                         if is_serie and src not in ("dx", "et"):
