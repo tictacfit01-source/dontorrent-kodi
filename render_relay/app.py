@@ -2615,6 +2615,21 @@ def _et_relevant(title, q):
     return hit >= max(1, len(toks) - 1)
 
 
+def _q_relevant(title, q):
+    """Relevancia ESTRICTA para la busqueda combinada: el titulo debe contener
+    TODAS las palabras significativas (>2 letras) de la consulta. Asi 'desde mi
+    cielo' no trae 'El mismo cielo' (solo comparte 'cielo')."""
+    nt, nq = _et_norm(title), _et_norm(q)
+    if not nq:
+        return True
+    if nq in nt:
+        return True
+    toks = [w for w in nq.split() if len(w) > 2]
+    if not toks:
+        return nq in nt
+    return all(w in nt for w in toks)
+
+
 def _et_search(q):
     """Peliculas de EliteTorrent para la busqueda combinada. Best-effort: si ET
     cae o bloquea la IP de Render, devuelve [] (DonTorrent sigue mandando)."""
@@ -2817,6 +2832,12 @@ def catetbox():
     if res is None:
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
+    # ET/WF dan 1 tarjeta por episodio en series -> solo DivxTotal aporta series
+    items = [it for it in items if not (it.get("kind") == "serie"
+             and (it.get("source") in ("et", "wf")))]
+    # relevancia ESTRICTA en busqueda (las fuentes-box traen sueltos/"ultimos")
+    if op == "search" and q:
+        items = [it for it in items if _q_relevant(it.get("title", ""), q)]
     for it in items:   # titulos de fuentes-box pueden venir verbosos (WolfMax)
         disp, ql = _cat_clean_quality(it.get("title", ""))
         it["title"] = disp
@@ -3149,6 +3170,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <button onclick="go()">Buscar</button>
   </div>
   <div id="buscar-grid" class="msg">Busca pelis y series y envíalas a tu tele 📺</div>
+  <div id="buscar-more" class="morebar"></div>
  </section>
  <section id="pane-lista" class="pane hidden">
   <div id="lista-grid" class="msg"></div>
@@ -3257,24 +3279,26 @@ window.addEventListener('scroll',function(){
  if($('pane-inicio').classList.contains('hidden'))return;
  if($('ov').classList.contains('on')||$('remote').classList.contains('on')||$('sheet').classList.contains('on'))return;
  if(window.innerHeight+window.scrollY>=document.body.offsetHeight-700)loadMoreInicio();});
+function mergeResults(list,g,items){
+ if(!items||!items.length)return;
+ var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
+ var have={};LISTS[list].forEach(function(x){have[norm(x.title)]=1});
+ var fresh=items.filter(function(x){var k=norm(x.title);if(!k)return true;if(have[k])return false;have[k]=1;return true});
+ if(!fresh.length)return;
+ var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
+ if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Buscando...';
- var cd=(code.value||'').replace(/\D/g,'');
- fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
-  LISTS.buscar=(d&&d.items)||[];
-  if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';}else renderGrid(g,'buscar');
-  if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx');boxMerge('buscar',g,'search',q,'wf');}
- }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
-function boxMerge(list,g,op,q,srcs){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
+ var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];
+ var more=$('buscar-more');var pend=(cd.length===6)?3:1;
+ function done(){pend--;if(pend>0){if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
+  if(more)more.textContent='';
+  if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';}}
+ // DonTorrent (relay) y fuentes-box (tu Kodi) EN PARALELO -> salen antes
+ fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){mergeResults('buscar',g,(d&&d.items)||[]);done()}).catch(function(){done()});
+ if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx',done);boxMerge('buscar',g,'search',q,'wf',done);}}
+function boxMerge(list,g,op,q,srcs,cb){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb();return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
- fetch(u).then(function(r){return r.json()}).then(function(d){
-  var ex=(d&&d.items)||[];if(!ex.length)return;
-  var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
-  var have={};LISTS[list].forEach(function(x){have[norm(x.title)]=1});
-  var fresh=ex.filter(function(x){var k=norm(x.title);if(!k||have[k])return false;have[k]=1;return true});
-  if(!fresh.length)return;
-  var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
-  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);
- }).catch(function(){})}
+ fetch(u).then(function(r){return r.json()}).then(function(d){mergeResults(list,g,(d&&d.items)||[]);if(cb)cb()}).catch(function(){if(cb)cb()})}
 function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';return}renderGrid(g,'lista')}
 function cardHTML(x,list,i){
  var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
