@@ -1045,92 +1045,13 @@ def dtpow():
     if not content_id or not tabla:
         return jsonify({"error": "missing content_id/tabla"}), 400
 
-    # Los content_id se comparten entre mirrors de DonTorrent, pero NO todos
-    # exponen api_validate_pow.php (ej. support da 405). Probamos varios
-    # dominios hasta que uno resuelva la descarga.
-    dom_candidates = []
-    if domain:
-        dom_candidates.append(domain)
-    for d in DT_FALLBACK:
-        if d not in dom_candidates:
-            dom_candidates.append(d)
-
-    last_err = "unknown"
-    tried = []
-    for dom in dom_candidates[:2]:   # el validate falla desde Render; no perder 28s
-        try:
-            sess, _ = _dt_anubis_session(dom)
-            api = f"https://{dom}/api_validate_pow.php"
-
-            r1 = sess.post(api, json={
-                "action": "generate",
-                "content_id": int(content_id),
-                "tabla": tabla,
-            }, timeout=20)
-            # 405/404 -> este mirror no tiene el endpoint, siguiente
-            if r1.status_code in (404, 405):
-                tried.append(f"{dom}:no-endpoint")
-                last_err = f"{dom}: {r1.status_code}"
-                continue
-            try:
-                gen = r1.json()
-            except Exception:
-                tried.append(f"{dom}:non-json[{r1.status_code}]")
-                last_err = f"{dom}: non-json"
-                continue
-            challenge = gen.get("challenge")
-            if not gen.get("success") or not challenge:
-                tried.append(f"{dom}:no-challenge")
-                last_err = f"{dom}: {gen.get('error', 'no challenge')}"
-                continue
-
-            # El challenge actual de DonTorrent es un STRING hex; el PoW es
-            # sha256(challenge + nonce) con dificultad 3 (ver _dl_pow del
-            # addon). El formato dict legacy (randomData/difficulty) tambien
-            # se soporta por compatibilidad.
-            if isinstance(challenge, dict):
-                rand = challenge.get("randomData", "")
-                diff = challenge.get("difficulty", 3)
-            else:
-                rand = str(challenge)
-                diff = 3
-            h, nonce, elapsed = _dt_solve_pow(rand, diff)
-
-            r2 = sess.post(api, json={
-                "action": "validate",
-                "challenge": challenge,
-                "nonce": nonce,
-            }, timeout=20)
-            try:
-                val = r2.json()
-            except Exception:
-                tried.append(f"{dom}:validate-non-json")
-                continue
-            if not val.get("success") or not val.get("download_url"):
-                tried.append(f"{dom}:validate-fail")
-                last_err = f"{dom}: {val.get('error', 'validate failed')}"
-                continue
-
-            url = val["download_url"]
-            if url.startswith("//"):
-                url = "https:" + url
-            elif url.startswith("/"):
-                url = f"https://{dom}{url}"
-
-            return jsonify({
-                "success": True,
-                "download_url": url,
-                "domain": dom,
-                "elapsed": elapsed,
-                "tried": tried,
-            })
-        except Exception as e:
-            tried.append(f"{dom}:ERR")
-            last_err = f"{dom}: {e.__class__.__name__}"
-            continue
-
-    return jsonify({"error": last_err, "tried": tried,
-                    "phase": "all-domains-failed"}), 502
+    # Resolucion unica y auto-curativa (refresca cookies Anubis si caducaron).
+    _t0 = _t.time()
+    url = _dt_download_url(domain, content_id, tabla)
+    if url:
+        return jsonify({"success": True, "download_url": url,
+                        "elapsed": round(_t.time() - _t0, 2)})
+    return jsonify({"error": "pow failed", "phase": "all-domains-failed"}), 502
 
 
 # ===========================================================================
@@ -1244,40 +1165,48 @@ def _dt_download_url(domain, content_id, tabla):
     for d in DT_FALLBACK:
         if d not in dom_candidates:
             dom_candidates.append(d)
-    for dom in dom_candidates[:2]:   # el validate falla desde Render; no perder 28s
-        try:
-            sess, _ = _dt_anubis_session(dom)
-            api = f"https://{dom}/api_validate_pow.php"
-            r1 = sess.post(api, json={"action": "generate",
-                                      "content_id": int(content_id),
-                                      "tabla": tabla}, timeout=20)
-            if r1.status_code in (404, 405):
-                continue
-            gen = r1.json()
-            challenge = gen.get("challenge")
-            if not gen.get("success") or not challenge:
-                continue
-            if isinstance(challenge, dict):
-                rand = challenge.get("randomData", "")
-                diff = challenge.get("difficulty", 3)
-            else:
-                rand = str(challenge)
-                diff = 3
-            _h, nonce, _e = _dt_solve_pow(rand, diff)
-            r2 = sess.post(api, json={"action": "validate",
-                                      "challenge": challenge,
-                                      "nonce": nonce}, timeout=20)
-            val = r2.json()
-            if not val.get("success") or not val.get("download_url"):
-                continue
-            url = val["download_url"]
-            if url.startswith("//"):
-                url = "https:" + url
-            elif url.startswith("/"):
-                url = f"https://{dom}{url}"
-            return url
-        except Exception:
-            continue
+    def _try(dom, fresh):
+        if fresh:
+            _DT_COOKIES.pop(dom, None)   # cookies Anubis caducadas -> re-resolver
+        sess, _ = _dt_anubis_session(dom)
+        api = f"https://{dom}/api_validate_pow.php"
+        r1 = sess.post(api, json={"action": "generate",
+                                  "content_id": int(content_id),
+                                  "tabla": tabla}, timeout=20)
+        if r1.status_code in (404, 405):
+            return None
+        gen = r1.json()
+        challenge = gen.get("challenge")
+        if not gen.get("success") or not challenge:
+            return None
+        if isinstance(challenge, dict):
+            rand = challenge.get("randomData", "")
+            diff = challenge.get("difficulty", 3)
+        else:
+            rand, diff = str(challenge), 3
+        _h, nonce, _e = _dt_solve_pow(rand, diff)
+        r2 = sess.post(api, json={"action": "validate", "challenge": challenge,
+                                  "nonce": nonce}, timeout=20)
+        val = r2.json()
+        if not val.get("success") or not val.get("download_url"):
+            return None
+        url = val["download_url"]
+        if url.startswith("//"):
+            url = "https:" + url
+        elif url.startswith("/"):
+            url = f"https://{dom}{url}"
+        return url
+
+    # Auto-curativo: por dominio, 1er intento normal y 2o con cookies frescas
+    # (la causa real de fallo era cookies Anubis caducadas, NO bloqueo de IP).
+    for dom in dom_candidates[:2]:
+        for fresh in (False, True):
+            try:
+                url = _try(dom, fresh)
+                if url:
+                    return url
+            except Exception:
+                pass
     return None
 
 
@@ -1373,39 +1302,6 @@ def catdtmeta():
             d.pop(k, None)
     _dtpacked_save(d)
     return jsonify({"rar": rar, "quality": q})
-
-
-@app.get("/dtvaldbg")
-def dtvaldbg():
-    """TEMPORAL: flujo completo del PoW de descarga (generate+solve+validate)."""
-    cid = int(re.sub(r"\D", "", request.args.get("c", "30614")) or "30614")
-    tb = request.args.get("tb") or "peliculas"
-    dom = request.args.get("dom") or _dt_load_domain() or "dontorrent.review"
-    out = {"dom": dom, "cid": cid, "tb": tb}
-    try:
-        sess, _ = _dt_anubis_session(dom)
-        api = f"https://{dom}/api_validate_pow.php"
-        r1 = sess.post(api, json={"action": "generate", "content_id": cid,
-                                  "tabla": tb}, timeout=20)
-        out["gen_status"] = r1.status_code
-        gen = r1.json()
-        out["gen"] = gen
-        ch = gen.get("challenge")
-        if isinstance(ch, dict):
-            rand, diff = ch.get("randomData", ""), ch.get("difficulty", 3)
-        else:
-            rand, diff = str(ch), 3
-        t0 = _t.time()
-        h, nonce, _el = _dt_solve_pow(rand, diff)
-        out["solve"] = {"nonce": nonce, "hash": h[:16],
-                        "sec": round(_t.time() - t0, 2), "diff": diff}
-        r2 = sess.post(api, json={"action": "validate", "challenge": ch,
-                                  "nonce": nonce}, timeout=20)
-        out["val_status"] = r2.status_code
-        out["val_body"] = (r2.text or "")[:700]
-    except Exception as e:
-        out["err"] = e.__class__.__name__ + ": " + str(e)
-    return jsonify(out)
 
 
 # ===========================================================================
@@ -3432,7 +3328,7 @@ function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderG
 var _rarCache={},_rarQ=[],_rarActive=0;
 function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').replace(/\D/g,'');
  for(var i=from;i<items.length;i++){var x=items[i];if(x.kind!=='movie')continue;var s=x.source||'dt';
-  if(s==='dt'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dt:'+(x.tabla||'peliculas')+':'+x.content_id,f:'rar',url:'/catdtmeta?code='+cd+'&c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')});
+  if(s==='dt')_rarQ.push({el:el,list:list,i:i,key:'dt:'+(x.tabla||'peliculas')+':'+x.content_id,f:'packed',url:'/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')});
   else if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
  pumpRar()}
 function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
