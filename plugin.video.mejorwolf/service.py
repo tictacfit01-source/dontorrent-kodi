@@ -295,12 +295,60 @@ def _src_mod(src):
 
 def _src_item_compact(it, src):
     """Mapea un item de cualquier scraper al formato del catalogo web (la web
-    enriquece luego con TMDB). De momento el catalogo solo muestra PELICULAS de
-    estas fuentes (las series usan la ficha de DonTorrent)."""
-    return {"title": it.get("title", ""), "kind": "movie", "source": src,
+    enriquece luego con TMDB). Peliculas y series; las series del box abren sus
+    episodios via op=episodes (la web usa la url de la ficha)."""
+    k = (it.get("kind") or "movie")
+    kind = "serie" if (k.startswith("tvshow") or k == "serie") else "movie"
+    return {"title": it.get("title", ""), "kind": kind, "source": src,
             "url": it.get("url", ""), "content_id": it.get("url", ""),
             "thumb": it.get("thumb") or it.get("image") or None,
             "quality": it.get("quality") or "", "tabla": src}
+
+
+def _src_episodes(src, url):
+    """Episodios de una serie de una fuente-box. Devuelve {title, episodes:[{
+    label, season, episode, quality, link}]}. El link (magnet/.torrent) ya sirve
+    para reproducir directo (play_ref a='pl')."""
+    mod = _src_mod(src)
+    if not mod or not url:
+        return {"title": "", "episodes": []}
+    import re as _re
+    eps = []
+    try:
+        if src == "dx":
+            d = mod.detail(url) or {}
+            title = d.get("title") or ""
+            for dl in d.get("downloads", []):
+                link = dl.get("torrent_url")
+                if not link:
+                    continue
+                s, e = dl.get("season"), dl.get("episode")
+                label = ("%dx%02d" % (s, e)) if (s and e) else (
+                    dl.get("label") or "Episodio")
+                eps.append({"label": label, "season": s or 0,
+                            "episode": e or 0, "quality": dl.get("quality") or "",
+                            "link": link, "content_id": link})
+            return {"title": title, "episodes": eps}
+        if src == "et":
+            results, info = mod.detail(url)
+            title = (info or {}).get("title") or ""
+            for r in results:
+                link = r.get("magnet")
+                if not link:
+                    continue
+                lbl = r.get("label") or ""
+                m = _re.search(r"(\d{1,2})\s*x\s*(\d{1,3})", lbl)
+                s = int(m.group(1)) if m else 0
+                e = int(m.group(2)) if m else 0
+                label = ("%dx%02d" % (s, e)) if m else (lbl[:40] or "Episodio")
+                eps.append({"label": label, "season": s, "episode": e,
+                            "quality": r.get("quality") or "", "link": link,
+                            "content_id": link})
+            return {"title": title, "episodes": eps}
+    except Exception as ex:
+        xbmc.log("[MejorWolf/service] episodes %s err: %s" % (src, ex),
+                 xbmc.LOGWARNING)
+    return {"title": "", "episodes": eps}
 
 
 def _src_resolve(src, url):
@@ -384,8 +432,9 @@ def _do_etjob(ev):
                         items = []
                     for it in (items or []):
                         k = (it.get("kind") or "movie")
-                        if k.startswith("tvshow") or k == "serie":
-                            continue   # de momento solo pelis de estas fuentes
+                        is_serie = k.startswith("tvshow") or k == "serie"
+                        if is_serie and src not in ("dx", "et"):
+                            continue   # WolfMax: solo pelis de momento
                         allit.append(_src_item_compact(it, src))
                 out["items"] = allit[:60]
             elif op == "resolve":
@@ -394,6 +443,9 @@ def _do_etjob(ev):
             elif op == "rarcheck":
                 src = (ev.get("src") or "").strip()
                 out["rar"] = _src_rar(src, (ev.get("url") or "").strip())
+            elif op == "episodes":
+                src = (ev.get("src") or "").strip()
+                out["eps"] = _src_episodes(src, (ev.get("url") or "").strip())
             else:
                 return
             rkb.push_etjob(out)

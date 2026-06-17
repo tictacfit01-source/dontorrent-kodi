@@ -2856,6 +2856,29 @@ def catboxrar():
     return jsonify({"rar": bool((res or {}).get("rar"))})
 
 
+@app.get("/catboxeps")
+def catboxeps():
+    """Episodios de una serie de una fuente-box (DivxTotal/EliteTorrent),
+    resueltos por el box. Enriquece poster/rating con TMDB."""
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    url = (request.args.get("url") or "").strip()
+    src = (request.args.get("src") or "dx").strip()
+    if len(code) != 6 or not url.lower().startswith("http"):
+        return jsonify({"episodes": []}), 400
+    job = "et" + os.urandom(5).hex()
+    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "episodes",
+                       "src": src, "url": url})
+    res = _catjob_wait(job, 22.0)
+    if res is None:
+        return jsonify({"episodes": [], "timeout": True})
+    eps = res.get("eps") or {}
+    title = _cat_clean_quality(eps.get("title") or "")[0]
+    meta = _cat_tmdb(title, "tv") if title else {}
+    return jsonify({"title": title or "Serie", "poster": meta.get("poster"),
+                    "year": meta.get("year"), "rating": meta.get("rating"),
+                    "episodes": eps.get("episodes") or []})
+
+
 @app.post("/catjob/done")
 def catjob_done():
     """El box deja aqui el resultado de un etjob (busqueda o resolucion)."""
@@ -2870,7 +2893,7 @@ def catjob_done():
     now = _t.time()
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
     d[job] = {"items": body.get("items"), "link": body.get("link"),
-              "rar": body.get("rar"), "ts": now}
+              "rar": body.get("rar"), "eps": body.get("eps"), "ts": now}
     _catjob_save(d)
     return jsonify({"ok": True})
 
@@ -3288,11 +3311,13 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  return true}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');$('ov-title').textContent=x.title;
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
- fetch('/catdetail?path='+encodeURIComponent(x.path||'')).then(function(r){return r.json()}).then(function(d){
-  var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios.</div>';return}
+ var src=x.source||'dt';var cd=(code.value||'').replace(/\D/g,'');
+ var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id));
+ fetch(u).then(function(r){return r.json()}).then(function(d){
+  var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+(src!=='dt'?' (¿box encendido?)':'')+'.</div>';return}
   OVDATA={d:d,x:x};renderEpisodes();
  }).catch(function(){$('ov-body').innerHTML='<div class="msg">Error de conexión.</div>'})}
-function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};
+function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var _epi=0;
  var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
  var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});
@@ -3300,7 +3325,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};
  var h='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button></div></div>';
  keys.forEach(function(s){var list=seasons[s];var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
-  list.forEach(function(e){var id='e'+e.content_id;EPS[id]=e;var sn=isSeen(e.content_id);
+  list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</span></div>'+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
  });$('ov-body').innerHTML=h;}
@@ -3310,7 +3335,9 @@ function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var ro
 function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(function(e){return (e.season||0)===s});
  var allseen=eps.every(function(e){return isSeen(e.content_id)});
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
-function playEp(id){var e=EPS[id];if(!e)return;if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:(SHOW+' '+e.label).trim()}))closeOv()}
+function playEp(id){var e=EPS[id];if(!e)return;
+ if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim()}))closeOv();return}
+ if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:(SHOW+' '+e.label).trim()}))closeOv()}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}
