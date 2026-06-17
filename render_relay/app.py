@@ -3293,11 +3293,12 @@ function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k)
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
  INI={kind:kind,page:1,loading:false,more:true};
  var g=$('inicio-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Cargando...';
- fetch('/catbrowse?kind='+kind+'&page=1').then(function(r){return r.json()}).then(function(d){
+ var slow=setTimeout(function(){if(g.querySelector('.spin'))g.innerHTML='<span class="spin"></span> Despertando el servidor… (solo la primera vez)';},7000);
+ fetch('/catbrowse?kind='+kind+'&page=1').then(function(r){return r.json()}).then(function(d){clearTimeout(slow);
   LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';INI.more=false;return}
   renderGrid(g,'inicio');
   if(kind==='estrenos'){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');}
- }).catch(function(){g.className='msg';g.textContent='Error de conexión.'})}
+ }).catch(function(){clearTimeout(slow);g.className='msg';g.textContent='Error de conexión.'})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
  fetch('/catbrowse?kind='+INI.kind+'&page='+next).then(function(r){return r.json()}).then(function(d){
   var items=(d&&d.items)||[];var have={};LISTS.inicio.forEach(function(x){have[x.kind+':'+x.content_id]=1});
@@ -3486,25 +3487,17 @@ def cat_page():
 import threading as _kth
 import datetime as _kdt
 
-# Franja horaria (UTC) en la que se mantiene caliente. Render corre en UTC.
-# Dormimos UTC 01:00-07:00 == Madrid ~03:00-09:00 (verano) / 02:00-08:00
-# (invierno): nadie ve nada de madrugada. Asi ~18h/dia despierto (~558h/mes,
-# muy por debajo de las 750h gratis) e instantaneo en horario normal.
-_KEEPALIVE_SLEEP_FROM_UTC = 1   # incl.
-_KEEPALIVE_SLEEP_TO_UTC = 7     # excl.
-
-
 def _self_keepalive():
     url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     if not url:
         return   # solo en Render; en local no hace nada
+    # 24/7 cada 8 min (< 15 de Render) -> NUNCA se duerme -> nunca arranque en
+    # frio (~50s) -> la web nunca se queda "colgada". 24/7 ~= 730h/mes < 750h
+    # gratis de Render. Pinguea /ping (ligero), no el catalogo de 42KB.
     while True:
         try:
-            _t.sleep(600)   # 10 min (< 15 min de Render)
-            h = _kdt.datetime.utcnow().hour
-            if _KEEPALIVE_SLEEP_FROM_UTC <= h < _KEEPALIVE_SLEEP_TO_UTC:
-                continue   # de madrugada NO pinguear: se deja dormir (ahorro)
-            requests.get(url + "/", timeout=20,
+            _t.sleep(480)
+            requests.get(url + "/ping", timeout=20,
                          headers={"User-Agent": "mw-keepalive"})
         except Exception:
             pass
