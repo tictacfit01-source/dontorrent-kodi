@@ -3086,7 +3086,14 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ovfav{border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:12px;padding:9px 13px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
 /* etiquetas tipo / fuente en la tarjeta */
 .card .kindtag{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.6);border:1px solid var(--stroke);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700;color:#dfe6f2}
-.card .srctag{position:absolute;bottom:6px;right:6px;background:rgba(255,159,110,.92);border-radius:6px;padding:2px 6px;font-size:9px;font-weight:800;color:#1a0d06;letter-spacing:.3px}
+.card .srctag{position:absolute;bottom:6px;right:6px;border-radius:6px;padding:2px 7px;font-size:9px;font-weight:800;letter-spacing:.4px;box-shadow:0 2px 6px rgba(0,0,0,.45)}
+.srctag.s-dt{background:#4a9eff;color:#04122b}
+.srctag.s-et{background:#ff9f6e;color:#2a1206}
+.srctag.s-dx{background:#34d36a;color:#04210f}
+.srctag.s-wf{background:#c77dff;color:#1e0833}
+.srclegend{display:flex;flex-wrap:wrap;gap:9px 14px;justify-content:center;margin:-2px 0 14px;font-size:11px;color:var(--sub)}
+.srclegend span{display:flex;align-items:center;gap:5px}
+.srclegend i{width:11px;height:11px;border-radius:3px;display:inline-block;flex:none}
 /* salto a minuto en el mando */
 .jump{display:flex;gap:10px;margin:2px 0 6px}
 .jump input{flex:1;background:rgba(255,255,255,.07);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);padding:15px;font-size:16px;outline:0;text-align:center}
@@ -3121,6 +3128,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <button id="tab-inicio" class="tab on" onclick="setView('inicio')">Inicio</button>
   <button id="tab-buscar" class="tab" onclick="setView('buscar')">Buscar</button>
   <button id="tab-lista" class="tab" onclick="setView('lista')">Mi lista</button>
+ </div>
+ <div class="srclegend">
+  <span><i style="background:#4a9eff"></i>DonTorrent</span>
+  <span><i style="background:#ff9f6e"></i>EliteTorrent</span>
+  <span><i style="background:#34d36a"></i>DivxTotal</span>
+  <span><i style="background:#c77dff"></i>WolfMax</span>
  </div>
  <section id="pane-inicio" class="pane">
   <div class="chips">
@@ -3268,8 +3281,8 @@ function cardHTML(x,list,i){
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
  var q='<div class="tl">'+(x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'')+'</div>';
  var kt='<div class="kindtag">'+kindLabel(x.kind)+'</div>';
- var SL={et:'ET',dx:'DX',wf:'WF'};
- var src=(x.source&&x.source!=='dt')?('<div class="srctag">'+(SL[x.source]||x.source.toUpperCase())+'</div>'):'';
+ var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
+ var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
  return '<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+q+kt+src+
     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
@@ -3288,8 +3301,8 @@ function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
 function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
- var SL={et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};
- var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(x.source&&SL[x.source])sy+=' · '+SL[x.source];
+ var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
+ var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sheet').classList.add('on');
  if((x.source||'dt')==='dt')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
