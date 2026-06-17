@@ -3038,7 +3038,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .sheet.on{display:flex}
 .sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));animation:up .2s ease;max-height:92vh;overflow-y:auto}
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
-.sh-poster{width:170px;aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 10px 30px rgba(0,0,0,.55)}
+.sh-poster{width:min(68vw,260px);aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 12px 34px rgba(0,0,0,.6)}
 .sh-poster.hidden{display:none}
 .sheet h3{margin:0 0 4px;font-size:17px;text-align:center}
 .sheet .sy{text-align:center}
