@@ -399,6 +399,26 @@ def _src_rar(src, url):
         return False
 
 
+def _src_meta(src, url):
+    """RAR + calidad de un item DivxTotal en UNA sola apertura de ficha (para el
+    badge perezoso del catalogo)."""
+    out = {"rar": False, "quality": ""}
+    if src != "dx" or not url:
+        return out
+    try:
+        mod = _src_mod("dx")
+        d = mod.detail(url) if mod else {}
+        dls = (d or {}).get("downloads") or []
+        if dls:
+            name = (dls[0].get("torrent_url") or "").lower()
+            out["rar"] = ("comprimido" in name or "(archivo" in name
+                          or "-archivo" in name or name.endswith(".rar"))
+            out["quality"] = dls[0].get("quality") or ""
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] meta dx err: %s" % e, xbmc.LOGWARNING)
+    return out
+
+
 def _do_etjob(ev):
     """El catalogo web pide buscar/listar/resolver en fuentes que Render no
     alcanza (Cloudflare/ISP). El box SI (IP residencial). En hilo aparte para no
@@ -441,8 +461,10 @@ def _do_etjob(ev):
                 src = (ev.get("src") or "et").strip()
                 out["link"] = _src_resolve(src, (ev.get("url") or "").strip())
             elif op == "rarcheck":
-                src = (ev.get("src") or "").strip()
-                out["rar"] = _src_rar(src, (ev.get("url") or "").strip())
+                m = _src_meta((ev.get("src") or "").strip(),
+                              (ev.get("url") or "").strip())
+                out["rar"] = m["rar"]
+                out["quality"] = m["quality"]
             elif op == "episodes":
                 src = (ev.get("src") or "").strip()
                 out["eps"] = _src_episodes(src, (ev.get("url") or "").strip())

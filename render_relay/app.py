@@ -1211,6 +1211,31 @@ def _torrent_packed(data):
         return False
 
 
+def _torrent_quality(data):
+    """Calidad sacada del nombre del .torrent (4K/1080p/720p/HDTV...). '' si nada."""
+    try:
+        meta = _bdecode(data)
+        info = meta.get(b"info") or {}
+        names = []
+        nm = info.get(b"name")
+        if isinstance(nm, (bytes, bytearray)):
+            names.append(bytes(nm).decode("utf-8", "ignore"))
+        files = info.get(b"files")
+        if isinstance(files, list):
+            for f in files:
+                p = f.get(b"path") if isinstance(f, dict) else None
+                if isinstance(p, list) and p and isinstance(p[-1],
+                                                            (bytes, bytearray)):
+                    names.append(bytes(p[-1]).decode("utf-8", "ignore"))
+        for n in names:
+            m = _CAT_QRE.search(n)
+            if m:
+                return _cat_norm_quality(m.group(1))
+    except Exception:
+        pass
+    return ""
+
+
 def _dt_download_url(domain, content_id, tabla):
     """Resuelve la URL del .torrent (mismo PoW que /dtpow). Devuelve url o None."""
     dom_candidates = []
@@ -1289,26 +1314,29 @@ def dtpacked():
     ent = d.get(key)
     now = _t.time()
     if ent and (now - ent.get("ts", 0) < _DTPACKED_TTL):
-        return jsonify({"packed": ent.get("p"), "cached": True})
+        return jsonify({"packed": ent.get("p"), "quality": ent.get("q", ""),
+                        "cached": True})
     url = _dt_download_url(request.args.get("domain", "").strip(), cid, tb)
     if not url:
         return jsonify({"packed": None})
     packed = None
+    quality = ""
     try:
         from urllib.parse import urlparse
         sess, _ = _dt_anubis_session(urlparse(url).hostname)
         r = sess.get(url, timeout=25, allow_redirects=True)
         if r.status_code == 200 and len(r.content) > 100:
             packed = _torrent_packed(r.content)
+            quality = _torrent_quality(r.content)
     except Exception:
         packed = None
     if packed is not None:
-        d[key] = {"p": bool(packed), "ts": now}
+        d[key] = {"p": bool(packed), "q": quality, "ts": now}
         if len(d) > 3000:
             for k in sorted(d, key=lambda k: d[k].get("ts", 0))[:len(d) - 3000]:
                 d.pop(k, None)
         _dtpacked_save(d)
-    return jsonify({"packed": packed})
+    return jsonify({"packed": packed, "quality": quality})
 
 
 # ===========================================================================
@@ -2874,7 +2902,8 @@ def catboxrar():
     _kb_enqueue(code, {"c": "etjob", "job": job, "op": "rarcheck",
                        "src": src, "url": url})
     res = _catjob_wait(job, 16.0)
-    return jsonify({"rar": bool((res or {}).get("rar"))})
+    return jsonify({"rar": bool((res or {}).get("rar")),
+                    "quality": (res or {}).get("quality") or ""})
 
 
 @app.get("/catboxeps")
@@ -2914,7 +2943,8 @@ def catjob_done():
     now = _t.time()
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
     d[job] = {"items": body.get("items"), "link": body.get("link"),
-              "rar": body.get("rar"), "eps": body.get("eps"), "ts": now}
+              "rar": body.get("rar"), "quality": body.get("quality"),
+              "eps": body.get("eps"), "ts": now}
     _catjob_save(d)
     return jsonify({"ok": True})
 
@@ -3032,7 +3062,15 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .btn{display:block;width:100%;border:0;border-radius:14px;padding:15px;font-size:16px;font-weight:700;margin-top:10px;cursor:pointer}
 .btn.play{color:#06140a;background:linear-gradient(145deg,#3dd46a,#27c257)}
 .btn.fav{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
+.btn.share{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
 .btn.cancel{background:transparent;color:var(--sub)}
+.shared{display:none;margin:0 0 14px}
+.shared.on{display:block}
+.shared-in{display:flex;align-items:center;gap:10px;background:linear-gradient(145deg,rgba(48,209,88,.16),rgba(48,209,88,.05));border:1px solid rgba(48,209,88,.36);border-radius:14px;padding:12px 14px}
+.shared-lab{font-size:11px;color:#8fe0a6;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.shared-t{font-size:15px;font-weight:700;color:#eafff0;line-height:1.25}
+.shared-btn{margin-left:auto;border:0;border-radius:12px;padding:11px 15px;font-weight:700;color:#06140a;background:linear-gradient(145deg,#3dd46a,#27c257);cursor:pointer;white-space:nowrap}
+.shared-x{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--sub);width:34px;height:34px;border-radius:50%;font-size:18px;cursor:pointer;flex:none}
 .ov{position:fixed;inset:0;background:var(--bg);z-index:35;overflow-y:auto;display:none;padding-bottom:96px}
 .ov.on{display:block}
 .remote{position:fixed;inset:0;background:radial-gradient(900px 500px at 50% -10%,#1b2740 0,transparent 60%),var(--bg);z-index:38;display:none;overflow-y:auto}
@@ -3065,7 +3103,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .np-prog{height:100%;width:0;background:linear-gradient(90deg,var(--blue2),var(--blue));transition:width .5s}
 .np-row{display:flex;align-items:center;gap:10px;padding:11px 14px calc(11px + env(safe-area-inset-bottom))}
 .np-t{flex:1;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.np-pp{border:0;background:var(--blue);color:#fff;width:38px;height:38px;border-radius:50%;font-size:15px;cursor:pointer;flex:none}
+.np-pp{border:0;background:var(--blue);color:#fff;width:40px;height:40px;border-radius:50%;cursor:pointer;flex:none;display:flex;align-items:center;justify-content:center;padding:0;line-height:0}
+.np-pp svg{display:block}
 .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:45;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%}
 .toast.on{opacity:1;transform:translateX(-50%)}
 .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px}
@@ -3156,6 +3195,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <span><i style="background:#34d36a"></i>DivxTotal</span>
   <span><i style="background:#c77dff"></i>WolfMax</span>
  </div>
+ <div id="shared" class="shared"><div class="shared-in">
+  <div><div class="shared-lab">Te han compartido</div><div class="shared-t" id="shared-t"></div></div>
+  <button class="shared-btn" onclick="playShared()">▶ Reproducir</button>
+  <button class="shared-x" onclick="closeShared()">&times;</button>
+ </div></div>
  <section id="pane-inicio" class="pane">
   <div class="chips">
    <button class="chip on" data-k="estrenos" onclick="chip('estrenos')">Estrenos</button>
@@ -3179,7 +3223,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 <div class="npbar" id="npbar" onclick="openRemote()">
  <div class="np-prog-wrap"><div class="np-prog" id="np-prog"></div></div>
  <div class="np-row"><div class="np-t" id="np-t"></div>
-  <button class="np-pp" id="np-pp" onclick="event.stopPropagation();cmd('playpause')">⏸</button></div>
+  <button class="np-pp" id="np-pp" onclick="event.stopPropagation();cmd('playpause')"><svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg></button></div>
 </div>
 <div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
  <div class="box">
@@ -3187,6 +3231,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div class="rar" id="sh-rar"></div>
   <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
   <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Añadir a mi lista</button>
+  <button class="btn share" onclick="shareSheet()">📤 Compartir enlace</button>
   <button class="btn cancel" onclick="closeSheet()">Cancelar</button>
  </div>
 </div>
@@ -3237,6 +3282,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 var $=function(s){return document.getElementById(s)};
 var SVG_PLAY='<svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg>';
 var SVG_PAUSE='<svg width="28" height="28" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg>';
+var NP_PLAY='<svg width="16" height="16" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg>';
+var NP_PAUSE='<svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg>';
 var EYE_OFF='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
 var EYE_ON='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C6 4.5 2.2 11.2 2.05 11.5a1 1 0 0 0 0 .9C2.2 12.8 6 19.5 12 19.5s9.8-6.7 9.95-7a1 1 0 0 0 0-.9C21.8 11.2 18 4.5 12 4.5Zm0 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>';
 function clk(d){return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
@@ -3320,9 +3367,14 @@ function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').rep
   else if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
  pumpRar()}
 function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
- if(_rarCache[job.key]!==undefined){if(_rarCache[job.key])rarBadge(job);continue}
- _rarActive++;(function(job){fetch(job.url).then(function(r){return r.json()}).then(function(p){_rarActive--;_rarCache[job.key]=!!(p&&p[job.f]===true);if(_rarCache[job.key])rarBadge(job);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job)}}
+ var c=_rarCache[job.key];
+ if(c!==undefined){if(c.rar)rarBadge(job);if(c.q)qualBadge(job,c.q);continue}
+ _rarActive++;(function(job){fetch(job.url).then(function(r){return r.json()}).then(function(p){_rarActive--;
+   var rar=!!(p&&p[job.f]===true);var q=(p&&p.quality)||'';
+   _rarCache[job.key]={rar:rar,q:q};
+   if(rar)rarBadge(job);if(q)qualBadge(job,q);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job)}}
 function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
+function qualBadge(job,q){if(!q)return;var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.q'))return;var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
@@ -3332,6 +3384,27 @@ function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSe
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
+// ---- Compartir enlace directo (como el mando): link que reproduce al abrirlo ----
+function doShare(t,yr,qs){var link=location.origin+'/cat?'+qs+'&t='+encodeURIComponent(t)+(yr?('&yr='+encodeURIComponent(yr)):'');
+ var nice=t+(yr?(' ('+yr+')'):'');
+ if(navigator.share){navigator.share({title:'MejorWolf',text:'Te recomiendo «'+nice+'» en MejorWolf',url:link}).then(function(){},function(){})}
+ else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){toast('Enlace copiado')},function(){prompt('Copia el enlace:',link)})}
+ else{prompt('Copia el enlace:',link)}}
+function shareSheet(){if(!sel)return;var t=sel.title||'',yr=sel.year||'';
+ if((sel.source||'dt')==='dt'){doShare(t,yr,'play=dt&ci='+encodeURIComponent(sel.content_id)+'&tb='+encodeURIComponent(sel.tabla||'peliculas'));return}
+ var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código para preparar el enlace');return}
+ toast('Preparando enlace…');
+ fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
+  if(d&&d.link)doShare(t,yr,'play=pl&u='+encodeURIComponent(d.link));else toast('No se pudo preparar el enlace')}).catch(function(){toast('No se pudo')})}
+function shareSeries(){if(!OVDATA)return;var t=(OVDATA.d.title||OVDATA.x.title||'');if(!t)return;
+ var link=location.origin+'/cat?find='+encodeURIComponent(t);
+ if(navigator.share){navigator.share({title:'MejorWolf',text:'Te recomiendo «'+t+'» en MejorWolf',url:link}).then(function(){},function(){})}
+ else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){toast('Enlace copiado')},function(){prompt('Copia el enlace:',link)})}
+ else{prompt('Copia el enlace:',link)}}
+var sharedPlay=null;
+function showShared(t){$('shared-t').textContent=t||'Compartido';$('shared').classList.add('on')}
+function playShared(){if(sharedPlay&&sendPlay(sharedPlay))$('shared').classList.remove('on')}
+function closeShared(){$('shared').classList.remove('on')}
 function play(){if(!sel)return;
  if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
   toast('Resolviendo en tu box…');
@@ -3359,7 +3432,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
  var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});
  var ph=poster?(' style="background-image:url('+poster+')"'):'';
- var h='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button></div></div>';
+ var h='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button></div></div>';
  keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
@@ -3384,7 +3457,7 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
   if(np&&np.title){bar.classList.add('on');var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
    var fin='';if(!np.paused&&np.total>0)fin=clk(new Date(Date.now()+(np.total-np.elapsed)*1000));
    $('np-t').textContent=np.title+(fin?(' · Finaliza '+fin):'');
-   $('np-prog').style.width=pct+'%';$('np-pp').textContent=np.paused?'▶':'⏸';
+   $('np-prog').style.width=pct+'%';$('np-pp').innerHTML=np.paused?NP_PLAY:NP_PAUSE;
    $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+(np.total?(' / '+fmt(np.total)):'');
    $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');
    $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
@@ -3397,6 +3470,11 @@ function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toas
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
  if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
 $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
+(function(){try{var p=new URLSearchParams(location.search);var pl=p.get('play');var t=p.get('t')||'';
+ if(pl==='dt'&&p.get('ci')){sharedPlay={a:'dt',c:p.get('ci'),tb:p.get('tb')||'peliculas',t:t};showShared(t);}
+ else if(pl==='pl'&&p.get('u')){sharedPlay={a:'pl',u:p.get('u'),t:t};showShared(t);}
+ else if(p.get('find')){setView('buscar');$('q').value=p.get('find');go();}
+}catch(e){}})();
 chip('estrenos');pollNow();
 </script></body></html>"""
 
