@@ -18,7 +18,7 @@ import re
 import requests
 import cloudscraper
 from urllib.parse import urlencode, quote as urlquote
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, send_file
 
 app = Flask(__name__)
 
@@ -146,6 +146,82 @@ def _serve_page(html):
     r = Response(html, mimetype="text/html; charset=utf-8")
     r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return r
+
+
+# ===========================================================================
+# PWA: instalable en el movil (icono en la pantalla de inicio, pantalla
+# completa). Manifest + service worker + iconos. Todo gratis, sin dependencias.
+# ===========================================================================
+_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="#4aa3ff"/><stop offset="1" stop-color="#0a6bff"/>
+</linearGradient></defs>
+<rect width="512" height="512" fill="url(#bg)"/>
+<g fill="#ffffff">
+<path d="M150 120 L210 215 L128 205 Z"/>
+<path d="M362 120 L302 215 L384 205 Z"/>
+<path d="M158 192 H354 L338 300 L292 366 L256 402 L220 366 L174 300 Z"/>
+</g>
+<g fill="#0a6bff">
+<path d="M200 252 L246 246 L226 282 Z"/>
+<path d="M312 252 L266 246 L286 282 Z"/>
+<path d="M256 322 L236 356 L276 356 Z"/>
+</g></svg>"""
+
+_MANIFEST_JSON = """{
+ "name":"MejorWolf","short_name":"MejorWolf",
+ "description":"Tu cine y series en casa",
+ "start_url":"/","scope":"/","display":"standalone","orientation":"portrait",
+ "background_color":"#06070c","theme_color":"#06070c",
+ "icons":[
+  {"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"},
+  {"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}
+ ]
+}"""
+
+_SW_JS = """var C='mw-shell-v15';
+self.addEventListener('install',function(){self.skipWaiting()});
+self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.map(function(k){if(k!==C)return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});
+self.addEventListener('fetch',function(e){
+ var req=e.request;if(req.method!=='GET')return;
+ var url=new URL(req.url);
+ if(req.mode==='navigate'){
+  e.respondWith(fetch(req).then(function(r){var cp=r.clone();caches.open(C).then(function(c){c.put(req,cp)});return r}).catch(function(){return caches.match(req).then(function(r){return r||caches.match('/')})}));
+  return;
+ }
+ if(url.pathname==='/manifest.webmanifest'||url.pathname==='/icon.svg'||url.pathname==='/icon-512.png'){
+  e.respondWith(caches.match(req).then(function(r){return r||fetch(req).then(function(rr){var cp=rr.clone();caches.open(C).then(function(c){c.put(req,cp)});return rr})}));
+ }
+});
+"""
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return Response(_MANIFEST_JSON, mimetype="application/manifest+json",
+                    headers={"Cache-Control": "max-age=86400"})
+
+
+@app.get("/sw.js")
+def sw_js():
+    return Response(_SW_JS, mimetype="application/javascript",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/icon.svg")
+def icon_svg():
+    return Response(_ICON_SVG, mimetype="image/svg+xml",
+                    headers={"Cache-Control": "max-age=604800"})
+
+
+@app.get("/icon-512.png")
+def icon_png():
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon-512.png")
+    try:
+        return send_file(p, mimetype="image/png",
+                         max_age=604800)
+    except Exception:
+        return Response(_ICON_SVG, mimetype="image/svg+xml")
 
 
 @app.get("/")
@@ -1168,6 +1244,110 @@ def _torrent_quality(data):
     return ""
 
 
+# ===========================================================================
+# SALUD DE SEMILLAS: info_hash del .torrent + scrape UDP a trackers vivos.
+# Para que el movil pueda mostrar/avisar de cuantos seeders tiene un titulo
+# ANTES de reproducir (lo de "sin semillas" no es fallo del addon: enjambres
+# muertos en series viejas). Se cuelga de la cache de /dtpacked (sin PoW extra).
+# ===========================================================================
+import socket as _sock
+import struct as _struct
+
+_SEEDS_TTL = 2700   # 45 min: los seeders cambian, refrescamos
+_SEED_TRACKERS = (("tracker.opentrackr.org", 1337),
+                  ("tracker.torrent.eu.org", 451),
+                  ("open.stealth.si", 80))
+
+
+def _bspan(data, i):
+    """Indice final (exclusivo) del elemento bencoded que empieza en i."""
+    c = data[i:i + 1]
+    if c == b"i":
+        return data.index(b"e", i) + 1
+    if c == b"l" or c == b"d":
+        i += 1
+        while data[i:i + 1] != b"e":
+            i = _bspan(data, i)
+        return i + 1
+    j = data.index(b":", i)
+    n = int(data[i:j])
+    return j + 1 + n
+
+
+def _dt_infohash(data):
+    """SHA1 del dict info (span EXACTO de los bytes) -> 20 bytes, o None."""
+    try:
+        ip = data.find(b"4:info")
+        if ip < 0:
+            return None
+        s = ip + 6
+        e = _bspan(data, s)
+        return _hl.sha1(data[s:e]).digest()
+    except Exception:
+        return None
+
+
+def _udp_scrape_one(host, port, info_hash, timeout=3.0):
+    """Seeders de un tracker UDP (BEP-15), o None si no responde a tiempo."""
+    s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        addr = (host, port)
+        s.sendto(_struct.pack(">QII", 0x41727101980, 0,
+                              int.from_bytes(os.urandom(4), "big")), addr)
+        action, _rt, cid = _struct.unpack(">IIQ", s.recv(16))
+        if action != 0:
+            return None
+        s.sendto(_struct.pack(">QII", cid, 2,
+                              int.from_bytes(os.urandom(4), "big")) + info_hash,
+                 addr)
+        resp = s.recv(20)
+        a2, _ = _struct.unpack(">II", resp[:8])
+        if a2 != 2:
+            return None
+        seeders, _comp, _leech = _struct.unpack(">III", resp[8:20])
+        return int(seeders)
+    except Exception:
+        return None
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _dt_seed_count(info_hash):
+    """Maximo de seeders entre trackers vivos. -1 si no se pudo medir."""
+    best = -1
+    for host, port in _SEED_TRACKERS:
+        n = _udp_scrape_one(host, port, info_hash)
+        if n is not None:
+            best = max(best, n)
+            if best >= 8:   # claramente bien sembrado: no hace falta seguir
+                break
+    return best
+
+
+def _dtpacked_seeds(ent, now):
+    """Seeders del item; refresca por UDP si caducaron y hay ih guardado.
+    Muta `ent` (entrada de la cache) -> el llamante debe guardar."""
+    s = ent.get("s")
+    if s is not None and (now - ent.get("sts", 0) < _SEEDS_TTL):
+        return s
+    ihex = ent.get("ih")
+    if not ihex:
+        return s
+    try:
+        sc = _dt_seed_count(bytes.fromhex(ihex))
+    except Exception:
+        sc = -1
+    if sc >= 0:
+        ent["s"] = sc
+        ent["sts"] = now
+        return sc
+    return s
+
+
 def _dt_download_url(domain, content_id, tabla):
     """Resuelve la URL del .torrent (mismo PoW que /dtpow). Devuelve url o None."""
     dom_candidates = []
@@ -1254,13 +1434,20 @@ def dtpacked():
     ent = d.get(key)
     now = _t.time()
     if ent and (now - ent.get("ts", 0) < _DTPACKED_TTL):
-        return jsonify({"packed": ent.get("p"), "quality": ent.get("q", ""),
-                        "cached": True})
+        seeds = _dtpacked_seeds(ent, now)
+        out = {"packed": ent.get("p"), "quality": ent.get("q", ""),
+               "cached": True}
+        if seeds is not None:
+            out["seeds"] = seeds
+            _dtpacked_save(d)   # persistir seeders refrescados
+        return jsonify(out)
     url = _dt_download_url(request.args.get("domain", "").strip(), cid, tb)
     if not url:
         return jsonify({"packed": None})
     packed = None
     quality = ""
+    ihex = ""
+    seeds = None
     try:
         from urllib.parse import urlparse
         sess, _ = _dt_anubis_session(urlparse(url).hostname)
@@ -1268,15 +1455,76 @@ def dtpacked():
         if r.status_code == 200 and len(r.content) > 100:
             packed = _torrent_packed(r.content)
             quality = _torrent_quality(r.content)
+            ih = _dt_infohash(r.content)
+            if ih:
+                ihex = ih.hex()
+                sc = _dt_seed_count(ih)
+                if sc >= 0:
+                    seeds = sc
     except Exception:
         packed = None
     if packed is not None:
-        d[key] = {"p": bool(packed), "q": quality, "ts": now}
+        ent = {"p": bool(packed), "q": quality, "ts": now}
+        if ihex:
+            ent["ih"] = ihex
+        if seeds is not None:
+            ent["s"] = seeds
+            ent["sts"] = now
+        d[key] = ent
         if len(d) > 3000:
             for k in sorted(d, key=lambda k: d[k].get("ts", 0))[:len(d) - 3000]:
                 d.pop(k, None)
         _dtpacked_save(d)
-    return jsonify({"packed": packed, "quality": quality})
+    out = {"packed": packed, "quality": quality}
+    if seeds is not None:
+        out["seeds"] = seeds
+    return jsonify(out)
+
+
+@app.get("/dtseeds")
+def dtseeds():
+    """Seeders reales de un item DonTorrent (scrape UDP). Lo usa el movil para
+    avisar ANTES de reproducir. Reusa/rellena la cache de /dtpacked (sin PoW
+    extra si ya conocemos el info_hash del titulo)."""
+    cid = re.sub(r"\D", "", request.args.get("c", ""))[:12]
+    tb = re.sub(r"[^a-z0-9_]", "",
+                request.args.get("tb", "").lower())[:24] or "peliculas"
+    if not cid:
+        return jsonify({"seeds": None})
+    key = f"{tb}:{cid}"
+    d = _dtpacked_load()
+    ent = d.get(key)
+    now = _t.time()
+    if ent and ent.get("ih"):
+        s = _dtpacked_seeds(ent, now)
+        _dtpacked_save(d)
+        return jsonify({"seeds": s, "cached": True})
+    url = _dt_download_url("", cid, tb)
+    if not url:
+        return jsonify({"seeds": None})
+    try:
+        from urllib.parse import urlparse
+        sess, _ = _dt_anubis_session(urlparse(url).hostname)
+        r = sess.get(url, timeout=25, allow_redirects=True)
+        if r.status_code == 200 and len(r.content) > 100:
+            ih = _dt_infohash(r.content)
+            if ih:
+                sc = _dt_seed_count(ih)
+                ent = d.get(key) or {}
+                ent["ih"] = ih.hex()
+                if sc >= 0:
+                    ent["s"] = sc
+                    ent["sts"] = now
+                if "p" not in ent:   # de paso, rellenamos RAR/calidad (gratis)
+                    ent["p"] = bool(_torrent_packed(r.content))
+                    ent["q"] = _torrent_quality(r.content)
+                    ent["ts"] = now
+                d[key] = ent
+                _dtpacked_save(d)
+                return jsonify({"seeds": (sc if sc >= 0 else None)})
+    except Exception:
+        pass
+    return jsonify({"seeds": None})
 
 
 @app.get("/catdtmeta")
@@ -3038,6 +3286,14 @@ _CAT_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <title>MejorWolf</title>
+<meta name="theme-color" content="#06070c">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-512.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MejorWolf">
 <style>
 :root{--bg:#06070c;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -3078,6 +3334,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
 .sh-poster{width:min(68vw,260px);aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 12px 34px rgba(0,0,0,.6)}
 .sh-poster.hidden{display:none}
+.sh-meta{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:2px 0 6px;min-height:0}
+.sh-meta:empty{margin:0}
+.seedtag{font-size:12.5px;font-weight:700;padding:4px 12px;border-radius:999px;border:1px solid var(--stroke)}
+.seedtag.s-ok{background:rgba(48,209,88,.16);color:#62e08c;border-color:rgba(48,209,88,.4)}
+.seedtag.s-low{background:rgba(255,196,0,.14);color:#ffce4d;border-color:rgba(255,196,0,.4)}
+.seedtag.s-zero{background:rgba(255,77,77,.16);color:#ff8a8a;border-color:rgba(255,77,77,.42)}
 .sheet h3{margin:0 0 4px;font-size:17px;text-align:center}
 .sheet .sy{text-align:center}
 .sheet .sy{color:var(--sub);font-size:13px;margin-bottom:14px}
@@ -3254,6 +3516,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <div class="box">
   <div class="sh-poster hidden" id="sh-poster"></div>
   <h3 id="sh-t"></h3><div class="sy" id="sh-y"></div>
+  <div class="sh-meta" id="sh-seeds"></div>
   <div class="rar" id="sh-rar"></div>
   <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
   <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Añadir a mi lista</button>
@@ -3414,8 +3677,14 @@ function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSe
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
- $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sheet').classList.add('on');
- if((x.source||'dt')==='dt')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.'}).catch(function(){})}
+ $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sh-seeds').innerHTML='';$('sheet').classList.add('on');
+ if((x.source||'dt')==='dt')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x||!p)return;if(p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';if(typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}
+function seedTag(n){var c,t;if(n<=0){c='s-zero';t='⚠ Sin semillas';}else if(n<3){c='s-low';t='🌱 '+n+' semilla'+(n===1?'':'s');}else{c='s-ok';t='🌱 '+n+' semillas';}return '<span class="seedtag '+c+'">'+t+'</span>';}
+function seedGate(ci,tb,proceed){var done=false;var to=setTimeout(function(){if(done)return;done=true;proceed()},6000);toast('Comprobando semillas…');
+ fetch('/dtseeds?c='+encodeURIComponent(ci)+'&tb='+encodeURIComponent(tb)).then(function(r){return r.json()}).then(function(d){if(done)return;done=true;clearTimeout(to);var s=d&&d.seeds;
+  if(s===0){if(confirm('⚠ Este título no tiene semillas ahora mismo.\nEs muy probable que NO cargue.\n\n¿Intentar de todas formas?'))proceed();return}
+  if(typeof s==='number'&&s>0&&s<3)toast('Pocas semillas ('+s+') — puede tardar en arrancar');
+  proceed();}).catch(function(){if(done)return;done=true;clearTimeout(to);proceed()})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
@@ -3446,7 +3715,7 @@ function play(){if(!sel)return;
   fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
- if(sendPlay({a:'dt',c:sel.content_id,tb:sel.tabla,t:sel.title}))closeSheet()}
+ var _x=sel;seedGate(_x.content_id,_x.tabla||'peliculas',function(){if(sendPlay({a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title}))closeSheet()})}
 function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
  if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
@@ -3482,7 +3751,7 @@ function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
 function playEp(id){var e=EPS[id];if(!e)return;
  if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim()}))closeOv();return}
- if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:(SHOW+' '+e.label).trim()}))closeOv()}
+ var ttl=(SHOW+' '+e.label).trim();seedGate(e.content_id,e.tabla||'series',function(){if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:ttl}))closeOv()})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}
@@ -3511,6 +3780,7 @@ $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
  else if(p.get('find')){setView('buscar');$('q').value=p.get('find');go();}
 }catch(e){}})();
 chip('estrenos');pollNow();
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){})}
 </script></body></html>"""
 
 
