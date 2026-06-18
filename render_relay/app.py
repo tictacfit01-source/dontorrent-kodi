@@ -3427,7 +3427,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ovt{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #ov-body{padding:14px}
 .ovhead{display:flex;gap:14px;margin-bottom:16px}
-.ovposter{width:120px;height:180px;border-radius:12px;background:#0e1320 center/cover;flex:none;border:1px solid var(--stroke);box-shadow:0 8px 22px rgba(0,0,0,.5)}
+.ovposter{width:min(42vw,170px);aspect-ratio:2/3;border-radius:12px;background:#0e1320 center/cover;flex:none;border:1px solid var(--stroke);box-shadow:0 8px 22px rgba(0,0,0,.5)}
 .ovh-t{font-size:18px;font-weight:700}
 .ovh-y{color:var(--sub);font-size:13px;margin-top:4px}
 .seas{font-size:13px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;margin:16px 0 8px}
@@ -3435,6 +3435,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ep:active{transform:scale(.98);background:rgba(255,255,255,.12)}
 .epl{font-size:15px;font-weight:600}
 .epq{font-size:11px;color:var(--sub);font-weight:600;margin-left:6px}
+.epb{display:inline-flex;gap:5px;margin-left:7px;vertical-align:middle}
+.ep-rar{font-size:10px;background:rgba(255,159,110,.95);color:#1a0d06;border-radius:5px;padding:1px 6px;font-weight:800}
+.ep-seed{font-size:10px;border-radius:5px;padding:1px 6px;font-weight:700;border:1px solid var(--stroke)}
+.ep-seed.s-ok{color:#62e08c;background:rgba(48,209,88,.14);border-color:rgba(48,209,88,.4)}
+.ep-seed.s-low{color:#ffce4d;background:rgba(255,196,0,.12);border-color:rgba(255,196,0,.4)}
+.ep-seed.s-zero{color:#ff8a8a;background:rgba(255,77,77,.14);border-color:rgba(255,77,77,.42)}
 .rmwrap{padding:30px 22px;text-align:center;max-width:520px;margin:0 auto}
 .rm-t{font-size:20px;font-weight:700;margin-top:10px}
 .rm-time{color:var(--sub);font-size:13px;margin:10px 0 6px}
@@ -3813,9 +3819,20 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
  keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
-   h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'</span></div>'+
+   h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
- });$('ov-body').innerHTML=h;}
+ });$('ov-body').innerHTML=h;lazyEps();}
+// ---- Semillas + RAR por capitulo (DonTorrent), perezoso y cacheado ----
+var _epQ=[],_epActive=0,_epCache={};
+function lazyEps(){_epQ=[];Object.keys(EPS).forEach(function(id){var e=EPS[id];if(e&&e.content_id&&e.tabla&&!e.link)_epQ.push({id:id,c:e.content_id,tb:e.tabla,key:'dt:'+e.tabla+':'+e.content_id});});pumpEp();}
+function pumpEp(){while(_epActive<2&&_epQ.length){var job=_epQ.shift();var c=_epCache[job.key];
+  if(c!==undefined){epBadge(job,c);continue;}
+  _epActive++;(function(job){fetch('/dtpacked?c='+encodeURIComponent(job.c)+'&tb='+encodeURIComponent(job.tb)).then(function(r){return r.json()}).then(function(p){_epActive--;
+   var info={seeds:(p&&typeof p.seeds==='number')?p.seeds:null,rar:!!(p&&p.packed===true)};_epCache[job.key]=info;epBadge(job,info);pumpEp();}).catch(function(){_epActive--;pumpEp();});})(job);}}
+function epBadge(job,info){var el=document.getElementById('epb-'+job.id);if(!el)return;var h='';
+  if(info.rar)h+='<span class="ep-rar">📦 RAR</span>';
+  if(typeof info.seeds==='number'){var cls=info.seeds<=0?'s-zero':(info.seeds<3?'s-low':'s-ok');h+='<span class="ep-seed '+cls+'">🌱 '+info.seeds+'</span>';}
+  el.innerHTML=h;}
 function closeOv(){$('ov').classList.remove('on')}
 function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var row=$('row-'+id);
  if(row){var sn=isSeen(e.content_id);row.classList.toggle('seen',sn);var ey=row.querySelector('.eye');if(ey)ey.innerHTML=sn?EYE_ON:EYE_OFF;}}
