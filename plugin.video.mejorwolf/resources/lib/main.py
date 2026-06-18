@@ -38,8 +38,8 @@ HANDLE  = int(sys.argv[1]) if len(sys.argv) > 1 else -1
 BASE    = sys.argv[0] if sys.argv else "plugin://plugin.video.mejorwolf/"
 
 ADDON_PATH = xbmcvfs.translatePath(ADDON.getAddonInfo("path"))
-ICON       = os.path.join(ADDON_PATH, "icon.png")
-FANART     = os.path.join(ADDON_PATH, "fanart.jpg")
+ICON       = os.path.join(ADDON_PATH, "icon2.png")
+FANART     = os.path.join(ADDON_PATH, "fanart2.jpg")
 DEFAULT_ART = {"fanart": FANART}
 
 _PROFILE = xbmcvfs.translatePath(ADDON.getAddonInfo("profile"))
