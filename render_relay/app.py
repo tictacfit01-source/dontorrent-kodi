@@ -2612,16 +2612,43 @@ def _cat_tmdb(title, kind="movie"):
 # Circuit breaker DonTorrent: si DonTorrent no responde (rate-limit a la IP de
 # Render), se SALTA al instante durante un rato en vez de colgar cada peticion.
 # Asi la web responde YA (con las fuentes-box) y reintenta DonTorrent cada 90s.
+# COMPARTIDO entre workers via /tmp: en cuanto UN worker detecta que DonTorrent
+# esta caido, TODOS lo saltan al instante (antes era por-worker -> cada worker
+# frio se colgaba ~40s la primera vez). Asi solo 1 peticion paga el sondeo.
 _DT_DOWN_UNTIL = [0.0]
 _DT_DOWN_COOLDOWN = 90
+_DT_DOWN_FILE = "/tmp/mw_dt_down"
 
 
 def _dt_is_down():
-    return _t.time() < _DT_DOWN_UNTIL[0]
+    if _t.time() < _DT_DOWN_UNTIL[0]:
+        return True
+    try:
+        with open(_DT_DOWN_FILE) as f:
+            until = float(f.read().strip() or 0)
+        if _t.time() < until:
+            _DT_DOWN_UNTIL[0] = until   # sincroniza memoria local
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _dt_mark(ok):
-    _DT_DOWN_UNTIL[0] = 0.0 if ok else (_t.time() + _DT_DOWN_COOLDOWN)
+    if ok:
+        _DT_DOWN_UNTIL[0] = 0.0
+        try:
+            os.remove(_DT_DOWN_FILE)
+        except Exception:
+            pass
+    else:
+        until = _t.time() + _DT_DOWN_COOLDOWN
+        _DT_DOWN_UNTIL[0] = until
+        try:
+            with open(_DT_DOWN_FILE, "w") as f:
+                f.write(str(until))
+        except Exception:
+            pass
 
 
 def _cat_dt_html(q):
@@ -3207,6 +3234,25 @@ def catjob_done():
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
 _CATBROWSE_CACHE = {}      # "kind:page" -> {"items": [...], "ts": ...}
 _CATBROWSE_TTL = 900       # 15 min: los listados cambian despacio
+_CATBROWSE_FILE = "/tmp/mw_catbrowse.json"   # persiste entre workers y deploys
+
+
+def _catbrowse_load():
+    try:
+        with open(_CATBROWSE_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _catbrowse_save(d):
+    try:
+        tmp = _CATBROWSE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _CATBROWSE_FILE)
+    except Exception:
+        pass
 
 
 @app.get("/catbrowse")
@@ -3217,20 +3263,30 @@ def catbrowse():
     except Exception:
         page = 1
     key = f"{kind}:{page}"
-    ent = _CATBROWSE_CACHE.get(key)
     now = _t.time()
+    # cache en memoria; si el worker esta frio (tras deploy) cae al disco
+    ent = _CATBROWSE_CACHE.get(key)
+    if not ent:
+        ent = _catbrowse_load().get(key)
+        if ent:
+            _CATBROWSE_CACHE[key] = ent
     if ent and (now - ent["ts"]) < _CATBROWSE_TTL:
         return jsonify({"items": ent["items"], "cached": True})
     bp = _CAT_BROWSE.get(kind, "/")
     path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
     html, _d = _cat_dt_session_get(path)
     if not html:
-        # si falla pero hay cache vieja, sirvela (mejor algo que nada)
+        # si falla pero hay cache vieja (memoria o disco), sirvela: mejor lo
+        # ultimo conocido al instante que una pagina vacia o colgada.
         if ent:
             return jsonify({"items": ent["items"], "stale": True})
         return jsonify({"items": []})
     items = _cat_enrich(_cat_parse_items(html))
-    _CATBROWSE_CACHE[key] = {"items": items, "ts": now}
+    rec = {"items": items, "ts": now}
+    _CATBROWSE_CACHE[key] = rec
+    disk = _catbrowse_load()
+    disk[key] = rec
+    _catbrowse_save(disk)
     return jsonify({"items": items})
 
 
