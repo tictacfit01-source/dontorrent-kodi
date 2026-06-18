@@ -1352,11 +1352,18 @@ def _dtpacked_seeds(ent, now):
 
 
 def _dt_download_url(domain, content_id, tabla):
-    """Resuelve la URL del .torrent (mismo PoW que /dtpow). Devuelve url o None.
-    Respeta el circuit breaker COMPARTIDO: si DonTorrent esta caido no entra (no
-    cuelga los workers ~80s) y, si no responde, BAJA el breaker para todos."""
-    if _dt_is_down():
+    """Breaker + tope de concurrencia (max 2 ops DonTorrent), luego delega."""
+    if _dt_is_down() or not _DT_SEM.acquire(blocking=False):
         return None
+    try:
+        return _dt_download_url_inner(domain, content_id, tabla)
+    finally:
+        _DT_SEM.release()
+
+
+def _dt_download_url_inner(domain, content_id, tabla):
+    """Resuelve la URL del .torrent (mismo PoW que /dtpow). Devuelve url o None.
+    Si DonTorrent no responde, BAJA el breaker compartido para todos."""
     dom_candidates = []
     if domain:
         dom_candidates.append(domain)
@@ -2631,6 +2638,14 @@ _DT_DOWN_COOLDOWN = 90
 _DT_SLOW = 12          # si una operacion DonTorrent tarda mas -> baja el breaker
 _DT_DOWN_FILE = "/tmp/mw_dt_down"
 
+# Tope de operaciones DonTorrent SIMULTANEAS. Aunque DonTorrent se cuelgue (PoW
+# Anubis dificultad 5 + rate-limit pueden tardar >45s antes de que el breaker
+# salte), como mucho 2 hilos quedan ocupados con DonTorrent -> SIEMPRE quedan
+# hilos libres para servir la pagina, /ping y las fuentes-box. El relay NO se
+# satura ni se cae. La 3a peticion concurrente devuelve al instante (cache/vacio).
+import threading as _thr
+_DT_SEM = _thr.Semaphore(2)
+
 
 def _dt_is_down():
     if _t.time() < _DT_DOWN_UNTIL[0]:
@@ -2664,11 +2679,18 @@ def _dt_mark(ok):
 
 
 def _cat_dt_html(q):
-    """POST de busqueda a DonTorrent (dominio APRENDIDO) -> HTML de TODAS las
-    paginas concatenado. Reusa Anubis. Circuit breaker: si DonTorrent esta caido
-    desde Render, devuelve '' al instante (las fuentes-box siguen igual)."""
-    if _dt_is_down():
+    """Breaker + tope de concurrencia (max 2 ops DonTorrent), luego delega."""
+    if _dt_is_down() or not _DT_SEM.acquire(blocking=False):
         return ""
+    try:
+        return _cat_dt_html_inner(q)
+    finally:
+        _DT_SEM.release()
+
+
+def _cat_dt_html_inner(q):
+    """POST de busqueda a DonTorrent (dominio APRENDIDO) -> HTML de TODAS las
+    paginas concatenado. Reusa Anubis."""
     t0 = _t.time()
     from urllib.parse import urlparse as _up
     data = {"valor": q, "Buscar": "Buscar"}
@@ -2722,32 +2744,36 @@ def _cat_dt_html(q):
 
 def _cat_dt_session_get(path):
     """GET a una ruta de DonTorrent (dominio APRENDIDO) con sesion Anubis.
-    Devuelve (html, domain) o ('', None). Circuit breaker: si DonTorrent esta
-    caido desde Render, devuelve al instante (no cuelga)."""
-    if _dt_is_down():
+    Devuelve (html, domain) o ('', None). Breaker + tope de concurrencia: si
+    DonTorrent esta caido o ya hay 2 ops en curso, devuelve al instante."""
+    if _dt_is_down() or not _DT_SEM.acquire(blocking=False):
         return "", None
-    t0 = _t.time()
-    got = False
-    for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
-                if d][:1]:
-        try:
-            s, _ = _dt_anubis_session(dom)
-            rr = s.get(f"https://{dom}{path}", timeout=6, allow_redirects=True)
-            got = True
-            if "anubis_challenge" in rr.text:
-                _DT_COOKIES.pop(dom, None)
+    try:
+        t0 = _t.time()
+        got = False
+        for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
+                    if d][:1]:
+            try:
                 s, _ = _dt_anubis_session(dom)
-                rr = s.get(f"https://{dom}{path}", timeout=6)
-            if rr.status_code == 200 and _re_dt.search(
-                    r"/(?:pelicula|serie|documental)/\d+/", rr.text):
-                # ok, pero si tardo >12s (DonTorrent lento/rate-limit) BAJA el
-                # breaker: las siguientes lo saltan y el relay no se satura.
-                _dt_mark(_t.time() - t0 <= _DT_SLOW)
-                return rr.text, dom
-        except Exception:
-            continue
-    _dt_mark(got and (_t.time() - t0 <= _DT_SLOW))
-    return "", None
+                rr = s.get(f"https://{dom}{path}", timeout=6,
+                           allow_redirects=True)
+                got = True
+                if "anubis_challenge" in rr.text:
+                    _DT_COOKIES.pop(dom, None)
+                    s, _ = _dt_anubis_session(dom)
+                    rr = s.get(f"https://{dom}{path}", timeout=6)
+                if rr.status_code == 200 and _re_dt.search(
+                        r"/(?:pelicula|serie|documental)/\d+/", rr.text):
+                    # ok, pero si tardo >12s (DonTorrent lento) BAJA el breaker:
+                    # las siguientes lo saltan y el relay no se satura.
+                    _dt_mark(_t.time() - t0 <= _DT_SLOW)
+                    return rr.text, dom
+            except Exception:
+                continue
+        _dt_mark(got and (_t.time() - t0 <= _DT_SLOW))
+        return "", None
+    finally:
+        _DT_SEM.release()
 
 
 _CAT_QRE = _re_dt.compile(
