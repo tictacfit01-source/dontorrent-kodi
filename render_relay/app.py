@@ -1348,13 +1348,18 @@ def _dtpacked_seeds(ent, now):
 
 
 def _dt_download_url(domain, content_id, tabla):
-    """Resuelve la URL del .torrent (mismo PoW que /dtpow). Devuelve url o None."""
+    """Resuelve la URL del .torrent (mismo PoW que /dtpow). Devuelve url o None.
+    Respeta el circuit breaker COMPARTIDO: si DonTorrent esta caido no entra (no
+    cuelga los workers ~80s) y, si no responde, BAJA el breaker para todos."""
+    if _dt_is_down():
+        return None
     dom_candidates = []
     if domain:
         dom_candidates.append(domain)
     for d in DT_FALLBACK:
         if d not in dom_candidates:
             dom_candidates.append(d)
+    got = [False]
     def _try(dom, fresh):
         if fresh:
             _DT_COOKIES.pop(dom, None)   # cookies Anubis caducadas -> re-resolver
@@ -1362,7 +1367,8 @@ def _dt_download_url(domain, content_id, tabla):
         api = f"https://{dom}/api_validate_pow.php"
         r1 = sess.post(api, json={"action": "generate",
                                   "content_id": int(content_id),
-                                  "tabla": tabla}, timeout=20)
+                                  "tabla": tabla}, timeout=8)
+        got[0] = True   # DonTorrent respondio (no esta caido)
         if r1.status_code in (404, 405):
             return None
         gen = r1.json()
@@ -1376,7 +1382,7 @@ def _dt_download_url(domain, content_id, tabla):
             rand, diff = str(challenge), 3
         _h, nonce, _e = _dt_solve_pow(rand, diff)
         r2 = sess.post(api, json={"action": "validate", "challenge": challenge,
-                                  "nonce": nonce}, timeout=20)
+                                  "nonce": nonce}, timeout=8)
         val = r2.json()
         if not val.get("success") or not val.get("download_url"):
             return None
@@ -1387,16 +1393,18 @@ def _dt_download_url(domain, content_id, tabla):
             url = f"https://{dom}{url}"
         return url
 
-    # Auto-curativo: por dominio, 1er intento normal y 2o con cookies frescas
-    # (la causa real de fallo era cookies Anubis caducadas, NO bloqueo de IP).
-    for dom in dom_candidates[:2]:
+    # Auto-curativo: 1 dominio (no saturar), 1er intento normal y 2o con cookies
+    # frescas (causa habitual de fallo: cookies Anubis caducadas, NO bloqueo IP).
+    for dom in dom_candidates[:1]:
         for fresh in (False, True):
             try:
                 url = _try(dom, fresh)
                 if url:
+                    _dt_mark(True)
                     return url
             except Exception:
                 pass
+    _dt_mark(got[0])   # si NADA respondio -> DonTorrent caido -> breaker compartido
     return None
 
 
@@ -3860,6 +3868,8 @@ def _warm_dt():
     el usuario nunca paga el ~13s de re-resolver Anubis (tras deploy o expiracion).
     Refresca proactivamente a las ~5h (antes del TTL de 6h)."""
     try:
+        if _dt_is_down():   # DonTorrent caido: no machacar (el breaker reintenta)
+            return
         dom = _dt_load_domain() or (DT_FALLBACK[0] if DT_FALLBACK
                                     else "dontorrent.review")
         ent = _DT_COOKIES.get(dom)
