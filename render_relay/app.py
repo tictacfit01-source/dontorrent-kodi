@@ -3662,11 +3662,21 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  INI={kind:kind,page:1,loading:false,more:true};
  var g=$('inicio-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Cargando...';
  var slow=setTimeout(function(){if(g.querySelector('.spin'))g.innerHTML='<span class="spin"></span> Despertando el servidor… (solo la primera vez)';},7000);
- fetch('/catbrowse?kind='+kind+'&page=1').then(function(r){return r.json()}).then(function(d){clearTimeout(slow);
-  LISTS.inicio=(d&&d.items)||[];if(!LISTS.inicio.length){g.className='msg';g.textContent='Nada por aquí ahora mismo.';INI.more=false;return}
-  renderGrid(g,'inicio');
-  if(kind==='estrenos'){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');}
- }).catch(function(){clearTimeout(slow);g.className='msg';g.textContent='Error de conexión.'})}
+ // Timeout duro: si DonTorrent va lento/caido NUNCA dejamos la app colgada.
+ var ctrl=(window.AbortController?new AbortController():null);var done=false;
+ var to=setTimeout(function(){if(!done&&ctrl)ctrl.abort();},12000);
+ function ensureGrid(){if(!g.querySelector('.grid')){g.className='';g.innerHTML='<div class="grid"></div>';}}
+ function box(){if(kind==='estrenos'){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');}}
+ function retry(){g.className='msg';g.innerHTML='No se pudo cargar ahora. <a href="javascript:void(0)" onclick="chip(\''+kind+'\')">Reintentar</a>';}
+ function fallback(){ // DonTorrent vacio/lento/caido: que el box (Estrenos) llene; si no, reintento
+  LISTS.inicio=[];ensureGrid();box();
+  if(kind==='estrenos'){setTimeout(function(){if(!g.querySelector('.card'))retry();},14000);}else{retry();}}
+ fetch('/catbrowse?kind='+kind+'&page=1',ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
+  done=true;clearTimeout(slow);clearTimeout(to);
+  LISTS.inicio=(d&&d.items)||[];
+  if(!LISTS.inicio.length){fallback();return}
+  renderGrid(g,'inicio');box();
+ }).catch(function(){done=true;clearTimeout(slow);clearTimeout(to);fallback()})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
  fetch('/catbrowse?kind='+INI.kind+'&page='+next).then(function(r){return r.json()}).then(function(d){
   var items=(d&&d.items)||[];var have={};LISTS.inicio.forEach(function(x){have[x.kind+':'+x.content_id]=1});
