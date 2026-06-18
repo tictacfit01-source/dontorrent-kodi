@@ -178,18 +178,22 @@ _MANIFEST_JSON = """{
  ]
 }"""
 
-_SW_JS = """var C='mw-shell-v15';
-self.addEventListener('install',function(){self.skipWaiting()});
+_SW_JS = """var C='mw-shell-v16';
+self.addEventListener('install',function(e){e.waitUntil(caches.open(C).then(function(c){return c.add('/').catch(function(){})}));self.skipWaiting()});
 self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.map(function(k){if(k!==C)return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});
+// Navegacion: red con timeout de 4s -> si el relay va lento/caido, sirve la
+// shell CACHEADA al instante (la PWA NUNCA se queda en el splash). Solo cachea
+// respuestas OK (nunca un 502). La pagina, ya cargada, gestiona sus datos.
+function navResp(req){return new Promise(function(resolve){var done=false;
+ var t=setTimeout(function(){if(done)return;caches.match('/').then(function(c){if(c&&!done){done=true;resolve(c)}})},4000);
+ fetch(req).then(function(r){if(done)return;if(r&&r.ok){var cp=r.clone();caches.open(C).then(function(c){c.put('/',cp)})}done=true;clearTimeout(t);resolve(r)}).catch(function(){if(done)return;caches.match('/').then(function(c){done=true;clearTimeout(t);resolve(c||new Response('<h1>Sin conexion</h1>',{headers:{'Content-Type':'text/html'}}))})});
+});}
 self.addEventListener('fetch',function(e){
  var req=e.request;if(req.method!=='GET')return;
  var url=new URL(req.url);
- if(req.mode==='navigate'){
-  e.respondWith(fetch(req).then(function(r){var cp=r.clone();caches.open(C).then(function(c){c.put(req,cp)});return r}).catch(function(){return caches.match(req).then(function(r){return r||caches.match('/')})}));
-  return;
- }
+ if(req.mode==='navigate'){e.respondWith(navResp(req));return;}
  if(url.pathname==='/manifest.webmanifest'||url.pathname==='/icon.svg'||url.pathname==='/icon-512.png'){
-  e.respondWith(caches.match(req).then(function(r){return r||fetch(req).then(function(rr){var cp=rr.clone();caches.open(C).then(function(c){c.put(req,cp)});return rr})}));
+  e.respondWith(caches.match(req).then(function(r){return r||fetch(req).then(function(rr){if(rr&&rr.ok){var cp=rr.clone();caches.open(C).then(function(c){c.put(req,cp)})}return rr})}));
  }
 });
 """
@@ -2624,6 +2628,7 @@ def _cat_tmdb(title, kind="movie"):
 # frio se colgaba ~40s la primera vez). Asi solo 1 peticion paga el sondeo.
 _DT_DOWN_UNTIL = [0.0]
 _DT_DOWN_COOLDOWN = 90
+_DT_SLOW = 12          # si una operacion DonTorrent tarda mas -> baja el breaker
 _DT_DOWN_FILE = "/tmp/mw_dt_down"
 
 
@@ -2664,6 +2669,7 @@ def _cat_dt_html(q):
     desde Render, devuelve '' al instante (las fuentes-box siguen igual)."""
     if _dt_is_down():
         return ""
+    t0 = _t.time()
     from urllib.parse import urlparse as _up
     data = {"valor": q, "Buscar": "Buscar"}
     got = False
@@ -2706,11 +2712,11 @@ def _cat_dt_html(q):
                         return ""
                 with _TPE(max_workers=min(8, mx - 1)) as ex:
                     full += "".join(ex.map(_pg, range(2, mx + 1)))
-            _dt_mark(True)
+            _dt_mark(_t.time() - t0 <= _DT_SLOW)   # lento -> baja breaker
             return full
         except Exception:
             continue
-    _dt_mark(got)   # si respondio pero sin match, no es "caido"
+    _dt_mark(got and (_t.time() - t0 <= _DT_SLOW))  # lento o fallo -> caido
     return ""
 
 
@@ -2720,6 +2726,7 @@ def _cat_dt_session_get(path):
     caido desde Render, devuelve al instante (no cuelga)."""
     if _dt_is_down():
         return "", None
+    t0 = _t.time()
     got = False
     for dom in [d for d in dict.fromkeys([_dt_load_domain()] + DT_FALLBACK)
                 if d][:1]:
@@ -2733,11 +2740,13 @@ def _cat_dt_session_get(path):
                 rr = s.get(f"https://{dom}{path}", timeout=6)
             if rr.status_code == 200 and _re_dt.search(
                     r"/(?:pelicula|serie|documental)/\d+/", rr.text):
-                _dt_mark(True)
+                # ok, pero si tardo >12s (DonTorrent lento/rate-limit) BAJA el
+                # breaker: las siguientes lo saltan y el relay no se satura.
+                _dt_mark(_t.time() - t0 <= _DT_SLOW)
                 return rr.text, dom
         except Exception:
             continue
-    _dt_mark(got)
+    _dt_mark(got and (_t.time() - t0 <= _DT_SLOW))
     return "", None
 
 
