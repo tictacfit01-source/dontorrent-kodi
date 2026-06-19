@@ -3315,26 +3315,46 @@ def _ih_from_magnet(s):
     return h.lower()
 
 
+def _ih_from_link(link):
+    """info_hash hex desde un magnet (extrae) o un .torrent http (lo baja en el
+    relay -el CDN de dx/wf/DonTorrent SI es alcanzable desde Render- y calcula el
+    hash con _dt_infohash). '' si no se puede."""
+    if not link:
+        return ""
+    if link.startswith("magnet:"):
+        return _ih_from_magnet(link)
+    if link.startswith("http") and host_allowed(link):
+        try:
+            rr = requests.get(link, headers=BROWSER_HEADERS, timeout=20,
+                              allow_redirects=True)
+            if rr.status_code == 200 and rr.content[:1] == b"d":
+                dg = _dt_infohash(rr.content)
+                if dg:
+                    return dg.hex()
+        except Exception:
+            pass
+    return ""
+
+
 @app.get("/seeds")
 def seeds_ep():
     ih = re.sub(r"[^a-f0-9]", "", request.args.get("ih", "").lower())[:40]
-    if len(ih) != 40:
-        ih = _ih_from_magnet(request.args.get("magnet", "")
-                             or request.args.get("link", ""))
+    link = request.args.get("link", "") or request.args.get("magnet", "")
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     src = re.sub(r"[^a-z]", "", request.args.get("src", "").lower())[:4]
     url = request.args.get("url", "")
-    link = request.args.get("link", "")
     now = _t.time()
     d = _seeds_load()
-    # Sin info_hash y con box: que el box lo derive (residencial).
-    if len(ih) != 40 and code and (link or (src and url)):
+    # 1) link directo (magnet o .torrent) -> el relay deriva el hash (sin box).
+    if len(ih) != 40 and link:
+        ih = _ih_from_link(link)
+    # 2) solo src+url (ficha): el box RESUELVE el link y el relay deriva el hash.
+    if len(ih) != 40 and code and src and url:
         job = "ih" + os.urandom(5).hex()
         _kb_enqueue(code, {"c": "etjob", "job": job, "op": "infohash",
-                           "src": src, "url": url, "link": link})
+                           "src": src, "url": url})
         res = _catjob_wait(job, 20.0)
-        ih = re.sub(r"[^a-f0-9]", "",
-                    ((res or {}).get("ih") or "").lower())[:40]
+        ih = _ih_from_link((res or {}).get("link") or "")
     if len(ih) != 40:
         return jsonify({"seeds": None})
     ent = d.get(ih)
