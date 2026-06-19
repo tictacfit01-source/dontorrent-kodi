@@ -1255,25 +1255,29 @@ def dt_play(content_id, tabla, page_url="", title=""):
         except Exception:
             pass
 
+        # Descargar los BYTES del .torrent. PRIMERO desde el BOX (DoH/proxy, que
+        # SI resuelven Anubis): el .torrent viene tras un reto Anubis, asi que un
+        # GET generico baja la pagina de reto, no el .torrent. Ademas la IP de
+        # Render esta bloqueada por DonTorrent, asi que el relay no sirve aqui.
         torrent_data = None
         try:
-            # Intentar descargar via render relay (bypass ISP)
-            relay_url = dt._render_relay_url()
-            if relay_url:
-                from urllib.parse import quote as _q
-                fetch_url = f"{relay_url}/dtfetch?u={_q(torrent_url, safe='')}"
-                import requests as _rq
-                rr = _rq.get(fetch_url, timeout=30)
-                if rr.status_code == 200 and len(rr.content) > 100:
-                    torrent_data = rr.content
+            torrent_data = dt.download_torrent(torrent_url)
         except Exception:
-            pass
+            torrent_data = None
 
+        # Fallback: relay /dtfetch (por si el box no alcanza y Render no esta
+        # bloqueado). Validamos que sea un .torrent real (bencode 'd').
         if not torrent_data:
             try:
-                sess = hs.make_session()
-                r = hs.get(sess, torrent_url, timeout=30)
-                torrent_data = r.content
+                relay_url = dt._render_relay_url()
+                if relay_url:
+                    from urllib.parse import quote as _q
+                    fetch_url = f"{relay_url}/dtfetch?u={_q(torrent_url, safe='')}"
+                    import requests as _rq
+                    rr = _rq.get(fetch_url, timeout=20)
+                    if (rr.status_code == 200 and len(rr.content) > 100
+                            and rr.content[:1] == b"d"):
+                        torrent_data = rr.content
             except Exception:
                 pass
 

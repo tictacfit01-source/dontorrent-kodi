@@ -1388,3 +1388,35 @@ def _resolve_torrent_uncached(content_id, tabla, page_url=None,
 
     _LOG(f"resolve_torrent -> {url[:100]}")
     return url
+
+
+def download_torrent(url):
+    """Descarga los BYTES del .torrent (estatico) desde el BOX, por el camino que
+    SI alcanza DonTorrent aunque el ISP bloquee el DNS y aunque el .torrent este
+    tras un reto Anubis: DoH -> proxy (ambos resuelven Anubis). Devuelve bytes o
+    b''. Necesario porque la IP de Render esta bloqueada por DonTorrent y un GET
+    generico (sin Anubis) devolveria la pagina del reto, no el .torrent."""
+    def _ok(data):
+        return (bool(data) and len(data) > 100 and data[:1] == b"d"
+                and b"<html" not in data[:300].lower())
+    # 1) DoH: conexion residencial directa (IP resuelta por DoH) + Anubis
+    try:
+        r = _doh_fetch("GET", url, timeout=25)
+        data = r.content if r is not None else b""
+        if _ok(data):
+            _LOG(f"download_torrent OK via DoH ({len(data)} bytes)")
+            return data
+        _LOG(f"download_torrent DoH: no parece .torrent (len={len(data)})")
+    except Exception as e:
+        _LOG(f"download_torrent DoH error: {e}")
+    # 2) proxy (CF Worker, residencial) + Anubis
+    try:
+        r = _proxy_get(url, timeout=30)
+        data = r.content if r is not None else b""
+        if _ok(data):
+            _LOG(f"download_torrent OK via proxy ({len(data)} bytes)")
+            return data
+        _LOG(f"download_torrent proxy: no parece .torrent (len={len(data)})")
+    except Exception as e:
+        _LOG(f"download_torrent proxy error: {e}")
+    return b""
