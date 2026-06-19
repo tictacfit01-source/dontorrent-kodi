@@ -90,7 +90,13 @@ def _resolve_cache_put(content_id, tabla, url):
 # Probados 2026-05: science, irish, reisen, club, info, istanbul, lighting
 # son los que respondian. rocks/onl/live/kiwi/phd/pink suelen estar caidos.
 # Lista actualizada periodicamente desde Supabase (mw_config.dontorrent).
+# dontorrent.review es el dominio CANONICO vigente. Va primero: los mirrors
+# viejos (p.ej. .science) hacen 301 -> .review y el redirect convierte el POST
+# del PoW en GET -> api_validate_pow.php devuelve 405. Usando el canonico directo
+# no hay redirect.
+_CANONICAL_DOMAIN = "dontorrent.review"
 FALLBACK_DOMAINS = [
+    "dontorrent.review",
     "dontorrent.science",
     "dontorrent.irish",
     "dontorrent.club",
@@ -539,11 +545,31 @@ def resolve_domain(force=False):
         pass
     if manual:
         host = manual.replace("https://", "").replace("http://", "").rstrip("/")
-        return host
+        host = host.split("/")[0]
+        # Ignorar overrides que apuntan a mirrors VIEJOS que redirigen (301): el
+        # redirect convierte el POST del PoW en GET -> api_validate_pow.php = 405.
+        # Asi caemos a la auto-resolucion (fast-path canonico .review).
+        _STALE = {"dontorrent.science", "www.dontorrent.science",
+                  "dontorrent.support", "www.dontorrent.support"}
+        if host and host not in _STALE:
+            return host
 
     # Cache valida
     if not force and _cached_domain and (time.time() - _cached_domain_ts) < _DOMAIN_TTL:
         return _cached_domain
+
+    # Fast path: dominio CANONICO vigente. Evita que la carrera paralela (o un
+    # Supabase/cache con un mirror viejo) elija un dominio que redirige el POST
+    # del PoW (.science -> 301 .review -> POST se vuelve GET -> 405).
+    try:
+        canon = _probe_domain(_CANONICAL_DOMAIN)
+        if canon:
+            _cached_domain = canon
+            _cached_domain_ts = time.time()
+            _LOG(f"resolve_domain: canonico {canon}")
+            return canon
+    except Exception:
+        pass
 
     # Construir lista de candidatos: Supabase + Telegram + Fallback
     candidates = []
