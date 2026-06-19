@@ -351,6 +351,40 @@ def _src_episodes(src, url):
     return {"title": "", "episodes": eps}
 
 
+def _src_infohash(src, url, link=""):
+    """info_hash (hex) de un item de fuente-box (et/dx/wf) para consultar
+    semillas. Usa el link (magnet/.torrent) si lo hay; si no, resuelve src+url.
+    Para .torrent lo descarga (IP residencial) y deriva el magnet."""
+    try:
+        if not link:
+            link = _src_resolve(src, url)
+        if not link:
+            return ""
+        if not link.startswith("magnet:"):
+            data = b""
+            try:
+                from resources.lib import http_session as hs
+                sess = hs.make_session()
+                data = hs.get(sess, link, timeout=20).content
+            except Exception:
+                data = b""
+            if data[:1] == b"d":
+                from resources.lib import torrent as tparse
+                link = tparse.torrent_to_magnet(data) or ""
+        m = re.search(r"btih:([a-fA-F0-9]{40}|[A-Za-z2-7]{32})", link or "")
+        if not m:
+            return ""
+        h = m.group(1)
+        if len(h) == 32:
+            import base64
+            h = base64.b32decode(h.upper()).hex()
+        return h.lower()
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] infohash %s err: %s" % (src, e),
+                 xbmc.LOGWARNING)
+        return ""
+
+
 def _src_resolve(src, url):
     """Ficha de la fuente -> mejor enlace (magnet o .torrent). '' si nada."""
     mod = _src_mod(src)
@@ -536,6 +570,10 @@ def _do_etjob(ev):
             elif op == "episodes":
                 src = (ev.get("src") or "").strip()
                 out["eps"] = _src_episodes(src, (ev.get("url") or "").strip())
+            elif op == "infohash":
+                out["ih"] = _src_infohash((ev.get("src") or "").strip(),
+                                          (ev.get("url") or "").strip(),
+                                          (ev.get("link") or "").strip())
             elif op == "dtmeta":
                 cid = re.sub(r"\D", "", str(ev.get("cid") or ""))
                 tb = (ev.get("tb") or "peliculas").strip()

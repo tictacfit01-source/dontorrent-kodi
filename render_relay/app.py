@@ -1843,7 +1843,8 @@ _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 :root{--bg0:#06070c;--bg1:#0e1320;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);
 --txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158;--red:#ff453a;--glass:rgba(255,255,255,.07)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;background:#06070c}
+html,body{margin:0;background:#06070c;-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-touch-callout:none}
+input,textarea{-webkit-user-select:text;-moz-user-select:text;user-select:text}
 body{font-family:-apple-system,"SF Pro Display","SF Pro Text",system-ui,Segoe UI,Roboto,sans-serif;
 color:var(--txt);min-height:100vh;display:flex;justify-content:center;overscroll-behavior-y:contain;
 background:radial-gradient(1200px 700px at 50% -10%,#1b2740 0%,transparent 60%),
@@ -3268,9 +3269,86 @@ def catjob_done():
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
     d[job] = {"items": body.get("items"), "link": body.get("link"),
               "rar": body.get("rar"), "quality": body.get("quality"),
-              "eps": body.get("eps"), "ts": now}
+              "eps": body.get("eps"), "ih": body.get("ih"), "ts": now}
     _catjob_save(d)
     return jsonify({"ok": True})
+
+
+# ===========================================================================
+# SEMILLAS universales (cualquier fuente). Por info_hash/magnet directo (rapido,
+# scrape UDP desde Render) o por code+src+url/link (el box deriva el info_hash
+# desde su IP residencial: extrae del magnet o descarga el .torrent). Cacheado.
+# ===========================================================================
+_SEEDS_FILE = "/tmp/mw_seeds.json"
+_SEEDS_TTL2 = 2700   # 45 min
+
+
+def _seeds_load():
+    try:
+        with open(_SEEDS_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _seeds_save(d):
+    try:
+        tmp = _SEEDS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _SEEDS_FILE)
+    except Exception:
+        pass
+
+
+def _ih_from_magnet(s):
+    m = re.search(r"btih:([a-fA-F0-9]{40}|[A-Za-z2-7]{32})", s or "")
+    if not m:
+        return ""
+    h = m.group(1)
+    if len(h) == 32:
+        try:
+            import base64
+            h = base64.b32decode(h.upper()).hex()
+        except Exception:
+            return ""
+    return h.lower()
+
+
+@app.get("/seeds")
+def seeds_ep():
+    ih = re.sub(r"[^a-f0-9]", "", request.args.get("ih", "").lower())[:40]
+    if len(ih) != 40:
+        ih = _ih_from_magnet(request.args.get("magnet", "")
+                             or request.args.get("link", ""))
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    src = re.sub(r"[^a-z]", "", request.args.get("src", "").lower())[:4]
+    url = request.args.get("url", "")
+    link = request.args.get("link", "")
+    now = _t.time()
+    d = _seeds_load()
+    # Sin info_hash y con box: que el box lo derive (residencial).
+    if len(ih) != 40 and code and (link or (src and url)):
+        job = "ih" + os.urandom(5).hex()
+        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "infohash",
+                           "src": src, "url": url, "link": link})
+        res = _catjob_wait(job, 20.0)
+        ih = re.sub(r"[^a-f0-9]", "",
+                    ((res or {}).get("ih") or "").lower())[:40]
+    if len(ih) != 40:
+        return jsonify({"seeds": None})
+    ent = d.get(ih)
+    if ent and (now - ent.get("ts", 0) < _SEEDS_TTL2):
+        return jsonify({"seeds": ent.get("s"), "cached": True})
+    sc = _dt_seed_count(bytes.fromhex(ih))
+    s = sc if sc >= 0 else None
+    if s is not None:
+        d[ih] = {"s": s, "ts": now}
+        if len(d) > 4000:
+            for k in sorted(d, key=lambda k: d[k].get("ts", 0))[:len(d) - 4000]:
+                d.pop(k, None)
+        _seeds_save(d)
+    return jsonify({"seeds": s})
 
 
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
@@ -3395,7 +3473,8 @@ _CAT_PAGE = r"""<!doctype html><html lang="es"><head>
 <style>
 :root{--bg:#06070c;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+html,body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-touch-callout:none}
+input,textarea{-webkit-user-select:text;-moz-user-select:text;user-select:text}
 body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b2740 0,transparent 60%),var(--bg)}
 .wrap{max-width:760px;margin:0 auto;padding:16px 14px 96px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
@@ -3792,7 +3871,8 @@ function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSe
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sh-seeds').innerHTML='';$('sheet').classList.add('on');
- if((x.source||'dt')==='dt')fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x||!p)return;if(p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';if(typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}
+ if((x.source||'dt')==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x||!p)return;if(p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';if(typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}
+ else{var _cd=(code.value||'').replace(/\D/g,'');if(_cd.length===6)fetch('/seeds?code='+_cd+'&src='+encodeURIComponent(x.source)+'&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}}
 function seedTag(n){var c,t;if(n<=0){c='s-zero';t='⚠ Sin semillas';}else if(n<3){c='s-low';t='🌱 '+n+' semilla'+(n===1?'':'s');}else{c='s-ok';t='🌱 '+n+' semillas';}return '<span class="seedtag '+c+'">'+t+'</span>';}
 function seedGate(ci,tb,proceed){var done=false;var to=setTimeout(function(){if(done)return;done=true;proceed()},6000);toast('Comprobando semillas…');
  fetch('/dtseeds?c='+encodeURIComponent(ci)+'&tb='+encodeURIComponent(tb)).then(function(r){return r.json()}).then(function(d){if(done)return;done=true;clearTimeout(to);var s=d&&d.seeds;
@@ -3859,10 +3939,14 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
  });$('ov-body').innerHTML=h;lazyEps();}
 // ---- Semillas + RAR por capitulo (DonTorrent), perezoso y cacheado ----
 var _epQ=[],_epActive=0,_epCache={};
-function lazyEps(){_epQ=[];Object.keys(EPS).forEach(function(id){var e=EPS[id];if(e&&e.content_id&&e.tabla&&!e.link)_epQ.push({id:id,c:e.content_id,tb:e.tabla,key:'dt:'+e.tabla+':'+e.content_id});});pumpEp();}
+function lazyEps(){_epQ=[];var cd=(code.value||'').replace(/\D/g,'');var src=(OVDATA&&OVDATA.x&&(OVDATA.x.source||'dt'))||'dt';
+ Object.keys(EPS).forEach(function(id){var e=EPS[id];if(!e)return;
+  if(e.link){var u='/seeds?link='+encodeURIComponent(e.link)+(cd.length===6?('&code='+cd+'&src='+encodeURIComponent(src)):'');_epQ.push({id:id,key:'lk:'+e.link,url:u});}
+  else if(e.content_id&&e.tabla){_epQ.push({id:id,key:'dt:'+e.tabla+':'+e.content_id,url:'/dtpacked?c='+encodeURIComponent(e.content_id)+'&tb='+encodeURIComponent(e.tabla)});}
+ });pumpEp();}
 function pumpEp(){while(_epActive<2&&_epQ.length){var job=_epQ.shift();var c=_epCache[job.key];
   if(c!==undefined){epBadge(job,c);continue;}
-  _epActive++;(function(job){fetch('/dtpacked?c='+encodeURIComponent(job.c)+'&tb='+encodeURIComponent(job.tb)).then(function(r){return r.json()}).then(function(p){_epActive--;
+  _epActive++;(function(job){fetch(job.url).then(function(r){return r.json()}).then(function(p){_epActive--;
    var info={seeds:(p&&typeof p.seeds==='number')?p.seeds:null,rar:!!(p&&p.packed===true)};_epCache[job.key]=info;epBadge(job,info);pumpEp();}).catch(function(){_epActive--;pumpEp();});})(job);}}
 function epBadge(job,info){var el=document.getElementById('epb-'+job.id);if(!el)return;var h='';
   if(info.rar)h+='<span class="ep-rar">📦 RAR</span>';
