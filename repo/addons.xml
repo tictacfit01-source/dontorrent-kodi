@@ -20,7 +20,7 @@
       <fanart>fanart.jpg</fanart>
     </assets>
   </extension>
-</addon><addon id="plugin.video.mejorwolf" name="MejorWolf" version="2.9.42" provider-name="israel">
+</addon><addon id="plugin.video.mejorwolf" name="MejorWolf" version="2.9.43" provider-name="israel">
   <requires>
     <import addon="xbmc.python" version="3.0.0" />
     <import addon="script.module.requests" version="2.22.0" />
