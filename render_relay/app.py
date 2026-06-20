@@ -989,11 +989,21 @@ def dtsearch():
         full_html = ""
         tried = []
         got_results = False
-        for cand in dom_candidates[:2]:   # 1 aprendido + 1 fallback (no saturar)
+        for cand in dom_candidates[:1]:   # 1 dominio aprendido (no saturar; el
+            # 301-handling de _post_page_on sigue la rotacion si el dominio cambio)
+            # TOPE DURO: resolver Anubis + POST puede colgar (slow-drip del baneo
+            # evade el timeout de requests). _bounded abandona en 8s -> /dtsearch
+            # NO cuelga 30-60s y Kodi cae a su DoH residencial al instante.
+            def _try_dom(c=cand):
+                s2, sv = _dt_anubis_session(c)
+                rr = _post_page_on(c, s2, 1)
+                return (s2, sv, rr, rr.text)
+            got = _bounded(_try_dom, 8.0, None)
+            if got is None:
+                tried.append(f"{cand}:TIMEOUT")
+                continue
             try:
-                s2, sv = _dt_anubis_session(cand)
-                rr = _post_page_on(cand, s2, 1)
-                html = rr.text
+                s2, sv, rr, html = got
                 # ¿Tiene resultados de contenido reales?
                 n_items = len(_re_dt.findall(
                     r"/(?:pelicula|serie|documental)/\d+/", html))
@@ -1014,6 +1024,10 @@ def dtsearch():
         # /dtsearch que prioriza Kodi) se rinden al instante (502) y Kodi cae a su
         # DoH residencial. Si dio resultados, reactivar DonTorrent.
         _dt_mark(got_results)
+
+        # Ningun dominio alcanzable (todo timeout/baneo) -> 502 limpio al instante.
+        if r is None:
+            return jsonify({"error": "dt_unreachable", "tried": tried}), 502
 
         # AUTO-CURATIVO: si hubo resultados, aprende el dominio oficial vigente
         # del schema.org de la pagina (donde de verdad sirvio, tras posibles 301)
