@@ -2883,7 +2883,14 @@ def _cat_tmdb(title, kind="movie"):
         if year and ep == "movie":
             params["year"] = year
         r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
-                         params=params, timeout=5)
+                         params=params, timeout=(3, 4))
+        if r.status_code != 200:
+            # 429/403: TMDB rate-limita la IP de Render. NO lanza excepcion, asi
+            # que sin esto el breaker no saltaba y el enrich se atascaba (el Inicio
+            # con 36 items se colgaba). Marcamos caido -> el resto del enrich va
+            # SIN poster AL INSTANTE; reintenta a los 2 min.
+            _tmdb_mark(False)
+            return out
         res = (r.json() or {}).get("results") or []
         if res:
             top = res[0]
