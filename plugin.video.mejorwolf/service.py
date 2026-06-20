@@ -909,6 +909,46 @@ def _playback_diag():
     }
 
 
+def _prefetch_catalog():
+    """Pre-carga los listados de DonTorrent (IP RESIDENCIAL del box) y los empuja
+    al relay -> catbrowse los sirve al INSTANTE de cache, aunque DonTorrent tenga
+    baneada la IP de datacenter de Render. Asi Inicio funciona y va rapido."""
+    try:
+        from resources.lib import scraper_dontorrent as dt
+        base = _relay_base()
+        if not base:
+            return
+        import requests
+        n = 0
+        for kind, path in (("estrenos", "/"), ("peliculas", "/peliculas"),
+                           ("series", "/series")):
+            try:
+                html = dt.fetch_html(path=path)
+                if html and len(html) > 500:
+                    r = requests.post(base + "/catfeed",
+                                      json={"kind": kind, "html": html},
+                                      timeout=30)
+                    if r.status_code == 200:
+                        n += 1
+            except Exception:
+                pass
+        xbmc.log("[MejorWolf/service] prefetch catalogo -> %d/3" % n,
+                 xbmc.LOGINFO)
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] prefetch err: %s" % e, xbmc.LOGWARNING)
+
+
+def _prefetch_loop(monitor):
+    """Mantiene los listados de DonTorrent precargados en el relay (cada ~8 min;
+    el TTL de cache del relay es 15 min). Asi Inicio nunca depende del on-demand."""
+    if monitor.waitForAbort(20):   # deja arrancar el servicio + Anubis
+        return
+    while not monitor.abortRequested():
+        _prefetch_catalog()
+        if monitor.waitForAbort(480):
+            break
+
+
 def main():
     monitor = xbmc.Monitor()
     xbmc.log("[MejorWolf/service] iniciado (keep-warm + teclado remoto)",
@@ -923,6 +963,9 @@ def main():
     threading.Thread(target=_warm_dt, daemon=True).start()
     # Teclado Remoto en su propio hilo (sondeo rapido, respuesta agil).
     threading.Thread(target=_kb_thread, args=(monitor,), daemon=True).start()
+    # Pre-carga del catalogo DonTorrent al relay (Inicio instantaneo aunque
+    # DonTorrent banee la IP de Render).
+    threading.Thread(target=_prefetch_loop, args=(monitor,), daemon=True).start()
 
     last_ping = time.time()
     last_beat = 0.0        # ultimo latido de estado al relay

@@ -3441,6 +3441,34 @@ def _bounded(fn, secs, default=None):
     return box["v"]
 
 
+@app.post("/catfeed")
+def catfeed():
+    """El box PRE-CARGA los listados de DonTorrent (que Render no alcanza por el
+    baneo de IP) desde su IP residencial y los empuja aqui; los parseamos +
+    cacheamos -> catbrowse los sirve al INSTANTE. Inicio funciona y rapido aunque
+    Render este baneado, sin esperar a ningun on-demand."""
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    kind = (body.get("kind") or "").strip().lower()
+    html = body.get("html") or ""
+    if kind not in _CAT_BROWSE or len(html) < 500:
+        return jsonify({"ok": False}), 400
+    try:
+        items = _cat_enrich(_cat_parse_items(html))
+    except Exception:
+        items = []
+    if not items:
+        return jsonify({"ok": False, "items": 0})
+    rec = {"items": items, "ts": _t.time()}
+    _CATBROWSE_CACHE[f"{kind}:1"] = rec
+    disk = _catbrowse_load()
+    disk[f"{kind}:1"] = rec
+    _catbrowse_save(disk)
+    return jsonify({"ok": True, "items": len(items)})
+
+
 @app.get("/catbrowse")
 def catbrowse():
     kind = (request.args.get("kind") or "estrenos").strip().lower()
