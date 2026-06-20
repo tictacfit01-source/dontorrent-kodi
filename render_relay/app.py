@@ -3844,16 +3844,21 @@ def catbrowse():
         job = "db" + os.urandom(5).hex()
         _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml",
                            "path": path})
-        res = _catjob_wait(job, 20.0)
+        # 9s (antes 20s): el box ya tiene el HTML cacheado (fetch_html <1s) +
+        # round-trip del poll (<=6s). 20s retenia el hilo demasiado y SATURABA el
+        # relay (los workers ocupados -> el POST /catfeed del box hacia timeout ->
+        # la cache nunca se poblaba -> Inicio "no se pudo cargar"). El box ademas
+        # empuja /catfeed proactivamente, asi que esto es solo el on-demand.
+        res = _catjob_wait(job, 9.0)
         html = (res or {}).get("html") or ""
     if not html:
         # FALLBACK DivxTotal DIRECTO: el relay SI alcanza DivxTotal aunque
         # DonTorrent banee la IP -> el Inicio NUNCA queda en blanco. TTL corto
         # (dx:True) para reintentar DonTorrent en cuanto se recupere.
-        try:
-            dxit = _dx_browse_items(kind, page)
-        except Exception:
-            dxit = []
+        # TOPE DURO: DivxTotal tambien puede banear/retar la IP de Render y
+        # colgar (slow-drip evade el timeout) -> sin tope, /catbrowse retenia el
+        # hilo indefinidamente y saturaba el relay. _bounded(6s) lo abandona.
+        dxit = _bounded(lambda: _dx_browse_items(kind, page), 6.0, []) or []
         if dxit:
             # Enrich SINCRONO: con el breaker TMDB no cuelga (si TMDB esta caido
             # devuelve sin poster al instante). Sin hilos en 2o plano -> el relay
