@@ -3456,17 +3456,42 @@ def catfeed():
     if kind not in _CAT_BROWSE or len(html) < 500:
         return jsonify({"ok": False}), 400
     try:
-        items = _cat_enrich(_cat_parse_items(html))
+        raw = _cat_parse_items(html)
     except Exception:
-        items = []
-    if not items:
+        raw = []
+    if not raw:
         return jsonify({"ok": False, "items": 0})
-    rec = {"items": items, "ts": _t.time()}
-    _CATBROWSE_CACHE[f"{kind}:1"] = rec
-    disk = _catbrowse_load()
-    disk[f"{kind}:1"] = rec
-    _catbrowse_save(disk)
-    return jsonify({"ok": True, "items": len(items)})
+    # Cachea YA con la caratula PROPIA de DonTorrent (poster=thumb) -> catbrowse
+    # sirve al INSTANTE en cuanto el box empuja. El enrich TMDB (en frio ~40s, si
+    # TMDB ralentiza la IP de Render) va en 2o plano y MEJORA posters/notas SIN
+    # bloquear el POST del box (antes el POST esperaba el enrich -> ReadTimeout
+    # -> 0/3 -> Inicio vacio). Asi el POST responde en ~1s y nunca falla por eso.
+    key = "%s:1" % kind
+    for it in raw:
+        if not it.get("poster"):
+            it["poster"] = it.get("thumb")
+    rec = {"items": raw, "ts": _t.time()}
+    _CATBROWSE_CACHE[key] = rec
+    try:
+        disk = _catbrowse_load()
+        disk[key] = rec
+        _catbrowse_save(disk)
+    except Exception:
+        pass
+
+    def _bg_enrich(_html=html, _key=key):
+        try:
+            en = _cat_enrich(_cat_parse_items(_html))
+            if en:
+                r2 = {"items": en, "ts": _t.time()}
+                _CATBROWSE_CACHE[_key] = r2
+                d = _catbrowse_load()
+                d[_key] = r2
+                _catbrowse_save(d)
+        except Exception:
+            pass
+    _thr.Thread(target=_bg_enrich, daemon=True).start()
+    return jsonify({"ok": True, "items": len(raw), "bg": True})
 
 
 @app.get("/catbrowse")

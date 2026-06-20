@@ -927,11 +927,19 @@ def _prefetch_catalog():
                 if html and len(html) > 500:
                     r = requests.post(base + "/catfeed",
                                       json={"kind": kind, "html": html},
-                                      timeout=30)
+                                      timeout=45)
                     if r.status_code == 200:
                         n += 1
-            except Exception:
-                pass
+                    else:
+                        xbmc.log("[MejorWolf/service] catfeed %s HTTP %d: %s"
+                                 % (kind, r.status_code, (r.text or "")[:140]),
+                                 xbmc.LOGWARNING)
+                else:
+                    xbmc.log("[MejorWolf/service] catfeed %s html corto (%d)"
+                             % (kind, len(html or "")), xbmc.LOGWARNING)
+            except Exception as e:
+                xbmc.log("[MejorWolf/service] catfeed %s ERR: %r"
+                         % (kind, e), xbmc.LOGWARNING)
         xbmc.log("[MejorWolf/service] prefetch catalogo -> %d/3" % n,
                  xbmc.LOGINFO)
     except Exception as e:
