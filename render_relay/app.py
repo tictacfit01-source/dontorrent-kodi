@@ -929,6 +929,14 @@ def dtsearch():
     if not q:
         return jsonify({"error": "missing q"}), 400
 
+    # Si DonTorrent esta baneando la IP de Render (breaker compartido ON),
+    # RENDIRSE AL INSTANTE con 502. Asi el addon de Kodi NO se queda 60s
+    # esperando al relay y cae enseguida a su DoH residencial (IP de casa, NO
+    # baneada) -> Kodi busca igual. Sin esto, /dtsearch colgaba 30s/dominio y
+    # Kodi "no buscaba nada". El breaker se auto-resetea en 90s.
+    if _dt_is_down():
+        return jsonify({"error": "dt_down"}), 502
+
     diag = {"phase": "init", "preferred": preferred}
     try:
         # Lista de dominios a probar: preferido primero, luego los fallback.
@@ -957,20 +965,20 @@ def dtsearch():
             # PERDIENDO el termino (-> "Busqueda: -", 0 resultados). En su lugar
             # re-POSTeamos directo al dominio destino (robusto ante rotaciones).
             rr = sess.post(f"https://{domain}/buscar", data=data,
-                           timeout=30, allow_redirects=False)
+                           timeout=8, allow_redirects=False)
             if rr.status_code in (301, 302, 303, 307, 308):
                 newdom = _urlparse(rr.headers.get("Location") or "").hostname
                 if newdom and newdom != domain:
                     ns, _ = _dt_anubis_session(newdom)
                     rr = ns.post(f"https://{newdom}/buscar", data=data,
-                                 timeout=30, allow_redirects=False)
+                                 timeout=8, allow_redirects=False)
                 else:
                     rr = sess.post(f"https://{domain}/buscar", data=data,
-                                   timeout=30, allow_redirects=True)
+                                   timeout=8, allow_redirects=True)
             if "anubis_challenge" in rr.text:
                 _DT_COOKIES.pop(domain, None)
                 ns, _ = _dt_anubis_session(domain)
-                rr = ns.post(f"https://{domain}/buscar", data=data, timeout=30,
+                rr = ns.post(f"https://{domain}/buscar", data=data, timeout=8,
                              allow_redirects=False)
             return rr
 
@@ -981,7 +989,7 @@ def dtsearch():
         full_html = ""
         tried = []
         got_results = False
-        for cand in dom_candidates[:5]:
+        for cand in dom_candidates[:2]:   # 1 aprendido + 1 fallback (no saturar)
             try:
                 s2, sv = _dt_anubis_session(cand)
                 rr = _post_page_on(cand, s2, 1)
@@ -1000,6 +1008,12 @@ def dtsearch():
             except Exception as e:
                 tried.append(f"{cand}:ERR")
                 continue
+
+        # Breaker compartido: si DonTorrent no dio resultados (baneo/cuelgue de la
+        # IP de Render), marcarlo CAIDO -> las siguientes peticiones (web y el
+        # /dtsearch que prioriza Kodi) se rinden al instante (502) y Kodi cae a su
+        # DoH residencial. Si dio resultados, reactivar DonTorrent.
+        _dt_mark(got_results)
 
         # AUTO-CURATIVO: si hubo resultados, aprende el dominio oficial vigente
         # del schema.org de la pagina (donde de verdad sirvio, tras posibles 301)
@@ -3524,14 +3538,19 @@ def catboxeps():
     src = (request.args.get("src") or "dx").strip()
     if not url.lower().startswith("http"):
         return jsonify({"episodes": []}), 400
-    # DivxTotal: resolucion directa (esto arregla "los episodios no cargan"
-    # cuando el box esta apagado -> las series dx ya salian en la busqueda).
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    # DivxTotal: resolucion DIRECTA desde el relay (sin box) -> arregla "los
+    # episodios no cargan" cuando el box esta apagado. Si DivxTotal banea la IP
+    # de Render (directo vacio) Y hay box emparejado, cae al box (DoH de casa,
+    # NO baneado) -> robusto pase lo que pase.
     if src == "dx" and "divxtotal" in url.lower():
         try:
-            return jsonify(_dx_episodes_payload(url))
+            payload = _dx_episodes_payload(url)
         except Exception:
-            return jsonify({"episodes": []})
-    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+            payload = {"episodes": []}
+        if payload.get("episodes") or len(code) != 6:
+            return jsonify(payload)
+        # directo sin episodios + hay box -> resolver via el box (abajo)
     if len(code) != 6:
         return jsonify({"episodes": []}), 400
     job = "et" + os.urandom(5).hex()
