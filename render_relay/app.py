@@ -1910,6 +1910,37 @@ def _dx_episodes_payload(url):
             "rating": meta.get("rating"), "episodes": eps}
 
 
+# Listado DivxTotal (estrenos/peliculas/series) DIRECTO desde el relay. Es el
+# FALLBACK del Inicio: cuando DonTorrent banea/rate-limitea la IP de Render, el
+# Inicio NO debe quedar en blanco -> tira de DivxTotal, que el relay si alcanza.
+_DX_BROWSE = {"estrenos": "", "peliculas": "peliculas", "series": "series"}
+
+
+def _dx_browse_items(kind, page=1):
+    dom = _dx_domain()
+    if not dom:
+        return []
+    section = _DX_BROWSE.get(kind, "peliculas")
+    base = f"https://{dom}/{section}/" if section else f"https://{dom}/"
+    url = base if page <= 1 else (base.rstrip("/") + f"/page/{page}/")
+    html = _dx_get(url)
+    if not html:
+        _DX_DOM_CACHE["ts"] = 0.0          # por si el dominio rotó
+        dom = _dx_domain()
+        url = (f"https://{dom}/{section}/" if section else f"https://{dom}/")
+        url = url if page <= 1 else (url.rstrip("/") + f"/page/{page}/")
+        html = _dx_get(url) if dom else None
+    if not html:
+        return []
+    items, seen = [], set()
+    for it in _dx_parse_items(html, dom):
+        if it["url"] in seen:
+            continue
+        seen.add(it["url"])
+        items.append(it)
+    return items
+
+
 # ===========================================================================
 # TECLADO REMOTO (escribir busquedas desde el movil)
 # ===========================================================================
@@ -3626,6 +3657,7 @@ def seeds_ep():
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
 _CATBROWSE_CACHE = {}      # "kind:page" -> {"items": [...], "ts": ...}
 _CATBROWSE_TTL = 900       # 15 min: los listados cambian despacio
+_CATBROWSE_DX_TTL = 300    # 5 min para el fallback DivxTotal -> reintenta DT pronto
 _CATBROWSE_FILE = "/tmp/mw_catbrowse.json"   # persiste entre workers y deploys
 
 
@@ -3734,7 +3766,8 @@ def catbrowse():
         ent = _catbrowse_load().get(key)
         if ent:
             _CATBROWSE_CACHE[key] = ent
-    if ent and (now - ent["ts"]) < _CATBROWSE_TTL:
+    ttl = _CATBROWSE_DX_TTL if (ent and ent.get("dx")) else _CATBROWSE_TTL
+    if ent and (now - ent["ts"]) < ttl:
         return jsonify({"items": ent["items"], "cached": True})
     bp = _CAT_BROWSE.get(kind, "/")
     path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
@@ -3749,6 +3782,24 @@ def catbrowse():
         res = _catjob_wait(job, 20.0)
         html = (res or {}).get("html") or ""
     if not html:
+        # FALLBACK DivxTotal DIRECTO: el relay SI alcanza DivxTotal aunque
+        # DonTorrent banee la IP -> el Inicio NUNCA queda en blanco. TTL corto
+        # (dx:True) para reintentar DonTorrent en cuanto se recupere.
+        try:
+            dxit = _dx_browse_items(kind, page)
+        except Exception:
+            dxit = []
+        if dxit:
+            items = _cat_enrich(dxit)
+            rec = {"items": items, "ts": now, "dx": True}
+            _CATBROWSE_CACHE[key] = rec
+            try:
+                disk = _catbrowse_load()
+                disk[key] = rec
+                _catbrowse_save(disk)
+            except Exception:
+                pass
+            return jsonify({"items": items, "dx": True})
         # si falla pero hay cache vieja (memoria o disco), sirvela: mejor lo
         # ultimo conocido al instante que una pagina vacia o colgada.
         if ent:
