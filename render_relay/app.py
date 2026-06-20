@@ -3091,6 +3091,7 @@ def catsearch():
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify({"items": []})
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     from concurrent.futures import ThreadPoolExecutor as _TPE
     with _TPE(max_workers=2) as ex:
         f_et = ex.submit(_et_search, q)
@@ -3103,6 +3104,15 @@ def catsearch():
             et_items = f_et.result() or []
         except Exception:
             et_items = []
+    if not dt_items and len(code) == 6:
+        # Render bloqueado por DonTorrent -> buscar DonTorrent VIA EL BOX (IP
+        # residencial). El box trae el HTML de /buscar y aqui lo parseamos igual.
+        job = "ds" + os.urandom(5).hex()
+        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml", "q": q})
+        res = _catjob_wait(job, 20.0)
+        h = (res or {}).get("html") or ""
+        if h:
+            dt_items = _cat_parse_items(h)
     if not dt_items and not et_items:
         return jsonify({"items": []})
     return jsonify({"items": _cat_enrich(_cat_merge(dt_items, et_items))})
@@ -3273,7 +3283,8 @@ def catjob_done():
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
     d[job] = {"items": body.get("items"), "link": body.get("link"),
               "rar": body.get("rar"), "quality": body.get("quality"),
-              "eps": body.get("eps"), "ih": body.get("ih"), "ts": now}
+              "eps": body.get("eps"), "ih": body.get("ih"),
+              "html": body.get("html"), "ts": now}
     _catjob_save(d)
     return jsonify({"ok": True})
 
@@ -3406,6 +3417,7 @@ def catbrowse():
         page = max(1, int(request.args.get("page") or 1))
     except Exception:
         page = 1
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     key = f"{kind}:{page}"
     now = _t.time()
     # cache en memoria; si el worker esta frio (tras deploy) cae al disco
@@ -3419,6 +3431,14 @@ def catbrowse():
     bp = _CAT_BROWSE.get(kind, "/")
     path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
     html, _d = _cat_dt_session_get(path)
+    if not html and len(code) == 6:
+        # Render bloqueado por DonTorrent -> traer el listado VIA EL BOX (IP
+        # residencial). El box fetcha el HTML crudo y aqui lo parseamos igual.
+        job = "db" + os.urandom(5).hex()
+        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml",
+                           "path": path})
+        res = _catjob_wait(job, 20.0)
+        html = (res or {}).get("html") or ""
     if not html:
         # si falla pero hay cache vieja (memoria o disco), sirvela: mejor lo
         # ultimo conocido al instante que una pagina vacia o colgada.
@@ -3815,14 +3835,14 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  function fallback(){ // DonTorrent vacio/lento/caido: que el box (Estrenos) llene; si no, reintento
   LISTS.inicio=[];ensureGrid();box();
   if(kind==='estrenos'){setTimeout(function(){if(!g.querySelector('.card'))retry();},14000);}else{retry();}}
- fetch('/catbrowse?kind='+kind+'&page=1',ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
+ fetch('/catbrowse?kind='+kind+'&page=1&code='+(code.value||'').replace(/\D/g,''),ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
   done=true;clearTimeout(slow);clearTimeout(to);
   LISTS.inicio=(d&&d.items)||[];
   if(!LISTS.inicio.length){fallback();return}
   renderGrid(g,'inicio');box();
  }).catch(function(){done=true;clearTimeout(slow);clearTimeout(to);fallback()})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
- fetch('/catbrowse?kind='+INI.kind+'&page='+next).then(function(r){return r.json()}).then(function(d){
+ fetch('/catbrowse?kind='+INI.kind+'&page='+next+'&code='+(code.value||'').replace(/\D/g,'')).then(function(r){return r.json()}).then(function(d){
   var items=(d&&d.items)||[];var have={};LISTS.inicio.forEach(function(x){have[x.kind+':'+x.content_id]=1});
   var fresh=items.filter(function(x){var k=x.kind+':'+x.content_id;if(have[k])return false;have[k]=1;return true});
   if(!fresh.length){INI.more=false;INI.loading=false;return}
@@ -3855,7 +3875,7 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  function doneWf(r){if(seq!==_searchSeq)return;wfPend=false;paint();}
  // DonTorrent (relay) y EliteTorrent+DivxTotal (box) EN PARALELO -> salen en ~3s.
  // WolfMax (lento) va aparte, en 2o plano, sin bloquear el spinner principal.
- fetch('/catsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq)return;mergeResults('buscar',g,(d&&d.items)||[]);done()}).catch(function(){done()});
+ fetch('/catsearch?q='+encodeURIComponent(q)+'&code='+(code.value||'').replace(/\D/g,'')).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq)return;mergeResults('buscar',g,(d&&d.items)||[]);done()}).catch(function(){done()});
  if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx',done,seq);boxMerge('buscar',g,'search',q,'wf',doneWf,seq);}}
 function boxMerge(list,g,op,q,srcs,cb,seq){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');

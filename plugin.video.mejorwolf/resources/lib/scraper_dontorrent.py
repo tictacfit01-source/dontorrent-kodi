@@ -647,6 +647,29 @@ def resolve_domain(force=False):
     return _cached_domain or FALLBACK_DOMAINS[0]
 
 
+def fetch_html(path=None, q=None):
+    """HTML CRUDO de un listado (path: '/', '/peliculas', '/series', '/page/N')
+    o de una busqueda (q) de DonTorrent, desde la IP RESIDENCIAL del box (DoH,
+    resuelve Anubis). Lo usa el relay cuando DonTorrent le bloquea su IP de
+    datacenter: el box lo trae y el relay lo parsea con su parser. '' si falla."""
+    host = resolve_domain()
+    try:
+        if q:
+            r = _doh_fetch("POST", f"https://{host}/buscar",
+                           data={"valor": q, "Buscar": "Buscar"})
+        else:
+            p = path or "/"
+            if not p.startswith("/"):
+                p = "/" + p
+            r = _doh_fetch("GET", f"https://{host}{p}")
+        html = r.text or ""
+        _LOG(f"fetch_html ({'q='+q if q else path}) -> {len(html)} bytes")
+        return html
+    except Exception as e:
+        _LOG(f"fetch_html error: {e}")
+        return ""
+
+
 def base_url():
     return f"https://{resolve_domain()}"
 

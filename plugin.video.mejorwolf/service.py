@@ -541,6 +541,10 @@ def _do_etjob(ev):
                 out["link"] = lk or _src_resolve(
                     (ev.get("src") or "").strip(),
                     (ev.get("url") or "").strip())
+            elif op == "dthtml":
+                from resources.lib import scraper_dontorrent as dt
+                out["html"] = dt.fetch_html(path=ev.get("path"),
+                                            q=(ev.get("q") or "").strip())
             elif op == "dtmeta":
                 cid = re.sub(r"\D", "", str(ev.get("cid") or ""))
                 tb = (ev.get("tb") or "peliculas").strip()
