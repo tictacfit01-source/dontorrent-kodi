@@ -2815,8 +2815,24 @@ def _cat_clean_title(title):
     return t
 
 
+# Breaker TMDB: TMDB tambien banea la IP de Render tras muchas llamadas (el enrich
+# hace 18-36 por pantalla). Si una llamada falla, dejamos de tocar TMDB un rato:
+# el enrich devuelve SIN poster AL INSTANTE (no cuelga, no abre conexiones que se
+# acumulen). Asi el relay no se satura ni se queda sin memoria. Reintenta a los 2min.
+_TMDB_DOWN_UNTIL = [0.0]
+_TMDB_DOWN_COOLDOWN = 120
+
+
+def _tmdb_is_down():
+    return _t.time() < _TMDB_DOWN_UNTIL[0]
+
+
+def _tmdb_mark(ok):
+    _TMDB_DOWN_UNTIL[0] = 0.0 if ok else (_t.time() + _TMDB_DOWN_COOLDOWN)
+
+
 def _cat_tmdb(title, kind="movie"):
-    """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria."""
+    """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria + breaker."""
     clean = _cat_clean_title(title)
     ym = _re_dt.search(r"\b(19|20)\d{2}\b", title)
     year = ym.group(0) if ym else None
@@ -2826,6 +2842,8 @@ def _cat_tmdb(title, kind="movie"):
     if ckey in _CAT_TMDB_CACHE:
         return _CAT_TMDB_CACHE[ckey]
     out = {"poster": None, "year": year, "rating": None}
+    if _tmdb_is_down():
+        return out   # TMDB baneado -> sin poster al instante (no toca la red)
     try:
         ep = "tv" if kind == "tv" else "movie"
         params = {"api_key": _CAT_TMDB_KEY, "language": "es-ES",
@@ -2833,7 +2851,7 @@ def _cat_tmdb(title, kind="movie"):
         if year and ep == "movie":
             params["year"] = year
         r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
-                         params=params, timeout=8)
+                         params=params, timeout=5)
         res = (r.json() or {}).get("results") or []
         if res:
             top = res[0]
@@ -2841,9 +2859,10 @@ def _cat_tmdb(title, kind="movie"):
             d = top.get("release_date") or top.get("first_air_date") or ""
             out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
                    "year": d[:4] or year, "rating": top.get("vote_average")}
+        _tmdb_mark(True)
+        _CAT_TMDB_CACHE[ckey] = out
     except Exception:
-        pass
-    _CAT_TMDB_CACHE[ckey] = out
+        _tmdb_mark(False)   # no cachear -> reintenta cuando TMDB se recupere
     return out
 
 
@@ -3364,19 +3383,9 @@ def catsearch():
     if not dt_items and not et_items and not dx_items:
         return jsonify({"items": []})
     merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
-    # Enrich TMDB con TOPE: si TMDB esta lento/baneado desde Render, NO colgamos
-    # la busqueda -> devolvemos los resultados YA (sin poster, pero todos).
-    _en = {}
-
-    def _do_enrich():
-        try:
-            _en["v"] = _cat_enrich(merged)
-        except Exception:
-            _en["v"] = merged
-    _te = _th.Thread(target=_do_enrich, daemon=True)
-    _te.start()
-    _te.join(8.0)
-    return jsonify({"items": _en.get("v", merged)})
+    # Enrich SINCRONO seguro: el breaker TMDB evita que cuelgue (sin TMDB, items
+    # sin poster al instante). Sin hilos en 2o plano que se acumulen.
+    return jsonify({"items": _cat_enrich(merged)})
 
 
 @app.get("/catetresolve")
@@ -3809,30 +3818,19 @@ def catbrowse():
         except Exception:
             dxit = []
         if dxit:
-            # Enrich TMDB en hilo CON TOPE: si TMDB va bien (~2-3s) salen con
-            # poster/nota; si TMDB esta lento/baneado desde Render, servimos los
-            # items YA (visibles, sin poster) y el hilo cachea el enriquecido
-            # para la proxima carga. El Inicio NUNCA se cuelga ni queda en blanco.
-            res = {}
-
-            def _enrich_cache(_items=dxit, _key=key):
-                try:
-                    en = _cat_enrich(_items)
-                except Exception:
-                    en = _items
-                rec2 = {"items": en, "ts": _t.time(), "dx": True}
-                _CATBROWSE_CACHE[_key] = rec2
-                try:
-                    disk = _catbrowse_load()
-                    disk[_key] = rec2
-                    _catbrowse_save(disk)
-                except Exception:
-                    pass
-                res["items"] = en
-            th = _thr.Thread(target=_enrich_cache, daemon=True)
-            th.start()
-            th.join(6.0)
-            return jsonify({"items": res.get("items", dxit), "dx": True})
+            # Enrich SINCRONO: con el breaker TMDB no cuelga (si TMDB esta caido
+            # devuelve sin poster al instante). Sin hilos en 2o plano -> el relay
+            # no acumula hilos/conexiones ni se queda sin memoria.
+            items = _cat_enrich(dxit)
+            rec = {"items": items, "ts": now, "dx": True}
+            _CATBROWSE_CACHE[key] = rec
+            try:
+                disk = _catbrowse_load()
+                disk[key] = rec
+                _catbrowse_save(disk)
+            except Exception:
+                pass
+            return jsonify({"items": items, "dx": True})
         # si falla pero hay cache vieja (memoria o disco), sirvela: mejor lo
         # ultimo conocido al instante que una pagina vacia o colgada.
         if ent:
