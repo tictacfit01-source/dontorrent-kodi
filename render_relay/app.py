@@ -1816,6 +1816,100 @@ def _dx_search_items(q, max_pages=5):
     return _dx_relevance(items, q)
 
 
+# --- Ficha DivxTotal DIRECTO desde el relay (episodios + .torrent + semillas) -
+# El relay SI alcanza DivxTotal, asi que la ficha (episodios de una serie, o el
+# .torrent de una peli) NO necesita el box: la resolvemos aqui igual que la
+# busqueda. Mismo formato que el box (_src_episodes/_src_resolve) para no tocar
+# la web. Replica scraper_divxtotal.detail() con regex (el relay no usa bs4).
+_DX_DL_RE = re.compile(r"download_tt\.php\?u=([A-Za-z0-9+/=]+)", re.I)
+_DX_EP_RE = re.compile(r"(\d{1,2})\s*[xX×]\s*(\d{1,3})")
+_DX_QFILE_RE = re.compile(
+    r"(2160p|1080p|720p|480p|bdremux|blu-?ray|brrip|bdrip|web-?dl|webrip|"
+    r"hdrip|microhd|dvdrip|hdtv|4k|hdr)", re.I)
+_DX_TR_RE = re.compile(r"<tr\b.*?</tr>", re.S | re.I)
+_DX_IMG_RE = re.compile(
+    r'<img[^>]+(?:src|data-src)=["\']([^"\']*/wp-content/uploads/[^"\']+)["\']',
+    re.I)
+_DX_H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S | re.I)
+
+
+def _dx_decode_tt(b64):
+    """download_tt.php?u=<base64> -> URL real del .torrent (estatico)."""
+    try:
+        import base64 as _b64
+        u = (b64 or "") + "=" * (-len(b64 or "") % 4)
+        dec = _b64.b64decode(u).decode("utf-8", "replace")
+        return dec if dec.startswith("http") else None
+    except Exception:
+        return None
+
+
+def _dx_detail(url):
+    """Ficha DivxTotal: {title, year, image, downloads:[{torrent_url, label,
+    season, episode, quality}]}. El .torrent ya sirve para reproducir (a='pl')
+    y para derivar el hash de las semillas (sin pasar por el box)."""
+    html = _dx_get(url)
+    if not html:
+        return {"title": "", "downloads": []}
+    hm = _DX_H1_RE.search(html)
+    title = (re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", hm.group(1))).strip()
+             if hm else "")
+    body = re.sub(r"<[^>]+>", " ", html)
+    ym = re.search(r"\b(19|20)\d{2}\b", body)
+    year = ym.group(0) if ym else None
+    pm = _DX_IMG_RE.search(html)
+    image = pm.group(1) if pm else None
+    if image and image.startswith("//"):
+        image = "https:" + image
+    downloads, seen = [], set()
+    rows = _DX_TR_RE.findall(html)
+    for row in (rows or [html]):
+        bm = _DX_DL_RE.search(row)
+        if not bm:
+            continue
+        turl = _dx_decode_tt(bm.group(1))
+        if not turl or turl in seen:
+            continue
+        seen.add(turl)
+        txt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", row)).strip()
+        # El ULTIMO marcador NxNN del texto (robusto ante "1x09 FINAL").
+        ems = _DX_EP_RE.findall(txt)
+        season = int(ems[-1][0]) if ems else None
+        episode = int(ems[-1][1]) if ems else None
+        qm = _DX_QFILE_RE.search(turl.rsplit("/", 1)[-1])
+        quality = _cat_norm_quality(qm.group(1)) if qm else ""
+        label = ("%dx%02d" % (season, episode)) if (season and episode) else (
+            title or "Descargar")
+        downloads.append({"torrent_url": turl, "label": label,
+                          "season": season, "episode": episode,
+                          "quality": quality})
+    return {"title": title, "year": year, "image": image,
+            "downloads": downloads}
+
+
+def _dx_episodes_payload(url):
+    """Episodios de una serie DivxTotal en el formato que espera la web (igual
+    que /catboxeps via box). Enriquece poster/year/nota con TMDB."""
+    det = _dx_detail(url)
+    eps = []
+    for dl in det.get("downloads", []):
+        link = dl.get("torrent_url")
+        if not link:
+            continue
+        s, e = dl.get("season"), dl.get("episode")
+        label = ("%dx%02d" % (s, e)) if (s and e) else (
+            dl.get("label") or "Episodio")
+        eps.append({"label": label, "season": s or 0, "episode": e or 0,
+                    "quality": dl.get("quality") or "", "link": link,
+                    "content_id": link})
+    title = _cat_clean_quality(det.get("title") or "")[0]
+    meta = _cat_tmdb(title, "tv") if title else {}
+    return {"title": title or "Serie",
+            "poster": meta.get("poster") or det.get("image"),
+            "year": meta.get("year") or det.get("year"),
+            "rating": meta.get("rating"), "episodes": eps}
+
+
 # ===========================================================================
 # TECLADO REMOTO (escribir busquedas desde el movil)
 # ===========================================================================
@@ -2973,8 +3067,12 @@ def _cat_parse_items(html):
     return out
 
 
-def _cat_enrich(items, limit=36):
-    items = items[:limit]
+def _cat_enrich(items, limit=120):
+    # NO descartamos resultados: la busqueda debe volcar TODO lo que da la web
+    # original (DonTorrent puede traer 49+ en "batman"). Enriquecemos con TMDB
+    # (poster/nota) hasta `limit` en paralelo; el resto (rarisimo) se devuelve
+    # tal cual -> aparece igualmente (con su miniatura propia o sin poster).
+    head, tail = items[:limit], items[limit:]
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
     def _go(it):
@@ -2986,9 +3084,10 @@ def _cat_enrich(items, limit=36):
         return it
     try:
         with _TPE(max_workers=8) as ex:
-            return list(ex.map(_go, items))
+            head = list(ex.map(_go, head))
     except Exception:
-        return items
+        pass
+    return head + tail
 
 
 # === EliteTorrent (catalogo: 2a fuente, peliculas) =========================
@@ -3366,12 +3465,22 @@ def catboxrar():
 
 @app.get("/catboxeps")
 def catboxeps():
-    """Episodios de una serie de una fuente-box (DivxTotal/EliteTorrent),
-    resueltos por el box. Enriquece poster/rating con TMDB."""
-    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    """Episodios de una serie de una fuente-box (EliteTorrent/WolfMax) resueltos
+    por el box, o de DivxTotal DIRECTO desde el relay (sin box, sin code: el
+    relay alcanza DivxTotal igual que en la busqueda). Enriquece con TMDB."""
     url = (request.args.get("url") or "").strip()
     src = (request.args.get("src") or "dx").strip()
-    if len(code) != 6 or not url.lower().startswith("http"):
+    if not url.lower().startswith("http"):
+        return jsonify({"episodes": []}), 400
+    # DivxTotal: resolucion directa (esto arregla "los episodios no cargan"
+    # cuando el box esta apagado -> las series dx ya salian en la busqueda).
+    if src == "dx" and "divxtotal" in url.lower():
+        try:
+            return jsonify(_dx_episodes_payload(url))
+        except Exception:
+            return jsonify({"episodes": []})
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    if len(code) != 6:
         return jsonify({"episodes": []}), 400
     job = "et" + os.urandom(5).hex()
     _kb_enqueue(code, {"c": "etjob", "job": job, "op": "episodes",
@@ -3482,6 +3591,15 @@ def seeds_ep():
     # 1) link directo (magnet o .torrent) -> el relay deriva el hash (sin box).
     if len(ih) != 40 and link:
         ih = _ih_from_link(link)
+    # 1b) DivxTotal: el relay alcanza la ficha y el .torrent -> deriva el hash
+    # DIRECTO, sin box ni code (asi las semillas salen tambien en DivxTotal).
+    if len(ih) != 40 and src == "dx" and "divxtotal" in (url or "").lower():
+        try:
+            dls = _dx_detail(url).get("downloads") or []
+            if dls:
+                ih = _ih_from_link(dls[0].get("torrent_url") or "")
+        except Exception:
+            pass
     # 2) solo src+url (ficha): el box RESUELVE el link y el relay deriva el hash.
     if len(ih) != 40 and code and src and url:
         job = "ih" + os.urandom(5).hex()
@@ -4107,7 +4225,10 @@ function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSe
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sh-seeds').innerHTML='';$('sheet').classList.add('on');
  if((x.source||'dt')==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x||!p)return;if(p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';if(typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}
- else{var _cd=(code.value||'').replace(/\D/g,'');if(_cd.length===6)fetch('/seeds?code='+_cd+'&src='+encodeURIComponent(x.source)+'&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}}
+ else{var _cd=(code.value||'').replace(/\D/g,'');var s3=x.source||'';
+  // DivxTotal: el relay deriva las semillas directo (sin code). ET/WF: via box (necesita code).
+  if(s3==='dx'||_cd.length===6){var su='/seeds?src='+encodeURIComponent(s3)+'&url='+encodeURIComponent(x.url||x.content_id)+(_cd.length===6?('&code='+_cd):'');
+   fetch(su).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}}}
 function seedTag(n){var c,t;if(n<=0){c='s-zero';t='⚠ Sin semillas';}else if(n<3){c='s-low';t='🌱 '+n+' semilla'+(n===1?'':'s');}else{c='s-ok';t='🌱 '+n+' semillas';}return '<span class="seedtag '+c+'">'+t+'</span>';}
 function seedGate(ci,tb,proceed){var done=false;var to=setTimeout(function(){if(done)return;done=true;proceed()},6000);toast('Comprobando semillas…');
  fetch('/dtseeds?c='+encodeURIComponent(ci)+'&tb='+encodeURIComponent(tb)).then(function(r){return r.json()}).then(function(d){if(done)return;done=true;clearTimeout(to);var s=d&&d.seeds;
@@ -4157,7 +4278,7 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on
  var src=x.source||'dt';var cd=(code.value||'').replace(/\D/g,'');
  var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id));
  fetch(u).then(function(r){return r.json()}).then(function(d){
-  var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+(src!=='dt'?' (¿box encendido?)':'')+'.</div>';return}
+  var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+((src==='et'||src==='wf')?' (¿box encendido?)':'')+'.</div>';return}
   OVDATA={d:d,x:x};renderEpisodes();
  }).catch(function(){$('ov-body').innerHTML='<div class="msg">Error de conexión.</div>'})}
 function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var _epi=0;
