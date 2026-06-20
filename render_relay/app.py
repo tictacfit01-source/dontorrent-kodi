@@ -3177,7 +3177,11 @@ def catetbox():
     srcs = (request.args.get("srcs") or "et").strip()
     if len(code) != 6 or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
-    wait = 24.0 if "wf" in srcs else 10.0   # WolfMax es lento (catalogo->brave)
+    # WolfMax es lento (catalogo->brave). Para et/dx, 20s: las cajas LENTAS (TV)
+    # no terminaban en 10s -> el salon devolvia 0 ("solo DonTorrent"). _catjob_wait
+    # devuelve en cuanto el box responde, asi que las cajas rapidas (PC) NO se
+    # penalizan; solo da margen a las lentas. DonTorrent sale ya; el box rellena.
+    wait = 24.0 if "wf" in srcs else 20.0
     job = "et" + os.urandom(5).hex()
     _kb_enqueue(code, {"c": "etjob", "job": job, "op": op, "q": q,
                        "srcs": srcs})
