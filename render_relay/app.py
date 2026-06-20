@@ -998,7 +998,11 @@ def dtsearch():
                 s2, sv = _dt_anubis_session(c)
                 rr = _post_page_on(c, s2, 1)
                 return (s2, sv, rr, rr.text)
-            got = _bounded(_try_dom, 8.0, None)
+            # Tope 4s: la busqueda combinada del addon corta DonTorrent a 7s y
+            # luego el box aun resuelve por DoH (~2s). Si el relay tardara 8s en
+            # rendirse, el DoH llegaria a 10s -> TARDE. Con 4s: 4+2=6s < 7s, los
+            # resultados de DonTorrent (via DoH del box) SI entran a tiempo.
+            got = _bounded(_try_dom, 4.0, None)
             if got is None:
                 tried.append(f"{cand}:TIMEOUT")
                 continue
