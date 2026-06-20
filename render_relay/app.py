@@ -3092,18 +3092,31 @@ def catsearch():
     if not q:
         return jsonify({"items": []})
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
-    from concurrent.futures import ThreadPoolExecutor as _TPE
-    with _TPE(max_workers=2) as ex:
-        f_et = ex.submit(_et_search, q)
-        f_dt = ex.submit(lambda: _cat_parse_items(_cat_dt_html(q)))
+    # Probes con TOPE DURO (hilos daemon): si DonTorrent/ET cuelgan la conexion
+    # (Render bloqueado -> ignora el timeout de requests), los abandonamos y
+    # seguimos. Asi la peticion NUNCA se cuelga y llega el fallback al box.
+    import threading as _th
+    _r = {"dt": [], "et": []}
+
+    def _w_dt():
         try:
-            dt_items = f_dt.result() or []
+            _r["dt"] = _cat_parse_items(_cat_dt_html(q)) or []
         except Exception:
-            dt_items = []
+            pass
+
+    def _w_et():
         try:
-            et_items = f_et.result() or []
+            _r["et"] = _et_search(q) or []
         except Exception:
-            et_items = []
+            pass
+    _tdt = _th.Thread(target=_w_dt, daemon=True)
+    _tet = _th.Thread(target=_w_et, daemon=True)
+    _tdt.start()
+    _tet.start()
+    _tdt.join(8.0)
+    _tet.join(10.0)
+    dt_items = _r["dt"]
+    et_items = _r["et"]
     if not dt_items and len(code) == 6:
         # Render bloqueado por DonTorrent -> buscar DonTorrent VIA EL BOX (IP
         # residencial). El box trae el HTML de /buscar y aqui lo parseamos igual.
@@ -3410,6 +3423,24 @@ def _catbrowse_save(d):
         pass
 
 
+def _bounded(fn, secs, default=None):
+    """Ejecuta fn() con TOPE DURO de `secs` (hilo daemon). Si se cuelga (conexion
+    que ignora el timeout de requests por bloqueo de IP de Render), devuelve
+    `default` y abandona el hilo -> la peticion NUNCA se cuelga."""
+    import threading
+    box = {"v": default}
+
+    def _w():
+        try:
+            box["v"] = fn()
+        except Exception:
+            box["v"] = default
+    th = threading.Thread(target=_w, daemon=True)
+    th.start()
+    th.join(secs)
+    return box["v"]
+
+
 @app.get("/catbrowse")
 def catbrowse():
     kind = (request.args.get("kind") or "estrenos").strip().lower()
@@ -3430,7 +3461,8 @@ def catbrowse():
         return jsonify({"items": ent["items"], "cached": True})
     bp = _CAT_BROWSE.get(kind, "/")
     path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
-    html, _d = _cat_dt_session_get(path)
+    html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
+                    8.0, "") or ""
     if not html and len(code) == 6:
         # Render bloqueado por DonTorrent -> traer el listado VIA EL BOX (IP
         # residencial). El box fetcha el HTML crudo y aqui lo parseamos igual.
