@@ -1722,6 +1722,100 @@ def dxsearch():
                              "X-MW-Dx-Pages": str(max_page)})
 
 
+# --- DivxTotal DIRECTO desde el relay (parseado a items del catalogo) -------
+# El relay SI alcanza DivxTotal (no esta bloqueado como DonTorrent/TMDB), asi
+# que la busqueda dx NO necesita el box: la servimos en /catsearch al instante
+# (rapido y SIN code -> los amigos ven DivxTotal aunque no tengan Kodi
+# encendido). Antes dx iba web->relay->BOX->relay/dxsearch->box->relay->web
+# (ida-y-vuelta lento e inconsistente); ahora el relay lo trae directo (~2s).
+_DX_SLUG_RE = re.compile(r'/(?:peliculas|series)/[a-z0-9][a-z0-9\-]+/?$', re.I)
+_DX_KIND_RE = re.compile(r'/(peliculas|series)/', re.I)
+_DX_EP_TAIL = re.compile(r'\s*\d{1,2}\s*[xX×]\s*\d{1,3}\s*$')
+_DX_STOP = {"el", "la", "los", "las", "de", "del", "y", "a", "en", "un", "una",
+            "the", "of", "to", "lo", "su", "al", "o", "and"}
+_DX_A_RE = re.compile(r'<a\b[^>]*?href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+                      re.I | re.S)
+
+
+def _dx_norm(s):
+    s = _wud.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not _wud.combining(c)).lower()
+    return re.sub(r"[^a-z0-9 ]", " ", s)
+
+
+def _dx_relevance(items, q):
+    """Quita ruido: titulos con TODAS las palabras > con ALGUNA (como el box)."""
+    toks = [t for t in _dx_norm(q).split() if len(t) > 1 and t not in _DX_STOP]
+    if not toks:
+        return items
+
+    def score(it):
+        words = set(_dx_norm(it.get("title", "")).split())
+        return sum(1 for t in toks if t in words)
+    full = [it for it in items if score(it) == len(toks)]
+    return full or [it for it in items if score(it) >= 1]
+
+
+def _dx_parse_items(html, dom):
+    """Items (peli/serie) del HTML de DivxTotal -> MISMO formato que el box
+    (_src_item_compact): source/url/content_id/kind/thumb/quality/tabla."""
+    out, seen = [], set()
+    for m in _DX_A_RE.finditer(html or ""):
+        href = (m.group(1) or "").strip()
+        if not _DX_SLUG_RE.search(href):
+            continue
+        km = _DX_KIND_RE.search(href)
+        kind = "serie" if (km and km.group(1).lower() == "series") else "movie"
+        url = href if href.startswith("http") else f"https://{dom}{href}"
+        if url in seen:
+            continue
+        title = re.sub(r"<[^>]+>", " ", m.group(2) or "")
+        title = re.sub(r"\s+", " ", title).strip()
+        if not title or len(title) < 2:
+            continue
+        if kind == "serie":
+            title = _DX_EP_TAIL.sub("", title).strip() or title
+        seen.add(url)
+        out.append({"title": title, "kind": kind, "source": "dx",
+                    "url": url, "content_id": url, "thumb": None,
+                    "quality": "", "tabla": "dx"})
+    return out
+
+
+def _dx_search_items(q, max_pages=5):
+    """Busca en DivxTotal DIRECTO (relay) y devuelve items del catalogo web."""
+    from urllib.parse import quote as _q
+    dom = _dx_domain()
+    if not dom:
+        return []
+    qq = _q(q)
+    html1 = _dx_get(f"https://{dom}/?s={qq}")
+    if not html1:
+        _DX_DOM_CACHE["ts"] = 0.0
+        dom = _dx_domain()
+        html1 = _dx_get(f"https://{dom}/?s={qq}") if dom else None
+    if not html1:
+        return []
+    nums = [int(n) for n in re.findall(r"/page/(\d+)/", html1)]
+    max_page = min(max(nums), max_pages) if nums else 1
+    parts = [html1]
+    if max_page > 1:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        def _fp(p):
+            return _dx_get(f"https://{dom}/page/{p}/?s={qq}") or ""
+        with _TPE(max_workers=min(5, max_page - 1)) as ex:
+            parts.extend(ex.map(_fp, range(2, max_page + 1)))
+    items, seen = [], set()
+    for h in parts:
+        for it in _dx_parse_items(h, dom):
+            if it["url"] in seen:
+                continue
+            seen.add(it["url"])
+            items.append(it)
+    return _dx_relevance(items, q)
+
+
 # ===========================================================================
 # TECLADO REMOTO (escribir busquedas desde el movil)
 # ===========================================================================
@@ -3096,7 +3190,7 @@ def catsearch():
     # (Render bloqueado -> ignora el timeout de requests), los abandonamos y
     # seguimos. Asi la peticion NUNCA se cuelga y llega el fallback al box.
     import threading as _th
-    _r = {"dt": [], "et": []}
+    _r = {"dt": [], "et": [], "dx": []}
 
     def _w_dt():
         try:
@@ -3109,14 +3203,25 @@ def catsearch():
             _r["et"] = _et_search(q) or []
         except Exception:
             pass
+
+    def _w_dx():
+        # DivxTotal DIRECTO (el relay si lo alcanza) -> rapido y SIN code.
+        try:
+            _r["dx"] = _dx_search_items(q) or []
+        except Exception:
+            pass
     _tdt = _th.Thread(target=_w_dt, daemon=True)
     _tet = _th.Thread(target=_w_et, daemon=True)
+    _tdx = _th.Thread(target=_w_dx, daemon=True)
     _tdt.start()
     _tet.start()
+    _tdx.start()
     _tdt.join(8.0)
     _tet.join(10.0)
+    _tdx.join(9.0)
     dt_items = _r["dt"]
     et_items = _r["et"]
+    dx_items = _r["dx"]
     if not dt_items and len(code) == 6:
         # Render bloqueado por DonTorrent -> buscar DonTorrent VIA EL BOX (IP
         # residencial). El box trae el HTML de /buscar y aqui lo parseamos igual.
@@ -3126,9 +3231,10 @@ def catsearch():
         h = (res or {}).get("html") or ""
         if h:
             dt_items = _cat_parse_items(h)
-    if not dt_items and not et_items:
+    if not dt_items and not et_items and not dx_items:
         return jsonify({"items": []})
-    return jsonify({"items": _cat_enrich(_cat_merge(dt_items, et_items))})
+    merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
+    return jsonify({"items": _cat_enrich(merged)})
 
 
 @app.get("/catetresolve")

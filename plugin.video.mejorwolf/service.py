@@ -267,7 +267,7 @@ def _poll_remote_kb():
             elif c == "play_ref":
                 _play_ref(ev)
             elif c == "etjob":
-                _do_etjob(ev)
+                _do_etjob(ev)   # ya lanza su propio hilo (no bloquea el sondeo)
             elif c == "home":
                 _go_home()
             elif c == "seek_fwd":
