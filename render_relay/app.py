@@ -3364,7 +3364,19 @@ def catsearch():
     if not dt_items and not et_items and not dx_items:
         return jsonify({"items": []})
     merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
-    return jsonify({"items": _cat_enrich(merged)})
+    # Enrich TMDB con TOPE: si TMDB esta lento/baneado desde Render, NO colgamos
+    # la busqueda -> devolvemos los resultados YA (sin poster, pero todos).
+    _en = {}
+
+    def _do_enrich():
+        try:
+            _en["v"] = _cat_enrich(merged)
+        except Exception:
+            _en["v"] = merged
+    _te = _th.Thread(target=_do_enrich, daemon=True)
+    _te.start()
+    _te.join(11.0)
+    return jsonify({"items": _en.get("v", merged)})
 
 
 @app.get("/catetresolve")
@@ -3790,16 +3802,30 @@ def catbrowse():
         except Exception:
             dxit = []
         if dxit:
-            items = _cat_enrich(dxit)
-            rec = {"items": items, "ts": now, "dx": True}
-            _CATBROWSE_CACHE[key] = rec
-            try:
-                disk = _catbrowse_load()
-                disk[key] = rec
-                _catbrowse_save(disk)
-            except Exception:
-                pass
-            return jsonify({"items": items, "dx": True})
+            # Enrich TMDB en hilo CON TOPE: si TMDB va bien (~2-3s) salen con
+            # poster/nota; si TMDB esta lento/baneado desde Render, servimos los
+            # items YA (visibles, sin poster) y el hilo cachea el enriquecido
+            # para la proxima carga. El Inicio NUNCA se cuelga ni queda en blanco.
+            res = {}
+
+            def _enrich_cache(_items=dxit, _key=key):
+                try:
+                    en = _cat_enrich(_items)
+                except Exception:
+                    en = _items
+                rec2 = {"items": en, "ts": _t.time(), "dx": True}
+                _CATBROWSE_CACHE[_key] = rec2
+                try:
+                    disk = _catbrowse_load()
+                    disk[_key] = rec2
+                    _catbrowse_save(disk)
+                except Exception:
+                    pass
+                res["items"] = en
+            th = _thr.Thread(target=_enrich_cache, daemon=True)
+            th.start()
+            th.join(9.0)
+            return jsonify({"items": res.get("items", dxit), "dx": True})
         # si falla pero hay cache vieja (memoria o disco), sirvela: mejor lo
         # ultimo conocido al instante que una pagina vacia o colgada.
         if ent:
