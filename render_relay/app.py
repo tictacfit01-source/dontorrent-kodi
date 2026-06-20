@@ -3375,7 +3375,7 @@ def catsearch():
             _en["v"] = merged
     _te = _th.Thread(target=_do_enrich, daemon=True)
     _te.start()
-    _te.join(11.0)
+    _te.join(8.0)
     return jsonify({"items": _en.get("v", merged)})
 
 
@@ -3785,6 +3785,13 @@ def catbrowse():
     path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
     html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
                     8.0, "") or ""
+    if not html:
+        # DonTorrent no respondio en 8s. El slow-drip del baneo evade el timeout
+        # de requests y deja el hilo colgado SIN marcar el breaker -> lo marcamos
+        # aqui para que las SIGUIENTES categorias/busquedas salten DT al instante
+        # (breaker 90s) y vayan directas al fallback DivxTotal. Asi solo la 1a
+        # paga los 8s; el resto del Inicio es agil aunque DonTorrent este caido.
+        _dt_mark(False)
     if not html and len(code) == 6:
         # Render bloqueado por DonTorrent -> traer el listado VIA EL BOX (IP
         # residencial). El box fetcha el HTML crudo y aqui lo parseamos igual.
@@ -3824,7 +3831,7 @@ def catbrowse():
                 res["items"] = en
             th = _thr.Thread(target=_enrich_cache, daemon=True)
             th.start()
-            th.join(9.0)
+            th.join(6.0)
             return jsonify({"items": res.get("items", dxit), "dx": True})
         # si falla pero hay cache vieja (memoria o disco), sirvela: mejor lo
         # ultimo conocido al instante que una pagina vacia o colgada.
