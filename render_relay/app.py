@@ -1473,20 +1473,55 @@ def _dtpacked_save(d):
         pass
 
 
+# Proteccion de la IP RESIDENCIAL del box: resolver un .torrent en el box es un
+# PoW (CPU + peticion a DonTorrent desde la IP de casa). La cuadricula del Inicio
+# pide /dtpacked por CADA peli DT visible (badges RAR) -> con Render baneado eso
+# podria lanzar DECENAS de PoW al box y banear la IP de casa (justo la que NO debe
+# caer, es el puente). Por eso: serializamos (1 a la vez) y limitamos el numero
+# por ventana. Lo que no pase -> sin badge (cosmetico); la ficha/aviso de
+# reproduccion (1-2 peticiones) si pasa siempre.
+_DT_BOX_SEM = _thr.Semaphore(1)
+_DT_BOX_LOCK = _thr.Lock()
+_DT_BOX_CALLS = []          # timestamps de llamadas dtmeta-via-box recientes
+_DT_BOX_BUDGET = 8          # maximo por ventana
+_DT_BOX_WINDOW = 120.0      # 2 min
+
+
+def _dt_box_allow():
+    """Presupuesto: como mucho _DT_BOX_BUDGET resoluciones en el box por ventana,
+    para que un Inicio lleno de pelis DT no machaque la IP residencial."""
+    now = _t.time()
+    with _DT_BOX_LOCK:
+        global _DT_BOX_CALLS
+        _DT_BOX_CALLS = [t for t in _DT_BOX_CALLS if now - t < _DT_BOX_WINDOW]
+        if len(_DT_BOX_CALLS) >= _DT_BOX_BUDGET:
+            return False
+        _DT_BOX_CALLS.append(now)
+        return True
+
+
 def _dt_meta_via_box(cid, tb):
     """Render baneado por DonTorrent -> un Kodi VIVO del sistema (IP residencial)
     resuelve el .torrent y devuelve rar+quality+info_hash; con el hash el relay
     deriva los seeders por scrape UDP (lo unico que SI va desde la IP de Render
     aunque DonTorrent la banee). Sin depender del code (any_live_box). Devuelve
-    {'packed','quality','ih','seeds'} o None si no hay box vivo o el box no logro
-    el .torrent (sin ih -> no cacheamos nada falso)."""
+    {'packed','quality','ih','seeds'} o None si no hay box vivo, esta limitado, o
+    el box no logro el .torrent (sin ih -> no cacheamos nada falso)."""
     box = _any_live_box()
     if not box:
         return None
-    job = "dp" + os.urandom(5).hex()
-    _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dtmeta",
-                      "cid": cid, "tb": tb})
-    res = _catjob_wait(job, 14.0)
+    # 1 a la vez (no avalancha de PoW en el box) + presupuesto por ventana.
+    if not _DT_BOX_SEM.acquire(blocking=False):
+        return None
+    try:
+        if not _dt_box_allow():
+            return None
+        job = "dp" + os.urandom(5).hex()
+        _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dtmeta",
+                          "cid": cid, "tb": tb})
+        res = _catjob_wait(job, 14.0)
+    finally:
+        _DT_BOX_SEM.release()
     if not res:
         return None
     ihx = re.sub(r"[^a-f0-9]", "", (res.get("ih") or "").lower())[:40]
