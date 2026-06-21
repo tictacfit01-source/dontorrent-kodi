@@ -4483,11 +4483,15 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  else{$('sh-seeds').innerHTML=seedFail(s2,_cd);}}
 function seedTag(n){var c,t;if(n<=0){c='s-zero';t='⚠ Sin semillas';}else if(n<3){c='s-low';t='🌱 '+n+' semilla'+(n===1?'':'s');}else{c='s-ok';t='🌱 '+n+' semillas';}return '<span class="seedtag '+c+'">'+t+'</span>';}
 function seedFail(src,cd){var t=((src==='et'||src==='wf')&&(!cd||cd.length!==6))?'🌱 enciende tu Kodi para las semillas':'🌱 semillas no disponibles';return '<span class="seedtag" style="opacity:.6">'+t+'</span>';}
-function seedGate(ci,tb,proceed){var done=false;var to=setTimeout(function(){if(done)return;done=true;proceed()},6000);toast('Comprobando semillas…');
- fetch('/dtseeds?c='+encodeURIComponent(ci)+'&tb='+encodeURIComponent(tb)).then(function(r){return r.json()}).then(function(d){if(done)return;done=true;clearTimeout(to);var s=d&&d.seeds;
-  if(s===0){if(confirm('⚠ Este título no tiene semillas ahora mismo.\nEs muy probable que NO cargue.\n\n¿Intentar de todas formas?'))proceed();return}
-  if(typeof s==='number'&&s>0&&s<3)toast('Pocas semillas ('+s+') — puede tardar en arrancar');
-  proceed();}).catch(function(){if(done)return;done=true;clearTimeout(to);proceed()})}
+// INSTANTÁNEO: el play sale a la tele YA; las semillas se comprueban EN PARALELO
+// y solo avisan (sin bloquear ni preguntar) si el enjambre está muerto. Antes
+// esto esperaba hasta 6s ANTES de enviar -> delay regalado (la IP de Render
+// baneada hacía que /dtseeds tardase). Reproducir debe sentirse instantáneo.
+function seedGate(ci,tb,proceed){proceed();
+ fetch('/dtseeds?c='+encodeURIComponent(ci)+'&tb='+encodeURIComponent(tb)).then(function(r){return r.json()}).then(function(d){var s=d&&d.seeds;
+  if(s===0)toast('⚠ Esta versión no tiene semillas; si no arranca, prueba otra');
+  else if(typeof s==='number'&&s>0&&s<3)toast('Pocas semillas ('+s+') — puede tardar en arrancar');
+ }).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
