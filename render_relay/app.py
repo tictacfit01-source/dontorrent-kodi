@@ -3556,6 +3556,10 @@ def catsearch():
     qkey = q.lower()
     now = _t.time()
     cent = _CATSEARCH_CACHE.get(qkey)
+    if not cent:   # memoria vacia (worker frio / otro worker la calculo) -> disco
+        cent = _catsearch_load().get(qkey)
+        if cent:
+            _CATSEARCH_CACHE[qkey] = cent
     if cent and (now - cent["ts"]) < _CATSEARCH_TTL:
         return jsonify({"items": cent["items"], "cached": True})
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
@@ -3611,8 +3615,19 @@ def catsearch():
     # sin poster al instante). Sin hilos en 2o plano que se acumulen.
     items = _cat_enrich(merged)
     if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
-        _CATSEARCH_CACHE[qkey] = {"items": items, "ts": now}
-        if len(_CATSEARCH_CACHE) > _CATSEARCH_MAX:   # evicta la entrada mas vieja
+        rec = {"items": items, "ts": now}
+        _CATSEARCH_CACHE[qkey] = rec
+        try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
+            disk = _catsearch_load()
+            disk[qkey] = rec
+            if len(disk) > _CATSEARCH_MAX:   # poda: deja las MAX mas recientes
+                for k in sorted(disk, key=lambda k: disk[k].get("ts", 0))[
+                        :len(disk) - _CATSEARCH_MAX]:
+                    disk.pop(k, None)
+            _catsearch_save(disk)
+        except Exception:
+            pass
+        if len(_CATSEARCH_CACHE) > _CATSEARCH_MAX:   # evicta la mas vieja en memoria
             try:
                 old = min(_CATSEARCH_CACHE, key=lambda k: _CATSEARCH_CACHE[k]["ts"])
                 _CATSEARCH_CACHE.pop(old, None)
@@ -3919,15 +3934,17 @@ _CATBROWSE_TTL = 900       # 15 min: los listados cambian despacio
 _CATBROWSE_DX_TTL = 300    # 5 min para el fallback DivxTotal -> reintenta DT pronto
 _CATBROWSE_FILE = "/tmp/mw_catbrowse.json"   # persiste entre workers y deploys
 
-# Cache de BUSQUEDA en memoria. Una busqueda repetida o refinada (el usuario
-# escribe, borra, reintenta, o vuelve atras) re-escrapeaba DonTorrent cada vez
-# (~8s + suma riesgo de BANEO de la IP de Render = el dolor historico nº1). Con
-# cache: el 2o hit es INSTANTANEO y NO toca DonTorrent/TMDB. TTL corto: un torrent
-# nuevo no aparece minuto a minuto, 10 min es seguro. Por-worker (no a disco): es
-# solo aceleracion, no critico; cada worker calienta su propia cache.
+# Cache de BUSQUEDA. Una busqueda repetida o refinada (el usuario escribe, borra,
+# reintenta, o vuelve atras) re-escrapeaba DonTorrent cada vez (~8s + suma riesgo
+# de BANEO de la IP de Render = el dolor historico nº1). Con cache: el 2o hit es
+# INSTANTANEO y NO toca DonTorrent/TMDB. TTL corto: un torrent nuevo no aparece
+# minuto a minuto, 10 min es seguro. COMPARTIDA via disco (/tmp) como /catbrowse:
+# con gthread hay 2 WORKERS (procesos) y la cache solo-memoria fallaba ~50% de las
+# repeticiones (cada peticion puede caer en otro worker con su memoria vacia).
 _CATSEARCH_CACHE = {}      # q.lower() -> {"items": [...], "ts": ...}
 _CATSEARCH_TTL = 600       # 10 min
 _CATSEARCH_MAX = 80        # tope de entradas -> no crece sin limite (Render 512MB)
+_CATSEARCH_FILE = "/tmp/mw_catsearch.json"   # compartida entre workers
 
 
 def _catbrowse_load():
@@ -3944,6 +3961,24 @@ def _catbrowse_save(d):
         with open(tmp, "w", encoding="utf-8") as f:
             _json.dump(d, f)
         os.replace(tmp, _CATBROWSE_FILE)
+    except Exception:
+        pass
+
+
+def _catsearch_load():
+    try:
+        with open(_CATSEARCH_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _catsearch_save(d):
+    try:
+        tmp = _CATSEARCH_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _CATSEARCH_FILE)
     except Exception:
         pass
 
