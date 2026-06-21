@@ -4020,6 +4020,15 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ov.on{display:block}
 .remote{position:fixed;inset:0;background:radial-gradient(900px 500px at 50% -10%,#1b2740 0,transparent 60%),var(--bg);z-index:38;display:none;overflow-y:auto}
 .remote.on{display:block}
+/* Boton flotante para abrir el mando (abajo-derecha, mano diestra). Queda por
+   debajo de los overlays (z 38+) -> se oculta solo cuando el mando/visor estan abiertos. */
+.fab{position:fixed;right:18px;bottom:calc(20px + env(safe-area-inset-bottom));z-index:25;width:60px;height:60px;border-radius:50%;border:0;cursor:pointer;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue));box-shadow:0 8px 22px rgba(10,107,255,.45),0 2px 6px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;transition:transform .15s,box-shadow .15s}
+.fab:active{transform:scale(.92)}
+.fab svg{display:block}
+.fab .fabl{position:absolute;bottom:-1px;right:-1px;background:#0e1320;border:1px solid var(--stroke);border-radius:8px;font-size:9px;font-weight:700;padding:1px 4px;color:var(--blue2)}
+/* Boton Cerrar fijo abajo-derecha dentro del mando (sobre el mando, z 40 > 38) */
+.rm-close{position:fixed;right:18px;bottom:calc(18px + env(safe-area-inset-bottom));z-index:40;border:1px solid var(--stroke);background:rgba(14,19,32,.95);backdrop-filter:blur(8px);color:var(--txt);font-size:15px;font-weight:700;padding:13px 20px;border-radius:999px;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.5)}
+.rm-close:active{transform:scale(.95)}
 .ovbar{display:flex;align-items:center;gap:10px;padding:14px;position:sticky;top:0;background:rgba(6,7,12,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--stroke)}
 .ovback{border:0;background:transparent;color:var(--blue2);font-size:16px;font-weight:600;cursor:pointer}
 .ovt{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -4232,7 +4241,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <div class="pill" onclick="cmd('back')">↩ Atrás</div>
   </div>
  </div>
+ <button class="rm-close" onclick="closeRemote()">✕ Cerrar</button>
 </div>
+<button class="fab" id="fab" onclick="openRemote()" aria-label="Abrir mando"><svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="7" y="2" width="10" height="20" rx="3" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="6.5" r="1.5" fill="currentColor"/><line x1="9.6" y1="11" x2="14.4" y2="11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="9.6" y1="14" x2="14.4" y2="14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="9.6" y1="17" x2="14.4" y2="17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
 <div class="toast" id="toast"></div>
 <script>
 var $=function(s){return document.getElementById(s)};
@@ -4313,6 +4324,10 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
   else if(more)more.textContent='';}
  function done(r){if(seq!==_searchSeq)return;if(r){if(r.timeout)boxTO=true;if(r.added)boxAdded+=r.added;}pend--;paint();}
  function doneWf(r){if(seq!==_searchSeq)return;wfPend=false;paint();}
+ // SALVAVIDAS: pase lo que pase (una fuente que se cuelga sin responder), a los
+ // 15s damos por cerrada la espera y mostramos lo que haya -> la busqueda NUNCA
+ // se queda "pensando" eternamente. Si ya cambio la busqueda, no hace nada.
+ setTimeout(function(){if(seq!==_searchSeq)return;if(pend>0||wfPend){pend=0;wfPend=false;paint();}},15000);
  // DonTorrent (relay) y EliteTorrent+DivxTotal (box) EN PARALELO -> salen en ~3s.
  // WolfMax (lento) va aparte, en 2o plano, sin bloquear el spinner principal.
  fetch('/catsearch?q='+encodeURIComponent(q)+'&code='+(code.value||'').replace(/\D/g,'')).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq)return;mergeResults('buscar',g,(d&&d.items)||[]);done()}).catch(function(){done()});
@@ -4454,14 +4469,14 @@ function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){to
 function fmt(s){s=Math.max(0,s||0);var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60);return (h?h+':':'')+(h?('0'+m).slice(-2):m)+':'+('0'+x).slice(-2)}
 function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000);return}
  fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(d){var np=d&&d.np;var bar=$('npbar');
-  if(np&&np.title){bar.classList.add('on');var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
+  if(np&&np.title){bar.classList.add('on');var _fb=$('fab');if(_fb)_fb.style.display='none';var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
    var fin='';if(!np.paused&&np.total>0)fin=clk(new Date(Date.now()+(np.total-np.elapsed)*1000));
    $('np-t').textContent=np.title+(fin?(' · Finaliza '+fin):'');
    $('np-prog').style.width=pct+'%';$('np-pp').innerHTML=np.paused?NP_PLAY:NP_PAUSE;
    $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+(np.total?(' / '+fmt(np.total)):'');
    $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');
    $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
-  else{bar.classList.remove('on');if($('remote').classList.contains('on')){$('rm-t').textContent='Preparando en la tele…';$('rm-time').textContent='';$('rm-fin').textContent='';}}
+  else{bar.classList.remove('on');var _fb2=$('fab');if(_fb2)_fb2.style.display='';if($('remote').classList.contains('on')){$('rm-t').textContent='Preparando en la tele…';$('rm-time').textContent='';$('rm-fin').textContent='';}}
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
  }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
 function openRemote(){$('remote').classList.add('on')}
