@@ -15,6 +15,9 @@ Endpoints:
 """
 import os
 import re
+import threading as _thr   # usado a nivel de modulo desde ~L1483 (_DT_BOX_SEM);
+                           # DEBE importarse aqui arriba o el modulo crashea al
+                           # cargar (NameError) y gunicorn no levanta -> relay 000.
 import requests
 import cloudscraper
 from urllib.parse import urlencode, quote as urlquote
@@ -1770,6 +1773,42 @@ _DX_DOMAINS = ["divxtotal.foo", "divxtotal.gg", "divxtotal.cam",
                "divxtotal.es", "divxtotal.mov"]
 _DX_DOM_CACHE = {"dom": None, "ts": 0.0}
 _DX_DOM_TTL = 3600
+# AUTO-CURATIVO: persistimos el dominio vigente en /tmp (sobrevive a reinicios de
+# proceso dentro de la misma instancia) y APRENDEMOS rotaciones: si un dominio
+# viejo redirige 301 al nuevo, adoptamos el host final aunque NO este en la lista.
+# Asi, cuando DivxTotal rote de TLD, el buscador se arregla solo sin tocar nada.
+_DX_DOMAIN_FILE = "/tmp/mw_dx_domain.txt"
+_DX_HOST_RE = re.compile(r"^(?:www\.)?(divxtotal\.[a-z]{2,12})$", re.I)
+
+
+def _dx_valid_host(host):
+    """Solo acepta el apex 'divxtotal.<tld>' (con o sin www). Rechaza clones y
+    hosts ajenos (cdns, imagenes...)."""
+    if not host:
+        return None
+    m = _DX_HOST_RE.match(host.strip().lower())
+    return m.group(1) if m else None
+
+
+def _dx_load_domain():
+    try:
+        with open(_DX_DOMAIN_FILE, "r", encoding="utf-8") as f:
+            return _dx_valid_host(f.read().strip())
+    except Exception:
+        return None
+
+
+def _dx_save_domain(host):
+    host = _dx_valid_host(host)
+    if not host:
+        return
+    try:
+        tmp = _DX_DOMAIN_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(host)
+        os.replace(tmp, _DX_DOMAIN_FILE)
+    except Exception:
+        pass
 
 
 def _dx_get(url):
@@ -1795,17 +1834,44 @@ def _dx_get(url):
     return None
 
 
+def _dx_probe(domain):
+    """Pide la home de `domain`. Si sirve catalogo (o redirige a otro 'divxtotal.*'
+    que lo sirve), devuelve el host REAL vigente -> aprende rotaciones aunque el
+    TLD nuevo no este en _DX_DOMAINS. None si no responde con catalogo."""
+    from urllib.parse import urlparse as _up
+    url = f"https://{domain}/"
+    for use_cs in (False, True):
+        try:
+            if use_cs:
+                r = _make_scraper().get(url, timeout=30, allow_redirects=True)
+            else:
+                r = requests.get(url, headers=BROWSER_HEADERS, timeout=15,
+                                 allow_redirects=True)
+            low = (r.text or "")[:6000].lower()
+            if r.status_code == 200 and "/peliculas/" in low:
+                host = _dx_valid_host(_up(r.url).hostname or "")
+                return host or domain
+        except Exception:
+            pass
+    return None
+
+
 def _dx_domain():
     now = _t.time()
     if _DX_DOM_CACHE["dom"] and now - _DX_DOM_CACHE["ts"] < _DX_DOM_TTL:
         return _DX_DOM_CACHE["dom"]
-    for d in _DX_DOMAINS:
-        t = _dx_get(f"https://{d}/")
-        if t and "/peliculas/" in t.lower():
-            _DX_DOM_CACHE["dom"] = d
+    # Orden de prueba: dominio aprendido (persistido) primero -> ruta rapida; luego
+    # la lista conocida. _dx_probe aprende el host final si hubo redireccion.
+    saved = _dx_load_domain()
+    cand = ([saved] if saved else []) + [d for d in _DX_DOMAINS if d != saved]
+    for d in cand:
+        real = _dx_probe(d)
+        if real:
+            _DX_DOM_CACHE["dom"] = real
             _DX_DOM_CACHE["ts"] = now
-            return d
-    return _DX_DOM_CACHE["dom"] or _DX_DOMAINS[0]
+            _dx_save_domain(real)
+            return real
+    return _DX_DOM_CACHE["dom"] or saved or _DX_DOMAINS[0]
 
 
 @app.route("/dxsearch", methods=["GET", "POST"])
@@ -4526,24 +4592,44 @@ function mergeResults(list,g,items){
  var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
 var _searchSeq=0;
+// fetch con TIMEOUT real (AbortController): un relay dormido (Render free, cold
+// start ~50s) NO deja la promesa colgada -> abortamos y reintentamos.
+function tfetch(url,ms){var c=('AbortController'in window)?new AbortController():null;
+ var to=c?setTimeout(function(){try{c.abort()}catch(e){}},ms):0;
+ return fetch(url,c?{signal:c.signal}:{}).then(function(r){if(to)clearTimeout(to);if(!r.ok)throw new Error('http'+r.status);return r;},function(e){if(to)clearTimeout(to);throw e;});}
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Buscando...';
  var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];_searchSeq++;var seq=_searchSeq;
- var more=$('buscar-more');var pend=(cd.length===6)?2:1;var boxAdded=0;var boxTO=false;var wfPend=(cd.length===6);
+ var more=$('buscar-more');var boxPend=(cd.length===6)?1:0;var boxAdded=0;var boxTO=false;var wfPend=(cd.length===6);
+ var catState='pending';var wakeAtt=0;  // pending|ok|fail ; intentos de despertar
  function paint(){if(seq!==_searchSeq)return;
-  if(pend>0){if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
-  if(!LISTS.buscar.length){g.className='msg';g.textContent='Sin resultados para "'+q+'".';if(more)more.textContent='';return;}
+  var waiting=(catState==='pending')||boxPend>0;
+  if(!LISTS.buscar.length){
+   // AÚN sin resultados: distinguir relay dormido (reintentando) de vacío real.
+   if(catState==='pending'){g.className='msg';g.innerHTML='<span class="spin"></span> '+(wakeAtt>=2?'Despertando el servidor…':'Buscando…');if(more)more.textContent='';return;}
+   if(waiting){g.className='msg';g.innerHTML='<span class="spin"></span> Buscando…';if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
+   if(catState==='fail'){g.className='msg';g.innerHTML='⚠️ El servidor estaba dormido y no respondió a tiempo.<br><br><button onclick="go()" style="background:#1c64f2;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer">↻ Reintentar</button>';if(more)more.textContent='';return;}
+   g.className='msg';g.textContent='Sin resultados para "'+q+'".';if(more)more.textContent='';return;}
+  // YA hay resultados:
+  if(waiting){if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
   if(boxTO&&!boxAdded&&cd.length===6){if(more)more.innerHTML='💡 Enciende tu Kodi ('+cd+') para ver EliteTorrent · DivxTotal · WolfMax';}
   else if(wfPend){if(more)more.innerHTML='<span class="spin" style="opacity:.5"></span> <span style="opacity:.6">buscando también en WolfMax…</span>';}
   else if(more)more.textContent='';}
- function done(r){if(seq!==_searchSeq)return;if(r){if(r.timeout)boxTO=true;if(r.added)boxAdded+=r.added;}pend--;paint();}
+ function done(r){if(seq!==_searchSeq)return;if(r){if(r.timeout)boxTO=true;if(r.added)boxAdded+=r.added;}boxPend--;paint();}
  function doneWf(r){if(seq!==_searchSeq)return;wfPend=false;paint();}
- // SALVAVIDAS: pase lo que pase (una fuente que se cuelga sin responder), a los
- // 15s damos por cerrada la espera y mostramos lo que haya -> la busqueda NUNCA
- // se queda "pensando" eternamente. Si ya cambio la busqueda, no hace nada.
- setTimeout(function(){if(seq!==_searchSeq)return;if(pend>0||wfPend){pend=0;wfPend=false;paint();}},15000);
- // DonTorrent (relay) y EliteTorrent+DivxTotal (box) EN PARALELO -> salen en ~3s.
- // WolfMax (lento) va aparte, en 2o plano, sin bloquear el spinner principal.
- fetch('/catsearch?q='+encodeURIComponent(q)+'&code='+(code.value||'').replace(/\D/g,'')).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq)return;mergeResults('buscar',g,(d&&d.items)||[]);done()}).catch(function(){done()});
+ // catsearch (relay) con REINTENTO AUTO: si Render está dormido, la 1ª llamada lo
+ // despierta (~50s) -> reintentamos hasta que conteste. Así un relay frío acaba
+ // dando resultados y muestra "Despertando…", NUNCA "Sin resultados" en falso.
+ function csTry(att){if(seq!==_searchSeq)return;wakeAtt=att;
+  tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,14000).then(function(r){return r.json()}).then(function(d){
+   if(seq!==_searchSeq)return;catState='ok';mergeResults('buscar',g,(d&&d.items)||[]);paint();
+  }).catch(function(){if(seq!==_searchSeq)return;
+   if(att<6){setTimeout(function(){csTry(att+1)},1200);paint();}
+   else{catState='fail';paint();}});}
+ csTry(1);
+ // SALVAVIDAS solo para el BOX (et/dx/wf): a los 18s cerramos SU espera y pintamos
+ // lo que haya. El catsearch tiene su propio reintento, no lo toca este salvavidas.
+ setTimeout(function(){if(seq!==_searchSeq)return;if(boxPend>0||wfPend){boxPend=0;wfPend=false;paint();}},18000);
+ // EliteTorrent+DivxTotal+WolfMax via box (solo con Kodi/box, code de 6 dígitos).
  if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx',done,seq);boxMerge('buscar',g,'search',q,'wf',doneWf,seq);}}
 function boxMerge(list,g,op,q,srcs,cb,seq){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
@@ -4773,9 +4859,12 @@ def _warm_dt():
 
 def _self_keepalive():
     # 1) Anubis de DonTorrent siempre caliente (en proceso, por worker).
-    # 2) self-ping a /ping cada 8 min para que Render NO se duerma (24/7 ~=
-    #    730h/mes < 750h gratis) -> nunca arranque en frio (~50s).
-    # Asi la web nunca se queda "colgada" ni "cargando" mucho.
+    # 2) self-ping a /ping cada 4 min para que Render NO se duerma. (8 min era
+    #    arriesgado: Render duerme a los 15 min; si UN ping falla, el siguiente
+    #    caia a 16 min -> se dormia. 4 min deja margen para 2-3 fallos seguidos.)
+    #    OJO: el self-ping mantiene despierto MIENTRAS vive; si el proceso muere
+    #    (deploy/OOM/crash) NO puede resucitarse solo -> de eso se encarga el
+    #    keepalive EXTERNO de GitHub Actions (.github/workflows/keepalive.yml).
     url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     while True:
         _warm_dt()
@@ -4785,7 +4874,7 @@ def _self_keepalive():
                              headers={"User-Agent": "mw-keepalive"})
             except Exception:
                 pass
-        _t.sleep(480)
+        _t.sleep(240)
 
 
 def _start_keepalive():

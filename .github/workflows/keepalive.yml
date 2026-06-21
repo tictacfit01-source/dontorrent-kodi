@@ -1,30 +1,54 @@
 name: Keep Render relay awake
 
-# Render free tier "spin down" tras 15 min de inactividad: la primera
-# busqueda tras dormir tarda ~30s en despertar. Este workflow hace ping
-# cada 10 min para mantenerlo caliente, asi las busquedas son rapidas.
+# Render free tier "spin down" tras 15 min sin trafico -> la 1a busqueda del dia
+# se encuentra el relay dormido/caido y la web mostraba "Sin resultados".
+#
+# PROBLEMA del cron simple `*/5`: GitHub ESTRANGULA los crons programados (medido:
+# se disparaban cada ~1.5-2h, no cada 5 min) -> huecos enormes -> Render dormia.
+#
+# SOLUCION: cada run es un BUCLE LARGO (~5h40m, justo bajo el limite de 6h de un
+# job) que pinguea cada 2 min. Con `concurrency` SIN cancelar, los runs se
+# ENCADENAN (uno espera a que acabe el anterior) -> cobertura CONTINUA 24/7 aunque
+# el cron llegue tarde. El push y el dispatch re-arman la cadena si se cortara.
+# Repo PUBLICO => minutos de Actions ILIMITADOS y gratis.
 
 on:
   schedule:
-    - cron: "*/5 * * * *"    # cada 5 min (GitHub retrasa crons; con 5min
-                             # hay margen para no superar los 15min de Render)
+    - cron: "0 */3 * * *"     # cada 3h re-arma la cadena (best-effort; el run dura ~5h40m)
   workflow_dispatch:
+  push:
+    branches: [main]          # tras desplegar, re-arranca el keepalive ya
+
+concurrency:
+  group: render-keepalive
+  cancel-in-progress: false   # NO cancelar: encadenar para no dejar huecos
+
+permissions:
+  contents: read
 
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 350       # ~5h50m (limite duro de GitHub es 6h)
     steps:
-      - name: Ping Render relay
+      - name: Mantener el relay despierto (bucle largo)
         run: |
-          for i in 1 2 3; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" \
-              --max-time 60 \
-              https://mw-render-relay-6noq.onrender.com/ || echo "000")
-            echo "Attempt $i: HTTP $code"
+          URL="https://mw-render-relay-6noq.onrender.com"
+          END=$(( $(date +%s) + 20400 ))   # 5h40m de pings
+          warm=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            code="000"
+            # Hasta 3 intentos: el 1o despierta (cold start ~50s), los siguientes confirman.
+            for t in 1 2 3; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 70 "$URL/ping" || echo "000")
+              [ "$code" = "200" ] && break
+              sleep 10
+            done
             if [ "$code" = "200" ]; then
-              echo "Relay awake."
-              exit 0
+              warm=$((warm+1)); echo "$(date -u +%H:%M:%S) OK ($code) [warm=$warm]"
+            else
+              echo "$(date -u +%H:%M:%S) NO RESPONDE ($code) -> reintento en el proximo ciclo"
             fi
-            sleep 15
+            sleep 120   # siguiente ping a los 2 min (Render duerme a los 15)
           done
-          echo "Relay did not respond 200 after 3 attempts (non-fatal)."
+          echo "Fin del ciclo. El proximo run (encadenado/cron) toma el relevo."
