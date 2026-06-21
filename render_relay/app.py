@@ -3894,15 +3894,40 @@ def catbrowse():
     return jsonify({"items": items})
 
 
-@app.get("/catdetail")
-def catdetail():
-    """Episodios de una serie DonTorrent. path=/serie/ID/slug -> JSON."""
-    path = (request.args.get("path") or "").strip()
-    if not _re_dt.match(r"^/serie/\d+/", path):
-        return jsonify({"error": "bad path", "episodes": []}), 400
-    html, _d = _cat_dt_session_get(path)
-    if not html:
-        return jsonify({"episodes": []})
+# --- Caché de fichas de serie (episodios DonTorrent) -----------------------
+# Las series cambian despacio -> reaperturas instantaneas y, sobre todo, MENOS
+# peticiones a DonTorrent (clave para que la IP de Render NO se banee). Igual
+# patron que _CATBROWSE_CACHE: memoria + disco (sobrevive a reinicios de worker).
+_CATDETAIL_CACHE = {}
+_CATDETAIL_TTL = 1800            # 30 min
+_CATDETAIL_FILE = "/tmp/mw_catdetail.json"
+
+
+def _catdetail_load():
+    try:
+        with open(_CATDETAIL_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _catdetail_save(d):
+    try:
+        # poda: no dejar crecer el disco indefinidamente (quedarse las 200 mas
+        # recientes basta de sobra para reaperturas).
+        if len(d) > 200:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-200:])
+        tmp = _CATDETAIL_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _CATDETAIL_FILE)
+    except Exception:
+        pass
+
+
+def _cat_parse_detail(html):
+    """Parsea el HTML de una ficha de serie DonTorrent -> (title, [eps]). Sirve
+    igual para el HTML traido por Render o por el box (mismo parser)."""
     tm = _re_dt.search(r"<title>([^<]*)</title>", html)
     raw = (tm.group(1).split(" - ")[0].strip() if tm else "Serie")
     # El H1/title viene como 'Descargar Ted Lasso' -> sin ese prefijo TMDB acierta.
@@ -3936,10 +3961,68 @@ def catdetail():
         eps.append({"content_id": cid, "tabla": tabla, "label": label,
                     "season": season, "episode": episode,
                     "quality": (_cat_norm_quality(qm.group(1)) if qm else "")})
+    return title, eps
+
+
+@app.get("/catdetail")
+def catdetail():
+    """Episodios de una serie DonTorrent. path=/serie/ID/slug -> JSON.
+    ROBUSTO ante el baneo de la IP de Render (lo que rompia los capitulos):
+    1) cache fresca -> instantaneo, sin tocar DonTorrent;
+    2) DonTorrent directo desde Render (tope duro, marca el breaker si falla);
+    3) si Render esta baneado y hay code -> el BOX trae el HTML (IP residencial,
+       no baneada) via dthtml, igual que catbrowse/catsearch;
+    4) si todo falla pero hay cache vieja, se sirve (mejor lo ultimo conocido)."""
+    path = (request.args.get("path") or "").strip()
+    if not _re_dt.match(r"^/serie/\d+/", path):
+        return jsonify({"error": "bad path", "episodes": []}), 400
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    now = _t.time()
+    # 1) cache fresca
+    ent = _CATDETAIL_CACHE.get(path)
+    if ent is None:
+        ent = _catdetail_load().get(path)
+        if ent:
+            _CATDETAIL_CACHE[path] = ent
+    if ent and (now - ent.get("ts", 0)) < _CATDETAIL_TTL:
+        return jsonify(ent["data"])
+    # 2) DonTorrent directo desde Render (tope duro: el slow-drip del baneo evade
+    #    el timeout de requests; si no responde en 8s marcamos el breaker para que
+    #    las siguientes aperturas salten directas al box).
+    html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
+                    8.0, "") or ""
+    if not html:
+        _dt_mark(False)
+    # 3) fallback VIA BOX: el box fetcha el HTML con su IP residencial (DoH,
+    #    resuelve Anubis) y aqui lo parseamos con el MISMO parser.
+    if not html and len(code) == 6:
+        job = "dd" + os.urandom(5).hex()
+        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml",
+                           "path": path})
+        res = _catjob_wait(job, 9.0)
+        html = (res or {}).get("html") or ""
+    if not html:
+        # 4) stale: mejor lo ultimo conocido que una lista vacia.
+        if ent:
+            d = dict(ent["data"])
+            d["stale"] = True
+            return jsonify(d)
+        return jsonify({"episodes": []})
+    title, eps = _cat_parse_detail(html)
     meta = _cat_tmdb(title, "tv")
-    return jsonify({"title": title, "poster": meta.get("poster"),
-                    "year": meta.get("year"), "rating": meta.get("rating"),
-                    "episodes": eps})
+    data = {"title": title, "poster": meta.get("poster"),
+            "year": meta.get("year"), "rating": meta.get("rating"),
+            "episodes": eps}
+    if eps:
+        rec = {"data": data, "ts": now}
+        _CATDETAIL_CACHE[path] = rec
+        try:
+            disk = _catdetail_load()
+            disk[path] = rec
+            _catdetail_save(disk)
+        except Exception:
+            pass
+    return jsonify(data)
 
 
 _CAT_PAGE = r"""<!doctype html><html lang="es"><head>
@@ -4442,11 +4525,17 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');$('ov-title').textContent=x.title;
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
  var src=x.source||'dt';var cd=(code.value||'').replace(/\D/g,'');
- var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id));
- fetch(u).then(function(r){return r.json()}).then(function(d){
-  var eps=(d&&d.episodes)||[];if(!eps.length){$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+((src==='et'||src==='wf')?' (¿box encendido?)':'')+'.</div>';return}
+ // DT lleva el code -> si Render esta baneado por DonTorrent, el relay trae los
+ // episodios por TU box (IP de casa). Sin code igualmente intenta directo.
+ var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')+(cd.length===6?('&code='+cd):'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id));
+ // Salvavidas: nunca dejar "Cargando episodios..." para siempre (relay saturado).
+ var ac=(window.AbortController?new AbortController():null);var opt=ac?{signal:ac.signal}:undefined;
+ var kill=setTimeout(function(){if(ac)try{ac.abort()}catch(e){}},20000);
+ fetch(u,opt).then(function(r){return r.json()}).then(function(d){clearTimeout(kill);
+  var eps=(d&&d.episodes)||[];if(!eps.length){OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>';return}
   OVDATA={d:d,x:x};renderEpisodes();
- }).catch(function(){$('ov-body').innerHTML='<div class="msg">Error de conexión.</div>'})}
+ }).catch(function(){clearTimeout(kill);OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron cargar los episodios. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>'})}
+var OVRETRY=null;
 function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var _epi=0;
  var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
  var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
