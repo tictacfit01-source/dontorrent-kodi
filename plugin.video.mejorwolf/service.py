@@ -432,7 +432,7 @@ def _dt_meta(content_id, tabla):
         _DTQ_RE = _re.compile(
             rb"(4K|2160p|1080p|720p|HDRip|BluRay|BDRemux|BDRip|WEB-?DL|WEBRip|"
             rb"MicroHD|HDTV|DVDRip|Remux|UHD)", _re.I)
-    out = {"rar": False, "quality": ""}
+    out = {"rar": False, "quality": "", "ih": ""}
     try:
         from resources.lib import scraper_dontorrent as dt
         from resources.lib import torrent as tparse
@@ -451,6 +451,12 @@ def _dt_meta(content_id, tabla):
         if data:
             try:
                 out["rar"] = bool(tparse.is_packed(data))
+            except Exception:
+                pass
+            try:
+                # info_hash -> el relay deriva los seeders por scrape UDP (lo unico
+                # que SI puede desde la IP de Render aunque DonTorrent la banee).
+                out["ih"] = tparse.info_hash_hex(data)
             except Exception:
                 pass
             if not out["quality"]:
@@ -548,9 +554,11 @@ def _do_etjob(ev):
             elif op == "dtmeta":
                 cid = re.sub(r"\D", "", str(ev.get("cid") or ""))
                 tb = (ev.get("tb") or "peliculas").strip()
-                m = _dt_meta(cid, tb) if cid else {"rar": False, "quality": ""}
+                m = _dt_meta(cid, tb) if cid else {"rar": False,
+                                                   "quality": "", "ih": ""}
                 out["rar"] = m["rar"]
                 out["quality"] = m["quality"]
+                out["ih"] = m.get("ih", "")
             else:
                 return
             rkb.push_etjob(out)

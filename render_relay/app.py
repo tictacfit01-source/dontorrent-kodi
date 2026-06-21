@@ -1473,6 +1473,33 @@ def _dtpacked_save(d):
         pass
 
 
+def _dt_meta_via_box(cid, tb):
+    """Render baneado por DonTorrent -> un Kodi VIVO del sistema (IP residencial)
+    resuelve el .torrent y devuelve rar+quality+info_hash; con el hash el relay
+    deriva los seeders por scrape UDP (lo unico que SI va desde la IP de Render
+    aunque DonTorrent la banee). Sin depender del code (any_live_box). Devuelve
+    {'packed','quality','ih','seeds'} o None si no hay box vivo o el box no logro
+    el .torrent (sin ih -> no cacheamos nada falso)."""
+    box = _any_live_box()
+    if not box:
+        return None
+    job = "dp" + os.urandom(5).hex()
+    _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dtmeta",
+                      "cid": cid, "tb": tb})
+    res = _catjob_wait(job, 14.0)
+    if not res:
+        return None
+    ihx = re.sub(r"[^a-f0-9]", "", (res.get("ih") or "").lower())[:40]
+    if len(ihx) != 40:
+        return None
+    out = {"packed": bool(res.get("rar")), "quality": res.get("quality") or "",
+           "ih": ihx, "seeds": None}
+    sc = _dt_seed_count(bytes.fromhex(ihx))
+    if sc >= 0:
+        out["seeds"] = sc
+    return out
+
+
 @app.get("/dtpacked")
 def dtpacked():
     cid = re.sub(r"\D", "", request.args.get("c", ""))[:12]
@@ -1493,7 +1520,24 @@ def dtpacked():
         return jsonify(out)
     url = _dt_download_url(request.args.get("domain", "").strip(), cid, tb)
     if not url:
-        return jsonify({"packed": None})
+        # Render baneado -> via box (IP residencial): rar+quality+info_hash;
+        # el relay deriva seeders por scrape UDP. Cacheamos igual que el directo.
+        mb = _dt_meta_via_box(cid, tb)
+        if mb is None:
+            return jsonify({"packed": None})
+        ent = {"p": mb["packed"], "q": mb["quality"], "ts": now, "ih": mb["ih"]}
+        if mb["seeds"] is not None:
+            ent["s"] = mb["seeds"]
+            ent["sts"] = now
+        d[key] = ent
+        if len(d) > 3000:
+            for k in sorted(d, key=lambda k: d[k].get("ts", 0))[:len(d) - 3000]:
+                d.pop(k, None)
+        _dtpacked_save(d)
+        out = {"packed": mb["packed"], "quality": mb["quality"], "viabox": True}
+        if mb["seeds"] is not None:
+            out["seeds"] = mb["seeds"]
+        return jsonify(out)
     packed = None
     quality = ""
     ihex = ""
@@ -1551,7 +1595,20 @@ def dtseeds():
         return jsonify({"seeds": s, "cached": True})
     url = _dt_download_url("", cid, tb)
     if not url:
-        return jsonify({"seeds": None})
+        # Render baneado -> el box trae el info_hash; el scrape UDP va aqui.
+        mb = _dt_meta_via_box(cid, tb)
+        if mb is None or mb["seeds"] is None:
+            return jsonify({"seeds": None})
+        ent = d.get(key) or {}
+        ent["ih"] = mb["ih"]
+        ent["s"] = mb["seeds"]
+        ent["sts"] = now
+        ent.setdefault("ts", now)
+        ent.setdefault("p", mb["packed"])
+        ent.setdefault("q", mb["quality"])
+        d[key] = ent
+        _dtpacked_save(d)
+        return jsonify({"seeds": mb["seeds"], "viabox": True})
     try:
         from urllib.parse import urlparse
         sess, _ = _dt_anubis_session(urlparse(url).hostname)

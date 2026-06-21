@@ -88,6 +88,22 @@ def bencode(obj):
     raise BencodeError(f"can't encode {type(obj).__name__}")
 
 
+def info_hash_hex(data):
+    """info_hash (SHA1 del dict `info` bencodeado) en hex, o '' si los bytes no
+    son un .torrent valido. Lo usa el box para que el relay (IP de Render, que no
+    puede con el PoW de descarga de DonTorrent) pueda hacer el scrape UDP de
+    seeders con el hash que el box deriva desde su IP residencial."""
+    if not data or data[:1] != b"d":
+        return ""
+    try:
+        info = bdecode(data).get(b"info")
+        if not isinstance(info, dict):
+            return ""
+        return hashlib.sha1(bencode(info)).hexdigest()
+    except Exception:
+        return ""
+
+
 # ----------------------------------------------------- .torrent -> magnet
 
 def torrent_to_magnet(data):
