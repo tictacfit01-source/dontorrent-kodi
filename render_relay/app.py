@@ -2086,6 +2086,25 @@ def _kbstatus_save(d):
     except Exception:
         pass
 
+
+def _any_live_box(max_age=90):
+    """Code de CUALQUIER box con latido reciente (vivo), o None — el más reciente.
+    Sirve para que lo que necesita IP residencial (dthtml de DonTorrent cuando
+    Render está baneado) funcione AUNQUE el visitante no tenga su código puesto:
+    si hay algún Kodi del sistema encendido, lo usamos. El op dthtml es invisible
+    para el dueño del box (solo descarga HTML en 2º plano, no toca su pantalla)."""
+    try:
+        now = _t.time()
+        best, best_ts = None, 0
+        for code, ent in _kbstatus_load().items():
+            ts = ent.get("ts", 0)
+            if (now - ts) < max_age and ts > best_ts:
+                best, best_ts = code, ts
+        return best
+    except Exception:
+        return None
+
+
 _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -3994,12 +4013,18 @@ def catdetail():
     if not html:
         _dt_mark(False)
     # 3) fallback VIA BOX: el box fetcha el HTML con su IP residencial (DoH,
-    #    resuelve Anubis) y aqui lo parseamos con el MISMO parser.
-    if not html and len(code) == 6:
+    #    resuelve Anubis) y aqui lo parseamos con el MISMO parser. Usa el code del
+    #    visitante si lo tiene; si NO, cualquier Kodi del sistema que este
+    #    encendido -> los capitulos cargan aunque no haya code en la web (era la
+    #    causa de "no se pudieron leer": sin code no se disparaba el fallback).
+    box = code if len(code) == 6 else _any_live_box()
+    if not html and box:
         job = "dd" + os.urandom(5).hex()
-        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml",
-                           "path": path})
-        res = _catjob_wait(job, 9.0)
+        _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml",
+                          "path": path})
+        # 14s: el box caliente trae el HTML en ~3s, pero Anubis en frio sube a
+        # ~12s; el AbortController del front es 20s -> deja margen sin colgar.
+        res = _catjob_wait(job, 14.0)
         html = (res or {}).get("html") or ""
     if not html:
         # 4) stale: mejor lo ultimo conocido que una lista vacia.
