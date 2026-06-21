@@ -3977,6 +3977,18 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .search button{border:0;border-radius:14px;padding:0 16px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue))}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
 @media(max-width:430px){.grid{grid-template-columns:repeat(2,1fr)}}
+/* Mi lista: barra con el boton de cambiar vista (cuadricula <-> lista) */
+.listbar{display:flex;justify-content:flex-end;margin:0 0 12px}
+.vtog{border:1px solid var(--stroke);background:var(--card);color:var(--txt);font-size:13px;font-weight:600;padding:9px 14px;border-radius:999px;cursor:pointer}
+.vtog:active{transform:scale(.96)}
+/* Vista LISTA compacta: 1 columna, portada mini a la izquierda */
+.grid.lv{grid-template-columns:1fr!important;gap:8px}
+.grid.lv .card{display:flex;align-items:stretch}
+.grid.lv .ph{aspect-ratio:auto;width:48px;min-height:72px;flex:none}
+.grid.lv .ph .tl,.grid.lv .ph .kindtag,.grid.lv .ph .srctag{display:none}
+.grid.lv .ph .fav{width:24px;height:24px;font-size:13px;top:3px;right:3px}
+.grid.lv .m{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;padding:8px 14px}
+.grid.lv .m .t{-webkit-line-clamp:1;font-size:14px}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden;transition:.15s}
 .card:active{transform:scale(.97)}
 .card .ph{position:relative;aspect-ratio:2/3;background:#0e1320 center/cover no-repeat;cursor:pointer}
@@ -4179,6 +4191,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div id="buscar-more" class="morebar"></div>
  </section>
  <section id="pane-lista" class="pane hidden">
+  <div class="listbar"><button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
   <div id="lista-grid" class="msg"></div>
  </section>
  <div class="appfoot">MejorWolf · <a href="/kb/clasico">Mando clásico</a></div>
@@ -4335,7 +4348,9 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
 function boxMerge(list,g,op,q,srcs,cb,seq){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  fetch(u).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b})}).catch(function(){if(cb)cb({})})}
-function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';return}renderGrid(g,'lista')}
+function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();var b=$('vtog');if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';if(b)b.style.display='none';return}if(b)b.style.display='';renderGrid(g,'lista');applyView()}
+function applyView(){var lv=localStorage.getItem('mw_lv')==='1';var g=$('lista-grid');if(g){var grid=g.querySelector('.grid');if(grid)grid.classList.toggle('lv',lv)}var b=$('vtog');if(b)b.innerHTML=lv?'▦ Vista cuadrícula':'☰ Vista lista'}
+function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')==='1'?'0':'1');applyView()}
 function cardHTML(x,list,i){
  var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
@@ -4369,13 +4384,18 @@ function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSe
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
- $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';$('sh-seeds').innerHTML='';$('sheet').classList.add('on');
- if((x.source||'dt')==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x||!p)return;if(p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';if(typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}
- else{var _cd=(code.value||'').replace(/\D/g,'');var s3=x.source||'';
-  // DivxTotal: el relay deriva las semillas directo (sin code). ET/WF: via box (necesita code).
-  if(s3==='dx'||_cd.length===6){var su='/seeds?src='+encodeURIComponent(s3)+'&url='+encodeURIComponent(x.url||x.content_id)+(_cd.length===6?('&code='+_cd):'');
-   fetch(su).then(function(r){return r.json()}).then(function(p){if(sel===x&&p&&typeof p.seeds==='number')$('sh-seeds').innerHTML=seedTag(p.seeds)}).catch(function(){})}}}
+ $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';
+ // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
+ // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
+ $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');
+ var _cd=(code.value||'').replace(/\D/g,'');
+ var seedShow=function(p){if(sel!==x)return;$('sh-seeds').innerHTML=(p&&typeof p.seeds==='number')?seedTag(p.seeds):seedFail(s2,_cd);};
+ if(s2==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x)return;if(p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';seedShow(p)}).catch(function(){seedShow(null)})}
+ else if(s2==='dx'){fetch('/seeds?src=dx&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(seedShow).catch(function(){seedShow(null)})}
+ else if(_cd.length===6){fetch('/seeds?code='+_cd+'&src='+encodeURIComponent(s2)+'&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(seedShow).catch(function(){seedShow(null)})}
+ else{$('sh-seeds').innerHTML=seedFail(s2,_cd);}}
 function seedTag(n){var c,t;if(n<=0){c='s-zero';t='⚠ Sin semillas';}else if(n<3){c='s-low';t='🌱 '+n+' semilla'+(n===1?'':'s');}else{c='s-ok';t='🌱 '+n+' semillas';}return '<span class="seedtag '+c+'">'+t+'</span>';}
+function seedFail(src,cd){var t=((src==='et'||src==='wf')&&(!cd||cd.length!==6))?'🌱 enciende tu Kodi para las semillas':'🌱 semillas no disponibles';return '<span class="seedtag" style="opacity:.6">'+t+'</span>';}
 function seedGate(ci,tb,proceed){var done=false;var to=setTimeout(function(){if(done)return;done=true;proceed()},6000);toast('Comprobando semillas…');
  fetch('/dtseeds?c='+encodeURIComponent(ci)+'&tb='+encodeURIComponent(tb)).then(function(r){return r.json()}).then(function(d){if(done)return;done=true;clearTimeout(to);var s=d&&d.seeds;
   if(s===0){if(confirm('⚠ Este título no tiene semillas ahora mismo.\nEs muy probable que NO cargue.\n\n¿Intentar de todas formas?'))proceed();return}
