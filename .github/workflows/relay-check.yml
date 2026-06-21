@@ -1,0 +1,66 @@
+name: Check & deploy relay
+
+# Red de seguridad para render_relay/. El CI de Kodi (release.yml) NO testea el
+# relay -> el bug del 21-jun (usar `_thr` a nivel de modulo ANTES de importarlo)
+# llego a PRODUCCION sin que nada avisara: gunicorn no levantaba -> relay 000 ->
+# la web mostraba "Sin resultados". `py_compile` NO pilla ese NameError de orden
+# de import; `import app` SI. Este workflow lo caza en cada push.
+#
+# Ademas, AUTO-DESPLIEGA en Render SOLO si el import pasa (gate): un commit roto
+# NUNCA se despliega -> Render se queda con la ultima version buena viva. El
+# auto-deploy es OPCIONAL: solo actua si existe el secret RENDER_DEPLOY_HOOK
+# (Settings -> Secrets and variables -> Actions). Sin el secret, este workflow es
+# solo un guardian (X roja si el relay no importa). El deploy hook es un SECRETO
+# (este repo es PUBLICO) -> NUNCA ponerlo en claro aqui.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "render_relay/**"
+      - ".github/workflows/relay-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-deploy
+  cancel-in-progress: true
+
+jobs:
+  check-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        working-directory: render_relay
+        run: pip install -r requirements.txt
+
+      - name: Compila + import (caza el crash de orden-de-import)
+        working-directory: render_relay
+        run: |
+          python -m py_compile app.py
+          python -c "import app; print('import app OK')"
+
+      - name: Deploy a Render (solo si el import paso y hay hook)
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "Sin RENDER_DEPLOY_HOOK -> salto el deploy (solo guardian)."
+            echo "Para auto-desplegar, anade el secret en Settings > Secrets > Actions."
+            exit 0
+          fi
+          echo "Import OK -> disparando deploy hook de Render..."
+          code=$(curl -s -o /dev/null -w "%{http_code}" "$HOOK")
+          echo "Deploy hook HTTP $code"
+          [ "$code" = "200" ] || [ "$code" = "201" ]

@@ -3550,6 +3550,14 @@ def catsearch():
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify({"items": []})
+    # Cache fresca -> INSTANTANEO y sin tocar DonTorrent/TMDB (menos baneo). Solo
+    # se cachean resultados NO vacios (ver final): si DonTorrent estaba caido y la
+    # busqueda salio vacia, la siguiente reintenta de verdad (no cachea el vacio).
+    qkey = q.lower()
+    now = _t.time()
+    cent = _CATSEARCH_CACHE.get(qkey)
+    if cent and (now - cent["ts"]) < _CATSEARCH_TTL:
+        return jsonify({"items": cent["items"], "cached": True})
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     # Probes con TOPE DURO (hilos daemon): si DonTorrent/ET cuelgan la conexion
     # (Render bloqueado -> ignora el timeout de requests), los abandonamos y
@@ -3601,7 +3609,16 @@ def catsearch():
     merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
     # Enrich SINCRONO seguro: el breaker TMDB evita que cuelgue (sin TMDB, items
     # sin poster al instante). Sin hilos en 2o plano que se acumulen.
-    return jsonify({"items": _cat_enrich(merged)})
+    items = _cat_enrich(merged)
+    if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
+        _CATSEARCH_CACHE[qkey] = {"items": items, "ts": now}
+        if len(_CATSEARCH_CACHE) > _CATSEARCH_MAX:   # evicta la entrada mas vieja
+            try:
+                old = min(_CATSEARCH_CACHE, key=lambda k: _CATSEARCH_CACHE[k]["ts"])
+                _CATSEARCH_CACHE.pop(old, None)
+            except Exception:
+                _CATSEARCH_CACHE.clear()
+    return jsonify({"items": items})
 
 
 @app.get("/catetresolve")
@@ -3901,6 +3918,16 @@ _CATBROWSE_CACHE = {}      # "kind:page" -> {"items": [...], "ts": ...}
 _CATBROWSE_TTL = 900       # 15 min: los listados cambian despacio
 _CATBROWSE_DX_TTL = 300    # 5 min para el fallback DivxTotal -> reintenta DT pronto
 _CATBROWSE_FILE = "/tmp/mw_catbrowse.json"   # persiste entre workers y deploys
+
+# Cache de BUSQUEDA en memoria. Una busqueda repetida o refinada (el usuario
+# escribe, borra, reintenta, o vuelve atras) re-escrapeaba DonTorrent cada vez
+# (~8s + suma riesgo de BANEO de la IP de Render = el dolor historico nº1). Con
+# cache: el 2o hit es INSTANTANEO y NO toca DonTorrent/TMDB. TTL corto: un torrent
+# nuevo no aparece minuto a minuto, 10 min es seguro. Por-worker (no a disco): es
+# solo aceleracion, no critico; cada worker calienta su propia cache.
+_CATSEARCH_CACHE = {}      # q.lower() -> {"items": [...], "ts": ...}
+_CATSEARCH_TTL = 600       # 10 min
+_CATSEARCH_MAX = 80        # tope de entradas -> no crece sin limite (Render 512MB)
 
 
 def _catbrowse_load():
@@ -4619,8 +4646,13 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // catsearch (relay) con REINTENTO AUTO: si Render está dormido, la 1ª llamada lo
  // despierta (~50s) -> reintentamos hasta que conteste. Así un relay frío acaba
  // dando resultados y muestra "Despertando…", NUNCA "Sin resultados" en falso.
+ // Timeout 1er intento 20s: una busqueda normal pero lenta (DonTorrent con muchas
+ // paginas o Anubis recien refrescado) tarda 8-15s; con 14s saltaba el reintento y
+ // mostraba "Despertando..." EN FALSO con el relay vivo. 20s cubre el caso lento
+ // sin alargar de mas el aviso si el relay esta de verdad dormido (cold ~50s -> los
+ // reintentos lo cubren). Reintentos 16s (ya en modo "despertando").
  function csTry(att){if(seq!==_searchSeq)return;wakeAtt=att;
-  tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,14000).then(function(r){return r.json()}).then(function(d){
+  tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,att===1?20000:16000).then(function(r){return r.json()}).then(function(d){
    if(seq!==_searchSeq)return;catState='ok';mergeResults('buscar',g,(d&&d.items)||[]);paint();
   }).catch(function(){if(seq!==_searchSeq)return;
    if(att<6){setTimeout(function(){csTry(att+1)},1200);paint();}
