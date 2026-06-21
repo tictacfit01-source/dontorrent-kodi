@@ -4463,7 +4463,11 @@ function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
 function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
 function qualBadge(job,q){if(!q)return;var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.q'))return;var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
-function openItem(list,i){var x=LISTS[list][i];sel=x;if(x.kind==='serie'){openSeries(x);return}
+function openItem(list,i){openCard(LISTS[list][i])}
+// Abre la FICHA de un item (sheet de peli u overlay de serie) a partir del
+// OBJETO -> sirve igual para una tarjeta de la cuadricula que para un enlace
+// COMPARTIDO reconstruido (abrir directo la peli/serie, sin buscar).
+function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);return}
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
@@ -4493,17 +4497,24 @@ function doShare(t,yr,qs){var link=location.origin+'/cat?'+qs+'&t='+encodeURICom
  if(navigator.share){navigator.share({title:'MejorWolf',text:'Te recomiendo «'+nice+'» en MejorWolf',url:link}).then(function(){},function(){})}
  else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){toast('Enlace copiado')},function(){prompt('Copia el enlace:',link)})}
  else{prompt('Copia el enlace:',link)}}
-function shareSheet(){if(!sel)return;var t=sel.title||'',yr=sel.year||'';
- if((sel.source||'dt')==='dt'){doShare(t,yr,'play=dt&ci='+encodeURIComponent(sel.content_id)+'&tb='+encodeURIComponent(sel.tabla||'peliculas'));return}
- var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código para preparar el enlace');return}
- toast('Preparando enlace…');
- fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
-  if(d&&d.link)doShare(t,yr,'play=pl&u='+encodeURIComponent(d.link));else toast('No se pudo preparar el enlace')}).catch(function(){toast('No se pudo')})}
-function shareSeries(){if(!OVDATA)return;var t=(OVDATA.d.title||OVDATA.x.title||'');if(!t)return;
- var link=location.origin+'/cat?find='+encodeURIComponent(t);
- if(navigator.share){navigator.share({title:'MejorWolf',text:'Te recomiendo «'+t+'» en MejorWolf',url:link}).then(function(){},function(){})}
- else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){toast('Enlace copiado')},function(){prompt('Copia el enlace:',link)})}
- else{prompt('Copia el enlace:',link)}}
+// Compartir PELÍCULA: el enlace abre la FICHA de esa peli en la web del amigo
+// (póster, calidad, semillas, reproducir con SU código) -> NO una búsqueda.
+function shareSheet(){if(!sel)return;var x=sel,t=x.title||'',yr=x.year||'',src=x.source||'dt';
+ var qs='open=peli&src='+encodeURIComponent(src);
+ if(src==='dt')qs+='&ci='+encodeURIComponent(x.content_id||'')+'&tb='+encodeURIComponent(x.tabla||'peliculas');
+ else qs+='&url='+encodeURIComponent(x.url||x.content_id||'');
+ if(x.quality)qs+='&q='+encodeURIComponent(x.quality);
+ if(x.poster)qs+='&ps='+encodeURIComponent(x.poster);
+ doShare(t,yr,qs);}
+// Compartir SERIE: el enlace abre directamente la ficha de la serie con sus
+// temporadas/episodios (openSeries), NO una búsqueda del título.
+function shareSeries(){if(!OVDATA)return;var x=OVDATA.x,d=OVDATA.d;var t=(d.title||x.title||'');if(!t)return;
+ var src=x.source||'dt';
+ var qs='open=serie&src='+encodeURIComponent(src);
+ if(src==='dt')qs+='&path='+encodeURIComponent(x.path||'');
+ else qs+='&url='+encodeURIComponent(x.url||x.content_id||'');
+ var ps=(d.poster||x.poster||'');if(ps)qs+='&ps='+encodeURIComponent(ps);
+ doShare(t,(d.year||x.year||''),qs);}
 var sharedPlay=null;
 function showShared(t){$('shared-t').textContent=t||'Compartido';$('shared').classList.add('on')}
 function playShared(){if(sharedPlay&&sendPlay(sharedPlay))$('shared').classList.remove('on')}
@@ -4594,8 +4605,10 @@ function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toas
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
  if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
 $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
-(function(){try{var p=new URLSearchParams(location.search);var pl=p.get('play');var t=p.get('t')||'';
- if(pl==='dt'&&p.get('ci')){sharedPlay={a:'dt',c:p.get('ci'),tb:p.get('tb')||'peliculas',t:t};showShared(t);}
+(function(){try{var p=new URLSearchParams(location.search);var pl=p.get('play');var t=p.get('t')||'';var op=p.get('open');
+ if(op==='serie'){openCard({kind:'serie',source:p.get('src')||'dt',path:p.get('path')||'',url:p.get('url')||'',title:t,poster:p.get('ps')||'',year:p.get('yr')||''});}
+ else if(op==='peli'){openCard({kind:'movie',source:p.get('src')||'dt',content_id:p.get('ci')||'',tabla:p.get('tb')||'peliculas',url:p.get('url')||'',quality:p.get('q')||'',title:t,poster:p.get('ps')||'',year:p.get('yr')||''});}
+ else if(pl==='dt'&&p.get('ci')){sharedPlay={a:'dt',c:p.get('ci'),tb:p.get('tb')||'peliculas',t:t};showShared(t);}
  else if(pl==='pl'&&p.get('u')){sharedPlay={a:'pl',u:p.get('u'),t:t};showShared(t);}
  else if(p.get('find')){setView('buscar');$('q').value=p.get('find');go();}
 }catch(e){}})();
