@@ -2048,12 +2048,48 @@ def _dx_parse_items(html, dom):
     return out
 
 
+# Breaker + tope de concurrencia para DivxTotal (la via DIRECTA). DivxTotal puede
+# tardar muchisimo (reto Cloudflare -> cloudscraper ~35s) y antes esos hilos se
+# ABANDONABAN tras el join(9s) de /catsearch y se ACUMULABAN -> es lo que mas
+# saturaba el relay al buscar varias cosas seguidas. Ahora: como mucho 2 ops DX a
+# la vez y, si DX va lento o esta bloqueado, se SALTA un rato (no machaca la IP, no
+# se cuelga). Espejo del breaker de DonTorrent. En memoria (por worker) -> simple.
+_DX_SEM = _thr.Semaphore(2)
+_DX_DOWN_UNTIL = [0.0]
+_DX_DOWN_COOLDOWN = 90
+
+
+def _dx_is_down():
+    return _t.time() < _DX_DOWN_UNTIL[0]
+
+
+def _dx_mark(ok):
+    _DX_DOWN_UNTIL[0] = 0.0 if ok else (_t.time() + _DX_DOWN_COOLDOWN)
+
+
 def _dx_search_items(q, max_pages=5, proxy=False):
+    """Busca en DivxTotal y devuelve items del catalogo web. proxy=True -> via
+    ScraperAPI (failover explicito, NO pasa por el breaker/tope directo)."""
+    if proxy:
+        return _dx_search_items_inner(q, max_pages, proxy=True)
+    # Via directa: breaker + tope. Si DX esta caido o ya hay 2 ops -> [] al instante
+    # (no abre otro hilo que luego se abandone y se acumule).
+    if _dx_is_down() or not _DX_SEM.acquire(blocking=False):
+        return []
+    try:
+        return _dx_search_items_inner(q, max_pages, proxy=False)
+    finally:
+        _DX_SEM.release()
+
+
+def _dx_search_items_inner(q, max_pages=5, proxy=False):
     """Busca en DivxTotal DIRECTO (relay) y devuelve items del catalogo web.
     proxy=True -> via ScraperAPI (failover cuando el directo esta baneado)."""
     from urllib.parse import quote as _q
     dom = _dx_domain()
     if not dom:
+        if not proxy:
+            _dx_mark(False)
         return []
     qq = _q(q)
     html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy)
@@ -2062,7 +2098,16 @@ def _dx_search_items(q, max_pages=5, proxy=False):
         dom = _dx_domain()
         html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy) if dom else None
     if not html1:
+        if not proxy:
+            _dx_mark(False)   # no se pudo ALCANZAR DivxTotal -> salta un rato
         return []
+    if not proxy:
+        # Alcanzamos DivxTotal -> breaker ARRIBA (aunque la query no tenga matches o
+        # haya tardado): asi DX se SIGUE intentando y aparece en cuanto responde
+        # rapido. El tope de 2 ops (_DX_SEM) ya evita que un DX lento se acumule; el
+        # breaker solo salta si NO se pudo ALCANZAR DivxTotal (bloqueo real) -> ahi
+        # si conviene no machacar la IP un rato.
+        _dx_mark(True)
     nums = [int(n) for n in re.findall(r"/page/(\d+)/", html1)]
     max_page = min(max(nums), max_pages) if nums else 1
     parts = [html1]
@@ -3117,6 +3162,52 @@ def _tmdb_mark(ok):
     _TMDB_DOWN_UNTIL[0] = 0.0 if ok else (_t.time() + _TMDB_DOWN_COOLDOWN)
 
 
+def _tmdb_pick(results, clean, year, ep):
+    """Elige el MEJOR resultado de la MISMA respuesta de TMDB (sin llamadas extra
+    -> cero riesgo de baneo). Antes se cogia res[0] a ciegas: TMDB prioriza el
+    titulo EXACTO sobre el popular, asi que 'Profanacion' devolvia una peli oscura
+    de 1934 (titulo exacto) en vez de la de Departamento Q (2014, mucho mas
+    popular pero titulada 'Los casos del Departamento Q: Profanacion').
+    Ponderamos: popularidad * boost por coincidencia de titulo, +/- cercania de
+    año cuando se conoce. Asi gana el correcto sin gastar ni una peticion mas."""
+    nq = _et_norm(clean or "")
+
+    def _names(it):
+        vals = (it.get("title"), it.get("name"),
+                it.get("original_title"), it.get("original_name"))
+        return [_et_norm(v) for v in vals if v]
+
+    def _year_of(it):
+        d = it.get("release_date") or it.get("first_air_date") or ""
+        return d[:4]
+
+    def _score(it):
+        names = _names(it)
+        if nq and nq in names:
+            w = 2.5                      # titulo EXACTO
+        elif nq and any((nq in n) or (n in nq) for n in names if n):
+            w = 1.3                      # uno contiene al otro
+        else:
+            w = 1.0
+        s = (float(it.get("popularity") or 0.0) + 0.5) * w
+        yr = _year_of(it)
+        if year and yr:
+            try:
+                d = abs(int(yr) - int(year))
+                if d <= 1:
+                    s *= 1.6             # año casi exacto -> casi seguro es esta
+                elif d >= 6:
+                    s *= 0.6             # muy lejos del año -> probablemente NO
+            except Exception:
+                pass
+        return s
+
+    try:
+        return max(results, key=_score)
+    except Exception:
+        return results[0]
+
+
 def _cat_tmdb(title, kind="movie"):
     """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria + breaker."""
     clean = _cat_clean_title(title)
@@ -3147,7 +3238,7 @@ def _cat_tmdb(title, kind="movie"):
             return out
         res = (r.json() or {}).get("results") or []
         if res:
-            top = res[0]
+            top = _tmdb_pick(res, clean, year, ep)
             pp = top.get("poster_path")
             d = top.get("release_date") or top.get("first_air_date") or ""
             out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
@@ -3639,85 +3730,115 @@ def catsearch():
             _CATSEARCH_CACHE[qkey] = cent
     if cent and (now - cent["ts"]) < _CATSEARCH_TTL:
         return jsonify({"items": cent["items"], "cached": True})
-    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
-    # Probes con TOPE DURO (hilos daemon): si DonTorrent/ET cuelgan la conexion
-    # (Render bloqueado -> ignora el timeout de requests), los abandonamos y
-    # seguimos. Asi la peticion NUNCA se cuelga y llega el fallback al box.
-    import threading as _th
-    _r = {"dt": [], "et": [], "dx": []}
+    # --- Single-flight: si una busqueda IDENTICA ya se esta calculando en este
+    # worker, NO lanzamos otro fan-out; esperamos su resultado y servimos la cache.
+    # Mata la amplificacion de los reintentos del front (csTry hasta 6x) que era
+    # una de las causas de que el relay se saturase al buscar varias cosas seguidas. --
+    _owner = False
+    _ev = _CATSEARCH_INFLIGHT.get(qkey)
+    if _ev is None:
+        with _CATSEARCH_INFLIGHT_LOCK:
+            _ev = _CATSEARCH_INFLIGHT.get(qkey)
+            if _ev is None:
+                _ev = _thr.Event()
+                _CATSEARCH_INFLIGHT[qkey] = _ev
+                _owner = True
+    if not _owner:
+        # Otra peticion identica manda; esperamos SU resultado (no abrimos otro
+        # fan-out). Cuando termine, servimos su cache.
+        _ev.wait(15.0)
+        cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
+        if cent and (_t.time() - cent["ts"]) < _CATSEARCH_TTL:
+            return jsonify({"items": cent["items"], "cached": True})
+        # el dueño aun no termino (o salio vacio) -> 503 para que el front REINTENTE
+        # (no "Sin resultados" en falso); el reintento sera el nuevo dueño.
+        return Response("", status=503)
+    try:
+        code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+        # Probes con TOPE DURO (hilos daemon): si DonTorrent/ET cuelgan la conexion
+        # (Render bloqueado -> ignora el timeout de requests), los abandonamos y
+        # seguimos. Asi la peticion NUNCA se cuelga y llega el fallback al box.
+        import threading as _th
+        _r = {"dt": [], "et": [], "dx": []}
 
-    def _w_dt():
-        try:
-            _r["dt"] = _cat_parse_items(_cat_dt_html(q)) or []
-        except Exception:
-            pass
-
-    def _w_et():
-        try:
-            _r["et"] = _et_search(q) or []
-        except Exception:
-            pass
-
-    def _w_dx():
-        # DivxTotal DIRECTO (el relay si lo alcanza) -> rapido y SIN code.
-        try:
-            _r["dx"] = _dx_search_items(q) or []
-        except Exception:
-            pass
-    _tdt = _th.Thread(target=_w_dt, daemon=True)
-    _tet = _th.Thread(target=_w_et, daemon=True)
-    _tdx = _th.Thread(target=_w_dx, daemon=True)
-    _tdt.start()
-    _tet.start()
-    _tdx.start()
-    _tdt.join(8.0)
-    _tet.join(10.0)
-    _tdx.join(9.0)
-    dt_items = _r["dt"]
-    et_items = _r["et"]
-    dx_items = _r["dx"]
-    if not dt_items and len(code) == 6:
-        # Render bloqueado por DonTorrent -> buscar DonTorrent VIA EL BOX (IP
-        # residencial). El box trae el HTML de /buscar y aqui lo parseamos igual.
-        job = "ds" + os.urandom(5).hex()
-        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml", "q": q})
-        res = _catjob_wait(job, 20.0)
-        h = (res or {}).get("html") or ""
-        if h:
-            dt_items = _cat_parse_items(h)
-    # FAILOVER anti-baneo via ScraperAPI (IPs residenciales rotativas). Solo si el
-    # directo NO trajo NADA (senal de que DonTorrent/DivxTotal banean la IP de
-    # Render) -> en uso normal NO gasta creditos. Asi la BUSQUEDA funciona desde
-    # fuera de casa SIN el box ([[directrices-solidez-no-pc]]). De momento via
-    # DivxTotal (sin Anubis); DonTorrent-via-proxy es el siguiente paso.
-    if (not dt_items and not dx_items) and _sapi_credits_ok():
-        dx_items = _bounded(lambda: _dx_search_items(q, proxy=True), 18.0, []) or []
-    if not dt_items and not et_items and not dx_items:
-        return jsonify({"items": []})
-    merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
-    # Enrich SINCRONO seguro: el breaker TMDB evita que cuelgue (sin TMDB, items
-    # sin poster al instante). Sin hilos en 2o plano que se acumulen.
-    items = _cat_enrich(merged)
-    if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
-        rec = {"items": items, "ts": now}
-        _CATSEARCH_CACHE[qkey] = rec
-        try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
-            disk = _catsearch_load()
-            disk[qkey] = rec
-            if len(disk) > _CATSEARCH_MAX:   # poda: deja las MAX mas recientes
-                for k in sorted(disk, key=lambda k: disk[k].get("ts", 0))[
-                        :len(disk) - _CATSEARCH_MAX]:
-                    disk.pop(k, None)
-            _catsearch_save(disk)
-        except Exception:
-            pass
-        if len(_CATSEARCH_CACHE) > _CATSEARCH_MAX:   # evicta la mas vieja en memoria
+        def _w_dt():
             try:
-                old = min(_CATSEARCH_CACHE, key=lambda k: _CATSEARCH_CACHE[k]["ts"])
-                _CATSEARCH_CACHE.pop(old, None)
+                _r["dt"] = _cat_parse_items(_cat_dt_html(q)) or []
             except Exception:
-                _CATSEARCH_CACHE.clear()
-    return jsonify({"items": items})
+                pass
+
+        def _w_et():
+            try:
+                _r["et"] = _et_search(q) or []
+            except Exception:
+                pass
+
+        def _w_dx():
+            # DivxTotal DIRECTO (el relay si lo alcanza) -> rapido y SIN code.
+            try:
+                _r["dx"] = _dx_search_items(q) or []
+            except Exception:
+                pass
+        _tdt = _th.Thread(target=_w_dt, daemon=True)
+        _tet = _th.Thread(target=_w_et, daemon=True)
+        _tdx = _th.Thread(target=_w_dx, daemon=True)
+        _tdt.start()
+        _tet.start()
+        _tdx.start()
+        _tdt.join(8.0)
+        _tet.join(10.0)
+        _tdx.join(9.0)
+        dt_items = _r["dt"]
+        et_items = _r["et"]
+        dx_items = _r["dx"]
+        if not dt_items and len(code) == 6:
+            # Render bloqueado por DonTorrent -> buscar DonTorrent VIA EL BOX (IP
+            # residencial). El box trae el HTML de /buscar y aqui lo parseamos igual.
+            job = "ds" + os.urandom(5).hex()
+            _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml", "q": q})
+            res = _catjob_wait(job, 20.0)
+            h = (res or {}).get("html") or ""
+            if h:
+                dt_items = _cat_parse_items(h)
+        # FAILOVER anti-baneo via ScraperAPI (IPs residenciales rotativas). Solo si el
+        # directo NO trajo NADA (senal de que DonTorrent/DivxTotal banean la IP de
+        # Render) -> en uso normal NO gasta creditos. Asi la BUSQUEDA funciona desde
+        # fuera de casa SIN el box ([[directrices-solidez-no-pc]]). De momento via
+        # DivxTotal (sin Anubis); DonTorrent-via-proxy es el siguiente paso.
+        if (not dt_items and not dx_items) and _sapi_credits_ok():
+            dx_items = _bounded(lambda: _dx_search_items(q, proxy=True), 18.0, []) or []
+        if not dt_items and not et_items and not dx_items:
+            return jsonify({"items": []})
+        merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
+        # Enrich SINCRONO seguro: el breaker TMDB evita que cuelgue (sin TMDB, items
+        # sin poster al instante). Sin hilos en 2o plano que se acumulen.
+        items = _cat_enrich(merged)
+        if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
+            rec = {"items": items, "ts": now}
+            _CATSEARCH_CACHE[qkey] = rec
+            try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
+                disk = _catsearch_load()
+                disk[qkey] = rec
+                if len(disk) > _CATSEARCH_MAX:   # poda: deja las MAX mas recientes
+                    for k in sorted(disk, key=lambda k: disk[k].get("ts", 0))[
+                            :len(disk) - _CATSEARCH_MAX]:
+                        disk.pop(k, None)
+                _catsearch_save(disk)
+            except Exception:
+                pass
+            if len(_CATSEARCH_CACHE) > _CATSEARCH_MAX:   # evicta la mas vieja en memoria
+                try:
+                    old = min(_CATSEARCH_CACHE, key=lambda k: _CATSEARCH_CACHE[k]["ts"])
+                    _CATSEARCH_CACHE.pop(old, None)
+                except Exception:
+                    _CATSEARCH_CACHE.clear()
+        return jsonify({"items": items})
+    finally:
+        # SIEMPRE liberamos el single-flight (aunque haya excepcion) -> nunca deja
+        # una query "bloqueada" para siempre, y despierta a los que esperan.
+        with _CATSEARCH_INFLIGHT_LOCK:
+            _CATSEARCH_INFLIGHT.pop(qkey, None)
+        _ev.set()
 
 
 @app.get("/catetresolve")
@@ -4029,6 +4150,12 @@ _CATSEARCH_CACHE = {}      # q.lower() -> {"items": [...], "ts": ...}
 _CATSEARCH_TTL = 600       # 10 min
 _CATSEARCH_MAX = 80        # tope de entradas -> no crece sin limite (Render 512MB)
 _CATSEARCH_FILE = "/tmp/mw_catsearch.json"   # compartida entre workers
+# Single-flight: query EN CURSO -> Event. Las peticiones identicas concurrentes
+# (reintentos del front, varias pestañas) esperan a ESA en vez de abrir otro
+# fan-out -> el relay no se satura. Por-worker (basta: los reintentos del mismo
+# usuario caen casi siempre en el mismo worker; si no, paga 1 fan-out de mas, no se cuelga).
+_CATSEARCH_INFLIGHT = {}
+_CATSEARCH_INFLIGHT_LOCK = _thr.Lock()
 
 
 def _catbrowse_load():
