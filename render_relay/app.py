@@ -3357,11 +3357,14 @@ def _cat_dt_html_inner(q):
                         return ""
                 with _TPE(max_workers=min(8, mx - 1)) as ex:
                     full += "".join(ex.map(_pg, range(2, mx + 1)))
-            _dt_mark(_t.time() - t0 <= _DT_SLOW)   # lento -> baja breaker
+            _dt_mark(True)   # DT RESPONDIO con resultados -> breaker ARRIBA aunque
+            # haya sido lento (el PoW de Anubis en frio tarda 1 vez; _DT_SEM(2) ya
+            # evita saturar). Marcarlo "caido" por lento causaba el bache de ~90s
+            # sin resultados tras arrancar en frio.
             return full
         except Exception:
             continue
-    _dt_mark(got and (_t.time() - t0 <= _DT_SLOW))  # lento o fallo -> caido
+    _dt_mark(got)   # "caido" SOLO si DT no respondio (no por lento)
     return ""
 
 
@@ -3387,13 +3390,13 @@ def _cat_dt_session_get(path):
                     rr = s.get(f"https://{dom}{path}", timeout=6)
                 if rr.status_code == 200 and _re_dt.search(
                         r"/(?:pelicula|serie|documental)/\d+/", rr.text):
-                    # ok, pero si tardo >12s (DonTorrent lento) BAJA el breaker:
-                    # las siguientes lo saltan y el relay no se satura.
-                    _dt_mark(_t.time() - t0 <= _DT_SLOW)
+                    # DT respondio con resultados -> breaker ARRIBA aunque lento
+                    # (el PoW en frio tarda 1 vez; _DT_SEM(2) ya evita saturar).
+                    _dt_mark(True)
                     return rr.text, dom
             except Exception:
                 continue
-        _dt_mark(got and (_t.time() - t0 <= _DT_SLOW))
+        _dt_mark(got)   # "caido" SOLO si DT no respondio (no por lento)
         return "", None
     finally:
         _DT_SEM.release()
