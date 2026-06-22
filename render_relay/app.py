@@ -84,6 +84,52 @@ def _make_scraper():
     )
 
 
+# === ScraperAPI MODO PROXY (failover anti-baneo para la BUSQUEDA) ===========
+# DonTorrent/DivxTotal banean la IP de datacenter de Render. En modo PROXY,
+# nuestras propias peticiones (las que ya resuelven Anubis con requests) salen
+# por el pool de IPs de ScraperAPI -> no se pueden banear. Se usa SOLO como
+# FAILOVER de la busqueda (cuando el directo falla) para no gastar creditos en
+# uso normal. NO premium por defecto (1 credito/request; premium=residencial
+# ~10-25). El plan free son 1000 creditos/mes -> de sobra para buscar a mano.
+try:
+    import urllib3 as _urllib3
+    _urllib3.disable_warnings()   # modo proxy hace MITM -> verify=False ruidoso
+except Exception:
+    pass
+
+
+def _sapi_proxies(premium=False, country="es"):
+    """Dict de proxies para `requests`/cloudscraper via ScraperAPI proxy-mode.
+    None si no hay key (entonces el llamante NO debe intentar el failover)."""
+    if not SCRAPERAPI_KEY:
+        return None
+    opts = "scraperapi"
+    if country:
+        opts += ".country_code=" + country
+    if premium:
+        opts += ".premium=true"
+    u = "http://%s:%s@proxy-server.scraperapi.com:8001" % (opts, SCRAPERAPI_KEY)
+    return {"http": u, "https": u}
+
+
+@app.get("/sapi")
+def sapi_status():
+    """Saldo de ScraperAPI (NO gasta creditos de scraping). Para vigilar que el
+    failover de busqueda no agote el plan free ni rompa WolfMax."""
+    if not SCRAPERAPI_KEY:
+        return jsonify({"key": False})
+    try:
+        r = requests.get("https://api.scraperapi.com/account",
+                         params={"api_key": SCRAPERAPI_KEY}, timeout=12)
+        try:
+            acc = r.json()
+        except Exception:
+            acc = {"raw": (r.text or "")[:200]}
+        return jsonify({"key": True, "http": r.status_code, "account": acc})
+    except Exception as e:
+        return jsonify({"key": True, "error": repr(e)[:140]})
+
+
 ALLOWED_HOSTS = (
     "mejortorrent",
     "wolfmax4k",
@@ -1811,12 +1857,17 @@ def _dx_save_domain(host):
         pass
 
 
-def _dx_get(url):
+def _dx_get(url, proxy=False):
     """HTML de una URL de DivxTotal: requests plano y, si hay challenge de
-    Cloudflare, reintenta con cloudscraper. None si no se pudo."""
+    Cloudflare, reintenta con cloudscraper. None si no se pudo.
+    proxy=True -> sale por ScraperAPI (IP no baneada); failover de la busqueda."""
+    px = _sapi_proxies(premium=False) if proxy else None
+    if proxy and not px:
+        return None   # pidieron proxy pero no hay key -> no insistir
     try:
-        r = requests.get(url, headers=BROWSER_HEADERS, timeout=20,
-                         allow_redirects=True)
+        r = requests.get(url, headers=BROWSER_HEADERS,
+                         timeout=(60 if proxy else 20), allow_redirects=True,
+                         proxies=px, verify=(not proxy))
         t = r.text
         low = t[:4000].lower()
         if (r.status_code == 200 and "just a moment" not in low
@@ -1826,7 +1877,10 @@ def _dx_get(url):
         pass
     try:
         cs = _make_scraper()
-        r2 = cs.get(url, timeout=35, allow_redirects=True)
+        if px:
+            cs.proxies.update(px)
+            cs.verify = False
+        r2 = cs.get(url, timeout=(70 if proxy else 35), allow_redirects=True)
         if r2.status_code == 200:
             return r2.text
     except Exception:
@@ -1972,18 +2026,19 @@ def _dx_parse_items(html, dom):
     return out
 
 
-def _dx_search_items(q, max_pages=5):
-    """Busca en DivxTotal DIRECTO (relay) y devuelve items del catalogo web."""
+def _dx_search_items(q, max_pages=5, proxy=False):
+    """Busca en DivxTotal DIRECTO (relay) y devuelve items del catalogo web.
+    proxy=True -> via ScraperAPI (failover cuando el directo esta baneado)."""
     from urllib.parse import quote as _q
     dom = _dx_domain()
     if not dom:
         return []
     qq = _q(q)
-    html1 = _dx_get(f"https://{dom}/?s={qq}")
+    html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy)
     if not html1:
         _DX_DOM_CACHE["ts"] = 0.0
         dom = _dx_domain()
-        html1 = _dx_get(f"https://{dom}/?s={qq}") if dom else None
+        html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy) if dom else None
     if not html1:
         return []
     nums = [int(n) for n in re.findall(r"/page/(\d+)/", html1)]
@@ -1993,7 +2048,7 @@ def _dx_search_items(q, max_pages=5):
         from concurrent.futures import ThreadPoolExecutor as _TPE
 
         def _fp(p):
-            return _dx_get(f"https://{dom}/page/{p}/?s={qq}") or ""
+            return _dx_get(f"https://{dom}/page/{p}/?s={qq}", proxy=proxy) or ""
         with _TPE(max_workers=min(5, max_page - 1)) as ex:
             parts.extend(ex.map(_fp, range(2, max_page + 1)))
     items, seen = [], set()
@@ -3608,6 +3663,13 @@ def catsearch():
         h = (res or {}).get("html") or ""
         if h:
             dt_items = _cat_parse_items(h)
+    # FAILOVER anti-baneo via ScraperAPI (IPs residenciales rotativas). Solo si el
+    # directo NO trajo NADA (senal de que DonTorrent/DivxTotal banean la IP de
+    # Render) -> en uso normal NO gasta creditos. Asi la BUSQUEDA funciona desde
+    # fuera de casa SIN el box ([[directrices-solidez-no-pc]]). De momento via
+    # DivxTotal (sin Anubis); DonTorrent-via-proxy es el siguiente paso.
+    if (not dt_items and not dx_items) and SCRAPERAPI_KEY:
+        dx_items = _bounded(lambda: _dx_search_items(q, proxy=True), 18.0, []) or []
     if not dt_items and not et_items and not dx_items:
         return jsonify({"items": []})
     merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
