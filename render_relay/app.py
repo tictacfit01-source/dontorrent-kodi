@@ -112,6 +112,28 @@ def _sapi_proxies(premium=False, country="es"):
     return {"http": u, "https": u}
 
 
+_SAPI_CRED = {"left": None, "ts": 0.0}
+
+
+def _sapi_credits_ok(min_left=10):
+    """True si ScraperAPI tiene saldo suficiente. Cachea 20 min y consulta
+    /account (que NO gasta creditos). Evita intentar el failover -y perder
+    segundos- cuando el plan free esta agotado (WolfMax se lo come). Se
+    reactiva solo cuando vuelve a haber saldo (p.ej. al reiniciarse el mes)."""
+    if not SCRAPERAPI_KEY:
+        return False
+    now = _t.time()
+    if _SAPI_CRED["left"] is None or (now - _SAPI_CRED["ts"]) > 1200:
+        try:
+            r = requests.get("https://api.scraperapi.com/account",
+                             params={"api_key": SCRAPERAPI_KEY}, timeout=8)
+            _SAPI_CRED["left"] = int((r.json() or {}).get("creditsLeft", 0))
+        except Exception:
+            pass   # conserva el ultimo valor conocido
+        _SAPI_CRED["ts"] = now
+    return (_SAPI_CRED["left"] or 0) >= min_left
+
+
 @app.get("/sapi")
 def sapi_status():
     """Saldo de ScraperAPI (NO gasta creditos de scraping). Para vigilar que el
@@ -3668,7 +3690,7 @@ def catsearch():
     # Render) -> en uso normal NO gasta creditos. Asi la BUSQUEDA funciona desde
     # fuera de casa SIN el box ([[directrices-solidez-no-pc]]). De momento via
     # DivxTotal (sin Anubis); DonTorrent-via-proxy es el siguiente paso.
-    if (not dt_items and not dx_items) and SCRAPERAPI_KEY:
+    if (not dt_items and not dx_items) and _sapi_credits_ok():
         dx_items = _bounded(lambda: _dx_search_items(q, proxy=True), 18.0, []) or []
     if not dt_items and not et_items and not dx_items:
         return jsonify({"items": []})
