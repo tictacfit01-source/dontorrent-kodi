@@ -308,7 +308,8 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF"), mimetype="text/plain")
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk1",
+                    mimetype="text/plain")
 
 
 # === Kodi repo proxy =======================================================
