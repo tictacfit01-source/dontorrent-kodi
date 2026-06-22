@@ -4719,9 +4719,15 @@ function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderG
 // ---- Badge RAR (📦) perezoso para items de DonTorrent (vía /dtpacked) ----
 var _rarCache={},_rarQ=[],_rarActive=0;
 function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').replace(/\D/g,'');
+ // SOLIDEZ: NO pedir /dtpacked por cada peli DT de la cuadricula. Hacia ~30 PoW a
+ // DonTorrent desde la IP de Render en CADA carga (Inicio, pelis, series, busqueda,
+ // mi lista) -> es lo que mas BANEABA la IP de Render. La calidad ya sale del titulo
+ // (x.quality) y el badge 📦 RAR se muestra en la FICHA (openItem pide /dtpacked 1
+ // sola vez, cuando el usuario ABRE el item). Asi Render casi no toca DonTorrent ->
+ // no se autobanea. El badge RAR de DivxTotal va por el BOX (IP residencial, no
+ // banea a Render) y solo con codigo -> se mantiene.
  for(var i=from;i<items.length;i++){var x=items[i];if(x.kind!=='movie')continue;var s=x.source||'dt';
-  if(s==='dt')_rarQ.push({el:el,list:list,i:i,key:'dt:'+(x.tabla||'peliculas')+':'+x.content_id,f:'packed',url:'/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')});
-  else if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
+  if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
  pumpRar()}
 function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
  var c=_rarCache[job.key];
