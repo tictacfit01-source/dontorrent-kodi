@@ -14,6 +14,9 @@ plugin.video.mejorwolf/cloudflare-worker/node_modules/
 /repository.mejorwolf-*.zip
 /repo/.git/
 
+# Log del puente residencial (se regenera; no versionar)
+render_relay/puente_residencial.log
+
 # Artefactos temporales de depuracion / scratch (en la raiz del repo)
 _dump_*.py
 _probe_*.py
