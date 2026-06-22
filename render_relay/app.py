@@ -4067,6 +4067,64 @@ def _catsearch_save(d):
         pass
 
 
+# === LISTA DE DESEADOS sincronizada (sin tocar fuentes -> CERO baneo) ========
+# La lista vivia SOLO en localStorage del movil: si limpias el navegador,
+# reinstalas la app o cambias de movil, se PERDIA. Aqui se guarda una copia
+# ligada al codigo del box -> sobrevive y se puede ver desde otro dispositivo.
+# El movil sigue siendo la copia MAESTRA (localStorage) y esto es espejo
+# best-effort: la web hace UNION al cargar (NUNCA borra items -> imposible perder
+# la lista por un fallo de sync). Solo guarda metadatos (titulo/poster/ids), nada
+# de fuentes -> no puede contribuir a ningun baneo. /tmp se borra en deploy, pero
+# el movil vuelve a subir su lista al cargar -> la copia se restaura sola.
+_MYLIST_FILE = "/tmp/mw_mylist.json"
+_MYLIST_MAX_ITEMS = 600      # tope por lista
+_MYLIST_MAX_CODES = 50       # tope de codigos guardados
+_MYLIST_LOCK = _thr.Lock()
+
+
+def _mylist_load():
+    try:
+        with open(_MYLIST_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+@app.get("/mylist")
+def mylist_get():
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    if len(code) != 6:
+        return jsonify({"list": [], "ts": 0})
+    ent = _mylist_load().get(code) or {}
+    return jsonify({"list": ent.get("list", []), "ts": ent.get("ts", 0)})
+
+
+@app.post("/mylist")
+def mylist_post():
+    code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
+    if len(code) != 6:
+        return jsonify({"ok": False}), 400
+    body = request.get_json(silent=True) or {}
+    lst = body.get("list")
+    if not isinstance(lst, list):
+        return jsonify({"ok": False}), 400
+    lst = lst[:_MYLIST_MAX_ITEMS]
+    with _MYLIST_LOCK:
+        d = _mylist_load()
+        d[code] = {"list": lst, "ts": _t.time()}
+        if len(d) > _MYLIST_MAX_CODES:   # no crecer sin limite
+            for k in list(d.keys())[:-_MYLIST_MAX_CODES]:
+                d.pop(k, None)
+        try:
+            tmp = _MYLIST_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _MYLIST_FILE)
+        except Exception:
+            pass
+    return jsonify({"ok": True, "n": len(lst)})
+
+
 def _bounded(fn, secs, default=None):
     """Ejecuta fn() con TOPE DURO de `secs` (hilo daemon). Si se cuelga (conexion
     que ignora el timeout de requests por bloqueo de IP de Render), devuelve
@@ -4683,7 +4741,7 @@ var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npT
 var INI={kind:'estrenos',page:1,loading:false,more:true}, OVDATA=null;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
 code.value=localStorage.getItem('mw_code')||'';
-code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value)};
+code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value);if(code.value.length===6){try{mlSync()}catch(e){}}};
 try{favs=JSON.parse(localStorage.getItem('mw_fav')||'[]')||[]}catch(e){favs=[]}
 function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catch(e){}}
 var seen=[];try{seen=JSON.parse(localStorage.getItem('mw_seen')||'[]')||[]}catch(e){seen=[]}
@@ -4693,7 +4751,21 @@ function toggleSeen(id){id=String(id);var i=seen.indexOf(id);if(i>=0)seen.splice
 function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
 function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
-function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality})}saveFavs()}
+function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality})}saveFavs();mlPushSoon()}
+// --- Sincronizacion de la lista de deseados (espejo en el relay, ligado al
+// codigo). El movil es la COPIA MAESTRA: al cargar hacemos UNION (nunca borra ->
+// imposible perder la lista). Cero peticiones a fuentes -> cero baneo. ---
+var _mlPushT=null;
+function mlPush(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
+ try{fetch('/mylist?code='+cd,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({list:favs})}).catch(function(){})}catch(e){}}
+function mlPushSoon(){clearTimeout(_mlPushT);_mlPushT=setTimeout(mlPush,1500)}
+function mlSync(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
+ fetch('/mylist?code='+cd).then(function(r){return r.json()}).then(function(d){
+  var rl=(d&&d.list)||[];var changed=false;
+  rl.forEach(function(it){if(it&&it.content_id&&!favs.some(function(f){return fk(f)===fk(it)})){favs.push(it);changed=true}});
+  if(changed){saveFavs();if(SHOW==='lista')renderFavs()}
+  mlPush();
+ }).catch(function(){})}
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
@@ -4977,6 +5049,7 @@ $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
  else if(p.get('find')){setView('buscar');$('q').value=p.get('find');go();}
 }catch(e){}})();
 chip('estrenos');pollNow();
+try{mlSync()}catch(e){}   // trae/respalda la lista de deseados si ya hay codigo
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){})}
 </script></body></html>"""
 
