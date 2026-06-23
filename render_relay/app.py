@@ -4408,8 +4408,18 @@ def catfeed():
     # bloquear el POST del box (antes el POST esperaba el enrich -> ReadTimeout
     # -> 0/3 -> Inicio vacio). Asi el POST responde en ~1s y nunca falla por eso.
     key = "%s:1" % kind
+    # Rellena con el TMDB de la SEMILLA por content_id (caratula HD + nota + año)
+    # de forma SINCRONA: el box empuja HTML crudo y Render no puede enriquecer
+    # (TMDB le banea la IP) -> sin esto el Inicio se DEGRADABA a la caratula propia
+    # no-HD. No depende del hilo de fondo (que en Render free puede no completar).
+    seed_idx = _seed_meta_index()
     for it in raw:
-        if not it.get("poster"):
+        sm = seed_idx.get(it.get("content_id"))
+        if sm and sm.get("poster"):
+            it["poster"] = sm["poster"]
+            it["year"] = it.get("year") or sm.get("year")
+            it["rating"] = sm.get("rating")
+        elif not it.get("poster"):
             it["poster"] = it.get("thumb")
     rec = {"items": raw, "ts": _t.time()}
     _CATBROWSE_CACHE[key] = rec
@@ -4582,6 +4592,14 @@ def catdiag():
     # 5) Contadores baratos ya cacheados (NO consultan la API).
     out["catsearch_cached"] = len(_CATSEARCH_CACHE)
     out["sapi_credits_left"] = _SAPI_CRED.get("left")
+    # Diagnostico de la semilla: si seed_meta=0 el blindaje no puede actuar (el
+    # Inicio se degradaria a la caratula no-HD) -> archivo no cargado / ruta mala.
+    try:
+        out["seed_meta"] = len(_seed_meta_index())
+        out["seed_kinds"] = {k: len(v.get("items", []))
+                             for k, v in (_catbrowse_seed() or {}).items()}
+    except Exception as e:
+        out["seed_meta"] = "ERR:%s" % e
     out["pid"] = os.getpid()
     return jsonify(out)
 
@@ -4678,27 +4696,25 @@ def catdetail():
             _CATDETAIL_CACHE[path] = ent
     if ent and (now - ent.get("ts", 0)) < _CATDETAIL_TTL:
         return jsonify(ent["data"])
-    # 2) DonTorrent directo desde Render (tope duro: el slow-drip del baneo evade
-    #    el timeout de requests; si no responde en 8s marcamos el breaker para que
-    #    las siguientes aperturas salten directas al box).
-    html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
-                    8.0, "") or ""
-    if not html:
-        _dt_mark(False)
-    # 3) fallback VIA BOX: el box fetcha el HTML con su IP residencial (DoH,
-    #    resuelve Anubis) y aqui lo parseamos con el MISMO parser. Usa el code del
-    #    visitante si lo tiene; si NO, cualquier Kodi del sistema que este
-    #    encendido -> los capitulos cargan aunque no haya code en la web (era la
-    #    causa de "no se pudieron leer": sin code no se disparaba el fallback).
+    # 2-3) Render casi NUNCA alcanza DonTorrent (IP de datacenter baneada). Antes
+    #    se probaba el directo (8s) y SOLO si fallaba se iba al box (14s) -> 22s en
+    #    SERIE, por encima del AbortController de 20s del front -> "no se pudieron
+    #    leer / lento". Ahora lanzamos el job al BOX EN PARALELO con el intento
+    #    directo: el box (IP residencial, no baneada) ya va trabajando y, si el
+    #    directo falla, su HTML llega antes -> la serie abre en ~14s, no 22s.
     box = code if len(code) == 6 else _any_live_box()
-    if not html and box:
+    job = None
+    if box:
         job = "dd" + os.urandom(5).hex()
         _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml",
                           "path": path})
-        # 14s: el box caliente trae el HTML en ~3s, pero Anubis en frio sube a
-        # ~12s; el AbortController del front es 20s -> deja margen sin colgar.
-        res = _catjob_wait(job, 14.0)
-        html = (res or {}).get("html") or ""
+    html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
+                    6.0, "") or ""
+    if not html:
+        _dt_mark(False)        # marca el baneo -> siguientes aperturas saltan DT ya
+        if job:                # el box ya lleva ~6s adelantado -> responde antes
+            res = _catjob_wait(job, 14.0)
+            html = (res or {}).get("html") or ""
     if not html:
         # 4) stale: mejor lo ultimo conocido que una lista vacia.
         if ent:
