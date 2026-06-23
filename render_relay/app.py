@@ -2036,7 +2036,11 @@ def _dx_parse_items(html, dom):
         url = href if href.startswith("http") else f"https://{dom}{href}"
         if url in seen:
             continue
-        title = re.sub(r"<[^>]+>", " ", m.group(2) or "")
+        # quita el resaltado inline del termino buscado SIN espacio (ver DT) para
+        # no partir palabras: "Desapa<span>rec</span>ida" -> "Desaparecida".
+        _raw = re.sub(r"</?(?:span|b|strong|em|mark|i|u|font)\b[^>]*>", "",
+                      m.group(2) or "")
+        title = re.sub(r"<[^>]+>", " ", _raw)
         title = re.sub(r"\s+", " ", title).strip()
         if not title or len(title) < 2:
             continue
@@ -3214,6 +3218,31 @@ def _tmdb_pick(results, clean, year, ep):
         return results[0]
 
 
+def _tmdb_accept(clean, pick):
+    """True si el match TMDB es de CONFIANZA. Evita pegar una caratula AJENA cuando
+    el titulo no existe en TMDB (packs/recopilatorios/documentales raros): sin esto
+    `_tmdb_pick` siempre devolvia el mas popular -> 'caratulas que no tienen nada que
+    ver'. Compara con TODOS los nombres del candidato (es-ES y ORIGINAL) para NO
+    rechazar traducciones (p.ej. 'Adam Resurrected' = 'Adam Resucitado')."""
+    nq = _et_norm(clean or "")
+    names = [_et_norm(n) for n in (pick.get("title"), pick.get("name"),
+             pick.get("original_title"), pick.get("original_name")) if n]
+    if not nq or not names:
+        return False
+    for npk in names:                       # coincidencia plena o de substring
+        if npk and (nq == npk or nq in npk or npk in nq):
+            return True
+    qtok = [w for w in nq.split() if len(w) > 2]
+    if not qtok:
+        return False
+    for npk in names:                       # o cubre la 1a palabra + >=70% tokens
+        ptok = set(npk.split())
+        hit = sum(1 for w in qtok if w in ptok)
+        if qtok[0] in ptok and hit / len(qtok) >= 0.7:
+            return True
+    return False
+
+
 def _cat_tmdb(title, kind="movie"):
     """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria + breaker."""
     clean = _cat_clean_title(title)
@@ -3245,10 +3274,14 @@ def _cat_tmdb(title, kind="movie"):
         res = (r.json() or {}).get("results") or []
         if res:
             top = _tmdb_pick(res, clean, year, ep)
-            pp = top.get("poster_path")
-            d = top.get("release_date") or top.get("first_air_date") or ""
-            out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
-                   "year": d[:4] or year, "rating": top.get("vote_average")}
+            if _tmdb_accept(clean, top):
+                pp = top.get("poster_path")
+                d = top.get("release_date") or top.get("first_air_date") or ""
+                out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
+                       "year": d[:4] or year, "rating": top.get("vote_average")}
+            # si el match NO es de confianza -> out se queda SIN poster TMDB (year
+            # del titulo): el enrich usa la caratula PROPIA (DonTorrent) o ninguna
+            # (DivxTotal) en vez de una caratula ajena. Ver _tmdb_accept.
         _tmdb_mark(True)
         _CAT_TMDB_CACHE[ckey] = out
     except Exception:
@@ -3458,7 +3491,13 @@ def _cat_parse_items(html):
         kind = _CAT_KIND_MAP.get(hm.group(1).lower(), "movie")
         cid, rest = hm.group(2), (hm.group(3) or "")
         tm = _re_dt.search(r'''title=["']([^"']+)["']''', attrs)
-        itxt = _re_dt.sub(r"\s+", " ", _re_dt.sub(r"<[^>]+>", " ", inner)).strip()
+        # DonTorrent RESALTA el termino buscado DENTRO del titulo con un <span>:
+        # "Desapa<span ...>rec</span>idas". Hay que quitar esas etiquetas INLINE
+        # SIN espacio (si no, "Desaparecidas" -> "Desapa rec idas" -> rompe el match
+        # TMDB y el titulo visible). Las demas etiquetas si separan con espacio.
+        inner_hl = _re_dt.sub(r"</?(?:span|b|strong|em|mark|i|u|font)\b[^>]*>",
+                              "", inner)
+        itxt = _re_dt.sub(r"\s+", " ", _re_dt.sub(r"<[^>]+>", " ", inner_hl)).strip()
         am = _re_dt.search(r'''alt=["']([^"']+)["']''', attrs + " " + inner)
         if tm and tm.group(1).strip():
             title, score = tm.group(1).strip(), 3
