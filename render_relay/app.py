@@ -3139,6 +3139,11 @@ def _cat_clean_title(title):
     t = (title or "").split(" - ")[0]   # "Show - 1ª Temporada [720p]" -> "Show"
     t = _re_dt.sub(r"[\(\[].*?[\)\]]", " ", t)
     t = _re_dt.sub(r"\b\d{1,2}\s*[ªºoa]\b", " ", t)   # ordinales sueltos (1ª, 2º)
+    # numero de temporada PEGADO al titulo sin ordinal: DonTorrent escribe
+    # "Dulces magnolias 5 Temporada" -> sin esto la query TMDB llevaba el "5" y
+    # no encontraba la serie (la mayoria de series del Inicio se quedaban sin
+    # poster/nota). Quita el numero (y ordinal opcional) que precede a "temporada".
+    t = _re_dt.sub(r"\b\d{1,2}\s*[ªºoa]?\s*(?=temporada\b)", " ", t, flags=_re_dt.I)
     t = _re_dt.sub(r"\b(temporada|parte|cap\w*|capitulo|\d{1,2}\s*x\s*\d{1,3})\b.*",
                    "", t, flags=_re_dt.I)
     t = _re_dt.sub(r"\b(1080p|720p|480p|2160p|4k|bluray|blu-?ray|brrip|bdrip|"
@@ -3495,6 +3500,13 @@ def _cat_parse_items(html):
         kind, cid = k
         e = best[k]
         disp, qual = _cat_clean_quality(e["title"])
+        if not qual and e["thumb"]:
+            # DonTorrent casi nunca pone la calidad en el TITULO del listado, pero
+            # el nombre del fichero de su CARATULA si la lleva ([DVDRip], [HDTV]...)
+            # -> la recuperamos de ahi (cobertura ~96% vs casi 0 solo por titulo).
+            mq = _CAT_QRE.search(e["thumb"])
+            if mq:
+                qual = _cat_norm_quality(mq.group(1))
         it = {"title": disp, "content_id": cid, "kind": kind,
               "thumb": e["thumb"], "quality": qual, "source": "dt"}
         if kind == "serie":
@@ -3512,13 +3524,24 @@ def _cat_enrich(items, limit=120):
     # tal cual -> aparece igualmente (con su miniatura propia o sin poster).
     head, tail = items[:limit], items[limit:]
     from concurrent.futures import ThreadPoolExecutor as _TPE
+    seed_idx = _seed_meta_index()   # {content_id: {poster TMDB, year, rating}}
 
     def _go(it):
         meta = _cat_tmdb(it["title"],
                          "tv" if it.get("kind") == "serie" else "movie")
-        it["poster"] = meta.get("poster") or it.get("thumb")   # TMDB > DT propia
-        it["year"] = meta.get("year") or it.get("year")
-        it["rating"] = meta.get("rating")
+        poster, year, rating = meta.get("poster"), meta.get("year"), meta.get("rating")
+        if (not poster) or (rating is None):
+            # TMDB no respondio (banea la IP de Render). En vez de DEGRADAR a la
+            # caratula no-HD y perder nota/año, reusamos lo PRE-ENRIQUECIDO de la
+            # semilla por content_id (poster HD + nota + año persisten siempre).
+            sm = seed_idx.get(it.get("content_id"))
+            if sm:
+                poster = poster or sm.get("poster")
+                year = year or sm.get("year")
+                rating = rating if rating is not None else sm.get("rating")
+        it["poster"] = poster or it.get("thumb")   # TMDB/semilla > DT propia
+        it["year"] = year or it.get("year")
+        it["rating"] = rating
         return it
     try:
         with _TPE(max_workers=8) as ex:
@@ -4200,6 +4223,30 @@ def _catbrowse_seed():
         except Exception:
             _CATBROWSE_SEED_CACHE[0] = {}
     return _CATBROWSE_SEED_CACHE[0]
+
+
+_SEED_META_INDEX = [None]
+
+
+def _seed_meta_index():
+    """Indice content_id -> {poster TMDB, year, rating} extraido de la semilla.
+    Es una cache TMDB PERSISTENTE: cuando TMDB banea la IP de Render, el enrich
+    reusa estos datos por content_id en vez de degradar el Inicio a la caratula
+    no-HD. Solo guarda entradas con poster de TMDB (no thumbs de DonTorrent)."""
+    if _SEED_META_INDEX[0] is None:
+        idx = {}
+        try:
+            for ent in (_catbrowse_seed() or {}).values():
+                for it in (ent or {}).get("items", []):
+                    cid = it.get("content_id")
+                    pos = it.get("poster") or ""
+                    if cid and "image.tmdb.org" in pos:
+                        idx[cid] = {"poster": pos, "year": it.get("year"),
+                                    "rating": it.get("rating")}
+        except Exception:
+            pass
+        _SEED_META_INDEX[0] = idx
+    return _SEED_META_INDEX[0]
 
 
 def _catsearch_load():
