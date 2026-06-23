@@ -4181,6 +4181,27 @@ def _catbrowse_save(d):
         pass
 
 
+# SEMILLA del catalogo (DonTorrent REAL) versionada en el repo. Es el "suelo"
+# garantizado del Inicio: sobrevive a deploys, a /tmp borrado y a que el box este
+# apagado -> el Inicio arranca SIEMPRE con DonTorrent (no con DivxTotal). Se
+# refresca en vivo cuando el box empuja /catfeed o cuando Render alcanza DT; la
+# semilla solo es el respaldo de ultimo-conocido. Cacheada en memoria (no cambia
+# en runtime). Se regenera con GET /catdump tras un /catfeed bueno -> commit.
+_CATBROWSE_SEED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "catalog_seed.json")
+_CATBROWSE_SEED_CACHE = [None]
+
+
+def _catbrowse_seed():
+    if _CATBROWSE_SEED_CACHE[0] is None:
+        try:
+            with open(_CATBROWSE_SEED_FILE, "r", encoding="utf-8") as f:
+                _CATBROWSE_SEED_CACHE[0] = _json.load(f) or {}
+        except Exception:
+            _CATBROWSE_SEED_CACHE[0] = {}
+    return _CATBROWSE_SEED_CACHE[0]
+
+
 def _catsearch_load():
     try:
         with open(_CATSEARCH_FILE, "r", encoding="utf-8") as f:
@@ -4337,75 +4358,95 @@ def catbrowse():
     except Exception:
         page = 1
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
-    key = f"{kind}:{page}"
+    key = f"{kind}:{page}"          # entrada DonTorrent (fuente PRINCIPAL = la web)
+    dxkey = key + ":dx"             # entrada DivxTotal (ULTIMO recurso; NO pisa DT)
     now = _t.time()
-    # cache en memoria; si el worker esta frio (tras deploy) cae al disco
-    ent = _CATBROWSE_CACHE.get(key)
-    if not ent:
-        ent = _catbrowse_load().get(key)
-        if ent:
-            _CATBROWSE_CACHE[key] = ent
-    ttl = _CATBROWSE_DX_TTL if (ent and ent.get("dx")) else _CATBROWSE_TTL
-    if ent and (now - ent["ts"]) < ttl:
-        return jsonify({"items": ent["items"], "cached": True})
+
+    def _load(k, seed=False):
+        # memoria -> disco -> (solo DT) SEMILLA del repo
+        e = _CATBROWSE_CACHE.get(k)
+        if not e:
+            e = _catbrowse_load().get(k)
+            if not e and seed:
+                e = _catbrowse_seed().get(k)
+            if e:
+                _CATBROWSE_CACHE[k] = e
+        return e
+
+    def _store(k, rec):
+        _CATBROWSE_CACHE[k] = rec
+        try:
+            disk = _catbrowse_load()
+            disk[k] = rec
+            _catbrowse_save(disk)
+        except Exception:
+            pass
+
+    dt_ent = _load(key, seed=True)
+    # 1) DonTorrent FRESCO en cache -> al instante, sin tocar ninguna fuente.
+    if dt_ent and (now - dt_ent.get("ts", 0)) < _CATBROWSE_TTL:
+        return jsonify({"items": dt_ent["items"], "cached": True, "src": "dt"})
+
+    # 2) Intentar REFRESCAR DonTorrent (directo; el box solo si no hay stale).
+    #    Tope CORTO (4s) si ya hay DT-stale: no hacemos esperar al usuario -> si
+    #    Render esta baneado el breaker devuelve al instante y servimos el stale.
+    #    Sin stale (1a vez, sin semilla) damos el presupuesto completo (8s) + box.
     bp = _CAT_BROWSE.get(kind, "/")
     path = bp if page <= 1 else (bp.rstrip("/") + f"/page/{page}")
+    budget = 4.0 if dt_ent else 8.0
     html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
-                    8.0, "") or ""
-    if not html:
-        # DonTorrent no respondio en 8s. El slow-drip del baneo evade el timeout
-        # de requests y deja el hilo colgado SIN marcar el breaker -> lo marcamos
-        # aqui para que las SIGUIENTES categorias/busquedas salten DT al instante
-        # (breaker 90s) y vayan directas al fallback DivxTotal. Asi solo la 1a
-        # paga los 8s; el resto del Inicio es agil aunque DonTorrent este caido.
+                    budget, "") or ""
+    if not html and not dt_ent:
+        # Inicio frio SIN nada DT que servir: marca el baneo (el slow-drip evade
+        # el timeout de requests) para que el resto del Inicio salte DT al instante.
+        # Con stale NO marcamos: el budget corto puede abortar a un DT solo lento.
         _dt_mark(False)
-    if not html and len(code) == 6:
-        # Render bloqueado por DonTorrent -> traer el listado VIA EL BOX (IP
-        # residencial). El box fetcha el HTML crudo y aqui lo parseamos igual.
-        job = "db" + os.urandom(5).hex()
-        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml",
-                           "path": path})
-        # 9s (antes 20s): el box ya tiene el HTML cacheado (fetch_html <1s) +
-        # round-trip del poll (<=6s). 20s retenia el hilo demasiado y SATURABA el
-        # relay (los workers ocupados -> el POST /catfeed del box hacia timeout ->
-        # la cache nunca se poblaba -> Inicio "no se pudo cargar"). El box ademas
-        # empuja /catfeed proactivamente, asi que esto es solo el on-demand.
-        res = _catjob_wait(job, 9.0)
-        html = (res or {}).get("html") or ""
-    if not html:
-        # FALLBACK DivxTotal DIRECTO: el relay SI alcanza DivxTotal aunque
-        # DonTorrent banee la IP -> el Inicio NUNCA queda en blanco. TTL corto
-        # (dx:True) para reintentar DonTorrent en cuanto se recupere.
-        # TOPE DURO: DivxTotal tambien puede banear/retar la IP de Render y
-        # colgar (slow-drip evade el timeout) -> sin tope, /catbrowse retenia el
-        # hilo indefinidamente y saturaba el relay. _bounded(6s) lo abandona.
+        if len(code) == 6:
+            # Render bloqueado por DonTorrent -> traer el listado VIA EL BOX.
+            job = "db" + os.urandom(5).hex()
+            _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml",
+                               "path": path})
+            res = _catjob_wait(job, 9.0)
+            html = (res or {}).get("html") or ""
+    if html:
+        items = _cat_enrich(_cat_parse_items(html))
+        rec = {"items": items, "ts": now}
+        _store(key, rec)
+        return jsonify({"items": items, "src": "dt"})
+
+    # 3) DonTorrent no disponible AHORA -> servir DonTorrent STALE (de hace un
+    #    rato) ANTES que DivxTotal. La web original es DonTorrent y los listados
+    #    cambian despacio -> DT viejo >> DX fresco. (Pedido explicito del usuario.)
+    if dt_ent:
+        return jsonify({"items": dt_ent["items"], "stale": True, "src": "dt"})
+
+    # 4) Nunca hubo DonTorrent (ni cache, ni disco, ni semilla) -> DivxTotal como
+    #    ULTIMO recurso, en su PROPIA clave para no pisar nunca una entrada DT.
+    dx_ent = _load(dxkey)
+    if not (dx_ent and (now - dx_ent.get("ts", 0)) < _CATBROWSE_DX_TTL):
         dxit = _bounded(lambda: _dx_browse_items(kind, page), 6.0, []) or []
         if dxit:
-            # Enrich SINCRONO: con el breaker TMDB no cuelga (si TMDB esta caido
-            # devuelve sin poster al instante). Sin hilos en 2o plano -> el relay
-            # no acumula hilos/conexiones ni se queda sin memoria.
-            items = _cat_enrich(dxit)
-            rec = {"items": items, "ts": now, "dx": True}
-            _CATBROWSE_CACHE[key] = rec
-            try:
-                disk = _catbrowse_load()
-                disk[key] = rec
-                _catbrowse_save(disk)
-            except Exception:
-                pass
-            return jsonify({"items": items, "dx": True})
-        # si falla pero hay cache vieja (memoria o disco), sirvela: mejor lo
-        # ultimo conocido al instante que una pagina vacia o colgada.
-        if ent:
-            return jsonify({"items": ent["items"], "stale": True})
-        return jsonify({"items": []})
-    items = _cat_enrich(_cat_parse_items(html))
-    rec = {"items": items, "ts": now}
-    _CATBROWSE_CACHE[key] = rec
-    disk = _catbrowse_load()
-    disk[key] = rec
-    _catbrowse_save(disk)
-    return jsonify({"items": items})
+            dx_ent = {"items": _cat_enrich(dxit), "ts": now, "dx": True}
+            _store(dxkey, dx_ent)
+    if dx_ent:
+        return jsonify({"items": dx_ent["items"], "dx": True, "src": "dx"})
+    return jsonify({"items": []})
+
+
+@app.get("/catdump")
+def catdump():
+    """Vuelca la cache ACTUAL de DonTorrent (claves kind:1) en formato semilla.
+    Se usa para regenerar catalog_seed.json tras un /catfeed bueno: capturar este
+    JSON y commitearlo al repo. NO toca ninguna fuente (solo lee cache/disco)."""
+    out = {}
+    src = dict(_catbrowse_load())
+    for k, v in _CATBROWSE_CACHE.items():
+        src[k] = v
+    for k, v in src.items():
+        # solo entradas DonTorrent de 1a pagina, con items (lo que siembra el Inicio)
+        if k.endswith(":1") and not (v or {}).get("dx") and (v or {}).get("items"):
+            out[k] = {"items": v["items"], "ts": v.get("ts", 0)}
+    return jsonify(out)
 
 
 @app.get("/catdiag")
