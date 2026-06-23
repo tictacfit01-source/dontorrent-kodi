@@ -4635,6 +4635,24 @@ def _catdetail_save(d):
         pass
 
 
+# SEMILLA de episodios (series del Inicio) versionada en el repo: las series del
+# catalogo ABREN AL INSTANTE sin tocar DonTorrent ni el box. Es el suelo; se
+# refresca cuando DonTorrent/box responden. Misma idea que catalog_seed.json.
+_CATDETAIL_SEED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "episodes_seed.json")
+_CATDETAIL_SEED_CACHE = [None]
+
+
+def _catdetail_seed():
+    if _CATDETAIL_SEED_CACHE[0] is None:
+        try:
+            with open(_CATDETAIL_SEED_FILE, "r", encoding="utf-8") as f:
+                _CATDETAIL_SEED_CACHE[0] = _json.load(f) or {}
+        except Exception:
+            _CATDETAIL_SEED_CACHE[0] = {}
+    return _CATDETAIL_SEED_CACHE[0]
+
+
 def _cat_parse_detail(html):
     """Parsea el HTML de una ficha de serie DonTorrent -> (title, [eps]). Sirve
     igual para el HTML traido por Render o por el box (mismo parser)."""
@@ -4688,10 +4706,12 @@ def catdetail():
         return jsonify({"error": "bad path", "episodes": []}), 400
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     now = _t.time()
-    # 1) cache fresca
+    # 1) cache fresca (memoria -> disco -> SEMILLA del repo). La semilla hace que
+    #    las series del Inicio ABRAN AL INSTANTE sin tocar DonTorrent ni el box
+    #    (era justo lo que fallaba: con el box apagado los capitulos no cargaban).
     ent = _CATDETAIL_CACHE.get(path)
     if ent is None:
-        ent = _catdetail_load().get(path)
+        ent = _catdetail_load().get(path) or _catdetail_seed().get(path)
         if ent:
             _CATDETAIL_CACHE[path] = ent
     if ent and (now - ent.get("ts", 0)) < _CATDETAIL_TTL:
