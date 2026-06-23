@@ -4142,6 +4142,7 @@ _CATBROWSE_CACHE = {}      # "kind:page" -> {"items": [...], "ts": ...}
 _CATBROWSE_TTL = 900       # 15 min: los listados cambian despacio
 _CATBROWSE_DX_TTL = 300    # 5 min para el fallback DivxTotal -> reintenta DT pronto
 _CATBROWSE_FILE = "/tmp/mw_catbrowse.json"   # persiste entre workers y deploys
+_CATFEED_LAST = {}         # kind -> ts del ultimo empuje del box (diagnostico)
 
 # Cache de BUSQUEDA. Una busqueda repetida o refinada (el usuario escribe, borra,
 # reintenta, o vuelve atras) re-escrapeaba DonTorrent cada vez (~8s + suma riesgo
@@ -4305,6 +4306,7 @@ def catfeed():
             it["poster"] = it.get("thumb")
     rec = {"items": raw, "ts": _t.time()}
     _CATBROWSE_CACHE[key] = rec
+    _CATFEED_LAST[kind] = _t.time()
     try:
         disk = _catbrowse_load()
         disk[key] = rec
@@ -4404,6 +4406,57 @@ def catbrowse():
     disk[key] = rec
     _catbrowse_save(disk)
     return jsonify({"items": items})
+
+
+@app.get("/catdiag")
+def catdiag():
+    """Radiografia del estado INTERNO del relay para diagnosticar por que el Inicio
+    sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
+    cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
+    now = _t.time()
+    out = {"build": "dtbk1", "now": int(now)}
+    # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
+    down = _dt_is_down()
+    out["dt_breaker"] = {
+        "down": down,
+        "remaining_s": max(0, int(_DT_DOWN_UNTIL[0] - now)) if down else 0,
+        "cooldown_s": _DT_DOWN_COOLDOWN,
+    }
+    # 2) Estado de la cache del Inicio (memoria + disco): origen (dx vs DT real),
+    #    antiguedad y nº de items. Aqui se ve si esta "pegada" en DX.
+    def _snap(cache, src):
+        d = {}
+        for k, v in (cache or {}).items():
+            try:
+                d[k] = {"src": "dx" if v.get("dx") else "dt",
+                        "n": len(v.get("items") or []),
+                        "age_s": int(now - v.get("ts", 0)),
+                        "stale": (now - v.get("ts", 0)) >= (
+                            _CATBROWSE_DX_TTL if v.get("dx") else _CATBROWSE_TTL)}
+            except Exception:
+                pass
+        return d
+    out["catbrowse_mem"] = _snap(_CATBROWSE_CACHE, "mem")
+    try:
+        out["catbrowse_disk"] = _snap(_catbrowse_load(), "disk")
+    except Exception:
+        out["catbrowse_disk"] = {}
+    # 3) ¿Esta el box EMPUJANDO /catfeed? (segundos desde el ultimo empuje por kind)
+    out["catfeed_last_s"] = {k: int(now - v) for k, v in _CATFEED_LAST.items()}
+    # 4) Memoria del worker (Render free = 512MB; el usuario sospechaba OOM).
+    try:
+        with open("/proc/self/status") as f:
+            for ln in f:
+                if ln.startswith("VmRSS:"):
+                    out["mem_rss_mb"] = round(int(ln.split()[1]) / 1024, 1)
+                    break
+    except Exception:
+        out["mem_rss_mb"] = None
+    # 5) Contadores baratos ya cacheados (NO consultan la API).
+    out["catsearch_cached"] = len(_CATSEARCH_CACHE)
+    out["sapi_credits_left"] = _SAPI_CRED.get("left")
+    out["pid"] = os.getpid()
+    return jsonify(out)
 
 
 # --- Caché de fichas de serie (episodios DonTorrent) -----------------------
