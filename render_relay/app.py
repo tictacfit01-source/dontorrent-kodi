@@ -884,6 +884,32 @@ def _dt_discover_canonical(html):
 # la misma IP de salida — las cookies IP-bound siguen siendo validas.
 _DT_COOKIES = {}   # domain -> {"cookies": {}, "ts": ...}
 _DT_TTL = 3600 * 6  # 6h
+# La sesion Anubis (cookie del PoW ya resuelto) se COMPARTE entre los 2 workers
+# via /tmp: el PoW (~5-13s) lo paga UN solo worker y el otro lee la cookie del
+# disco -> tras un deploy ya no lo pagan los dos. La cookie va atada a la IP de
+# salida (compartida por ambos workers en Render) -> valida cross-worker.
+_DT_COOKIES_FILE = "/tmp/mw_dt_anubis.json"
+
+
+def _dt_cookies_load():
+    try:
+        with open(_DT_COOKIES_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _dt_cookies_persist(domain, ent):
+    """Escribe la cookie de `domain` al fichero compartido (atomico: tmp+replace)."""
+    try:
+        d = _dt_cookies_load()
+        d[domain] = ent
+        tmp = _DT_COOKIES_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _DT_COOKIES_FILE)
+    except Exception:
+        pass
 
 
 def _dt_parse_challenge(html):
@@ -906,32 +932,50 @@ def _dt_parse_challenge(html):
 
 def _dt_solve_pow(random_data, difficulty):
     """Resuelve PoW Anubis: busca nonce tal que sha256(random_data+nonce)
-    empiece con N ceros en hex."""
-    prefix = "0" * difficulty
+    empiece con `difficulty` ceros HEX. Comparamos en BYTES (digest) en vez de
+    generar el hexdigest de 64 chars y un str nuevo en CADA vuelta: en dificultad
+    5 son ~1M de hashes y en la CPU de Render free (~0,1 CPU) eso eran ~13s. Con
+    digest+comparacion de bytes (y la base codificada 1 sola vez) baja a ~5s. El
+    resultado (hexdigest del hash ganador) es identico al de antes."""
+    base = str(random_data).encode()
+    full = difficulty // 2          # bytes que deben ser 0x00 enteros
+    half = difficulty & 1           # +1 nibble alto (medio byte) a 0 si impar
+    zeros = b"\x00" * full
     t0 = _t.time()
     for nonce in range(50_000_000):
-        h = _hl.sha256(f"{random_data}{nonce}".encode()).hexdigest()
-        if h.startswith(prefix):
-            return h, nonce, _t.time() - t0
+        d = _hl.sha256(base + str(nonce).encode()).digest()
+        if d[:full] == zeros and (not half or d[full] < 0x10):
+            return d.hex(), nonce, _t.time() - t0
     raise RuntimeError("PoW: nonce no encontrado")
 
 
-def _dt_anubis_session(domain):
-    """Devuelve session con cookies Anubis resueltas para `domain`.
-    Resuelve PoW si no hay cache."""
-    cached = _DT_COOKIES.get(domain)
-    if cached and (_t.time() - cached["ts"]) < _DT_TTL:
-        s = requests.Session()
-        s.cookies.update(cached["cookies"])
-        s.headers.update(BROWSER_HEADERS)
-        return s, False  # False = no resolvio
+def _dt_anubis_session(domain, force=False):
+    """Devuelve session con cookies Anubis resueltas para `domain`. Reusa la
+    cache en memoria y, si esta vacia (worker frio / la resolvio el OTRO worker),
+    la del disco compartido (/tmp) -> el PoW lo paga 1 solo worker. force=True
+    ignora AMBAS caches y RE-resuelve (cookie caducada/invalida)."""
+    if not force:
+        cached = _DT_COOKIES.get(domain)
+        if not (cached and (_t.time() - cached["ts"]) < _DT_TTL):
+            disk = _dt_cookies_load().get(domain)   # ¿la resolvio el otro worker?
+            if (disk and disk.get("cookies")
+                    and (_t.time() - disk.get("ts", 0)) < _DT_TTL):
+                _DT_COOKIES[domain] = disk
+                cached = disk
+        if cached and (_t.time() - cached["ts"]) < _DT_TTL:
+            s = requests.Session()
+            s.cookies.update(cached["cookies"])
+            s.headers.update(BROWSER_HEADERS)
+            return s, False  # False = no resolvio
 
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS)
     r = s.get(f"https://{domain}/", timeout=6)
     if "anubis_challenge" not in r.text:
         # No hay Anubis activo
-        _DT_COOKIES[domain] = {"cookies": dict(s.cookies), "ts": _t.time()}
+        ent = {"cookies": dict(s.cookies), "ts": _t.time()}
+        _DT_COOKIES[domain] = ent
+        _dt_cookies_persist(domain, ent)
         return s, False
 
     ch = _dt_parse_challenge(r.text)
@@ -956,7 +1000,9 @@ def _dt_anubis_session(domain):
     if "browser-pow-auth" not in s.cookies:
         raise RuntimeError("Anubis: pass-challenge no devolvio cookie auth")
 
-    _DT_COOKIES[domain] = {"cookies": dict(s.cookies), "ts": _t.time()}
+    ent = {"cookies": dict(s.cookies), "ts": _t.time()}
+    _DT_COOKIES[domain] = ent
+    _dt_cookies_persist(domain, ent)   # comparte con el otro worker (no repaga PoW)
     return s, True
 
 
@@ -1048,8 +1094,7 @@ def dtsearch():
                     rr = sess.post(f"https://{domain}/buscar", data=data,
                                    timeout=8, allow_redirects=True)
             if "anubis_challenge" in rr.text:
-                _DT_COOKIES.pop(domain, None)
-                ns, _ = _dt_anubis_session(domain)
+                ns, _ = _dt_anubis_session(domain, force=True)
                 rr = ns.post(f"https://{domain}/buscar", data=data, timeout=8,
                              allow_redirects=False)
             return rr
@@ -1202,8 +1247,7 @@ def dtfetch():
         r = sess.get(target, timeout=30, allow_redirects=True)
 
         if "anubis_challenge" in r.text:
-            _DT_COOKIES.pop(domain, None)
-            sess, _ = _dt_anubis_session(domain)
+            sess, _ = _dt_anubis_session(domain, force=True)
             r = sess.get(target, timeout=30)
 
         headers = {
@@ -1424,14 +1468,22 @@ def _udp_scrape_one(host, port, info_hash, timeout=3.0):
 
 
 def _dt_seed_count(info_hash):
-    """Maximo de seeders entre trackers vivos. -1 si no se pudo medir."""
+    """Maximo de seeders entre trackers vivos, consultados EN PARALELO. -1 si
+    ninguno respondio. Antes era SECUENCIAL (3 trackers x 3s de timeout = hasta
+    9s en el camino de CADA calculo de semillas, cuando el 1er tracker no
+    contesta); en paralelo el peor caso es ~3s. El scrape UDP a los trackers NO
+    toca DonTorrent ni TMDB -> cero riesgo de baneo."""
+    from concurrent.futures import ThreadPoolExecutor as _TPE
     best = -1
-    for host, port in _SEED_TRACKERS:
-        n = _udp_scrape_one(host, port, info_hash)
-        if n is not None:
-            best = max(best, n)
-            if best >= 8:   # claramente bien sembrado: no hace falta seguir
-                break
+    try:
+        with _TPE(max_workers=len(_SEED_TRACKERS)) as ex:
+            for n in ex.map(
+                    lambda hp: _udp_scrape_one(hp[0], hp[1], info_hash),
+                    _SEED_TRACKERS):
+                if n is not None and n > best:
+                    best = n
+    except Exception:
+        pass
     return best
 
 
@@ -1476,9 +1528,9 @@ def _dt_download_url_inner(domain, content_id, tabla):
             dom_candidates.append(d)
     got = [False]
     def _try(dom, fresh):
-        if fresh:
-            _DT_COOKIES.pop(dom, None)   # cookies Anubis caducadas -> re-resolver
-        sess, _ = _dt_anubis_session(dom)
+        # fresh=True: cookies Anubis caducadas/invalidas -> RE-resolver (ignora la
+        # cache de memoria Y la de disco), no solo limpiar la copia en memoria.
+        sess, _ = _dt_anubis_session(dom, force=fresh)
         api = f"https://{dom}/api_validate_pow.php"
         r1 = sess.post(api, json={"action": "generate",
                                   "content_id": int(content_id),
@@ -3369,8 +3421,7 @@ def _cat_dt_html_inner(q):
                 rr = _s.post(f"https://{_dom}/buscar", data=dd, timeout=6,
                              allow_redirects=False)
                 if "anubis_challenge" in rr.text:
-                    _DT_COOKIES.pop(_dom, None)
-                    ns, _ = _dt_anubis_session(_dom)
+                    ns, _ = _dt_anubis_session(_dom, force=True)
                     rr = ns.post(f"https://{_dom}/buscar", data=dd, timeout=6,
                                  allow_redirects=False)
                 return rr
@@ -3424,8 +3475,7 @@ def _cat_dt_session_get(path):
                            allow_redirects=True)
                 got = True
                 if "anubis_challenge" in rr.text:
-                    _DT_COOKIES.pop(dom, None)
-                    s, _ = _dt_anubis_session(dom)
+                    s, _ = _dt_anubis_session(dom, force=True)
                     rr = s.get(f"https://{dom}{path}", timeout=6)
                 if rr.status_code == 200 and _re_dt.search(
                         r"/(?:pelicula|serie|documental)/\d+/", rr.text):
@@ -3851,9 +3901,18 @@ def catsearch():
         _tdt.start()
         _tet.start()
         _tdx.start()
+        # Los 3 hilos corren EN PARALELO desde aqui. DonTorrent MANDA: lo
+        # esperamos primero (hasta 8s). DivxTotal es la fuente SECUNDARIA (solo
+        # aporta lo que DT no tiene) -> si DT YA trajo resultados NO bloqueamos
+        # la respuesta esperandolo: presupuesto CORTO (2.5s; ademas DX ya lleva
+        # corriendo lo que tardo DT, asi que normalmente ya termino y no perdemos
+        # nada). Si DT vino VACIO (baneo), DX es el SALVAVIDAS -> espera completa.
+        # Antes los join eran encadenados (8+10+9) -> aunque DT respondiera en 2s
+        # se regalaban ~9s esperando a DivxTotal. Ahorro tipico ~5-7s/busqueda.
         _tdt.join(8.0)
-        _tet.join(10.0)
-        _tdx.join(9.0)
+        _dt_ok = bool(_r["dt"])
+        _tet.join(0.5 if _dt_ok else 6.0)
+        _tdx.join(2.5 if _dt_ok else 9.0)
         dt_items = _r["dt"]
         et_items = _r["et"]
         dx_items = _r["dx"]
@@ -4120,6 +4179,32 @@ def _seeds_save(d):
         pass
 
 
+# Cache url -> info_hash para DivxTotal: derivar el hash de un item DX cuesta 2
+# descargas (la ficha + el .torrent). El .torrent es estatico, asi que mapeamos
+# la url de la ficha a su hash UNA vez -> la 2a apertura salta las descargas y va
+# directa a la cache de seeders. No toca DonTorrent/TMDB -> sin riesgo de baneo.
+_DXIH_FILE = "/tmp/mw_dxih.json"
+_DXIH_TTL = 7 * 86400   # 7 dias
+
+
+def _dxih_load():
+    try:
+        with open(_DXIH_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _dxih_save(d):
+    try:
+        tmp = _DXIH_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _DXIH_FILE)
+    except Exception:
+        pass
+
+
 def _ih_from_magnet(s):
     m = re.search(r"btih:([a-fA-F0-9]{40}|[A-Za-z2-7]{32})", s or "")
     if not m:
@@ -4169,13 +4254,26 @@ def seeds_ep():
         ih = _ih_from_link(link)
     # 1b) DivxTotal: el relay alcanza la ficha y el .torrent -> deriva el hash
     # DIRECTO, sin box ni code (asi las semillas salen tambien en DivxTotal).
+    # Cacheamos url->ih: la 2a apertura salta las 2 descargas (ficha + .torrent).
     if len(ih) != 40 and src == "dx" and "divxtotal" in (url or "").lower():
-        try:
-            dls = _dx_detail(url).get("downloads") or []
-            if dls:
-                ih = _ih_from_link(dls[0].get("torrent_url") or "")
-        except Exception:
-            pass
+        dih = _dxih_load()
+        c = dih.get(url)
+        if c and len(c.get("ih", "")) == 40 and (now - c.get("ts", 0) < _DXIH_TTL):
+            ih = c["ih"]
+        else:
+            try:
+                dls = _dx_detail(url).get("downloads") or []
+                if dls:
+                    ih = _ih_from_link(dls[0].get("torrent_url") or "")
+                if len(ih) == 40:
+                    dih[url] = {"ih": ih, "ts": now}
+                    if len(dih) > 2000:
+                        for k in sorted(dih, key=lambda k: dih[k].get("ts", 0))[
+                                :len(dih) - 2000]:
+                            dih.pop(k, None)
+                    _dxih_save(dih)
+            except Exception:
+                pass
     # 2) solo src+url (ficha): el box RESUELVE el link y el relay deriva el hash.
     if len(ih) != 40 and code and src and url:
         job = "ih" + os.urandom(5).hex()
@@ -5418,18 +5516,19 @@ import threading as _kth
 import datetime as _kdt
 
 def _warm_dt():
-    """Mantiene la sesion Anubis de DonTorrent SIEMPRE lista en ESTE worker, asi
-    el usuario nunca paga el ~13s de re-resolver Anubis (tras deploy o expiracion).
-    Refresca proactivamente a las ~5h (antes del TTL de 6h)."""
+    """Mantiene la sesion Anubis de DonTorrent SIEMPRE lista, asi el usuario nunca
+    paga el ~5-13s de re-resolver Anubis (tras deploy o expiracion). Reusa la
+    cookie del disco COMPARTIDO -> si el otro worker ya la resolvio, no la repaga.
+    Refresca proactivamente a las ~5h (antes del TTL de 6h), forzando para saltar
+    tambien la copia del disco si esa tambien es vieja."""
     try:
         if _dt_is_down():   # DonTorrent caido: no machacar (el breaker reintenta)
             return
         dom = _dt_load_domain() or (DT_FALLBACK[0] if DT_FALLBACK
                                     else "dontorrent.review")
-        ent = _DT_COOKIES.get(dom)
-        if ent and (_t.time() - ent.get("ts", 0)) > 3600 * 5:
-            _DT_COOKIES.pop(dom, None)
-        _dt_anubis_session(dom)
+        ent = _DT_COOKIES.get(dom) or _dt_cookies_load().get(dom)
+        old = bool(ent) and (_t.time() - ent.get("ts", 0)) > 3600 * 5
+        _dt_anubis_session(dom, force=old)
     except Exception:
         pass
 
