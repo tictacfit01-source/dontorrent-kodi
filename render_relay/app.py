@@ -3262,6 +3262,13 @@ def _tmdb_pick(results, clean, year, ep):
                     s *= 0.6             # muy lejos del año -> probablemente NO
             except Exception:
                 pass
+        # Ponderar por vote_count: entre titulos HOMONIMOS gana el ESTABLECIDO, no
+        # una NOVEDAD con mucho hype y pocos votos. Caso real: "Toy Story" (sin año
+        # en DonTorrent) cogia "Toy Story 5" (2026, popularity 351 pero solo 252
+        # votos) en vez de la original (1995, 19998 votos). DonTorrent tiene pelis
+        # ya asentadas -> el conteo de votos es mejor señal que la popularity volatil.
+        vc = float(it.get("vote_count") or 0)
+        s *= max(0.2, min(1.0, vc / 800.0))
         return s
 
     try:
@@ -3295,6 +3302,31 @@ def _tmdb_accept(clean, pick):
     return False
 
 
+_TMDB_QUAL_RE = _re_dt.compile(
+    r"\b(1080p|720p|480p|2160p|4k|uhd|hdr|bluray|blu-?ray|brrip|bdrip|web-?dl|"
+    r"webrip|hdtv|microhd|dvdrip|hdrip|x264|x265|hevc|remux|3d|imax|dual|castellano|"
+    r"latino|vose?|subtitulad|extendid|edicion|edición|director|sin censura|ac3|dts)\b",
+    _re_dt.I)
+
+
+def _saga_context(title):
+    """Texto entre paréntesis que es CONTEXTO de saga (p.ej. 'Los casos del
+    Departamento Q'), NO calidad/formato/año. Sirve para DESAMBIGUAR títulos
+    comunes: 'Redención (Los casos del Departamento Q)' a secas matchea 'Redención'
+    (Southpaw, ajena); con el contexto en la query TMDB devuelve la película
+    correcta. '' si el paréntesis es basura (calidad/año) o no hay."""
+    for c in _re_dt.findall(r"[\(\[]([^\)\]]+)[\)\]]", title or ""):
+        c = c.strip()
+        if _TMDB_QUAL_RE.search(c):
+            continue
+        if _re_dt.fullmatch(r"[\d\W]+", c):   # solo numeros/simbolos (año) -> no
+            continue
+        words = [w for w in _re_dt.findall(r"[^\W\d_]+", c, _re_dt.U) if len(w) > 1]
+        if len(words) >= 2:                   # >=2 palabras significativas -> saga
+            return c
+    return ""
+
+
 def _cat_tmdb(title, kind="movie"):
     """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria + breaker."""
     clean = _cat_clean_title(title)
@@ -3310,30 +3342,38 @@ def _cat_tmdb(title, kind="movie"):
         return out   # TMDB baneado -> sin poster al instante (no toca la red)
     try:
         ep = "tv" if kind == "tv" else "movie"
-        params = {"api_key": _CAT_TMDB_KEY, "language": "es-ES",
-                  "query": clean, "include_adult": "false"}
-        if year and ep == "movie":
-            params["year"] = year
-        r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
-                         params=params, timeout=(3, 4))
-        if r.status_code != 200:
-            # 429/403: TMDB rate-limita la IP de Render. NO lanza excepcion, asi
-            # que sin esto el breaker no saltaba y el enrich se atascaba (el Inicio
-            # con 36 items se colgaba). Marcamos caido -> el resto del enrich va
-            # SIN poster AL INSTANTE; reintenta a los 2 min.
-            _tmdb_mark(False)
-            return out
-        res = (r.json() or {}).get("results") or []
-        if res:
-            top = _tmdb_pick(res, clean, year, ep)
-            if _tmdb_accept(clean, top):
-                pp = top.get("poster_path")
-                d = top.get("release_date") or top.get("first_air_date") or ""
-                out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
-                       "year": d[:4] or year, "rating": top.get("vote_average")}
-            # si el match NO es de confianza -> out se queda SIN poster TMDB (year
-            # del titulo): el enrich usa la caratula PROPIA (DonTorrent) o ninguna
-            # (DivxTotal) en vez de una caratula ajena. Ver _tmdb_accept.
+        ctx = _saga_context(title)
+        # Query con CONTEXTO de saga PRIMERO (desambigua títulos comunes tipo
+        # "Redención"); si no da match de confianza, query limpia (base). Solo añade
+        # una 2a llamada cuando hay paréntesis de saga Y la 1a no acierta -> coste
+        # mínimo (la mayoría de items no tienen saga -> 1 sola query, como antes).
+        tries = ([f"{clean} {ctx}"] if ctx else []) + [clean]
+        for qi, q in enumerate(tries):
+            params = {"api_key": _CAT_TMDB_KEY, "language": "es-ES",
+                      "query": q, "include_adult": "false"}
+            if year and ep == "movie" and qi == len(tries) - 1:
+                params["year"] = year   # filtro de año solo en la query limpia
+            r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
+                             params=params, timeout=(3, 4))
+            if r.status_code != 200:
+                # 429/403: TMDB rate-limita la IP de Render. NO lanza excepcion, asi
+                # que sin esto el breaker no saltaba y el enrich se atascaba (el
+                # Inicio con 36 items se colgaba). Marcamos caido -> el resto del
+                # enrich va SIN poster AL INSTANTE; reintenta a los 2 min.
+                _tmdb_mark(False)
+                return out
+            res = (r.json() or {}).get("results") or []
+            if res:
+                top = _tmdb_pick(res, clean, year, ep)
+                if _tmdb_accept(clean, top):
+                    pp = top.get("poster_path")
+                    d = top.get("release_date") or top.get("first_air_date") or ""
+                    out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
+                           "year": d[:4] or year, "rating": top.get("vote_average")}
+                    break   # match de confianza -> no probar más queries
+                # match NO de confianza -> probar la siguiente query; si no quedan,
+                # out se queda SIN poster TMDB (el enrich usa la carátula propia de
+                # DonTorrent o ninguna, nunca una ajena). Ver _tmdb_accept.
         _tmdb_mark(True)
         _CAT_TMDB_CACHE[ckey] = out
     except Exception:
