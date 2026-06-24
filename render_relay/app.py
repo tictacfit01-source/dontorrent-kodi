@@ -308,7 +308,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk2",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk3",
                     mimetype="text/plain")
 
 
@@ -3915,11 +3915,40 @@ def catsearch():
         # (Render bloqueado -> ignora el timeout de requests), los abandonamos y
         # seguimos. Asi la peticion NUNCA se cuelga y llega el fallback al box.
         import threading as _th
-        _r = {"dt": [], "et": [], "dx": []}
+        _r = {"dt": [], "et": [], "dx": [], "box": []}
+        # El BOX vivo (IP residencial) es la via FIABLE y RAPIDA: la IP datacenter
+        # de Render es LENTA con ambas fuentes (Anubis de DonTorrent y Cloudflare de
+        # DivxTotal) -> en frio la busqueda directa tarda >20s y el front se rinde
+        # ("Despertando el servidor..."). Con code va a ESE box; SIN code, a
+        # cualquier box vivo (_any_live_box, mismo patron que /dtpacked) -> la
+        # busqueda desde la WEB va rapida AUNQUE no se escriba codigo. El box corre
+        # EN PARALELO con el intento directo (antes era SECUENCIAL: 8s directo + 20s
+        # box = >28s, imposible para el front).
+        box = code if len(code) == 6 else _any_live_box()
+        _ready = _th.Event()   # lo activan DT-directo o el box al traer resultados
 
         def _w_dt():
             try:
-                _r["dt"] = _cat_parse_items(_cat_dt_html(q)) or []
+                r = _cat_parse_items(_cat_dt_html(q)) or []
+                _r["dt"] = r
+                if r:
+                    _ready.set()
+            except Exception:
+                pass
+
+        def _w_box():
+            if not box:
+                return
+            try:
+                job = "ds" + os.urandom(5).hex()
+                _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml", "q": q})
+                res = _catjob_wait(job, 16.0)
+                h = (res or {}).get("html") or ""
+                if h:
+                    r = _cat_parse_items(h) or []
+                    _r["box"] = r
+                    if r:
+                        _ready.set()
             except Exception:
                 pass
 
@@ -3930,41 +3959,27 @@ def catsearch():
                 pass
 
         def _w_dx():
-            # DivxTotal DIRECTO (el relay si lo alcanza) -> rapido y SIN code.
+            # DivxTotal DIRECTO (sin code); LENTO desde Render (Cloudflare) -> ultimo
+            # recurso, nunca bloquea la respuesta.
             try:
                 _r["dx"] = _dx_search_items(q) or []
             except Exception:
                 pass
-        _tdt = _th.Thread(target=_w_dt, daemon=True)
-        _tet = _th.Thread(target=_w_et, daemon=True)
-        _tdx = _th.Thread(target=_w_dx, daemon=True)
-        _tdt.start()
-        _tet.start()
-        _tdx.start()
-        # Los 3 hilos corren EN PARALELO desde aqui. DonTorrent MANDA: lo
-        # esperamos primero (hasta 8s). DivxTotal es la fuente SECUNDARIA (solo
-        # aporta lo que DT no tiene) -> si DT YA trajo resultados NO bloqueamos
-        # la respuesta esperandolo: presupuesto CORTO (2.5s; ademas DX ya lleva
-        # corriendo lo que tardo DT, asi que normalmente ya termino y no perdemos
-        # nada). Si DT vino VACIO (baneo), DX es el SALVAVIDAS -> espera completa.
-        # Antes los join eran encadenados (8+10+9) -> aunque DT respondiera en 2s
-        # se regalaban ~9s esperando a DivxTotal. Ahorro tipico ~5-7s/busqueda.
-        _tdt.join(8.0)
-        _dt_ok = bool(_r["dt"])
-        _tet.join(0.5 if _dt_ok else 6.0)
-        _tdx.join(2.5 if _dt_ok else 9.0)
-        dt_items = _r["dt"]
+        _ths = [_th.Thread(target=f, daemon=True)
+                for f in (_w_dt, _w_box, _w_et, _w_dx)]
+        for t in _ths:
+            t.start()
+        # Devolvemos EN CUANTO DonTorrent-directo (Anubis caliente ~7s) o el box
+        # (residencial ~5-8s) traigan resultados, con TOPE GLOBAL de 16s < 20s del
+        # front -> la busqueda NUNCA se "eterniza". Tras el wait damos un respiro
+        # corto a ET/DX para recoger lo que ya hayan traido (sin esperar su lentitud).
+        _ready.wait(16.0 if box else 9.0)       # con box esperamos su ida-y-vuelta;
+        # sin box (Render directo en frio no llega) no alargamos -> DX salvavidas.
+        _ths[2].join(0.5)                       # ET (off) -> instantaneo
+        _ths[3].join(2.5 if (_r["dt"] or _r["box"]) else 6.0)   # DX salvavidas
+        dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
         et_items = _r["et"]
         dx_items = _r["dx"]
-        if not dt_items and len(code) == 6:
-            # Render bloqueado por DonTorrent -> buscar DonTorrent VIA EL BOX (IP
-            # residencial). El box trae el HTML de /buscar y aqui lo parseamos igual.
-            job = "ds" + os.urandom(5).hex()
-            _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml", "q": q})
-            res = _catjob_wait(job, 20.0)
-            h = (res or {}).get("html") or ""
-            if h:
-                dt_items = _cat_parse_items(h)
         # FAILOVER anti-baneo via ScraperAPI (IPs residenciales rotativas). Solo si el
         # directo NO trajo NADA (senal de que DonTorrent/DivxTotal banean la IP de
         # Render) -> en uso normal NO gasta creditos. Asi la BUSQUEDA funciona desde
@@ -4689,7 +4704,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk2", "now": int(now)}
+    out = {"build": "dtbk3", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
