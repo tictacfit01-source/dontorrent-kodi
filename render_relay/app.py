@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk13",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk14",
                     mimetype="text/plain")
 
 
@@ -4162,9 +4162,12 @@ def catsearch():
                 return jsonify({"items": []})
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
         merged = _cat_rank_dedup(merged, q)   # dedup versiones + orden por relevancia
-        # Enrich SINCRONO seguro: el breaker TMDB evita que cuelgue (sin TMDB, items
-        # sin poster al instante). Sin hilos en 2o plano que se acumulen.
-        items = _cat_enrich(merged)
+        # Enrich (poster/genero TMDB) ACOTADO al deadline total: con TMDB lento/frio
+        # podia añadir ~5s y pasarse del tope. Si no le da tiempo, devolvemos los
+        # items SIN enriquecer del todo (titulos ya visibles; el front no se cuelga).
+        # El breaker TMDB ya evita que cada llamada cuelgue; esto cierra el peor caso.
+        items = _bounded(lambda: _cat_enrich(merged),
+                         max(3.0, now + 19.0 - _t.time()), merged) or merged
         if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
             rec = {"items": items, "ts": now}
             _CATSEARCH_CACHE[qkey] = rec
@@ -4964,7 +4967,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk13", "now": int(now)}
+    out = {"build": "dtbk14", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
