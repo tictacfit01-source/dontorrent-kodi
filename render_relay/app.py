@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk8",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk9",
                     mimetype="text/plain")
 
 
@@ -4702,24 +4702,24 @@ def cattitlemeta():
     Lo llama el front SOLO al abrir un favorito sin enriquecer (1 vez, luego se
     persiste en el movil) -> de uno en uno, cero rafagas, cero baneo."""
     title = (request.args.get("title") or "").strip()
+    year = (request.args.get("year") or "").strip()
     kind = (request.args.get("kind") or "movie").strip().lower()
     if not title:
         return jsonify({})
     ep = "tv" if kind in ("tv", "serie") else "movie"
-    meta = _cat_tmdb(title, ep)
-    out = {"overview": meta.get("overview") or "",
-           "backdrop": meta.get("backdrop"),
-           "genres": meta.get("genres") or [],
-           "tmdb_id": meta.get("tmdb_id"),
-           "year": meta.get("year"),
-           "rating": meta.get("rating")}
-    tid = meta.get("tmdb_id")
-    if tid:
-        det = _tmdb_detail(ep, tid)
-        out["runtime"] = det.get("runtime") or 0
-        out["trailer"] = det.get("trailer") or ""
-        out["seasons"] = det.get("seasons") or 0
-    return jsonify(out)
+    # El año (si no esta ya en el titulo) afina el matching de titulos comunes
+    # ("Perdida", "Venganza"...). _cat_tmdb lo extrae del propio string.
+    q = title if (not year or year in title) else f"{title} {year}"
+    meta = _cat_tmdb(q, ep)
+    # SOLO los campos de la BUSQUEDA (1 llamada TMDB -> sinopsis/generos salen
+    # rapido). El trailer/duracion los pide el front aparte via /catmeta(tmdb_id)
+    # -> la ficha no espera al detalle para mostrar lo principal.
+    return jsonify({"overview": meta.get("overview") or "",
+                    "backdrop": meta.get("backdrop"),
+                    "genres": meta.get("genres") or [],
+                    "tmdb_id": meta.get("tmdb_id"),
+                    "year": meta.get("year"),
+                    "rating": meta.get("rating")})
 
 
 @app.get("/catbrowse")
@@ -4827,7 +4827,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk8", "now": int(now)}
+    out = {"build": "dtbk9", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5270,6 +5270,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .runt{font-size:12.5px;color:var(--sub);font-weight:600;align-self:center}
 .sh-ov{font-size:14px;line-height:1.5;color:#d4dae6;margin:2px 0 4px}
 .sh-ov.clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sh-ovload{color:var(--sub);font-size:13px;margin:4px 0 8px}
 .sh-more{color:var(--blue2);font-size:13px;font-weight:600;cursor:pointer;display:inline-block;margin:0 0 4px}
 .btnrow{display:flex;gap:10px}
 .btnrow .btn{margin-top:10px;flex:1}
@@ -5596,6 +5597,7 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  // backdrop + géneros + sinopsis + tráiler. shEnrich pinta lo que el item TENGA;
  // enrichItem rellena los favoritos GUARDADOS sin enriquecer (1 vez, se persiste).
  shEnrich(x);
+ if(!(x.overview&&x.genres&&x.genres.length)){$('sh-ovwrap').innerHTML='<div class="sh-ovload"><span class="spin"></span> Cargando detalles…</div>';}
  enrichItem(x,function(){if(sel===x)shEnrich(x);});
  // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
  // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
@@ -5636,9 +5638,13 @@ function shEnrich(x){
 // Enriquece un item por TITULO si le faltan los campos nuevos (favoritos viejos
 // de "Mi lista"). 1 sola llamada, y persiste en la lista -> la proxima vez instantaneo.
 function enrichItem(x,cb){
- if((x.overview&&x.genres&&x.genres.length)||x.tmdb_id){cb&&cb();return;}
- fetch('/cattitlemeta?title='+encodeURIComponent(x.title||'')+'&kind='+(x.kind==='serie'?'tv':'movie')).then(function(r){return r.json()}).then(function(m){
-  if(m){if(m.overview)x.overview=m.overview;if(m.backdrop)x.backdrop=m.backdrop;if(m.genres&&m.genres.length)x.genres=m.genres;if(m.tmdb_id)x.tmdb_id=m.tmdb_id;if(m.trailer)x.trailer=m.trailer;if(m.runtime)x.runtime=m.runtime;persistFavMeta(x);}
+ // Enriquece si FALTAN los campos visibles (sinopsis/generos), aunque ya tenga
+ // tmdb_id (un favorito viejo puede llevar tmdb_id pero no sinopsis). _tried evita
+ // repetir en la misma sesion si TMDB no encontro nada. El trailer lo trae shEnrich.
+ if((x.overview&&x.genres&&x.genres.length)||x._tried){cb&&cb();return;}
+ x._tried=1;
+ fetch('/cattitlemeta?title='+encodeURIComponent(x.title||'')+(x.year?('&year='+encodeURIComponent(x.year)):'')+'&kind='+(x.kind==='serie'?'tv':'movie')).then(function(r){return r.json()}).then(function(m){
+  if(m){if(m.overview)x.overview=m.overview;if(m.backdrop)x.backdrop=m.backdrop;if(m.genres&&m.genres.length)x.genres=m.genres;if(m.tmdb_id)x.tmdb_id=m.tmdb_id;persistFavMeta(x);}
   cb&&cb();
  }).catch(function(){cb&&cb();});
 }
