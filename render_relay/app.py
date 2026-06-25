@@ -306,25 +306,10 @@ def root():
     return _serve_page(_CAT_PAGE)
 
 
-@app.get("/preview")
-def preview_page():
-    # Preview AISLADO de mejoras de UI (ficha enriquecida + esqueletos de carga).
-    # NO toca catalogo/busqueda/mando: es una pagina suelta para validar en el
-    # movil. El service worker la EXCLUYE (network-only) -> jamas ensucia la
-    # cache del shell. Se puede borrar (ruta + preview.html) sin tocar nada mas.
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preview.html")
-    try:
-        with open(p, encoding="utf-8") as f:
-            return _serve_page(f.read())
-    except Exception:
-        return Response("preview no disponible", mimetype="text/plain",
-                        status=404)
-
-
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk6",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk7",
                     mimetype="text/plain")
 
 
@@ -4808,7 +4793,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk6", "now": int(now)}
+    out = {"build": "dtbk7", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5265,6 +5250,16 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .trm .frame{width:100%;max-width:880px;aspect-ratio:16/9;border-radius:14px;overflow:hidden;border:1px solid var(--stroke);background:#000;position:relative}
 .trm iframe{width:100%;height:100%;border:0}
 .trm .x{position:absolute;top:-46px;right:0;border:1px solid var(--stroke);background:rgba(14,19,32,.95);color:#fff;font-weight:700;border-radius:999px;padding:8px 16px;cursor:pointer}
+/* ===== Ficha de SERIE enriquecida (overlay) ===== */
+.ovhero{position:relative;margin:-14px -14px 14px;min-height:188px;background:#0e1320 center/cover no-repeat}
+.ovhero .grad{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,7,12,.10) 0%,rgba(6,7,12,.55) 55%,var(--bg) 100%)}
+.ovhero-row{position:relative;display:flex;gap:14px;align-items:flex-end;padding:104px 14px 14px}
+.ovhero .ovposter{width:96px;flex:none;margin:0;cursor:zoom-in}
+.ovhero-txt{min-width:0;flex:1}
+.ovhero-txt .ovh-t{text-shadow:0 2px 10px rgba(0,0,0,.75)}
+.ovgen{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
+.ovsyn{margin:0 0 14px}
+.ovactions{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -5396,6 +5391,7 @@ var EYE_OFF='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke=
 var EYE_ON='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C6 4.5 2.2 11.2 2.05 11.5a1 1 0 0 0 0 .9C2.2 12.8 6 19.5 12 19.5s9.8-6.7 9.95-7a1 1 0 0 0 0-.9C21.8 11.2 18 4.5 12 4.5Zm0 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>';
 function clk(d){return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
 var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='', lastPlayTs=0;
+var ZPOSTER='', TRK='';   // portada para el zoom + clave del trailer (peli/serie)
 var INI={kind:'estrenos',page:1,loading:false,more:true}, OVDATA=null;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
 code.value=localStorage.getItem('mw_code')||'';
@@ -5473,7 +5469,7 @@ var _searchSeq=0;
 function tfetch(url,ms){var c=('AbortController'in window)?new AbortController():null;
  var to=c?setTimeout(function(){try{c.abort()}catch(e){}},ms):0;
  return fetch(url,c?{signal:c.signal}:{}).then(function(r){if(to)clearTimeout(to);if(!r.ok)throw new Error('http'+r.status);return r;},function(e){if(to)clearTimeout(to);throw e;});}
-function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Buscando...';
+function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='';g.innerHTML=skelGrid();
  var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];_searchSeq++;var seq=_searchSeq;
  var more=$('buscar-more');var boxPend=(cd.length===6)?1:0;var boxAdded=0;var boxTO=false;var wfPend=(cd.length===6);
  var catState='pending';var wakeAtt=0;  // pending|ok|fail ; intentos de despertar
@@ -5481,8 +5477,8 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
   var waiting=(catState==='pending')||boxPend>0;
   if(!LISTS.buscar.length){
    // AÚN sin resultados: distinguir relay dormido (reintentando) de vacío real.
-   if(catState==='pending'){g.className='msg';g.innerHTML='<span class="spin"></span> '+(wakeAtt>=2?'Despertando el servidor…':'Buscando…');if(more)more.textContent='';return;}
-   if(waiting){g.className='msg';g.innerHTML='<span class="spin"></span> Buscando…';if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
+   if(catState==='pending'&&wakeAtt>=2){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor…';if(more)more.textContent='';return;}
+   if(catState==='pending'||waiting){if(!g.querySelector('.skgrid')){g.className='';g.innerHTML=skelGrid();}if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
    if(catState==='fail'){g.className='msg';g.innerHTML='⚠️ El servidor estaba dormido y no respondió a tiempo.<br><br><button onclick="go()" style="background:#1c64f2;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer">↻ Reintentar</button>';if(more)more.textContent='';return;}
    g.className='msg';g.textContent='Sin resultados para "'+q+'".';if(more)more.textContent='';return;}
   // YA hay resultados:
@@ -5562,15 +5558,15 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  // HERO: backdrop de TMDB (si no hay, el propio póster); el degradado lo funde.
- var hb=x.backdrop||x.poster||'';$('sh-hero').style.backgroundImage=hb?('url("'+hb+'")'):'';
+ var hb=x.backdrop||x.poster||'';$('sh-hero').style.backgroundImage=hb?('url("'+hb+'")'):'';ZPOSTER=x.poster||'';
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';
  // GÉNEROS (gratis del item) + SINOPSIS con "Leer más". Si no hay, se ocultan.
  var gn=(x.genres||[]);$('sh-genres').innerHTML=gn.map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
  $('sh-ovwrap').innerHTML=x.overview?('<div class="sh-ov clamp" id="sh-ov">'+esc(x.overview)+'</div><span class="sh-more" onclick="toggleOv()">Leer más</span>'):'';
  // TRÁILER + DURACIÓN: perezoso (1 llamada /catmeta cacheada). Oculto hasta llegar.
- var tb=$('sh-trailer');tb.style.display='none';tb._key='';
+ var tb=$('sh-trailer');tb.style.display='none';TRK='';
  if(x.tmdb_id){fetch('/catmeta?id='+encodeURIComponent(x.tmdb_id)+'&kind='+(x.kind==='serie'?'tv':'movie')).then(function(r){return r.json()}).then(function(m){if(sel!==x||!m)return;
-   if(m.trailer){tb._key=m.trailer;tb.style.display='';}
+   if(m.trailer){TRK=m.trailer;tb.style.display='';}
    if(m.runtime){var hh=Math.floor(m.runtime/60),mm=m.runtime%60,rt=(hh?hh+'h ':'')+(mm?mm+'m':'');var gr=$('sh-genres');if(rt&&gr.querySelector('.runt')===null)gr.insertAdjacentHTML('beforeend','<span class="runt">'+rt+'</span>');}
   }).catch(function(){});}
  // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
@@ -5601,10 +5597,11 @@ function skelGrid(n){n=n||9;var c='<div class="skcard"><div class="skph shim"></
 // Sinopsis: alternar recortada/completa.
 function toggleOv(){var o=$('sh-ov');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
 // Zoom de portada: tocar el póster de la ficha lo agranda a pantalla completa.
-function zoomPoster(){if(!sel||!sel.poster)return;event&&event.stopPropagation&&event.stopPropagation();var big=sel.poster.replace('/w342','/w500');$('zoom-img').src=big;$('zoom').classList.add('on')}
+function zoomPoster(){var p=ZPOSTER||(sel&&sel.poster);if(!p)return;event&&event.stopPropagation&&event.stopPropagation();$('zoom-img').src=p.replace('/w342','/w500');$('zoom').classList.add('on')}
 function closeZoom(){$('zoom').classList.remove('on');$('zoom-img').src=''}
 // Tráiler: reproduce el vídeo de YouTube en un modal (clave de /catmeta).
-function openTrailer(){var tb=$('sh-trailer');var k=tb&&tb._key;if(!k)return;$('trm-mount').innerHTML='<iframe src="https://www.youtube.com/embed/'+k+'?autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('trm').classList.add('on')}
+function openTrailer(){if(!TRK)return;$('trm-mount').innerHTML='<iframe src="https://www.youtube.com/embed/'+TRK+'?autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('trm').classList.add('on')}
+function toggleOvSyn(){var o=$('ov-syn');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
 function closeTrailer(){$('trm').classList.remove('on');$('trm-mount').innerHTML=''}
 // ---- Compartir enlace directo (como el mando): link que reproduce al abrirlo ----
 function doShare(t,yr,qs){var link=location.origin+'/cat?'+qs+'&t='+encodeURIComponent(t)+(yr?('&yr='+encodeURIComponent(yr)):'');
@@ -5667,13 +5664,27 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
  var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});
  var ph=poster?(' style="background-image:url('+poster+')"'):'';
- var h='<div class="ovhead"><div class="ovposter"'+ph+'></div><div><div class="ovh-t">'+esc(d.title||x.title)+'</div><div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button></div></div>';
+ // Hero enriquecido (igual estilo que la ficha de peli): backdrop + portada
+ // (con zoom) + genero + sinopsis. Degrada elegante si el item no trae datos.
+ ZPOSTER=poster||'';TRK='';
+ var bd=x.backdrop||d.backdrop||poster||'';
+ var genh=(x.genres||d.genres||[]).map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
+ var ovw=x.overview||d.overview||'';
+ var h='<div class="ovhero"'+(bd?(' style="background-image:url('+bd+')"'):'')+'><div class="grad"></div>'+
+   '<div class="ovhero-row"><div class="ovposter"'+ph+' onclick="zoomPoster()"></div>'+
+   '<div class="ovhero-txt"><div class="ovh-t">'+esc(d.title||x.title)+'</div>'+
+   '<div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div>'+
+   (genh?('<div class="ovgen">'+genh+'</div>'):'')+'</div></div></div>'+
+   (ovw?('<div class="ovsyn"><div class="sh-ov clamp" id="ov-syn">'+esc(ovw)+'</div><span class="sh-more" onclick="toggleOvSyn()">Leer más</span></div>'):'')+
+   '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
  keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
- });$('ov-body').innerHTML=h;lazyEps();}
+ });$('ov-body').innerHTML=h;lazyEps();
+ // Tráiler de la serie: perezoso (/catmeta kind=tv); muestra el botón al llegar.
+ if(x.tmdb_id){fetch('/catmeta?id='+encodeURIComponent(x.tmdb_id)+'&kind=tv').then(function(r){return r.json()}).then(function(m){if(!OVDATA||OVDATA.x!==x||!m||!m.trailer)return;TRK=m.trailer;var b=$('ov-trailer');if(b)b.style.display='';}).catch(function(){});}}
 // ---- Semillas + RAR por capitulo (DonTorrent), perezoso y cacheado ----
 var _epQ=[],_epActive=0,_epCache={};
 function lazyEps(){_epQ=[];var cd=(code.value||'').replace(/\D/g,'');var src=(OVDATA&&OVDATA.x&&(OVDATA.x.source||'dt'))||'dt';
