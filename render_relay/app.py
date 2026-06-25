@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk7",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk8",
                     mimetype="text/plain")
 
 
@@ -4637,24 +4637,14 @@ def catfeed():
 _CAT_META_CACHE = {}
 
 
-@app.get("/catmeta")
-def catmeta():
-    """Detalle PEREZOSO para la ficha enriquecida: duracion + trailer (YouTube).
-    Una sola llamada TMDB POR FICHA ABIERTA (no por cuadricula), cacheada en
-    memoria y protegida por el MISMO breaker del enrich -> si TMDB banea la IP,
-    devuelve {} al instante y la ficha simplemente no muestra trailer/duracion
-    (la sinopsis/generos/backdrop ya vienen gratis con el item). Cero baneo."""
-    tid = (request.args.get("id") or "").strip()
-    kind = (request.args.get("kind") or "movie").strip().lower()
-    if not tid.isdigit():
-        return jsonify({})
-    ep = "tv" if kind in ("tv", "serie") else "movie"
-    ck = (ep, tid)
+def _tmdb_detail(ep, tid):
+    """runtime + trailer (YouTube) + nº temporadas de TMDB. Cacheado + breaker.
+    {} si TMDB no responde (-> la ficha no muestra trailer/duracion, sin colgar)."""
+    ck = (ep, str(tid))
     if ck in _CAT_META_CACHE:
-        return jsonify(_CAT_META_CACHE[ck])
-    out = {}
+        return _CAT_META_CACHE[ck]
     if _tmdb_is_down():
-        return jsonify(out)
+        return {}
     try:
         r = requests.get(
             f"https://api.themoviedb.org/3/{ep}/{tid}",
@@ -4663,7 +4653,7 @@ def catmeta():
             timeout=(3, 5))
         if r.status_code != 200:
             _tmdb_mark(False)
-            return jsonify(out)
+            return {}
         d = r.json() or {}
         rt = d.get("runtime") or 0
         if not rt and d.get("episode_run_time"):
@@ -4683,8 +4673,52 @@ def catmeta():
                "seasons": d.get("number_of_seasons") or 0}
         _tmdb_mark(True)
         _CAT_META_CACHE[ck] = out
+        return out
     except Exception:
         _tmdb_mark(False)
+        return {}
+
+
+@app.get("/catmeta")
+def catmeta():
+    """Detalle PEREZOSO para la ficha enriquecida: duracion + trailer (YouTube).
+    Una sola llamada TMDB POR FICHA ABIERTA (no por cuadricula), cacheada en
+    memoria y protegida por el MISMO breaker del enrich -> si TMDB banea la IP,
+    devuelve {} al instante y la ficha simplemente no muestra trailer/duracion
+    (la sinopsis/generos/backdrop ya vienen gratis con el item). Cero baneo."""
+    tid = (request.args.get("id") or "").strip()
+    kind = (request.args.get("kind") or "movie").strip().lower()
+    if not tid.isdigit():
+        return jsonify({})
+    ep = "tv" if kind in ("tv", "serie") else "movie"
+    return jsonify(_tmdb_detail(ep, tid))
+
+
+@app.get("/cattitlemeta")
+def cattitlemeta():
+    """Enriquece un item POR TITULO (para 'Mi lista': los favoritos guardados
+    antes de la mejora no llevan sinopsis/generos/backdrop/tmdb_id). Resuelve TODO
+    con el MISMO matching del catalogo (_cat_tmdb, cacheado) + detalle perezoso.
+    Lo llama el front SOLO al abrir un favorito sin enriquecer (1 vez, luego se
+    persiste en el movil) -> de uno en uno, cero rafagas, cero baneo."""
+    title = (request.args.get("title") or "").strip()
+    kind = (request.args.get("kind") or "movie").strip().lower()
+    if not title:
+        return jsonify({})
+    ep = "tv" if kind in ("tv", "serie") else "movie"
+    meta = _cat_tmdb(title, ep)
+    out = {"overview": meta.get("overview") or "",
+           "backdrop": meta.get("backdrop"),
+           "genres": meta.get("genres") or [],
+           "tmdb_id": meta.get("tmdb_id"),
+           "year": meta.get("year"),
+           "rating": meta.get("rating")}
+    tid = meta.get("tmdb_id")
+    if tid:
+        det = _tmdb_detail(ep, tid)
+        out["runtime"] = det.get("runtime") or 0
+        out["trailer"] = det.get("trailer") or ""
+        out["seasons"] = det.get("seasons") or 0
     return jsonify(out)
 
 
@@ -4793,7 +4827,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk7", "now": int(now)}
+    out = {"build": "dtbk8", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5405,7 +5439,7 @@ function toggleSeen(id){id=String(id);var i=seen.indexOf(id);if(i>=0)seen.splice
 function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
 function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
-function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality})}saveFavs();mlPushSoon()}
+function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime})}saveFavs();mlPushSoon()}
 // --- Sincronizacion de la lista de deseados (espejo en el relay, ligado al
 // codigo). El movil es la COPIA MAESTRA: al cargar hacemos UNION (nunca borra ->
 // imposible perder la lista). Cero peticiones a fuentes -> cero baneo. ---
@@ -5557,18 +5591,12 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
- // HERO: backdrop de TMDB (si no hay, el propio póster); el degradado lo funde.
- var hb=x.backdrop||x.poster||'';$('sh-hero').style.backgroundImage=hb?('url("'+hb+'")'):'';ZPOSTER=x.poster||'';
+ ZPOSTER=x.poster||'';
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';
- // GÉNEROS (gratis del item) + SINOPSIS con "Leer más". Si no hay, se ocultan.
- var gn=(x.genres||[]);$('sh-genres').innerHTML=gn.map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
- $('sh-ovwrap').innerHTML=x.overview?('<div class="sh-ov clamp" id="sh-ov">'+esc(x.overview)+'</div><span class="sh-more" onclick="toggleOv()">Leer más</span>'):'';
- // TRÁILER + DURACIÓN: perezoso (1 llamada /catmeta cacheada). Oculto hasta llegar.
- var tb=$('sh-trailer');tb.style.display='none';TRK='';
- if(x.tmdb_id){fetch('/catmeta?id='+encodeURIComponent(x.tmdb_id)+'&kind='+(x.kind==='serie'?'tv':'movie')).then(function(r){return r.json()}).then(function(m){if(sel!==x||!m)return;
-   if(m.trailer){TRK=m.trailer;tb.style.display='';}
-   if(m.runtime){var hh=Math.floor(m.runtime/60),mm=m.runtime%60,rt=(hh?hh+'h ':'')+(mm?mm+'m':'');var gr=$('sh-genres');if(rt&&gr.querySelector('.runt')===null)gr.insertAdjacentHTML('beforeend','<span class="runt">'+rt+'</span>');}
-  }).catch(function(){});}
+ // backdrop + géneros + sinopsis + tráiler. shEnrich pinta lo que el item TENGA;
+ // enrichItem rellena los favoritos GUARDADOS sin enriquecer (1 vez, se persiste).
+ shEnrich(x);
+ enrichItem(x,function(){if(sel===x)shEnrich(x);});
  // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
  // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
  $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;
@@ -5592,6 +5620,35 @@ function seedGate(ci,tb,proceed){proceed();
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
+// Pinta la parte enriquecida de la ficha de PELI con lo que el item tenga
+// (backdrop + generos + duracion + sinopsis + trailer). Reentrante: se vuelve a
+// llamar cuando enrichItem/catmeta rellenan datos -> rerender suave.
+function shEnrich(x){
+ var hb=x.backdrop||x.poster||'';$('sh-hero').style.backgroundImage=hb?('url("'+hb+'")'):'';
+ var gh=(x.genres||[]).map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
+ if(x.runtime){var hh=Math.floor(x.runtime/60),mm=x.runtime%60,rt=(hh?hh+'h ':'')+(mm?mm+'m':'');if(rt)gh+='<span class="runt">'+rt+'</span>';}
+ $('sh-genres').innerHTML=gh;
+ $('sh-ovwrap').innerHTML=x.overview?('<div class="sh-ov clamp" id="sh-ov">'+esc(x.overview)+'</div><span class="sh-more" onclick="toggleOv()">Leer más</span>'):'';
+ var tb=$('sh-trailer');if(x.trailer){TRK=x.trailer;tb.style.display='';}else{TRK='';tb.style.display='none';}
+ // duracion/trailer perezosos via /catmeta si tenemos tmdb_id y aun no el trailer
+ if(!x.trailer&&x.tmdb_id&&!x._mt){x._mt=1;fetch('/catmeta?id='+encodeURIComponent(x.tmdb_id)+'&kind='+(x.kind==='serie'?'tv':'movie')).then(function(r){return r.json()}).then(function(m){if(!m)return;if(m.trailer)x.trailer=m.trailer;if(m.runtime&&!x.runtime)x.runtime=m.runtime;persistFavMeta(x);if(sel===x)shEnrich(x);}).catch(function(){});}
+}
+// Enriquece un item por TITULO si le faltan los campos nuevos (favoritos viejos
+// de "Mi lista"). 1 sola llamada, y persiste en la lista -> la proxima vez instantaneo.
+function enrichItem(x,cb){
+ if((x.overview&&x.genres&&x.genres.length)||x.tmdb_id){cb&&cb();return;}
+ fetch('/cattitlemeta?title='+encodeURIComponent(x.title||'')+'&kind='+(x.kind==='serie'?'tv':'movie')).then(function(r){return r.json()}).then(function(m){
+  if(m){if(m.overview)x.overview=m.overview;if(m.backdrop)x.backdrop=m.backdrop;if(m.genres&&m.genres.length)x.genres=m.genres;if(m.tmdb_id)x.tmdb_id=m.tmdb_id;if(m.trailer)x.trailer=m.trailer;if(m.runtime)x.runtime=m.runtime;persistFavMeta(x);}
+  cb&&cb();
+ }).catch(function(){cb&&cb();});
+}
+// Si el item es un favorito, copia los campos enriquecidos al guardado y persiste
+// (localStorage + sync con el relay) -> "Mi lista" se enriquece sola y para siempre.
+function persistFavMeta(x){var i=-1;for(var j=0;j<favs.length;j++){if(fk(favs[j])===fk(x)){i=j;break;}}
+ if(i<0)return;var f=favs[i];   // copia (idempotente; f puede SER x si se abrio desde la lista)
+ ['overview','backdrop','genres','tmdb_id','trailer','runtime'].forEach(function(k){if(x[k]!=null)f[k]=x[k];});
+ saveFavs();mlPushSoon();
+}
 // Esqueletos de carga (Inicio): tarjetas con brillo mientras llega TMDB.
 function skelGrid(n){n=n||9;var c='<div class="skcard"><div class="skph shim"></div><div class="skln shim"></div><div class="skln s2 shim"></div></div>';var h='<div class="skgrid">';for(var i=0;i<n;i++)h+=c;return h+'</div>'}
 // Sinopsis: alternar recortada/completa.
@@ -5646,6 +5703,8 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');$('ov-title').textContent=x.title;
+ // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
+ enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
  var src=x.source||'dt';var cd=(code.value||'').replace(/\D/g,'');
  // DT lleva el code -> si Render esta baneado por DonTorrent, el relay trae los
@@ -5683,8 +5742,10 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
  });$('ov-body').innerHTML=h;lazyEps();
- // Tráiler de la serie: perezoso (/catmeta kind=tv); muestra el botón al llegar.
- if(x.tmdb_id){fetch('/catmeta?id='+encodeURIComponent(x.tmdb_id)+'&kind=tv').then(function(r){return r.json()}).then(function(m){if(!OVDATA||OVDATA.x!==x||!m||!m.trailer)return;TRK=m.trailer;var b=$('ov-trailer');if(b)b.style.display='';}).catch(function(){});}}
+ // Tráiler de la serie: si ya lo tenemos (de enrichItem) lo mostramos; si no,
+ // perezoso via /catmeta (kind=tv) y se persiste en la lista.
+ if(x.trailer){TRK=x.trailer;var _ovb=$('ov-trailer');if(_ovb)_ovb.style.display='';}
+ else if(x.tmdb_id){fetch('/catmeta?id='+encodeURIComponent(x.tmdb_id)+'&kind=tv').then(function(r){return r.json()}).then(function(m){if(!OVDATA||OVDATA.x!==x||!m||!m.trailer)return;x.trailer=m.trailer;TRK=m.trailer;var b=$('ov-trailer');if(b)b.style.display='';persistFavMeta(x);}).catch(function(){});}}
 // ---- Semillas + RAR por capitulo (DonTorrent), perezoso y cacheado ----
 var _epQ=[],_epActive=0,_epCache={};
 function lazyEps(){_epQ=[];var cd=(code.value||'').replace(/\D/g,'');var src=(OVDATA&&OVDATA.x&&(OVDATA.x.source||'dt'))||'dt';
