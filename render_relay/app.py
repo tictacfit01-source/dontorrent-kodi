@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk14",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk15",
                     mimetype="text/plain")
 
 
@@ -4102,25 +4102,28 @@ def catsearch():
         # (residencial ~5-8s) traigan resultados, con TOPE GLOBAL de 16s < 20s del
         # front -> la busqueda NUNCA se "eterniza". Tras el wait damos un respiro
         # corto a ET/DX para recoger lo que ya hayan traido (sin esperar su lentitud).
-        # PRESUPUESTO TOTAL DURO: la busqueda responde SIEMPRE en < ~13s (bajo los
-        # 20s del front) -> NUNCA se cuelga ni el front se rinde. Antes podian
-        # SUMARSE espera-box (16s) + gracia-DX (6s) + failover ScraperAPI (18s) =
-        # hasta 40s (el usuario veia "Buscando..." eternamente). Ahora cada etapa
-        # consume SOLO lo que QUEDA del presupuesto.
-        _dl = now + 13.0
+        # TOPE TOTAL DURO (now+19s, bajo los 20s del front) -> la busqueda NUNCA se
+        # cuelga ni el front se rinde. Antes podian SUMARSE espera-box (16s) +
+        # gracia-DX (6s) + ScraperAPI (18s) = hasta 40s ("Buscando..." eterno). CLAVE:
+        # al box/DT-directo le damos su espera COMPLETA (~16s; NO cortar una fuente
+        # lenta-pero-VIVA, p.ej. Anubis frio -> antes con 13s la cortaba y devolvia
+        # VACIO en falso); el RESTO (DX, ScraperAPI, fallback, enrich) solo consume lo
+        # que QUEDA -> el total nunca pasa del tope. El caso comun (box ~5-8s) corta
+        # la espera al traer resultados y va rapido.
+        _dl = now + 19.0
         _rem = lambda: max(0.0, _dl - _t.time())
-        _ready.wait(_rem() if box else min(9.0, _rem()))
-        _ths[2].join(min(0.5, _rem()))          # ET (off) -> instantaneo
-        _ths[3].join(min(2.5 if (_r["dt"] or _r["box"]) else 6.0, _rem()))  # DX
+        _ready.wait(min(16.0, _rem()))          # box/DT-directo: espera completa
+        _ths[2].join(min(0.4, _rem()))          # ET (off) -> instantaneo
+        _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 2.5, _rem()))  # DX
         dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
         et_items = _r["et"]
         dx_items = _r["dx"]
-        # FAILOVER anti-baneo via ScraperAPI (IPs residenciales rotativas). Solo si el
-        # directo NO trajo NADA Y queda presupuesto -> nunca alarga mas alla del tope.
-        # En uso normal NO gasta creditos. Permite buscar desde fuera SIN el box.
-        if (not dt_items and not dx_items) and _sapi_credits_ok() and _rem() > 2.5:
+        # FAILOVER anti-baneo via ScraperAPI (IPs residenciales). Solo si el directo
+        # NO trajo NADA Y queda presupuesto suficiente -> nunca pasa del tope. En uso
+        # normal NO gasta creditos. Permite buscar SIN el box (Render baneado).
+        if (not dt_items and not dx_items) and _sapi_credits_ok() and _rem() > 4.0:
             dx_items = _bounded(lambda: _dx_search_items(q, proxy=True),
-                                min(10.0, _rem()), []) or []
+                                min(8.0, _rem()), []) or []
         if not dt_items and not et_items and not dx_items:
             # FALLBACK DE IDIOMA: la web puede tener el titulo en OTRO idioma
             # ('interestelar'->'Interstellar'). Solo si la busqueda salio VACIA.
@@ -4167,7 +4170,7 @@ def catsearch():
         # items SIN enriquecer del todo (titulos ya visibles; el front no se cuelga).
         # El breaker TMDB ya evita que cada llamada cuelgue; esto cierra el peor caso.
         items = _bounded(lambda: _cat_enrich(merged),
-                         max(3.0, now + 19.0 - _t.time()), merged) or merged
+                         max(1.5, now + 19.5 - _t.time()), merged) or merged
         if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
             rec = {"items": items, "ts": now}
             _CATSEARCH_CACHE[qkey] = rec
@@ -4967,7 +4970,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk14", "now": int(now)}
+    out = {"build": "dtbk15", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
