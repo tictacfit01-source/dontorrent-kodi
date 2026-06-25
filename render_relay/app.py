@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk12",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk13",
                     mimetype="text/plain")
 
 
@@ -4128,7 +4128,13 @@ def catsearch():
             # TOTAL de la peticion (now+18.5s) -> el front (20s) NUNCA se rinde,
             # pase lo que pase con TMDB/box. Si no queda margen, no se intenta.
             _fdl = now + 18.5
-            _alts = _tmdb_alt_titles(q) if (_fdl - _t.time()) > 4.0 else []
+            # Solo merece la pena si queda margen para resolver TMDB **y** reintentar.
+            # Si la pasada principal agoto el presupuesto (box ocupado reproduciendo o
+            # Render baneado) -> "sin resultados" YA, no colgamos. La resolucion TMDB
+            # va ACOTADA (_bounded) -> nunca revienta el tope total.
+            _alts = (_bounded(lambda: _tmdb_alt_titles(q),
+                              min(5.0, _fdl - _t.time()), [])
+                     if (_fdl - _t.time()) > 8.0 else [])
             for _alt in _alts:
                 if _fdl - _t.time() <= 2.0:
                     break
@@ -4958,7 +4964,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk12", "now": int(now)}
+    out = {"build": "dtbk13", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
