@@ -324,7 +324,7 @@ def preview_page():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk5",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk6",
                     mimetype="text/plain")
 
 
@@ -4808,7 +4808,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk5", "now": int(now)}
+    out = {"build": "dtbk6", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
