@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk9",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk10",
                     mimetype="text/plain")
 
 
@@ -3904,6 +3904,64 @@ def _cat_merge(dt_items, et_items):
     return out
 
 
+# Calidad de busqueda: DonTorrent lista CADA torrent por separado (la misma peli
+# en 4K y en SD -> "Matrix Reloaded" aparece 2-3 veces) y NO ordena por relevancia
+# (busca "breaking bad" y sale "El Camino" antes que la serie). Esto:
+#   1) DEDUP por (titulo normalizado, tipo) dejando la version de MEJOR calidad.
+#   2) ORDENA por relevancia al termino (exacto/prefijo arriba), ESTABLE -> dentro
+#      de cada nivel respeta el orden de la web (temporadas 1,2,3...).
+# NO inventa ni descarta titulos DISTINTOS -> sigue siendo reflejo de la web,
+# solo mas limpio y con lo relevante arriba.
+_CAT_QUAL_RANK = {"4k": 5, "2160p": 5, "uhd": 5, "1080p": 4, "1080": 4,
+                  "720p": 2, "720": 2, "480p": 1}
+
+
+def _cat_rank_dedup(items, q):
+    qn = _et_norm(q)
+    qtoks = [t for t in qn.split() if len(t) > 1 and t not in _DX_STOP]
+
+    def qr(it):
+        return _CAT_QUAL_RANK.get((it.get("quality") or "").strip().lower(), 0)
+
+    seen, out = {}, []
+    for it in items:
+        tn = _et_norm(it.get("title"))
+        if not tn:
+            out.append(it)
+            continue
+        key = (tn, it.get("kind") or "movie")
+        if key in seen:
+            j = seen[key]
+            if qr(it) > qr(out[j]):   # nos quedamos la de mejor calidad
+                out[j] = it
+        else:
+            seen[key] = len(out)
+            out.append(it)
+    if not qn:
+        return out
+
+    def score(it):
+        tn = _et_norm(it.get("title") or "")
+        if not tn:
+            return -1
+        s = 0
+        if tn == qn:                       # match EXACTO
+            s = 100
+        elif tn.startswith(qn):            # EMPIEZA por lo buscado
+            s = 60
+        elif (" " + qn + " ") in (" " + tn + " "):   # lo CONTIENE entero
+            s = 40
+        if qtoks:                          # +bonus por palabras de la query
+            tw = set(tn.split())
+            allw = sum(1 for t in qtoks if t in tw)
+            if allw == len(qtoks):
+                s += 20
+            s += allw
+        return s
+
+    return sorted(out, key=score, reverse=True)   # estable -> respeta orden web
+
+
 @app.get("/catsearch")
 def catsearch():
     q = (request.args.get("q") or "").strip()
@@ -4025,6 +4083,7 @@ def catsearch():
         if not dt_items and not et_items and not dx_items:
             return jsonify({"items": []})
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
+        merged = _cat_rank_dedup(merged, q)   # dedup versiones + orden por relevancia
         # Enrich SINCRONO seguro: el breaker TMDB evita que cuelgue (sin TMDB, items
         # sin poster al instante). Sin hilos en 2o plano que se acumulen.
         items = _cat_enrich(merged)
@@ -4827,7 +4886,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk9", "now": int(now)}
+    out = {"build": "dtbk10", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5280,11 +5339,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 .zoom img{max-width:100%;max-height:100%;border-radius:14px;box-shadow:0 16px 50px rgba(0,0,0,.7)}
 /* modal de trailer */
-.trm{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:50;padding:14px}
+.trm{position:fixed;inset:0;background:rgba(0,0,0,.95);display:none;align-items:center;justify-content:center;z-index:50;padding:14px}
 .trm.on{display:flex}
-.trm .frame{width:100%;max-width:880px;aspect-ratio:16/9;border-radius:14px;overflow:hidden;border:1px solid var(--stroke);background:#000;position:relative}
-.trm iframe{width:100%;height:100%;border:0}
-.trm .x{position:absolute;top:-46px;right:0;border:1px solid var(--stroke);background:rgba(14,19,32,.95);color:#fff;font-weight:700;border-radius:999px;padding:8px 16px;cursor:pointer}
+.trm .frame{width:100%;max-width:980px;aspect-ratio:16/9;border-radius:14px;overflow:hidden;background:#000;position:relative}
+.trm #trm-mount{position:absolute;inset:0}
+.trm iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:block}
+.trm .x{position:fixed;top:calc(12px + env(safe-area-inset-top));right:14px;z-index:51;border:1px solid var(--stroke);background:rgba(14,19,32,.96);color:#fff;font-weight:700;border-radius:999px;padding:9px 17px;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.5)}
 /* ===== Ficha de SERIE enriquecida (overlay) ===== */
 .ovhero{position:relative;margin:-14px -14px 14px;min-height:188px;background:#0e1320 center/cover no-repeat}
 .ovhero .grad{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,7,12,.10) 0%,rgba(6,7,12,.55) 55%,var(--bg) 100%)}
