@@ -1,0 +1,221 @@
+<!doctype html><html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>MejorWolf · PREVIEW</title>
+<style>
+:root{--bg:#06070c;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b2740 0,transparent 60%),var(--bg)}
+.wrap{max-width:760px;margin:0 auto;padding:16px 14px 96px}
+/* barra PREVIEW (no existe en la app real) */
+.pvbar{max-width:760px;margin:0 auto 4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:rgba(10,132,255,.10);border:1px solid rgba(10,132,255,.35);border-radius:14px;padding:10px 12px}
+.pvbar b{font-size:12px;letter-spacing:.5px;color:var(--blue2)}
+.pvbar .seg{display:flex;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:10px;overflow:hidden}
+.pvbar .seg button{border:0;background:transparent;color:var(--sub);font-weight:700;font-size:12px;padding:7px 12px;cursor:pointer}
+.pvbar .seg button.on{background:#f4f6fb;color:#0b1020}
+.pvbar .rl{margin-left:auto;border:1px solid var(--stroke);background:var(--card);color:var(--txt);font-weight:700;font-size:12px;padding:7px 12px;border-radius:10px;cursor:pointer}
+.top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.brand{font-weight:800;font-size:19px;display:flex;align-items:center;gap:8px;letter-spacing:.3px}
+.brand .d{width:26px;height:26px;border-radius:9px;background:linear-gradient(145deg,var(--blue2),var(--blue));display:flex;align-items:center;justify-content:center;font-size:15px}
+.code{width:96px;letter-spacing:3px;text-align:center;font-weight:600;background:rgba(255,255,255,.07);border:1px solid var(--stroke);color:var(--txt);border-radius:12px;padding:9px 8px;outline:0}
+.tabs{display:flex;background:rgba(255,255,255,.05);border:1px solid var(--stroke);border-radius:14px;padding:4px;margin-bottom:14px}
+.tab{flex:1;border:0;background:transparent;color:var(--sub);font-weight:600;font-size:15px;padding:11px;border-radius:10px;cursor:pointer}
+.tab.on{color:#0b1020;background:#f4f6fb}
+.chips{display:flex;gap:8px;margin-bottom:14px}
+.chip{border:1px solid var(--stroke);background:var(--card);color:var(--txt);font-weight:600;font-size:14px;padding:10px 18px;border-radius:999px;cursor:pointer}
+.chip.on{background:linear-gradient(145deg,var(--blue2),var(--blue));border-color:transparent;color:#fff}
+.srclegend{display:flex;flex-wrap:wrap;gap:9px 14px;justify-content:center;margin:-2px 0 14px;font-size:11px;color:var(--sub)}
+.srclegend span{display:flex;align-items:center;gap:5px}
+.srclegend i{width:11px;height:11px;border-radius:3px;display:inline-block;flex:none}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+@media(max-width:430px){.grid{grid-template-columns:repeat(2,1fr)}}
+.card{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden;transition:.15s}
+.card:active{transform:scale(.97)}
+.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320 center/cover no-repeat;cursor:pointer}
+.card .noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:8px;text-align:center;font-size:12px;color:var(--sub)}
+.card .tl{position:absolute;top:6px;left:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-start;z-index:1}
+.card .q{background:rgba(10,132,255,.85);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700}
+.card .fav{position:absolute;top:5px;right:5px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:19px;color:#fff;background:rgba(0,0,0,.4);border-radius:50%;cursor:pointer}
+.card .m{padding:8px 9px;cursor:pointer}
+.card .t{font-size:12.5px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .y{font-size:11px;color:var(--sub);margin-top:2px}
+.card .kindtag{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.6);border:1px solid var(--stroke);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700;color:#dfe6f2}
+.card .srctag{position:absolute;bottom:6px;right:6px;border-radius:6px;padding:2px 7px;font-size:9px;font-weight:800;letter-spacing:.4px;box-shadow:0 2px 6px rgba(0,0,0,.45)}
+.srctag.s-dt{background:#4a9eff;color:#04122b}
+.card.in{animation:fadein .45s ease both}
+@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* ===== ESQUELETOS (pulido de carga) ===== */
+.skcard{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden}
+.skph{aspect-ratio:2/3;background:#0e1320;position:relative;overflow:hidden}
+.skln{height:11px;margin:9px 9px 0;border-radius:6px;background:#0e1320;position:relative;overflow:hidden}
+.skln.s2{width:60%;height:9px;margin-bottom:9px}
+.shim::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.09),transparent);animation:sh 1.15s infinite}
+@keyframes sh{100%{transform:translateX(100%)}}
+.msg{color:var(--sub);text-align:center;padding:34px 10px;font-size:14px}
+/* ===== SHEET ===== */
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:30}
+.sheet.on{display:flex}
+.sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;animation:up .22s ease;max-height:93vh;overflow-y:auto;overflow-x:hidden}
+@keyframes up{from{transform:translateY(30px)}to{transform:none}}
+.sheet h3{margin:0 0 4px;font-size:17px}
+.btn{display:block;width:100%;border:0;border-radius:14px;padding:16px;font-size:16px;font-weight:700;margin-top:10px;cursor:pointer}
+.btn.play{color:#06140a;background:linear-gradient(145deg,#3dd46a,#27c257)}
+.btn.fav{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
+.btn.share{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
+.btn.trailer{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
+.btn.cancel{background:transparent;color:var(--sub)}
+.seedtag{font-size:12.5px;font-weight:700;padding:4px 12px;border-radius:999px;border:1px solid var(--stroke);display:inline-block}
+.seedtag.s-ok{background:rgba(48,209,88,.16);color:#62e08c;border-color:rgba(48,209,88,.4)}
+/* --- ficha ACTUAL (replica) --- */
+.old-pad{padding:18px 18px 22px;text-align:center}
+.old-poster{width:min(60vw,220px);aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 12px 34px rgba(0,0,0,.6)}
+.old-sy{color:var(--sub);font-size:13px;margin:6px 0 14px}
+/* --- ficha NUEVA (enriquecida) --- */
+.sh-hero{position:relative;height:200px;background:#0e1320 center/cover no-repeat}
+.sh-hero .grad{position:absolute;inset:0;background:linear-gradient(180deg,rgba(14,19,32,.15) 0%,rgba(14,19,32,.55) 55%,#0e1320 100%)}
+.sh-hero .row{position:absolute;left:16px;right:16px;bottom:12px;display:flex;gap:14px;align-items:flex-end}
+.sh-hero .pst{width:84px;aspect-ratio:2/3;border-radius:10px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 8px 22px rgba(0,0,0,.6);flex:none}
+.sh-hero .ttl{font-size:19px;font-weight:800;line-height:1.2;text-shadow:0 2px 10px rgba(0,0,0,.6)}
+.sh-hero .sub{font-size:13px;color:#cfd6e4;margin-top:5px;font-weight:600}
+.sh-body{padding:14px 18px calc(20px + env(safe-area-inset-bottom))}
+.sh-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.gtag{font-size:12px;font-weight:600;color:#cfd6e4;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:999px;padding:5px 12px}
+.runt{font-size:12.5px;color:var(--sub);font-weight:600}
+.sh-ov{font-size:14px;line-height:1.5;color:#d4dae6;margin:2px 0 8px}
+.sh-ov.clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sh-more{color:var(--blue2);font-size:13px;font-weight:600;cursor:pointer;display:inline-block;margin-bottom:6px}
+.btnrow{display:flex;gap:10px;margin-top:10px}
+.btnrow .btn{margin-top:0}
+/* tráiler modal */
+.tr{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:50;padding:14px}
+.tr.on{display:flex}
+.tr .frame{width:100%;max-width:880px;aspect-ratio:16/9;border-radius:14px;overflow:hidden;border:1px solid var(--stroke);background:#000;position:relative}
+.tr iframe{width:100%;height:100%;border:0}
+.tr .x{position:absolute;top:-44px;right:0;border:1px solid var(--stroke);background:rgba(14,19,32,.95);color:#fff;font-weight:700;border-radius:999px;padding:8px 16px;cursor:pointer}
+.toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.toast.on{opacity:1;transform:translateX(-50%)}
+</style></head><body>
+<div class="pvbar">
+ <b>PREVIEW</b>
+ <span style="font-size:12px;color:var(--sub)">Ficha:</span>
+ <div class="seg" id="fichaSeg">
+  <button class="on" data-m="new" onclick="setFicha('new')">Nueva</button>
+  <button data-m="old" onclick="setFicha('old')">Actual</button>
+ </div>
+ <button class="rl" onclick="reloadSkel()">↻ Recargar (ver esqueletos)</button>
+</div>
+<div class="wrap">
+ <div class="top">
+  <div class="brand"><span class="d">🐺</span> MejorWolf</div>
+  <input class="code" inputmode="numeric" maxlength="6" placeholder="código" value="">
+ </div>
+ <div class="tabs">
+  <button class="tab on">Inicio</button>
+  <button class="tab">Buscar</button>
+  <button class="tab">Mi lista</button>
+ </div>
+ <div class="srclegend">
+  <span><i style="background:#4a9eff"></i>DonTorrent</span>
+  <span><i style="background:#ff9f6e"></i>EliteTorrent</span>
+  <span><i style="background:#34d36a"></i>DivxTotal</span>
+  <span><i style="background:#c77dff"></i>WolfMax</span>
+ </div>
+ <div class="chips">
+  <button class="chip on">Estrenos</button>
+  <button class="chip">Cine</button>
+  <button class="chip">Series</button>
+ </div>
+ <div id="grid" class="msg"></div>
+</div>
+
+<div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
+ <div class="box" id="sheetBox"></div>
+</div>
+
+<div class="tr" id="tr" onclick="if(event.target===this)closeTr()">
+ <div class="frame"><button class="x" onclick="closeTr()">✕ Cerrar</button><div id="trMount"></div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+var DATA = [{"kind": "movie", "title": "Obsesión", "year": "2026", "rating": 7.9, "poster": "https://image.tmdb.org/t/p/w342/ohi9xvbBUymM4SuIOSlt1xbLRQQ.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/5lTZyuBTNOfawsfPT8Q0cIg6qAF.jpg", "overview": "El anhelo romántico desesperado de un chico por su amor platónico de toda la vida desencadena un siniestro hechizo: Niki se vuelve irracionalmente obsesiva hasta convertirse en la sombra de Bear. Una fantasía aparentemente inofensiva que se convertirá en una perturbadora pesadilla.", "genres": ["Terror", "Suspense"], "runtime": 108, "trailer": "5MBu6Xhuj38", "cast": ["Michael Johnston", "Inde Navarrette", "Cooper Tomlinson", "Megan Lawless"], "quality": "4K", "source": "dt", "content_id": "1339713", "tabla": "peliculas"}, {"kind": "movie", "title": "Toy Story 5", "year": "2026", "rating": 7.4, "poster": "https://image.tmdb.org/t/p/w342/1yF3AztF3rQ8MZ8En8974AWo5zZ.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/qjTqY5coNiz6sVtPng40IzltsoN.jpg", "overview": "Buzz, Woody, Jessie y el resto de la pandilla tienen un trabajo exponencialmente más difícil cuando se enfrentan a esta nueva amenaza para la hora de jugar: la tecnología.", "genres": ["Animación", "Familia", "Comedia"], "runtime": 102, "trailer": "9_reo5Jl1OM", "cast": ["Tom Hanks", "Tim Allen", "Joan Cusack", "Greta Lee"], "quality": "1080", "source": "dt", "content_id": "1084244", "tabla": "peliculas"}, {"kind": "movie", "title": "The Mandalorian and Grogu", "year": "2026", "rating": 6.7, "poster": "https://image.tmdb.org/t/p/w342/sWitU9IjgFwf6y1OrI0zUaL3GNa.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/4lj7MZtcIDI2FmZXGkFWh0sNCsq.jpg", "overview": "Continuación de la serie \"The Mandalorian\" en forma de película. El Imperio ha caído y los señores de la guerra imperiales siguen dispersos por toda la galaxia. Mientras la incipiente Nueva República trabaja para proteger todo por lo que luchó la Rebelión, ha reclutado la ayuda del legendario cazarrecompensas mandaloriano Din Djarin y su joven aprendiz Grogu.", "genres": ["Acción", "Aventura", "Ciencia ficción"], "runtime": 132, "trailer": "xPbGedFakzw", "cast": ["Pedro Pascal", "Jeremy Allen White", "Sigourney Weaver", "Brendan Wayne"], "quality": "1080", "source": "dt", "content_id": "1228710", "tabla": "peliculas"}, {"kind": "movie", "title": "El día de la revelación", "year": "2026", "rating": 6.7, "poster": "https://image.tmdb.org/t/p/w342/uGww4UrU3316Mld4p30dgdM09Du.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/s6ly8laenkHWlIBRkLSfIuEMLC6.jpg", "overview": "Si descubrieras que no estamos solos, si alguien te abriera los ojos y te lo demostrase, ¿te asustarías? Este verano, la verdad será revelada a siete mil millones de personas. Llega... el día de la revelación.", "genres": ["Ciencia ficción", "Suspense"], "runtime": 145, "trailer": "-XXZgYygh40", "cast": ["Emily Blunt", "Josh O'Connor", "Colin Firth", "Colman Domingo"], "quality": "720", "source": "dt", "content_id": "1275779", "tabla": "peliculas"}, {"kind": "movie", "title": "The Furious", "year": "2026", "rating": 7.7, "poster": "https://image.tmdb.org/t/p/w342/ryOVzYoGhiOn4QtkwSa8pUTivPO.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/dxyNrJ4uG9os6miCG7s754nvKPs.jpg", "overview": "Rainy, hija del experto en artes marciales Wang Wei, es secuestrada por una red de tráfico de menores. En un frenético intento de recuperarla, el padre se lanza a la guerra, enfrentándose a numerosos obstáculos mientras lucha contra criminales y policías corruptos. En el camino conoce a Navin, un periodista en busca de su esposa desaparecida. Ambos despliegan sus habilidades de combate mientras aprenden las virtudes de la confianza mutua.", "genres": ["Acción", "Crimen"], "runtime": 113, "trailer": "", "cast": ["Xie Miao", "Joe Taslim", "杨恩又", "Yayan Ruhian"], "quality": "4K", "source": "dt", "content_id": "1280738", "tabla": "peliculas"}, {"kind": "movie", "title": "Supergirl", "year": "2026", "rating": 6.0, "poster": "https://image.tmdb.org/t/p/w342/j1FSus4RoDJpY8zzfwjaqBktlUk.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/6nlqYWDUpNem3v2bDCxQNSg41aY.jpg", "overview": "Tomando como referencia la reciente miniserie escrita por Tom King, esta película promete una visión diferente de lo que la mayoría piensa cuando le viene a la mente la prima de Superman. \"Veremos la diferencia entre Superman, que fue enviado a la Tierra y criado por unos padres cariñosos desde que era un bebé, y Supergirl, criada en una roca, una astilla de Krypton, y que vio morir y ser asesinados de formas terribles a todos los que la rodeaban durante los primeros 14 años de su vida para luego venir a la Tierra. Ella es mucho más dura y no es la Supergirl a la que estamos acostumbrados\".", "genres": ["Acción", "Aventura", "Ciencia ficción"], "runtime": 108, "trailer": "rjT2Naumaoo", "cast": ["Milly Alcock", "Eve Ridley", "Matthias Schoenaerts", "Jason Momoa"], "quality": "1080", "source": "dt", "content_id": "1081003", "tabla": "peliculas"}, {"kind": "movie", "title": "He-Man y los masters del universo", "year": "2026", "rating": 7.2, "poster": "https://image.tmdb.org/t/p/w342/vo76hj9nwlX3qZxUkqUOpAbBYUs.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/piV2OnzTZCyGBP9JCjlHIgKGlfo.jpg", "overview": "En las regiones más lejanas del espacio, el reino de Eternia está amenazado por el villano Skeletor y sus traviesos ejércitos de oscuridad. Para salvar el reino de su padre y proteger las vidas de sus seres queridos, el joven príncipe Adam tiene que recuperar una espada mítica y convertirse en el legendario guerrero conocido como \"He-Man\".", "genres": ["Acción", "Fantasía", "Ciencia ficción"], "runtime": 140, "trailer": "K2p_Xz8i2Uo", "cast": ["Nicholas Galitzine", "Camila Mendes", "Idris Elba", "Jared Leto"], "quality": "720", "source": "dt", "content_id": "454639", "tabla": "peliculas"}, {"kind": "movie", "title": "Backrooms", "year": "2026", "rating": 6.9, "poster": "https://image.tmdb.org/t/p/w342/u3CfgxtnZRxbIm8JuVTzt3DXQhg.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/oUozq2XHWifwAVOoS1qHU0qfXqM.jpg", "overview": "Una puerta extraña aparece en el sótano de una sala de exposición de muebles.", "genres": ["Terror", "Misterio", "Ciencia ficción"], "runtime": 105, "trailer": "9EYRSmbsqzY", "cast": ["Chiwetel Ejiofor", "Renate Reinsve", "Mark Duplass", "Finn Bennett"], "quality": "1080", "source": "dt", "content_id": "1083381", "tabla": "peliculas"}, {"kind": "serie", "title": "FROM", "year": "2022", "rating": 8.5, "poster": "https://image.tmdb.org/t/p/w342/pRtJagIxpfODzzb0T0NAvZSzErC.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/m7eiSGHFzr584zFmetGqkqaU6BN.jpg", "overview": "Desvela el misterio de un pueblo de pesadilla en el centro de Norteamérica que atrapa a todos los que entran. Mientras los residentes involuntarios luchan por mantener una sensación de normalidad y buscan una salida, también deben sobrevivir a las amenazas del bosque circundante, incluidas las aterradoras criaturas que salen cuando se pone el sol.", "genres": ["Misterio", "Drama", "Sci-Fi & Fantasy"], "runtime": 0, "seasons": 4, "trailer": "", "quality": "4K", "source": "dt", "content_id": "124364", "tabla": "series"}, {"kind": "serie", "title": "राख", "year": "2026", "rating": 9.0, "poster": "https://image.tmdb.org/t/p/w342/5MbNy94ia4ZLf8OGtSfSjjlxxWN.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/hAuYDYBgLJ1qIPoAOM7yOD56uCp.jpg", "overview": "", "genres": ["Crimen", "Drama"], "runtime": 0, "seasons": 1, "trailer": "", "quality": "720", "source": "dt", "content_id": "284631", "tabla": "series"}, {"kind": "serie", "title": "La casa del dragón", "year": "2022", "rating": 8.3, "poster": "https://image.tmdb.org/t/p/w342/8MaxftF69sEAAD5673vTjIl8yT3.jpg", "backdrop": "https://image.tmdb.org/t/p/w780/577eXC8wFQT0eUrJcgznSiFPRmk.jpg", "overview": "Basada en el libro 'Fuego y Sangre' de George R.R. Martin. La serie se centra en la casa Targaryen, trescientos años antes de los eventos vistos en 'Juego de Tronos'.", "genres": ["Sci-Fi & Fantasy", "Drama", "Action & Adventure"], "runtime": 0, "seasons": 3, "trailer": "LHdivhLUU_Y", "quality": "1080", "source": "dt", "content_id": "94997", "tabla": "series"}];
+var FICHA = 'new';
+var favset = {};
+function $(id){return document.getElementById(id)}
+function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2200)}
+function setFicha(m){FICHA=m;document.querySelectorAll('#fichaSeg button').forEach(function(b){b.classList.toggle('on',b.dataset.m===m)})}
+function kindLabel(k){return k==='serie'?'Serie':'Película'}
+function star(x){return (x.year||'')+(x.rating?(' · ★'+x.rating):'')}
+
+function cardHTML(x,i){
+ var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
+ var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
+ var q=x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'';
+ var fav=favset[i]?'♥':'♡';
+ return '<div class="card in"><div class="ph"'+bg+' onclick="openCard('+i+')">'+noimg+
+   '<div class="tl">'+q+'</div>'+
+   '<div class="kindtag">'+kindLabel(x.kind)+'</div><div class="srctag s-dt">DT</div>'+
+   '<div class="fav" onclick="favTap('+i+',event)">'+fav+'</div></div>'+
+   '<div class="m" onclick="openCard('+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';
+}
+function renderGrid(){var h='<div class="grid">';for(var i=0;i<DATA.length;i++)h+=cardHTML(DATA[i],i);h+='</div>';var g=$('grid');g.className='';g.innerHTML=h}
+function favTap(i,ev){ev.stopPropagation();favset[i]=!favset[i];ev.target.textContent=favset[i]?'♥':'♡'}
+
+/* ---- ESQUELETOS ---- */
+function skelHTML(){var c='<div class="skcard"><div class="skph shim"></div><div class="skln shim"></div><div class="skln s2 shim"></div></div>';var h='<div class="grid">';for(var i=0;i<9;i++)h+=c;h+='</div>';return h}
+function reloadSkel(){var g=$('grid');g.className='';g.innerHTML=skelHTML();setTimeout(renderGrid,1300)}
+
+/* ---- FICHA ---- */
+function openCard(i){FICHA==='old'?openOld(DATA[i],i):openNew(DATA[i],i)}
+function closeSheet(){$('sheet').classList.remove('on')}
+
+function openOld(x,i){
+ var SL={dt:'DonTorrent'};var sy=star(x);if(x.quality)sy+=' · '+x.quality;sy+=' · DonTorrent';
+ var pst=x.poster?(' style="background-image:url('+x.poster+')"'):'';
+ var fav=favset[i]?'♥ En mi lista':'♡ Añadir a mi lista';
+ var h='<div class="old-pad">'+
+   '<div class="old-poster"'+pst+'></div>'+
+   '<h3>'+esc(x.title)+'</h3><div class="old-sy">'+sy+'</div>'+
+   '<div class="seedtag s-ok">🌱 24 semillas</div>'+
+   '<button class="btn play" onclick="toast(\'(demo) ▶ a la tele\')">▶ Reproducir en la tele</button>'+
+   '<button class="btn fav" onclick="toast(\'(demo) lista\')">'+fav+'</button>'+
+   '<button class="btn share" onclick="toast(\'(demo) compartir\')">📤 Compartir enlace</button>'+
+   '<button class="btn cancel" onclick="closeSheet()">Cancelar</button></div>';
+ $('sheetBox').innerHTML=h;$('sheet').classList.add('on');
+}
+function openNew(x,i){
+ var hero=x.backdrop?(' style="background-image:url('+x.backdrop+')"'):(x.poster?(' style="background-image:url('+x.poster+')"'):'');
+ var pst=x.poster?(' style="background-image:url('+x.poster+')"'):'';
+ var sub=(x.year||'')+(x.rating?('  ·  ★'+x.rating):'')+(x.quality?('  ·  '+x.quality):'')+'  ·  DonTorrent';
+ var genres=(x.genres||[]).map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
+ var rt=x.runtime?('<span class="runt">'+(x.kind==='serie'?(x.seasons?x.seasons+' temporadas':''):(Math.floor(x.runtime/60)+'h '+(x.runtime%60)+'m'))+'</span>'):'';
+ var ov=x.overview?('<div class="sh-ov clamp" id="ovtxt">'+esc(x.overview)+'</div><span class="sh-more" onclick="document.getElementById(\'ovtxt\').classList.toggle(\'clamp\');this.textContent=document.getElementById(\'ovtxt\').classList.contains(\'clamp\')?\'Leer más\':\'Leer menos\'">Leer más</span>'):'';
+ var fav=favset[i]?'♥ En mi lista':'♡ Añadir a mi lista';
+ var playLabel=x.kind==='serie'?'▶ Ver episodios':'▶ Reproducir en la tele';
+ var trailerBtn=x.trailer?('<button class="btn trailer" style="flex:1;margin-top:0" onclick="openTr(\''+x.trailer+'\')">🎬 Tráiler</button>'):'';
+ var h='<div class="sh-hero"'+hero+'><div class="grad"></div>'+
+     '<div class="row"><div class="pst"'+pst+'></div>'+
+     '<div><div class="ttl">'+esc(x.title)+'</div><div class="sub">'+sub+'</div></div></div></div>'+
+   '<div class="sh-body">'+
+     '<div class="sh-meta"><span class="seedtag s-ok">🌱 24 semillas</span>'+rt+'</div>'+
+     '<div class="sh-meta">'+genres+'</div>'+
+     ov+
+     '<button class="btn play" onclick="toast(\'(demo) ▶ a la tele\')">'+playLabel+'</button>'+
+     '<div class="btnrow"><button class="btn fav" style="flex:1;margin-top:0" onclick="favset['+i+']=!favset['+i+'];toast(\'(demo) lista\')">'+fav+'</button>'+trailerBtn+'</div>'+
+     '<button class="btn share" onclick="toast(\'(demo) compartir\')">📤 Compartir enlace</button>'+
+     '<button class="btn cancel" onclick="closeSheet()">Cancelar</button>'+
+   '</div>';
+ $('sheetBox').innerHTML=h;$('sheet').classList.add('on');$('sheet').querySelector('.box').scrollTop=0;
+}
+/* tráiler */
+function openTr(key){$('trMount').innerHTML='<iframe src="https://www.youtube.com/embed/'+key+'?autoplay=1&rel=0" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('tr').classList.add('on')}
+function closeTr(){$('tr').classList.remove('on');$('trMount').innerHTML=''}
+
+/* arranque: muestra esqueletos y rellena (demostración del pulido de carga) */
+reloadSkel();
+/* verificación: ?open=N abre la ficha N directamente (sin esqueleto) */
+(function(){var m=new URLSearchParams(location.search);var o=m.get('open');if(o!==null){var i=parseInt(o,10)||0;$('grid').className='';renderGrid();setTimeout(function(){openCard(i)},80)}})();
+</script>
+</body></html>

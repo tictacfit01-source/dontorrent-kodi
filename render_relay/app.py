@@ -249,7 +249,7 @@ _MANIFEST_JSON = """{
  ]
 }"""
 
-_SW_JS = """var C='mw-shell-v16';
+_SW_JS = """var C='mw-shell-v17';
 self.addEventListener('install',function(e){e.waitUntil(caches.open(C).then(function(c){return c.add('/').catch(function(){})}));self.skipWaiting()});
 self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.map(function(k){if(k!==C)return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});
 // Navegacion: red con timeout de 4s -> si el relay va lento/caido, sirve la
@@ -262,6 +262,7 @@ function navResp(req){return new Promise(function(resolve){var done=false;
 self.addEventListener('fetch',function(e){
  var req=e.request;if(req.method!=='GET')return;
  var url=new URL(req.url);
+ if(url.pathname.indexOf('/preview')===0)return;
  if(req.mode==='navigate'){e.respondWith(navResp(req));return;}
  if(url.pathname==='/manifest.webmanifest'||url.pathname==='/icon.svg'||url.pathname==='/icon-512.png'){
   e.respondWith(caches.match(req).then(function(r){return r||fetch(req).then(function(rr){if(rr&&rr.ok){var cp=rr.clone();caches.open(C).then(function(c){c.put(req,cp)})}return rr})}));
@@ -305,10 +306,25 @@ def root():
     return _serve_page(_CAT_PAGE)
 
 
+@app.get("/preview")
+def preview_page():
+    # Preview AISLADO de mejoras de UI (ficha enriquecida + esqueletos de carga).
+    # NO toca catalogo/busqueda/mando: es una pagina suelta para validar en el
+    # movil. El service worker la EXCLUYE (network-only) -> jamas ensucia la
+    # cache del shell. Se puede borrar (ruta + preview.html) sin tocar nada mas.
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preview.html")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return _serve_page(f.read())
+    except Exception:
+        return Response("preview no disponible", mimetype="text/plain",
+                        status=404)
+
+
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk3",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk4",
                     mimetype="text/plain")
 
 
@@ -4704,7 +4720,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk3", "now": int(now)}
+    out = {"build": "dtbk4", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
