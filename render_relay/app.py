@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk10",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk11",
                     mimetype="text/plain")
 
 
@@ -3962,6 +3962,42 @@ def _cat_rank_dedup(items, q):
     return sorted(out, key=score, reverse=True)   # estable -> respeta orden web
 
 
+def _tmdb_alt_titles(q):
+    """Titulos ALTERNATIVOS (es / original) de TMDB para una query que no encontro
+    NADA en la web -> reintentar con el nombre que usa la web (idiomas distintos:
+    'interestelar'->'Interstellar', 'jungla de cristal'->'Die Hard'). Maximo 2;
+    [] si TMDB caido o sin match. Solo se llama en busquedas VACIAS -> sin coste
+    en las que si encuentran."""
+    if _tmdb_is_down() or not q:
+        return []
+    qn = _et_norm(q)
+    alts, seen = [], {qn}
+    try:
+        for ep in ("movie", "tv"):
+            r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
+                             params={"api_key": _CAT_TMDB_KEY,
+                                     "language": "es-ES", "query": q,
+                                     "include_adult": "false"},
+                             timeout=(3, 4))
+            if r.status_code != 200:
+                _tmdb_mark(False)
+                continue
+            res = (r.json() or {}).get("results") or []
+            if not res:
+                continue
+            top = res[0]
+            for t in (top.get("title"), top.get("name"),
+                      top.get("original_title"), top.get("original_name")):
+                tn = _et_norm(t or "")
+                if tn and tn not in seen:
+                    seen.add(tn)
+                    alts.append(t)
+        _tmdb_mark(True)
+    except Exception:
+        _tmdb_mark(False)
+    return alts[:2]
+
+
 @app.get("/catsearch")
 def catsearch():
     q = (request.args.get("q") or "").strip()
@@ -4066,22 +4102,55 @@ def catsearch():
         # (residencial ~5-8s) traigan resultados, con TOPE GLOBAL de 16s < 20s del
         # front -> la busqueda NUNCA se "eterniza". Tras el wait damos un respiro
         # corto a ET/DX para recoger lo que ya hayan traido (sin esperar su lentitud).
-        _ready.wait(16.0 if box else 9.0)       # con box esperamos su ida-y-vuelta;
-        # sin box (Render directo en frio no llega) no alargamos -> DX salvavidas.
-        _ths[2].join(0.5)                       # ET (off) -> instantaneo
-        _ths[3].join(2.5 if (_r["dt"] or _r["box"]) else 6.0)   # DX salvavidas
+        # PRESUPUESTO TOTAL DURO: la busqueda responde SIEMPRE en < ~13s (bajo los
+        # 20s del front) -> NUNCA se cuelga ni el front se rinde. Antes podian
+        # SUMARSE espera-box (16s) + gracia-DX (6s) + failover ScraperAPI (18s) =
+        # hasta 40s (el usuario veia "Buscando..." eternamente). Ahora cada etapa
+        # consume SOLO lo que QUEDA del presupuesto.
+        _dl = now + 13.0
+        _rem = lambda: max(0.0, _dl - _t.time())
+        _ready.wait(_rem() if box else min(9.0, _rem()))
+        _ths[2].join(min(0.5, _rem()))          # ET (off) -> instantaneo
+        _ths[3].join(min(2.5 if (_r["dt"] or _r["box"]) else 6.0, _rem()))  # DX
         dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
         et_items = _r["et"]
         dx_items = _r["dx"]
         # FAILOVER anti-baneo via ScraperAPI (IPs residenciales rotativas). Solo si el
-        # directo NO trajo NADA (senal de que DonTorrent/DivxTotal banean la IP de
-        # Render) -> en uso normal NO gasta creditos. Asi la BUSQUEDA funciona desde
-        # fuera de casa SIN el box ([[directrices-solidez-no-pc]]). De momento via
-        # DivxTotal (sin Anubis); DonTorrent-via-proxy es el siguiente paso.
-        if (not dt_items and not dx_items) and _sapi_credits_ok():
-            dx_items = _bounded(lambda: _dx_search_items(q, proxy=True), 18.0, []) or []
+        # directo NO trajo NADA Y queda presupuesto -> nunca alarga mas alla del tope.
+        # En uso normal NO gasta creditos. Permite buscar desde fuera SIN el box.
+        if (not dt_items and not dx_items) and _sapi_credits_ok() and _rem() > 2.5:
+            dx_items = _bounded(lambda: _dx_search_items(q, proxy=True),
+                                min(10.0, _rem()), []) or []
         if not dt_items and not et_items and not dx_items:
-            return jsonify({"items": []})
+            # FALLBACK DE IDIOMA: la web puede tener el titulo en OTRO idioma
+            # ('interestelar'->'Interstellar'). Solo si la busqueda salio VACIA
+            # (no ralentiza las que SI encuentran): resolvemos el titulo via TMDB y
+            # reintentamos por la MISMA via. Con su propio MINI-presupuesto (~6s)
+            # -> el total (principal ~13s + fallback ~6s) sigue < 20s del front.
+            _fdl = _t.time() + 6.0
+            for _alt in _tmdb_alt_titles(q):
+                if _fdl - _t.time() <= 1.5:
+                    break
+                try:
+                    r2 = _cat_parse_items(_cat_dt_html(_alt)) or []
+                except Exception:
+                    r2 = []
+                _fr = _fdl - _t.time()
+                if not r2 and box and _fr > 2.0:
+                    try:
+                        j2 = "da" + os.urandom(5).hex()
+                        _kb_enqueue(box, {"c": "etjob", "job": j2,
+                                          "op": "dthtml", "q": _alt})
+                        h2 = (_catjob_wait(j2, min(8.0, _fr)) or {}).get("html") or ""
+                        if h2:
+                            r2 = _cat_parse_items(h2) or []
+                    except Exception:
+                        r2 = []
+                if r2:
+                    dt_items = r2
+                    break
+            if not dt_items:
+                return jsonify({"items": []})
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
         merged = _cat_rank_dedup(merged, q)   # dedup versiones + orden por relevancia
         # Enrich SINCRONO seguro: el breaker TMDB evita que cuelgue (sin TMDB, items
@@ -4886,7 +4955,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk10", "now": int(now)}
+    out = {"build": "dtbk11", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
