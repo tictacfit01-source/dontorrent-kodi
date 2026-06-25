@@ -324,7 +324,7 @@ def preview_page():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk4",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk5",
                     mimetype="text/plain")
 
 
@@ -3206,6 +3206,21 @@ def kb_qr():
 _CAT_TMDB_KEY = "f090bb54758cabf231fb605d3e3e0468"   # misma key publica del addon
 _CAT_TMDB_CACHE = {}
 
+# Mapa de generos TMDB (movie + tv) -> nombre es-ES. La busqueda TMDB devuelve
+# `genre_ids` (no nombres); los traducimos aqui SIN llamada extra (lista fija y
+# estable de TMDB). Ids compartidos entre movie/tv (16,35,80,99,18,10751,9648,37)
+# significan lo mismo; los tv-only (107xx) se añaden aparte.
+_TMDB_GENRES = {
+    28: "Acción", 12: "Aventura", 16: "Animación", 35: "Comedia",
+    80: "Crimen", 99: "Documental", 18: "Drama", 10751: "Familia",
+    14: "Fantasía", 36: "Historia", 27: "Terror", 10402: "Música",
+    9648: "Misterio", 10749: "Romance", 878: "Ciencia ficción",
+    10770: "Película de TV", 53: "Suspense", 10752: "Bélica", 37: "Western",
+    10759: "Acción y aventura", 10762: "Infantil", 10763: "Noticias",
+    10764: "Reality", 10765: "Ciencia ficción", 10766: "Telenovela",
+    10767: "Entrevistas", 10768: "Guerra y política",
+}
+
 
 def _cat_clean_title(title):
     t = (title or "").split(" - ")[0]   # "Show - 1ª Temporada [720p]" -> "Show"
@@ -3383,9 +3398,18 @@ def _cat_tmdb(title, kind="movie"):
                 top = _tmdb_pick(res, clean, year, ep)
                 if _tmdb_accept(clean, top):
                     pp = top.get("poster_path")
+                    bd = top.get("backdrop_path")
                     d = top.get("release_date") or top.get("first_air_date") or ""
+                    gids = top.get("genre_ids") or []
+                    # overview/backdrop/generos/id vienen GRATIS en esta MISMA
+                    # respuesta de busqueda -> 0 llamadas extra, 0 riesgo de baneo.
                     out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
-                           "year": d[:4] or year, "rating": top.get("vote_average")}
+                           "year": d[:4] or year, "rating": top.get("vote_average"),
+                           "overview": (top.get("overview") or "").strip(),
+                           "backdrop": (f"https://image.tmdb.org/t/p/w780{bd}" if bd else None),
+                           "genres": [_TMDB_GENRES[g] for g in gids
+                                      if g in _TMDB_GENRES][:3],
+                           "tmdb_id": top.get("id")}
                     break   # match de confianza -> no probar más queries
                 # match NO de confianza -> probar la siguiente query; si no quedan,
                 # out se queda SIN poster TMDB (el enrich usa la carátula propia de
@@ -3687,6 +3711,16 @@ def _cat_enrich(items, limit=120):
         it["poster"] = poster or it.get("thumb")   # TMDB/semilla > DT propia
         it["year"] = year or it.get("year")
         it["rating"] = rating
+        # Ficha enriquecida (todo GRATIS de la misma respuesta TMDB). Si TMDB
+        # estaba caido, quedan vacios -> la ficha degrada con elegancia.
+        if meta.get("overview"):
+            it["overview"] = meta["overview"]
+        if meta.get("backdrop"):
+            it["backdrop"] = meta["backdrop"]
+        if meta.get("genres"):
+            it["genres"] = meta["genres"]
+        if meta.get("tmdb_id"):
+            it["tmdb_id"] = meta["tmdb_id"]
         return it
     try:
         with _TPE(max_workers=8) as ex:
@@ -4615,6 +4649,60 @@ def catfeed():
     return jsonify({"ok": True, "items": len(raw), "bg": True})
 
 
+_CAT_META_CACHE = {}
+
+
+@app.get("/catmeta")
+def catmeta():
+    """Detalle PEREZOSO para la ficha enriquecida: duracion + trailer (YouTube).
+    Una sola llamada TMDB POR FICHA ABIERTA (no por cuadricula), cacheada en
+    memoria y protegida por el MISMO breaker del enrich -> si TMDB banea la IP,
+    devuelve {} al instante y la ficha simplemente no muestra trailer/duracion
+    (la sinopsis/generos/backdrop ya vienen gratis con el item). Cero baneo."""
+    tid = (request.args.get("id") or "").strip()
+    kind = (request.args.get("kind") or "movie").strip().lower()
+    if not tid.isdigit():
+        return jsonify({})
+    ep = "tv" if kind in ("tv", "serie") else "movie"
+    ck = (ep, tid)
+    if ck in _CAT_META_CACHE:
+        return jsonify(_CAT_META_CACHE[ck])
+    out = {}
+    if _tmdb_is_down():
+        return jsonify(out)
+    try:
+        r = requests.get(
+            f"https://api.themoviedb.org/3/{ep}/{tid}",
+            params={"api_key": _CAT_TMDB_KEY, "language": "es-ES",
+                    "append_to_response": "videos"},
+            timeout=(3, 5))
+        if r.status_code != 200:
+            _tmdb_mark(False)
+            return jsonify(out)
+        d = r.json() or {}
+        rt = d.get("runtime") or 0
+        if not rt and d.get("episode_run_time"):
+            rt = (d.get("episode_run_time") or [0])[0]
+        vids = (d.get("videos") or {}).get("results") or []
+        trailer = ""
+        for v in vids:                       # trailer oficial primero
+            if v.get("site") == "YouTube" and v.get("type") == "Trailer":
+                trailer = v.get("key")
+                break
+        if not trailer:                       # si no, cualquier video de YouTube
+            for v in vids:
+                if v.get("site") == "YouTube":
+                    trailer = v.get("key")
+                    break
+        out = {"runtime": rt, "trailer": trailer,
+               "seasons": d.get("number_of_seasons") or 0}
+        _tmdb_mark(True)
+        _CAT_META_CACHE[ck] = out
+    except Exception:
+        _tmdb_mark(False)
+    return jsonify(out)
+
+
 @app.get("/catbrowse")
 def catbrowse():
     kind = (request.args.get("kind") or "estrenos").strip().lower()
@@ -4720,7 +4808,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk4", "now": int(now)}
+    out = {"build": "dtbk5", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -4989,7 +5077,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .msg{color:var(--sub);text-align:center;padding:34px 10px;font-size:14px}
 .sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:30}
 .sheet.on{display:flex}
-.sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));animation:up .2s ease;max-height:92vh;overflow-y:auto}
+.sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:0;animation:up .2s ease;max-height:92vh;overflow-y:auto;overflow-x:hidden}
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
 .sh-poster{width:min(68vw,260px);aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 12px 34px rgba(0,0,0,.6)}
 .sh-poster.hidden{display:none}
@@ -5138,6 +5226,45 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .morebar{text-align:center;color:var(--sub);font-size:13px;padding:18px 10px}
 .appfoot{text-align:center;color:var(--sub);font-size:12px;opacity:.6;padding:26px 10px 10px}
 .appfoot a{color:var(--blue2);text-decoration:none}
+/* ===== Esqueletos de carga (Inicio) ===== */
+.skgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+@media(max-width:430px){.skgrid{grid-template-columns:repeat(2,1fr)}}
+.skcard{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden}
+.skph{aspect-ratio:2/3;background:#0e1320;position:relative;overflow:hidden}
+.skln{height:11px;margin:9px 9px 0;border-radius:6px;background:#0e1320;position:relative;overflow:hidden}
+.skln.s2{width:60%;height:9px;margin-bottom:9px}
+.shim::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);animation:shm 1.15s infinite}
+@keyframes shm{100%{transform:translateX(100%)}}
+/* ===== Ficha enriquecida (hero + sinopsis + generos + trailer) ===== */
+.sh-hero{position:relative;min-height:172px;background:#0e1320 center/cover no-repeat;border-radius:20px 20px 0 0}
+.sh-hero .grad{position:absolute;inset:0;border-radius:20px 20px 0 0;background:linear-gradient(180deg,rgba(14,19,32,.12) 0%,rgba(14,19,32,.55) 55%,#0e1320 100%)}
+.sh-hero .row{position:relative;display:flex;gap:14px;align-items:flex-end;padding:96px 16px 14px}
+.sh-pst{width:84px;aspect-ratio:2/3;border-radius:10px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 8px 22px rgba(0,0,0,.6);flex:none;cursor:zoom-in}
+.sh-pst.hidden{display:none}
+.sh-htext{min-width:0;flex:1}
+.sheet .sh-htext h3{margin:0;font-size:19px;font-weight:800;text-align:left;line-height:1.2;text-shadow:0 2px 10px rgba(0,0,0,.7)}
+.sheet .sh-htext .sy{text-align:left;color:#cfd6e4;font-size:13px;font-weight:600;margin:5px 0 0}
+.sh-body{padding:12px 18px calc(20px + env(safe-area-inset-bottom))}
+.sh-body .sh-meta{justify-content:flex-start;margin:0 0 10px}
+.sh-body .sh-meta:empty{margin:0}
+.gtag{font-size:12px;font-weight:600;color:#cfd6e4;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:999px;padding:5px 12px}
+.runt{font-size:12.5px;color:var(--sub);font-weight:600;align-self:center}
+.sh-ov{font-size:14px;line-height:1.5;color:#d4dae6;margin:2px 0 4px}
+.sh-ov.clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sh-more{color:var(--blue2);font-size:13px;font-weight:600;cursor:pointer;display:inline-block;margin:0 0 4px}
+.btnrow{display:flex;gap:10px}
+.btnrow .btn{margin-top:10px;flex:1}
+.btn.trailer{background:rgba(255,255,255,.08);color:var(--txt);border:1px solid var(--stroke)}
+/* zoom de portada (tocar la portada -> a pantalla) */
+.zoom{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:48;padding:24px;cursor:zoom-out}
+.zoom.on{display:flex}
+.zoom img{max-width:100%;max-height:100%;border-radius:14px;box-shadow:0 16px 50px rgba(0,0,0,.7)}
+/* modal de trailer */
+.trm{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:50;padding:14px}
+.trm.on{display:flex}
+.trm .frame{width:100%;max-width:880px;aspect-ratio:16/9;border-radius:14px;overflow:hidden;border:1px solid var(--stroke);background:#000;position:relative}
+.trm iframe{width:100%;height:100%;border:0}
+.trm .x{position:absolute;top:-46px;right:0;border:1px solid var(--stroke);background:rgba(14,19,32,.95);color:#fff;font-weight:700;border-radius:999px;padding:8px 16px;cursor:pointer}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -5189,14 +5316,25 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 </div>
 <div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
  <div class="box">
-  <div class="sh-poster hidden" id="sh-poster"></div>
-  <h3 id="sh-t"></h3><div class="sy" id="sh-y"></div>
-  <div class="sh-meta" id="sh-seeds"></div>
-  <div class="rar" id="sh-rar"></div>
-  <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
-  <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Añadir a mi lista</button>
-  <button class="btn share" onclick="shareSheet()">📤 Compartir enlace</button>
-  <button class="btn cancel" onclick="closeSheet()">Cancelar</button>
+  <div class="sh-hero" id="sh-hero"><div class="grad"></div>
+   <div class="row">
+    <div class="sh-pst hidden" id="sh-poster" onclick="zoomPoster()"></div>
+    <div class="sh-htext"><h3 id="sh-t"></h3><div class="sy" id="sh-y"></div></div>
+   </div>
+  </div>
+  <div class="sh-body">
+   <div class="sh-meta" id="sh-seeds"></div>
+   <div class="sh-meta" id="sh-genres"></div>
+   <div id="sh-ovwrap"></div>
+   <div class="rar" id="sh-rar"></div>
+   <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
+   <div class="btnrow">
+    <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Añadir a mi lista</button>
+    <button class="btn trailer" id="sh-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button>
+   </div>
+   <button class="btn share" onclick="shareSheet()">📤 Compartir enlace</button>
+   <button class="btn cancel" onclick="closeSheet()">Cancelar</button>
+  </div>
  </div>
 </div>
 <div class="ov" id="ov">
@@ -5243,6 +5381,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <button class="rm-close" onclick="closeRemote()">✕ Cerrar</button>
 </div>
 <button class="fab" id="fab" onclick="openRemote()" aria-label="Abrir mando"><svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="7" y="2" width="10" height="20" rx="3" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="6.5" r="1.5" fill="currentColor"/><line x1="9.6" y1="11" x2="14.4" y2="11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="9.6" y1="14" x2="14.4" y2="14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="9.6" y1="17" x2="14.4" y2="17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+<div class="zoom" id="zoom" onclick="closeZoom()"><img id="zoom-img" alt=""></div>
+<div class="trm" id="trm" onclick="if(event.target===this)closeTrailer()">
+ <div class="frame"><button class="x" onclick="closeTrailer()">✕ Cerrar</button><div id="trm-mount"></div></div>
+</div>
 <div class="toast" id="toast"></div>
 <script>
 var $=function(s){return document.getElementById(s)};
@@ -5288,8 +5430,8 @@ function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*1
 function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs()}
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
  INI={kind:kind,page:1,loading:false,more:true};
- var g=$('inicio-grid');g.className='msg';g.innerHTML='<span class="spin"></span> Cargando...';
- var slow=setTimeout(function(){if(g.querySelector('.spin'))g.innerHTML='<span class="spin"></span> Despertando el servidor… (solo la primera vez)';},7000);
+ var g=$('inicio-grid');g.className='';g.innerHTML=skelGrid();
+ var slow=setTimeout(function(){if(g.querySelector('.skph')){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor… (solo la primera vez)';}},7000);
  // Timeout duro: si DonTorrent va lento/caido NUNCA dejamos la app colgada.
  var ctrl=(window.AbortController?new AbortController():null);var done=false;
  var to=setTimeout(function(){if(!done&&ctrl)ctrl.abort();},12000);
@@ -5419,10 +5561,21 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
+ // HERO: backdrop de TMDB (si no hay, el propio póster); el degradado lo funde.
+ var hb=x.backdrop||x.poster||'';$('sh-hero').style.backgroundImage=hb?('url("'+hb+'")'):'';
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';
+ // GÉNEROS (gratis del item) + SINOPSIS con "Leer más". Si no hay, se ocultan.
+ var gn=(x.genres||[]);$('sh-genres').innerHTML=gn.map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
+ $('sh-ovwrap').innerHTML=x.overview?('<div class="sh-ov clamp" id="sh-ov">'+esc(x.overview)+'</div><span class="sh-more" onclick="toggleOv()">Leer más</span>'):'';
+ // TRÁILER + DURACIÓN: perezoso (1 llamada /catmeta cacheada). Oculto hasta llegar.
+ var tb=$('sh-trailer');tb.style.display='none';tb._key='';
+ if(x.tmdb_id){fetch('/catmeta?id='+encodeURIComponent(x.tmdb_id)+'&kind='+(x.kind==='serie'?'tv':'movie')).then(function(r){return r.json()}).then(function(m){if(sel!==x||!m)return;
+   if(m.trailer){tb._key=m.trailer;tb.style.display='';}
+   if(m.runtime){var hh=Math.floor(m.runtime/60),mm=m.runtime%60,rt=(hh?hh+'h ':'')+(mm?mm+'m':'');var gr=$('sh-genres');if(rt&&gr.querySelector('.runt')===null)gr.insertAdjacentHTML('beforeend','<span class="runt">'+rt+'</span>');}
+  }).catch(function(){});}
  // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
  // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
- $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');
+ $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;
  var _cd=(code.value||'').replace(/\D/g,'');
  var seedShow=function(p){if(sel!==x)return;$('sh-seeds').innerHTML=(p&&typeof p.seeds==='number')?seedTag(p.seeds):seedFail(s2,_cd);};
  if(s2==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x)return;if(p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';seedShow(p)}).catch(function(){seedShow(null)})}
@@ -5443,6 +5596,16 @@ function seedGate(ci,tb,proceed){proceed();
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function closeSheet(){$('sheet').classList.remove('on')}
+// Esqueletos de carga (Inicio): tarjetas con brillo mientras llega TMDB.
+function skelGrid(n){n=n||9;var c='<div class="skcard"><div class="skph shim"></div><div class="skln shim"></div><div class="skln s2 shim"></div></div>';var h='<div class="skgrid">';for(var i=0;i<n;i++)h+=c;return h+'</div>'}
+// Sinopsis: alternar recortada/completa.
+function toggleOv(){var o=$('sh-ov');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
+// Zoom de portada: tocar el póster de la ficha lo agranda a pantalla completa.
+function zoomPoster(){if(!sel||!sel.poster)return;event&&event.stopPropagation&&event.stopPropagation();var big=sel.poster.replace('/w342','/w500');$('zoom-img').src=big;$('zoom').classList.add('on')}
+function closeZoom(){$('zoom').classList.remove('on');$('zoom-img').src=''}
+// Tráiler: reproduce el vídeo de YouTube en un modal (clave de /catmeta).
+function openTrailer(){var tb=$('sh-trailer');var k=tb&&tb._key;if(!k)return;$('trm-mount').innerHTML='<iframe src="https://www.youtube.com/embed/'+k+'?autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('trm').classList.add('on')}
+function closeTrailer(){$('trm').classList.remove('on');$('trm-mount').innerHTML=''}
 // ---- Compartir enlace directo (como el mando): link que reproduce al abrirlo ----
 function doShare(t,yr,qs){var link=location.origin+'/cat?'+qs+'&t='+encodeURIComponent(t)+(yr?('&yr='+encodeURIComponent(yr)):'');
  var nice=t+(yr?(' ('+yr+')'):'');
