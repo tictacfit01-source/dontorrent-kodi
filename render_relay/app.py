@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk11",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk12",
                     mimetype="text/plain")
 
 
@@ -3978,7 +3978,7 @@ def _tmdb_alt_titles(q):
                              params={"api_key": _CAT_TMDB_KEY,
                                      "language": "es-ES", "query": q,
                                      "include_adult": "false"},
-                             timeout=(3, 4))
+                             timeout=(2, 3))
             if r.status_code != 200:
                 _tmdb_mark(False)
                 continue
@@ -4123,25 +4123,28 @@ def catsearch():
                                 min(10.0, _rem()), []) or []
         if not dt_items and not et_items and not dx_items:
             # FALLBACK DE IDIOMA: la web puede tener el titulo en OTRO idioma
-            # ('interestelar'->'Interstellar'). Solo si la busqueda salio VACIA
-            # (no ralentiza las que SI encuentran): resolvemos el titulo via TMDB y
-            # reintentamos por la MISMA via. Con su propio MINI-presupuesto (~6s)
-            # -> el total (principal ~13s + fallback ~6s) sigue < 20s del front.
-            _fdl = _t.time() + 6.0
-            for _alt in _tmdb_alt_titles(q):
-                if _fdl - _t.time() <= 1.5:
+            # ('interestelar'->'Interstellar'). Solo si la busqueda salio VACIA.
+            # TODO el fallback (incluida la resolucion TMDB) respeta el DEADLINE
+            # TOTAL de la peticion (now+18.5s) -> el front (20s) NUNCA se rinde,
+            # pase lo que pase con TMDB/box. Si no queda margen, no se intenta.
+            _fdl = now + 18.5
+            _alts = _tmdb_alt_titles(q) if (_fdl - _t.time()) > 4.0 else []
+            for _alt in _alts:
+                if _fdl - _t.time() <= 2.0:
                     break
-                try:
-                    r2 = _cat_parse_items(_cat_dt_html(_alt)) or []
+                try:   # DT-directo ACOTADO al presupuesto (Anubis frio no lo revienta)
+                    _b = min(6.0, _fdl - _t.time())
+                    r2 = _cat_parse_items(
+                        _bounded(lambda a=_alt: _cat_dt_html(a), _b, "") or "") or []
                 except Exception:
                     r2 = []
                 _fr = _fdl - _t.time()
-                if not r2 and box and _fr > 2.0:
+                if not r2 and box and _fr > 2.5:
                     try:
                         j2 = "da" + os.urandom(5).hex()
                         _kb_enqueue(box, {"c": "etjob", "job": j2,
                                           "op": "dthtml", "q": _alt})
-                        h2 = (_catjob_wait(j2, min(8.0, _fr)) or {}).get("html") or ""
+                        h2 = (_catjob_wait(j2, min(7.0, _fr)) or {}).get("html") or ""
                         if h2:
                             r2 = _cat_parse_items(h2) or []
                     except Exception:
@@ -4955,7 +4958,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk11", "now": int(now)}
+    out = {"build": "dtbk12", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
