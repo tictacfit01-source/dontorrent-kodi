@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk15",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk19-staging",
                     mimetype="text/plain")
 
 
@@ -5215,7 +5215,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk15", "now": int(now)}
+    out = {"build": "dtbk19-staging", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5849,6 +5849,20 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 <div class="toast" id="toast"></div>
 <script>
 var $=function(s){return document.getElementById(s)};
+// ===== Botón ATRÁS (móvil/navegador): cierra la capa abierta en vez de SALIR =====
+// Pila de capas visibles (ficha, tráiler, zoom, mando, Mis Kodis...). Mantenemos
+// UN solo "centinela" en el historial mientras haya algo abierto: al pulsar atrás
+// el navegador lo consume y cerramos la capa de arriba (re-armando el centinela si
+// aún quedan capas debajo -> back cierra de una en una). Cero acumulación de
+// entradas y cero cambio de URL. Si NADA está abierto, atrás funciona normal (sale
+// de la app). navOpen(id,closeFn) al abrir; navClose(id) en el cierre por X/tap; el
+// cierre POR back llama closeFn(true) -> la fn salta navClose (no re-toca historial).
+var _navStack=[], _trapArmed=false, _ignorePop=false;
+function _navArm(){if(_trapArmed)return;try{history.pushState({mwTrap:1},'');_trapArmed=true;}catch(e){}}
+function _navDisarm(){if(!_trapArmed)return;_trapArmed=false;_ignorePop=true;try{history.back();}catch(e){_ignorePop=false;}}
+function navOpen(id,closeFn){for(var i=0;i<_navStack.length;i++){if(_navStack[i].id===id){_navStack[i].close=closeFn;return;}}_navStack.push({id:id,close:closeFn});_navArm();}
+function navClose(id){var f=false;for(var i=_navStack.length-1;i>=0;i--){if(_navStack[i].id===id){_navStack.splice(i,1);f=true;break;}}if(f&&!_navStack.length)_navDisarm();}
+window.addEventListener('popstate',function(){if(_ignorePop){_ignorePop=false;return;}_trapArmed=false;if(_navStack.length){var top=_navStack.pop();try{top.close(true);}catch(e){}if(_navStack.length)_navArm();}});
 var SVG_PLAY='<svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg>';
 var SVG_PAUSE='<svg width="28" height="28" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg>';
 var NP_PLAY='<svg width="16" height="16" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg>';
@@ -5907,8 +5921,8 @@ function setActiveCode(c){c=(c||'').replace(/\D/g,'').slice(0,6);code.value=c;
 function openDevs(){var cur=(code.value||'').replace(/\D/g,'');
  var dc=$('devc');if(dc)dc.value=(cur.length===6&&!devName(cur))?cur:'';
  var dn=$('devn');if(dn)dn.value='';
- renderDevs();$('devsheet').classList.add('on')}
-function closeDevs(){$('devsheet').classList.remove('on')}
+ renderDevs();$('devsheet').classList.add('on');navOpen('devsheet',closeDevs)}
+function closeDevs(fb){$('devsheet').classList.remove('on');if(!fb)navClose('devsheet')}
 function liveDot(dot,c){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(function(j){
  dot.className='devdot '+((j&&j.connected)?'on':'off')}).catch(function(){})}
 function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var cur=(code.value||'').replace(/\D/g,'');
@@ -6089,7 +6103,7 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  enrichItem(x,function(){if(sel===x)shEnrich(x);});
  // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
  // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
- $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;
+ $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');navOpen('sheet',closeSheet);var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;
  var _cd=(code.value||'').replace(/\D/g,'');
  var seedShow=function(p){if(sel!==x)return;$('sh-seeds').innerHTML=(p&&typeof p.seeds==='number')?seedTag(p.seeds):seedFail(s2,_cd);};
  if(s2==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x)return;if(p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';seedShow(p)}).catch(function(){seedShow(null)})}
@@ -6109,7 +6123,7 @@ function seedGate(ci,tb,proceed){proceed();
  }).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
-function closeSheet(){$('sheet').classList.remove('on')}
+function closeSheet(fb){$('sheet').classList.remove('on');if(!fb)navClose('sheet')}
 // Pinta la parte enriquecida de la ficha de PELI con lo que el item tenga
 // (backdrop + generos + duracion + sinopsis + trailer). Reentrante: se vuelve a
 // llamar cuando enrichItem/catmeta rellenan datos -> rerender suave.
@@ -6148,12 +6162,12 @@ function skelGrid(n){n=n||9;var c='<div class="skcard"><div class="skph shim"></
 // Sinopsis: alternar recortada/completa.
 function toggleOv(){var o=$('sh-ov');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
 // Zoom de portada: tocar el póster de la ficha lo agranda a pantalla completa.
-function zoomPoster(){var p=ZPOSTER||(sel&&sel.poster);if(!p)return;event&&event.stopPropagation&&event.stopPropagation();$('zoom-img').src=p.replace('/w342','/w500');$('zoom').classList.add('on')}
-function closeZoom(){$('zoom').classList.remove('on');$('zoom-img').src=''}
+function zoomPoster(){var p=ZPOSTER||(sel&&sel.poster);if(!p)return;event&&event.stopPropagation&&event.stopPropagation();$('zoom-img').src=p.replace('/w342','/w500');$('zoom').classList.add('on');navOpen('zoom',closeZoom)}
+function closeZoom(fb){$('zoom').classList.remove('on');$('zoom-img').src='';if(!fb)navClose('zoom')}
 // Tráiler: reproduce el vídeo de YouTube en un modal (clave de /catmeta).
-function openTrailer(){if(!TRK)return;$('trm-mount').innerHTML='<iframe src="https://www.youtube.com/embed/'+TRK+'?autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('trm').classList.add('on')}
+function openTrailer(){if(!TRK)return;$('trm-mount').innerHTML='<iframe src="https://www.youtube.com/embed/'+TRK+'?autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('trm').classList.add('on');navOpen('trm',closeTrailer)}
 function toggleOvSyn(){var o=$('ov-syn');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
-function closeTrailer(){$('trm').classList.remove('on');$('trm-mount').innerHTML=''}
+function closeTrailer(fb){$('trm').classList.remove('on');$('trm-mount').innerHTML='';if(!fb)navClose('trm')}
 // ---- Compartir enlace directo (como el mando): link que reproduce al abrirlo ----
 function doShare(t,yr,qs){var link=location.origin+'/cat?'+qs+'&t='+encodeURIComponent(t)+(yr?('&yr='+encodeURIComponent(yr)):'');
  var nice=t+(yr?(' ('+yr+')'):'');
@@ -6179,9 +6193,9 @@ function shareSeries(){if(!OVDATA)return;var x=OVDATA.x,d=OVDATA.d;var t=(d.titl
  var ps=(d.poster||x.poster||'');if(ps)qs+='&ps='+encodeURIComponent(ps);
  doShare(t,(d.year||x.year||''),qs);}
 var sharedPlay=null;
-function showShared(t){$('shared-t').textContent=t||'Compartido';$('shared').classList.add('on')}
-function playShared(){if(sharedPlay&&sendPlay(sharedPlay))$('shared').classList.remove('on')}
-function closeShared(){$('shared').classList.remove('on')}
+function showShared(t){$('shared-t').textContent=t||'Compartido';$('shared').classList.add('on');navOpen('shared',closeShared)}
+function playShared(){if(sharedPlay&&sendPlay(sharedPlay))closeShared()}
+function closeShared(fb){$('shared').classList.remove('on');if(!fb)navClose('shared')}
 function play(){if(!sel)return;
  if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
   toast('Resolviendo en tu box…');
@@ -6196,7 +6210,7 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
-function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');$('ov-title').textContent=x.title;
+function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');navOpen('ov',closeOv);$('ov-title').textContent=x.title;
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
@@ -6255,7 +6269,7 @@ function epBadge(job,info){var el=document.getElementById('epb-'+job.id);if(!el)
   if(info.rar)h+='<span class="ep-rar">📦 RAR</span>';
   if(typeof info.seeds==='number'){var cls=info.seeds<=0?'s-zero':(info.seeds<3?'s-low':'s-ok');h+='<span class="ep-seed '+cls+'">🌱 '+info.seeds+'</span>';}
   el.innerHTML=h;}
-function closeOv(){$('ov').classList.remove('on')}
+function closeOv(fb){$('ov').classList.remove('on');if(!fb)navClose('ov')}
 function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var row=$('row-'+id);
  if(row){var sn=isSeen(e.content_id);row.classList.toggle('seen',sn);var ey=row.querySelector('.eye');if(ey)ey.innerHTML=sn?EYE_ON:EYE_OFF;}}
 function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(function(e){return (e.season||0)===s});
@@ -6280,8 +6294,8 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
   else{bar.classList.remove('on');var _fb2=$('fab');if(_fb2)_fb2.style.display='';if($('remote').classList.contains('on')){$('rm-t').textContent='Preparando en la tele…';$('rm-time').textContent='';$('rm-fin').textContent='';}}
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
  }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
-function openRemote(){$('remote').classList.add('on')}
-function closeRemote(){$('remote').classList.remove('on')}
+function openRemote(){$('remote').classList.add('on');navOpen('remote',closeRemote)}
+function closeRemote(fb){$('remote').classList.remove('on');if(!fb)navClose('remote')}
 function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
  if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
