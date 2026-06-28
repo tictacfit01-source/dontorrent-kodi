@@ -4002,28 +4002,62 @@ def _cat_rank_dedup(items, q):
 # el MISMO titulo: Suspiria 1977 vs 2018, IT 1990 vs 2017). El listado de DT no trae
 # año y TMDB le da el mismo a ambos -> sin esto el dedup los fundiria en uno solo.
 _CAT_DT_YEAR_CACHE = {}   # content_id -> "YYYY" (el año de una peli no cambia nunca)
+_CAT_DT_YEAR_FAIL = {}    # content_id -> ts del ultimo fallo (negative-cache, no machacar)
+_CAT_DT_YEAR_FAIL_TTL = 300
+_DT_YEAR_FILE = "/tmp/mw_dt_years.json"
+_DT_YEAR_LOCK = _thr.Lock()
 _CAT_DT_YEAR_RE = _re_dt.compile(r"A[nñ]o[^0-9]{0,40}((?:19|20)\d{2})", _re_dt.I)
 
 
+def _dt_years_load():
+    try:
+        with open(_DT_YEAR_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _dt_years_save(cid, y):
+    # El año de una peli NO cambia -> persistir en disco lo resuelto = se calcula UNA
+    # vez (sobrevive a la expiracion de la cache de busqueda y se comparte entre los
+    # 2 workers). Menos fichas a DonTorrent en el tiempo -> menos riesgo de baneo.
+    try:
+        with _DT_YEAR_LOCK:
+            d = _dt_years_load()
+            d[str(cid)] = y
+            tmp = _DT_YEAR_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _DT_YEAR_FILE)
+    except Exception:
+        pass
+
+
 def _dt_detail_year(it, deadline, box=None):
-    """Lee el campo 'Año' de la ficha DT de `it`. Cacheado por content_id;
-    best-effort -> '' si DT caido, sin tiempo, sin slug o sin match. En produccion
-    Render esta BANEADO por DonTorrent -> si el directo no trae nada, lo pide al
-    BOX (IP residencial) reusando el op 'dthtml' (que ya acepta 'path')."""
+    """Año REAL del campo 'Año' de la ficha DT de `it`. Orden: cache memoria -> disco
+    -> GET directo (NAVEGAR DonTorrent SI funciona desde Render aunque BUSCAR este
+    baneado) -> BOX (IP residencial). Cacheado (memoria+disco) y con negative-cache
+    para no reintentar en bucle un cid que acaba de fallar. '' si no se pudo."""
     cid = it.get("content_id")
     if not cid:
         return ""
+    cid = str(cid)
     if cid in _CAT_DT_YEAR_CACHE:
         return _CAT_DT_YEAR_CACHE[cid]
+    disk = _dt_years_load().get(cid)
+    if disk:
+        _CAT_DT_YEAR_CACHE[cid] = disk
+        return disk
+    if (_t.time() - _CAT_DT_YEAR_FAIL.get(cid, 0)) < _CAT_DT_YEAR_FAIL_TTL:
+        return ""   # fallo reciente -> no machacar DonTorrent
     path = it.get("dtpath") or it.get("path")
     if not path or _t.time() >= deadline:
         return ""
     html = ""
-    if not _dt_is_down():   # 1) directo (rapido cuando la IP no esta baneada)
-        try:
-            html, _ = _cat_dt_session_get(path)
-        except Exception:
-            html = ""
+    try:   # 1) GET directo: la ficha es navegacion (no la busqueda POST baneada)
+        html, _ = _cat_dt_session_get(path)
+    except Exception:
+        html = ""
     if not html and box and (deadline - _t.time()) > 2.5:   # 2) via box residencial
         try:
             job = "dy" + os.urandom(5).hex()
@@ -4036,16 +4070,22 @@ def _dt_detail_year(it, deadline, box=None):
     m = _CAT_DT_YEAR_RE.search(html or "")
     y = m.group(1) if m else ""
     if y:
-        _CAT_DT_YEAR_CACHE[cid] = y   # solo cachear aciertos (reintenta si fallo)
+        _CAT_DT_YEAR_CACHE[cid] = y
+        _CAT_DT_YEAR_FAIL.pop(cid, None)
+        _dt_years_save(cid, y)
+    else:
+        _CAT_DT_YEAR_FAIL[cid] = _t.time()
     return y
 
 
-def _cat_disambiguate_years(items, deadline, box=None, cap=10):
+def _cat_disambiguate_years(items, deadline, box=None, cap=12):
     """Cuando varios items DT comparten titulo+tipo Y el MISMO año (o ninguno), TMDB
     no los pudo separar (homonimos). Leemos el año REAL de la ficha de cada uno para
     que el dedup posterior MANTENGA separadas las pelis distintas (Suspiria 1977 vs
     2018) pero siga fundiendo la misma peli en otra calidad. Solo en COLISIONES
-    (raro), acotado al deadline y con tope de fichas -> sin scraping masivo."""
+    (raro), acotado al deadline y con tope de fichas -> sin scraping masivo.
+    Devuelve (items, ok): ok=False si queda alguna colision SIN resolver -> el caller
+    NO debe cachear (o cachear poco) para que el siguiente intento lo reintente."""
     from collections import defaultdict
     groups = defaultdict(list)
     for it in items:
@@ -4062,13 +4102,15 @@ def _cat_disambiguate_years(items, deadline, box=None, cap=10):
             if it.get("source") == "dt" and it.get("content_id"):
                 targets.append(it)
     if not targets:
-        return items
-    targets = targets[:cap]
+        return items, True
+    if (deadline - _t.time()) < 2.0:   # sin margen -> no resolver y avisar (no cachear)
+        return items, False
+    capped = targets[:cap]
 
     def _go(it):
         y = _dt_detail_year(it, deadline, box)
         if not y:
-            return
+            return False
         old = str(it.get("year") or "")
         it["year"] = y
         if y != old:
@@ -4086,15 +4128,18 @@ def _cat_disambiguate_years(items, deadline, box=None, cap=10):
             for k in ("overview", "backdrop", "genres", "tmdb_id"):
                 if meta.get(k):
                     it[k] = meta[k]
+        return True
+    results = []
     try:
         from concurrent.futures import ThreadPoolExecutor as _TPE
         # 2 workers = mismo tope que _DT_SEM(2) -> cada ficha consigue su turno en
         # vez de fallar al instante por contencion del semaforo.
         with _TPE(max_workers=2) as ex:
-            list(ex.map(_go, targets))
+            results = list(ex.map(_go, capped))
     except Exception:
-        pass
-    return items
+        results = []
+    ok = bool(results) and all(results) and len(targets) <= cap
+    return items, ok
 
 
 def _tmdb_alt_titles(q):
@@ -4148,7 +4193,7 @@ def catsearch():
         cent = _catsearch_load().get(qkey)
         if cent:
             _CATSEARCH_CACHE[qkey] = cent
-    if cent and (now - cent["ts"]) < _CATSEARCH_TTL:
+    if cent and (now - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
         return jsonify({"items": cent["items"], "cached": True})
     # --- Single-flight: si una busqueda IDENTICA ya se esta calculando en este
     # worker, NO lanzamos otro fan-out; esperamos su resultado y servimos la cache.
@@ -4168,7 +4213,7 @@ def catsearch():
         # fan-out). Cuando termine, servimos su cache.
         _ev.wait(15.0)
         cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
-        if cent and (_t.time() - cent["ts"]) < _CATSEARCH_TTL:
+        if cent and (_t.time() - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
             return jsonify({"items": cent["items"], "cached": True})
         # el dueño aun no termino (o salio vacio) -> 503 para que el front REINTENTE
         # (no "Sin resultados" en falso); el reintento sera el nuevo dueño.
@@ -4309,13 +4354,19 @@ def catsearch():
         enr = _bounded(lambda: _cat_enrich(merged),
                        max(1.5, now + 19.5 - _t.time()), merged) or merged
         # Homonimos (Suspiria 1977 vs 2018): DT no da año en el listado y TMDB le da
-        # el mismo a ambos -> el dedup los fundiria. Solo si hay choque de titulo Y
-        # queda margen (>3s), leemos el año REAL de la ficha DT de los implicados.
-        if (now + 18.5 - _t.time()) > 3.0:
-            enr = _cat_disambiguate_years(enr, now + 18.5, box)
+        # el mismo a ambos -> el dedup los fundiria. Si hay choque de titulo, leemos
+        # el año REAL de la ficha DT (la propia funcion gestiona su presupuesto). Si
+        # NO logra resolver la colision (sin margen/box/DT) -> _disok=False y NO se
+        # cachea largo (TTL corto) para que el siguiente intento la resuelva.
+        enr, _disok = _cat_disambiguate_years(enr, now + 18.5, box)
         items = _cat_rank_dedup(enr, q)   # dedup (titulo+año) + orden por relevancia
         if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
+            # Si una colision de homonimos quedo SIN resolver, TTL corto (90s) -> se
+            # reintenta pronto (y al resolverla se cachea ya el TTL largo), pero sin
+            # machacar (no recalcula en cada pulsacion). Resuelto/limpio -> TTL normal.
             rec = {"items": items, "ts": now}
+            if not _disok:
+                rec["ttl"] = 90
             _CATSEARCH_CACHE[qkey] = rec
             try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
                 disk = _catsearch_load()
@@ -5363,7 +5414,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .devmeta{flex:1;min-width:0}
 .devnm{font-size:15px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .devcc{font-size:12px;color:var(--sub);letter-spacing:2px;font-variant-numeric:tabular-nums;margin-top:2px}
-.devdel{border:0;background:transparent;color:var(--sub);font-size:16px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
+.deved,.devdel{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
+.deved:active{background:rgba(255,255,255,.14)}
 .devdel:active{background:rgba(255,69,58,.18)}
 .devadd{padding:8px 14px 20px;display:flex;flex-direction:column;gap:9px}
 .devin{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:12px;color:var(--txt);padding:13px 14px;font-size:15px;outline:0;box-sizing:border-box}
@@ -5819,10 +5871,18 @@ function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var
   var nm=document.createElement('div');nm.className='devnm';nm.textContent=dev.name||'Kodi';meta.appendChild(nm);
   var cc=document.createElement('div');cc.className='devcc';cc.textContent=dev.code;meta.appendChild(cc);
   row.appendChild(meta);
+  var ed=document.createElement('button');ed.className='deved';ed.title='Editar nombre';ed.textContent='✏️';
+  ed.onclick=function(e){e.stopPropagation();editDev(dev.code)};
+  row.appendChild(ed);
   var del=document.createElement('button');del.className='devdel';del.title='Borrar';del.textContent='🗑';
   del.onclick=function(e){e.stopPropagation();delDev(dev.code)};
   row.appendChild(del);
   wrap.appendChild(row);liveDot(dot,dev.code)})}
+function editDev(c){var d=loadDevs(),dev=null;
+ for(var i=0;i<d.length;i++){if(d[i].code===c){dev=d[i];break}}
+ if(!dev)return;var nn=prompt('Nombre para este Kodi:',dev.name||'');
+ if(nn===null)return;nn=nn.trim();if(!nn){toast('El nombre no puede estar vacío');return}
+ dev.name=nn;saveDevs(d);refreshDevBtn();renderDevs();toast('Nombre actualizado ✓')}
 function pickDev(c){setActiveCode(c);renderDevs();toast('Kodi activo: '+(devName(c)||c));setTimeout(closeDevs,220)}
 function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'').replace(/\D/g,'').slice(0,6);
  if(c.length!==6){toast('El código debe tener 6 cifras');return}
