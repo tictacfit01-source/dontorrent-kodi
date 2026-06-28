@@ -2322,6 +2322,50 @@ _KB_FILE = "/tmp/mw_kb.json"
 _KB_TTL = 600   # una busqueda pendiente caduca a los 10 min
 
 
+class _FileLock:
+    """Lock ENTRE PROCESOS (los 2 workers gunicorn) para serializar el
+    read-modify-write de las colas de /tmp (mw_kb.json, mw_catjob.json).
+
+    Sin esto habia una RACE: el box sondea /kb/poll cada ~0.5s (load->pop->save)
+    y otro worker encola un evento (load->add->save); si el poll guardaba JUSTO
+    despues del enqueue, PISABA el evento -> el mando y la busqueda perdian ~75%
+    de las ordenes. `os.mkdir` es atomico en todos los SO (sirve tambien para el
+    test local en Windows). Si un worker muriese con el lock cogido, se limpia por
+    antiguedad (>8s). Si no se consigue en `timeout`, se opera SIN lock (mejor un
+    race raro que colgar el mando)."""
+    def __init__(self, path, timeout=4.0):
+        self._lockdir = path + ".lockd"
+        self._timeout = timeout
+        self._got = False
+
+    def __enter__(self):
+        start = _t.time()
+        while True:
+            try:
+                os.mkdir(self._lockdir)
+                self._got = True
+                break
+            except FileExistsError:
+                try:
+                    if _t.time() - os.path.getmtime(self._lockdir) > 8:
+                        os.rmdir(self._lockdir)
+                        continue
+                except OSError:
+                    pass
+                if _t.time() - start > self._timeout:
+                    break
+                _t.sleep(0.005)
+        return self
+
+    def __exit__(self, *exc):
+        if self._got:
+            try:
+                os.rmdir(self._lockdir)
+            except OSError:
+                pass
+        return False
+
+
 def _kb_load():
     try:
         with open(_KB_FILE, "r", encoding="utf-8") as f:
@@ -3035,12 +3079,13 @@ def kb_poll():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
         return jsonify({"events": []})
-    d = _kb_clean(_kb_load())
-    entry = d.pop(code, None)
-    if entry:
-        _kb_save(d)   # consumo: devolvemos los eventos pendientes y limpiamos
-        return jsonify({"events": entry.get("ev", [])})
-    return jsonify({"events": []})
+    with _FileLock(_KB_FILE):   # serializa con _kb_enqueue (no perder eventos)
+        d = _kb_clean(_kb_load())
+        entry = d.pop(code, None)
+        if entry:
+            _kb_save(d)   # consumo: devolvemos los eventos pendientes y limpiamos
+    return jsonify({"events": entry.get("ev", [])}) if entry \
+        else jsonify({"events": []})
 
 
 @app.post("/kb/list")
@@ -4429,24 +4474,29 @@ def _catjob_save(d):
 
 
 def _kb_enqueue(code, ev):
-    """Mete un evento en la cola del box (la que consume /kb/poll)."""
-    d = _kb_clean(_kb_load())
-    entry = d.get(code) or {"ev": [], "ts": _t.time()}
-    evs = entry.get("ev", [])
-    evs.append(ev)
-    entry["ev"] = evs[-20:]
-    entry["ts"] = _t.time()
-    d[code] = entry
-    _kb_save(d)
+    """Mete un evento en la cola del box (la que consume /kb/poll).
+    Bajo lock entre procesos para no PISAR/perder el evento si el box sondea
+    (load->pop->save) a la vez que este enqueue (load->add->save)."""
+    with _FileLock(_KB_FILE):
+        d = _kb_clean(_kb_load())
+        entry = d.get(code) or {"ev": [], "ts": _t.time()}
+        evs = entry.get("ev", [])
+        evs.append(ev)
+        entry["ev"] = evs[-20:]
+        entry["ts"] = _t.time()
+        d[code] = entry
+        _kb_save(d)
 
 
 def _catjob_wait(job, secs):
     end = _t.time() + secs
     while _t.time() < end:
-        d = _catjob_load()
-        if job in d:
+        with _FileLock(_CATJOB_FILE):   # serializa con /catjob/done
+            d = _catjob_load()
             r = d.pop(job, None)
-            _catjob_save(d)
+            if r is not None:
+                _catjob_save(d)
+        if r is not None:
             return r
         _t.sleep(0.4)
     return None
@@ -4568,14 +4618,15 @@ def catjob_done():
     job = (str(body.get("job") or ""))[:40]
     if not job:
         return jsonify({"ok": False}), 400
-    d = _catjob_load()
     now = _t.time()
-    d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
-    d[job] = {"items": body.get("items"), "link": body.get("link"),
-              "rar": body.get("rar"), "quality": body.get("quality"),
-              "eps": body.get("eps"), "ih": body.get("ih"),
-              "html": body.get("html"), "ts": now}
-    _catjob_save(d)
+    with _FileLock(_CATJOB_FILE):   # serializa con _catjob_wait (no perder el resultado)
+        d = _catjob_load()
+        d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
+        d[job] = {"items": body.get("items"), "link": body.get("link"),
+                  "rar": body.get("rar"), "quality": body.get("quality"),
+                  "eps": body.get("eps"), "ih": body.get("ih"),
+                  "html": body.get("html"), "ts": now}
+        _catjob_save(d)
     return jsonify({"ok": True})
 
 
