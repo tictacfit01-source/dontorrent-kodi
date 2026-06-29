@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk15",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk20",
                     mimetype="text/plain")
 
 
@@ -3682,16 +3682,23 @@ def _cat_parse_items(html):
             thumb = _re_dt.sub(r"w=\d+&h=\d+", "w=342&h=513", thumb)
         key = (kind, cid)
         path = (f"/serie/{cid}{rest}" if (kind == "serie" and rest) else None)
+        # Ruta de la FICHA (con slug) para TODOS los tipos -> hace falta para leer el
+        # AÑO real de la peli (DT exige el slug; por cid pelado da 404). En pelis/docs
+        # va aparte (fpath -> dtpath) para no tocar 'path' (que en el front abre series).
+        _seg = {"movie": "pelicula", "doc": "documental"}.get(kind, "serie")
+        fpath = f"/{_seg}/{cid}{rest}" if rest else None
         e = best.get(key)
         if e is None:
             order.append(key)
             best[key] = {"title": title, "score": score, "path": path,
-                         "thumb": thumb}
+                         "fpath": fpath, "thumb": thumb}
         else:
             if score > e["score"]:
                 e["title"], e["score"] = title, score
             if path and not e["path"]:
                 e["path"] = path
+            if fpath and not e.get("fpath"):
+                e["fpath"] = fpath
             if thumb and not e["thumb"]:
                 e["thumb"] = thumb
     out = []
@@ -3712,6 +3719,8 @@ def _cat_parse_items(html):
             it["path"] = e["path"] or f"/serie/{cid}/"
         else:   # movie / doc -> descarga directa con su tabla
             it["tabla"] = _CAT_KIND_TABLA.get(kind, "peliculas")
+            if e.get("fpath"):
+                it["dtpath"] = e["fpath"]   # ficha con slug -> año real (desambigua homonimos)
         out.append(it)
     return out
 
@@ -3952,7 +3961,11 @@ def _cat_merge(dt_items, et_items):
 # Calidad de busqueda: DonTorrent lista CADA torrent por separado (la misma peli
 # en 4K y en SD -> "Matrix Reloaded" aparece 2-3 veces) y NO ordena por relevancia
 # (busca "breaking bad" y sale "El Camino" antes que la serie). Esto:
-#   1) DEDUP por (titulo normalizado, tipo) dejando la version de MEJOR calidad.
+#   1) DEDUP por (titulo normalizado, AÑO, tipo) dejando la version de MEJOR
+#      calidad. El AÑO es la CLAVE para no fundir REMAKES del mismo titulo
+#      (Suspiria 1977 vs 2018, IT 1990 vs 2017): son pelis DISTINTAS y deben salir
+#      las dos. Solo se colapsan si coinciden titulo Y año (= misma peli, otra
+#      calidad). Por eso el dedup corre DESPUES del enrich TMDB (ver /catsearch).
 #   2) ORDENA por relevancia al termino (exacto/prefijo arriba), ESTABLE -> dentro
 #      de cada nivel respeta el orden de la web (temporadas 1,2,3...).
 # NO inventa ni descarta titulos DISTINTOS -> sigue siendo reflejo de la web,
@@ -3968,20 +3981,43 @@ def _cat_rank_dedup(items, q):
     def qr(it):
         return _CAT_QUAL_RANK.get((it.get("quality") or "").strip().lower(), 0)
 
-    seen, out = {}, []
+    # FASE 1: los items CON año -> dedup por (titulo, AÑO, tipo), mejor calidad. El
+    # año (TMDB / ficha DT) separa REMAKES del mismo titulo (Suspiria 1977 vs 2018)
+    # de la misma peli en otra calidad (Matrix 4K vs SD -> mismo año -> se funden).
+    withy, order, titleset, noyear, passthrough = {}, [], {}, {}, []
     for it in items:
         tn = _et_norm(it.get("title"))
         if not tn:
-            out.append(it)
+            passthrough.append(it)
             continue
-        key = (tn, it.get("kind") or "movie")
-        if key in seen:
-            j = seen[key]
-            if qr(it) > qr(out[j]):   # nos quedamos la de mejor calidad
-                out[j] = it
+        kind = it.get("kind") or "movie"
+        yr = str(it.get("year") or "").strip()
+        if yr:
+            k = (tn, yr, kind)
+            if k not in withy:
+                withy[k] = it
+                order.append(k)
+            elif qr(it) > qr(withy[k]):
+                withy[k] = it
+            titleset.setdefault((tn, kind), set()).add(yr)
         else:
-            seen[key] = len(out)
+            nk = (tn, kind)   # mejor calidad entre los SIN año del mismo titulo
+            if nk not in noyear or qr(it) > qr(noyear[nk]):
+                noyear[nk] = it
+    # FASE 2: un item SIN año suele ser el MISMO homonimo que uno CON año (TMDB solo
+    # le fallo el año) -> NO crear tarjeta nueva "pelada"; se descarta y, si el
+    # titulo tiene UNA sola peli, le sube la calidad. Si NINGUN homonimo trae año
+    # (TMDB caido del todo para ese titulo), se conserva (1 por titulo, como antes).
+    out = [withy[k] for k in order]
+    for nk, it in noyear.items():
+        ybs = titleset.get(nk)
+        if not ybs:
             out.append(it)
+        elif len(ybs) == 1:
+            best = withy[(nk[0], next(iter(ybs)), nk[1])]
+            if qr(it) > qr(best):
+                best["quality"] = it.get("quality") or best.get("quality")
+    out += passthrough
     if not qn:
         return out
 
@@ -4005,6 +4041,150 @@ def _cat_rank_dedup(items, q):
         return s
 
     return sorted(out, key=score, reverse=True)   # estable -> respeta orden web
+
+
+# Año REAL leido de la ficha de DonTorrent para desambiguar HOMONIMOS (remakes con
+# el MISMO titulo: Suspiria 1977 vs 2018, IT 1990 vs 2017). El listado de DT no trae
+# año y TMDB le da el mismo a ambos -> sin esto el dedup los fundiria en uno solo.
+_CAT_DT_YEAR_CACHE = {}   # content_id -> "YYYY" (el año de una peli no cambia nunca)
+_CAT_DT_YEAR_FAIL = {}    # content_id -> ts del ultimo fallo (negative-cache, no machacar)
+_CAT_DT_YEAR_FAIL_TTL = 300
+_DT_YEAR_FILE = "/tmp/mw_dt_years.json"
+_DT_YEAR_LOCK = _thr.Lock()
+_CAT_DT_YEAR_RE = _re_dt.compile(r"A[nñ]o[^0-9]{0,40}((?:19|20)\d{2})", _re_dt.I)
+
+
+def _dt_years_load():
+    try:
+        with open(_DT_YEAR_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _dt_years_save(cid, y):
+    # El año de una peli NO cambia -> persistir en disco lo resuelto = se calcula UNA
+    # vez (sobrevive a la expiracion de la cache de busqueda y se comparte entre los
+    # 2 workers). Menos fichas a DonTorrent en el tiempo -> menos riesgo de baneo.
+    try:
+        with _DT_YEAR_LOCK:
+            d = _dt_years_load()
+            d[str(cid)] = y
+            tmp = _DT_YEAR_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _DT_YEAR_FILE)
+    except Exception:
+        pass
+
+
+def _dt_detail_year(it, deadline, box=None):
+    """Año REAL del campo 'Año' de la ficha DT de `it`. Orden: cache memoria -> disco
+    -> GET directo (NAVEGAR DonTorrent SI funciona desde Render aunque BUSCAR este
+    baneado) -> BOX (IP residencial). Cacheado (memoria+disco) y con negative-cache
+    para no reintentar en bucle un cid que acaba de fallar. '' si no se pudo."""
+    cid = it.get("content_id")
+    if not cid:
+        return ""
+    cid = str(cid)
+    if cid in _CAT_DT_YEAR_CACHE:
+        return _CAT_DT_YEAR_CACHE[cid]
+    disk = _dt_years_load().get(cid)
+    if disk:
+        _CAT_DT_YEAR_CACHE[cid] = disk
+        return disk
+    if (_t.time() - _CAT_DT_YEAR_FAIL.get(cid, 0)) < _CAT_DT_YEAR_FAIL_TTL:
+        return ""   # fallo reciente -> no machacar DonTorrent
+    path = it.get("dtpath") or it.get("path")
+    if not path or _t.time() >= deadline:
+        return ""
+    html = ""
+    try:   # 1) GET directo: la ficha es navegacion (no la busqueda POST baneada)
+        html, _ = _cat_dt_session_get(path)
+    except Exception:
+        html = ""
+    if not html and box and (deadline - _t.time()) > 2.5:   # 2) via box residencial
+        try:
+            job = "dy" + os.urandom(5).hex()
+            _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml",
+                              "path": path})
+            html = (_catjob_wait(job, min(8.0, deadline - _t.time()))
+                    or {}).get("html") or ""
+        except Exception:
+            html = ""
+    m = _CAT_DT_YEAR_RE.search(html or "")
+    y = m.group(1) if m else ""
+    if y:
+        _CAT_DT_YEAR_CACHE[cid] = y
+        _CAT_DT_YEAR_FAIL.pop(cid, None)
+        _dt_years_save(cid, y)
+    else:
+        _CAT_DT_YEAR_FAIL[cid] = _t.time()
+    return y
+
+
+def _cat_disambiguate_years(items, deadline, box=None, cap=12):
+    """Cuando varios items DT comparten titulo+tipo Y el MISMO año (o ninguno), TMDB
+    no los pudo separar (homonimos). Leemos el año REAL de la ficha de cada uno para
+    que el dedup posterior MANTENGA separadas las pelis distintas (Suspiria 1977 vs
+    2018) pero siga fundiendo la misma peli en otra calidad. Solo en COLISIONES
+    (raro), acotado al deadline y con tope de fichas -> sin scraping masivo.
+    Devuelve (items, ok): ok=False si queda alguna colision SIN resolver -> el caller
+    NO debe cachear (o cachear poco) para que el siguiente intento lo reintente."""
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for it in items:
+        tn = _et_norm(it.get("title"))
+        if tn:
+            groups[(tn, it.get("kind") or "movie")].append(it)
+    targets = []
+    for g in groups.values():
+        if len(g) < 2:
+            continue
+        if len({str(i.get("year") or "") for i in g}) > 1:
+            continue   # TMDB ya los diferencio por año -> no hace falta tocar DT
+        for it in g:
+            if it.get("source") == "dt" and it.get("content_id"):
+                targets.append(it)
+    if not targets:
+        return items, True
+    if (deadline - _t.time()) < 2.0:   # sin margen -> no resolver y avisar (no cachear)
+        return items, False
+    capped = targets[:cap]
+
+    def _go(it):
+        y = _dt_detail_year(it, deadline, box)
+        if not y:
+            return False
+        old = str(it.get("year") or "")
+        it["year"] = y
+        if y != old:
+            # El poster/sinopsis venian de la query GENERICA (la peli homonima
+            # equivocada -> el remake mostraba el cartel del original). Con el año
+            # real re-enriquecemos para traer la FICHA correcta (poster, nota...).
+            meta = _cat_tmdb(it["title"] + " " + y,
+                             "tv" if it.get("kind") == "serie" else "movie")
+            if meta.get("poster"):
+                it["poster"] = meta["poster"]
+            if meta.get("year"):
+                it["year"] = meta["year"]
+            if meta.get("rating") is not None:
+                it["rating"] = meta["rating"]
+            for k in ("overview", "backdrop", "genres", "tmdb_id"):
+                if meta.get(k):
+                    it[k] = meta[k]
+        return True
+    results = []
+    try:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        # 2 workers = mismo tope que _DT_SEM(2) -> cada ficha consigue su turno en
+        # vez de fallar al instante por contencion del semaforo.
+        with _TPE(max_workers=2) as ex:
+            results = list(ex.map(_go, capped))
+    except Exception:
+        results = []
+    ok = bool(results) and all(results) and len(targets) <= cap
+    return items, ok
 
 
 def _tmdb_alt_titles(q):
@@ -4058,7 +4238,7 @@ def catsearch():
         cent = _catsearch_load().get(qkey)
         if cent:
             _CATSEARCH_CACHE[qkey] = cent
-    if cent and (now - cent["ts"]) < _CATSEARCH_TTL:
+    if cent and (now - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
         return jsonify({"items": cent["items"], "cached": True})
     # --- Single-flight: si una busqueda IDENTICA ya se esta calculando en este
     # worker, NO lanzamos otro fan-out; esperamos su resultado y servimos la cache.
@@ -4078,7 +4258,7 @@ def catsearch():
         # fan-out). Cuando termine, servimos su cache.
         _ev.wait(15.0)
         cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
-        if cent and (_t.time() - cent["ts"]) < _CATSEARCH_TTL:
+        if cent and (_t.time() - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
             return jsonify({"items": cent["items"], "cached": True})
         # el dueño aun no termino (o salio vacio) -> 503 para que el front REINTENTE
         # (no "Sin resultados" en falso); el reintento sera el nuevo dueño.
@@ -4209,15 +4389,29 @@ def catsearch():
             if not dt_items:
                 return jsonify({"items": []})
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
-        merged = _cat_rank_dedup(merged, q)   # dedup versiones + orden por relevancia
-        # Enrich (poster/genero TMDB) ACOTADO al deadline total: con TMDB lento/frio
-        # podia añadir ~5s y pasarse del tope. Si no le da tiempo, devolvemos los
-        # items SIN enriquecer del todo (titulos ya visibles; el front no se cuelga).
-        # El breaker TMDB ya evita que cada llamada cuelgue; esto cierra el peor caso.
-        items = _bounded(lambda: _cat_enrich(merged),
-                         max(1.5, now + 19.5 - _t.time()), merged) or merged
+        # Enrich (poster/AÑO/genero TMDB) ACOTADO al deadline total: con TMDB
+        # lento/frio podia añadir ~5s y pasarse del tope. Si no le da tiempo,
+        # seguimos con los items SIN enriquecer (titulos ya visibles; el front no se
+        # cuelga). El breaker TMDB ya evita que cada llamada cuelgue. Va PRIMERO
+        # porque el dedup necesita el AÑO para no fundir remakes del mismo titulo
+        # (Suspiria 1977 vs 2018); la cache TMDB por titulo hace que enriquecer las
+        # versiones repetidas sea gratis (mismo titulo -> mismo año cacheado).
+        enr = _bounded(lambda: _cat_enrich(merged),
+                       max(1.5, now + 19.5 - _t.time()), merged) or merged
+        # Homonimos (Suspiria 1977 vs 2018): DT no da año en el listado y TMDB le da
+        # el mismo a ambos -> el dedup los fundiria. Si hay choque de titulo, leemos
+        # el año REAL de la ficha DT (la propia funcion gestiona su presupuesto). Si
+        # NO logra resolver la colision (sin margen/box/DT) -> _disok=False y NO se
+        # cachea largo (TTL corto) para que el siguiente intento la resuelva.
+        enr, _disok = _cat_disambiguate_years(enr, now + 18.5, box)
+        items = _cat_rank_dedup(enr, q)   # dedup (titulo+año) + orden por relevancia
         if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
+            # Si una colision de homonimos quedo SIN resolver, TTL corto (90s) -> se
+            # reintenta pronto (y al resolverla se cachea ya el TTL largo), pero sin
+            # machacar (no recalcula en cada pulsacion). Resuelto/limpio -> TTL normal.
             rec = {"items": items, "ts": now}
+            if not _disok:
+                rec["ttl"] = 90
             _CATSEARCH_CACHE[qkey] = rec
             try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
                 disk = _catsearch_load()
@@ -5021,7 +5215,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk15", "now": int(now)}
+    out = {"build": "dtbk20", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5252,6 +5446,34 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .brand{font-weight:800;font-size:19px;display:flex;align-items:center;gap:8px;letter-spacing:.3px}
 .brand .d{width:26px;height:26px;border-radius:9px;background:linear-gradient(145deg,var(--blue2),var(--blue));display:flex;align-items:center;justify-content:center;font-size:15px}
 .code{width:96px;letter-spacing:3px;text-align:center;font-weight:600;background:rgba(255,255,255,.07);border:1px solid var(--stroke);color:var(--txt);border-radius:12px;padding:9px 8px;outline:0}
+/* Selector "Mis Kodis": varios codigos guardados con nombre (Salon, Tablet, PC) */
+.devbtn{display:flex;align-items:center;gap:6px;cursor:pointer;max-width:150px;letter-spacing:.3px;font-weight:600;font-size:13px;background:rgba(255,255,255,.07);border:1px solid var(--stroke);color:var(--txt);border-radius:12px;padding:9px 11px;outline:0}
+.devbtn:active{transform:scale(.98)}
+.devbtn #devname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.devbtn .devcar{opacity:.55;font-size:11px;flex:none}
+.devsheet-h{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 6px;font-size:17px;font-weight:800}
+.devsheet-x{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--sub);width:34px;height:34px;border-radius:50%;font-size:15px;cursor:pointer;flex:none}
+.devsub{color:var(--sub);font-size:12.5px;padding:0 18px 8px;margin-top:-2px}
+.devlist{padding:6px 14px 4px}
+.devempty{color:var(--sub);text-align:center;font-size:14px;padding:14px 8px 18px;line-height:1.6}
+.devrow{display:flex;align-items:center;gap:12px;background:rgba(255,255,255,.05);border:1px solid var(--stroke);border-radius:14px;padding:12px 14px;margin-bottom:9px;cursor:pointer;transition:.15s}
+.devrow:active{transform:scale(.99);background:rgba(255,255,255,.1)}
+.devrow.on{border-color:var(--blue);background:rgba(10,132,255,.14)}
+.devdot{width:10px;height:10px;border-radius:50%;flex:none;background:#52607a}
+.devdot.on{background:#30d158;box-shadow:0 0 7px rgba(48,209,88,.7)}
+.devdot.off{background:#ff453a}
+.devmeta{flex:1;min-width:0}
+.devnm{font-size:15px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.devcc{font-size:12px;color:var(--sub);letter-spacing:2px;font-variant-numeric:tabular-nums;margin-top:2px}
+.deved,.devdel{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
+.deved:active{background:rgba(255,255,255,.14)}
+.devdel:active{background:rgba(255,69,58,.18)}
+.devadd{padding:8px 14px 20px;display:flex;flex-direction:column;gap:9px}
+.devin{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:12px;color:var(--txt);padding:13px 14px;font-size:15px;outline:0;box-sizing:border-box}
+.devin::placeholder{color:var(--sub)}
+.devin.devc{letter-spacing:3px;text-align:center;font-variant-numeric:tabular-nums}
+.devsave{border:0;border-radius:12px;padding:14px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue));cursor:pointer}
+.devsave:active{transform:scale(.99)}
 .tabs{display:flex;background:rgba(255,255,255,.05);border:1px solid var(--stroke);border-radius:14px;padding:4px;margin-bottom:14px}
 .tab{flex:1;border:0;background:transparent;color:var(--sub);font-weight:600;font-size:14px;padding:9px;border-radius:10px;cursor:pointer}
 .tab.on{color:#0b1020;background:#f4f6fb}
@@ -5494,7 +5716,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 <div class="wrap">
  <div class="top">
   <div class="brand"><span class="d">🐺</span> MejorWolf</div>
-  <input id="code" class="code" inputmode="numeric" maxlength="6" placeholder="código">
+  <button id="devbtn" class="devbtn" type="button" onclick="openDevs()" title="Mis Kodis (guarda varios códigos con nombre)">
+   <span id="devname">código</span><span class="devcar">▾</span></button>
+  <input id="code" type="hidden">
  </div>
  <div class="tabs">
   <button id="tab-inicio" class="tab on" onclick="setView('inicio')">Inicio</button>
@@ -5610,6 +5834,18 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 <div class="trm" id="trm" onclick="if(event.target===this)closeTrailer()">
  <div class="frame"><button class="x" onclick="closeTrailer()">✕ Cerrar</button><div id="trm-mount"></div></div>
 </div>
+<div class="sheet" id="devsheet" onclick="if(event.target===this)closeDevs()">
+ <div class="box">
+  <div class="devsheet-h">Mis Kodis <button class="devsheet-x" onclick="closeDevs()">✕</button></div>
+  <div class="devsub">Guarda el código de cada tele/dispositivo y elige a cuál mandar.</div>
+  <div class="devlist" id="devlist"></div>
+  <div class="devadd">
+   <input id="devn" class="devin" placeholder="Nombre (Salón, Tablet, PC…)" maxlength="24" autocomplete="off">
+   <input id="devc" class="devin devc" inputmode="numeric" maxlength="6" placeholder="código de 6 cifras" autocomplete="off">
+   <button class="devsave" onclick="addDev()">Guardar Kodi</button>
+  </div>
+ </div>
+</div>
 <div class="toast" id="toast"></div>
 <script>
 var $=function(s){return document.getElementById(s)};
@@ -5624,8 +5860,12 @@ var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npT
 var ZPOSTER='', TRK='';   // portada para el zoom + clave del trailer (peli/serie)
 var INI={kind:'estrenos',page:1,loading:false,more:true}, OVDATA=null;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
-code.value=localStorage.getItem('mw_code')||'';
-code.oninput=function(){code.value=code.value.replace(/\D/g,'').slice(0,6);localStorage.setItem('mw_code',code.value);if(code.value.length===6){try{mlSync()}catch(e){}}};
+code.value=(localStorage.getItem('mw_code')||'').replace(/\D/g,'').slice(0,6);
+// Migracion suave: si ya habia un codigo de siempre pero aun no hay lista de
+// Kodis, lo sembramos como "Mi Kodi" -> el dispositivo no se pierde al estrenar
+// el selector (loadDevs/saveDevs/refreshDevBtn son declaraciones -> ya hoisted).
+(function(){try{var d=loadDevs();if(!d.length&&code.value.length===6)saveDevs([{name:'Mi Kodi',code:code.value}]);}catch(e){}})();
+refreshDevBtn();
 try{favs=JSON.parse(localStorage.getItem('mw_fav')||'[]')||[]}catch(e){favs=[]}
 function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catch(e){}}
 var seen=[];try{seen=JSON.parse(localStorage.getItem('mw_seen')||'[]')||[]}catch(e){seen=[]}
@@ -5652,6 +5892,59 @@ function mlSync(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)ret
  }).catch(function(){})}
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
+// ---- Mis Kodis: varios codigos guardados con nombre (Salon, Tablet, PC...) ----
+// El codigo ACTIVO sigue en localStorage 'mw_code' y en el input oculto #code, asi
+// TODA la logica de siempre (play/lista/mando/mlSync) no cambia. Aqui solo gestionamos
+// la lista 'mw_devices' y cual esta activo. Cero peticiones a fuentes -> cero baneo.
+function loadDevs(){try{return JSON.parse(localStorage.getItem('mw_devices')||'[]')||[]}catch(e){return []}}
+function saveDevs(d){try{localStorage.setItem('mw_devices',JSON.stringify(d))}catch(e){}}
+function devName(c){var d=loadDevs();for(var i=0;i<d.length;i++){if(d[i].code===c)return d[i].name||''}return ''}
+function refreshDevBtn(){var el=$('devname');if(!el)return;var c=(code.value||'').replace(/\D/g,'');
+ el.textContent=devName(c)||(c.length===6?c:'código')}
+function setActiveCode(c){c=(c||'').replace(/\D/g,'').slice(0,6);code.value=c;
+ try{localStorage.setItem('mw_code',c)}catch(e){}
+ refreshDevBtn();if(c.length===6){try{mlSync()}catch(e){}}}
+function openDevs(){var cur=(code.value||'').replace(/\D/g,'');
+ var dc=$('devc');if(dc)dc.value=(cur.length===6&&!devName(cur))?cur:'';
+ var dn=$('devn');if(dn)dn.value='';
+ renderDevs();$('devsheet').classList.add('on')}
+function closeDevs(){$('devsheet').classList.remove('on')}
+function liveDot(dot,c){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(function(j){
+ dot.className='devdot '+((j&&j.connected)?'on':'off')}).catch(function(){})}
+function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var cur=(code.value||'').replace(/\D/g,'');
+ if(!d.length){wrap.innerHTML='<div class="devempty">Aún no has guardado ningún Kodi.<br>Añade tu salón, tablet o PC aquí abajo 👇</div>';return}
+ wrap.innerHTML='';
+ d.forEach(function(dev){
+  var row=document.createElement('div');row.className='devrow'+(dev.code===cur?' on':'');
+  row.onclick=function(){pickDev(dev.code)};
+  var dot=document.createElement('span');dot.className='devdot';row.appendChild(dot);
+  var meta=document.createElement('div');meta.className='devmeta';
+  var nm=document.createElement('div');nm.className='devnm';nm.textContent=dev.name||'Kodi';meta.appendChild(nm);
+  var cc=document.createElement('div');cc.className='devcc';cc.textContent=dev.code;meta.appendChild(cc);
+  row.appendChild(meta);
+  var ed=document.createElement('button');ed.className='deved';ed.title='Editar nombre';ed.textContent='✏️';
+  ed.onclick=function(e){e.stopPropagation();editDev(dev.code)};
+  row.appendChild(ed);
+  var del=document.createElement('button');del.className='devdel';del.title='Borrar';del.textContent='🗑';
+  del.onclick=function(e){e.stopPropagation();delDev(dev.code)};
+  row.appendChild(del);
+  wrap.appendChild(row);liveDot(dot,dev.code)})}
+function editDev(c){var d=loadDevs(),dev=null;
+ for(var i=0;i<d.length;i++){if(d[i].code===c){dev=d[i];break}}
+ if(!dev)return;var nn=prompt('Nombre para este Kodi:',dev.name||'');
+ if(nn===null)return;nn=nn.trim();if(!nn){toast('El nombre no puede estar vacío');return}
+ dev.name=nn;saveDevs(d);refreshDevBtn();renderDevs();toast('Nombre actualizado ✓')}
+function pickDev(c){setActiveCode(c);renderDevs();toast('Kodi activo: '+(devName(c)||c));setTimeout(closeDevs,220)}
+function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'').replace(/\D/g,'').slice(0,6);
+ if(c.length!==6){toast('El código debe tener 6 cifras');return}
+ if(!n){toast('Ponle un nombre (Salón, Tablet…)');try{$('devn').focus()}catch(e){}return}
+ var d=loadDevs(),found=false;
+ d.forEach(function(dev){if(dev.code===c){dev.name=n;found=true}});
+ if(!found)d.push({name:n,code:c});
+ saveDevs(d);$('devn').value='';$('devc').value='';
+ setActiveCode(c);renderDevs();toast(found?'Kodi actualizado ✓':'Kodi guardado ✓')}
+function delDev(c){if(!confirm('¿Borrar este Kodi de la lista?'))return;
+ saveDevs(loadDevs().filter(function(dev){return dev.code!==c}));renderDevs();refreshDevBtn()}
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
 function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs()}
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
