@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk20",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk21",
                     mimetype="text/plain")
 
 
@@ -5215,7 +5215,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk20", "now": int(now)}
+    out = {"build": "dtbk21", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5981,8 +5981,17 @@ window.addEventListener('scroll',function(){
 function mergeResults(list,g,items){
  if(!items||!items.length)return;
  var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
- var have={};LISTS[list].forEach(function(x){have[norm(x.title)]=1});
- var fresh=items.filter(function(x){var k=norm(x.title);if(!k)return true;if(have[k])return false;have[k]=1;return true});
+ // Dedup por TÍTULO+AÑO (no solo título): los remakes del MISMO título salen LAS DOS
+ // (Suspiria 1977 vs 2018, Dune 1984 vs 2021...) porque el año los separa; la misma
+ // peli repetida entre fuentes (mismo título+año) se funde. Un item SIN año se funde
+ // en cualquier homónimo del mismo título ya presente (evita una tarjeta "pelada" de
+ // otra fuente sin enriquecer). Antes el dedup por título a secas TIRABA el remake
+ // -> en la web solo salía una aunque el relay devolviera las dos.
+ var byKey={},titles={};
+ LISTS[list].forEach(function(x){var t=norm(x.title);if(!t)return;titles[t]=1;byKey[t+'|'+(x.year||'')]=1;});
+ var fresh=items.filter(function(x){var t=norm(x.title);if(!t)return true;var y=String(x.year||'');
+  if(y){var k=t+'|'+y;if(byKey[k])return false;byKey[k]=1;titles[t]=1;return true;}
+  if(titles[t])return false;titles[t]=1;byKey[t+'|']=1;return true;});
  if(!fresh.length)return;
  var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
