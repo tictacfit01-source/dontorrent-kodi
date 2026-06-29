@@ -4438,6 +4438,43 @@ def catsearch():
         _ev.set()
 
 
+@app.get("/catdxsearch")
+def catdxsearch():
+    """DivxTotal DIRECTO desde el relay, en JSON enriquecido, para que el FRONT lo
+    pida EN PARALELO y lo fusione cuando llegue. Por que separado de /catsearch: el
+    dominio actual de DivxTotal (divxtotal.foo) esta BLOQUEADO por el ISP residencial
+    -> ni el box ni la casa lo alcanzan; pero la IP de datacenter de Render SI. Y
+    DivxTotal tarda ~6s (reto Cloudflare), mas que el tope de DX dentro de /catsearch
+    (1.5s) -> ahi nunca entraba. Aqui le damos su tiempo SIN frenar el resultado
+    principal (DT). Cacheado 10 min por query -> no machaca DivxTotal en repeticiones."""
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"items": []})
+    qkey = "dx\x01" + q.lower()
+    now = _t.time()
+    cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
+    if cent and (now - cent.get("ts", 0)) < cent.get("ttl", _CATSEARCH_TTL):
+        _CATSEARCH_CACHE[qkey] = cent
+        return jsonify({"items": cent["items"], "cached": True})
+    items = _bounded(lambda: _dx_search_items(q), 14.0, []) or []
+    if items:
+        items = _bounded(lambda: _cat_enrich(items, limit=40), 6.0, items) or items
+        items = _cat_rank_dedup(items, q)
+        rec = {"items": items, "ts": now}
+        _CATSEARCH_CACHE[qkey] = rec
+        try:   # persistir (compartido entre los 2 workers gthread)
+            disk = _catsearch_load()
+            disk[qkey] = rec
+            if len(disk) > _CATSEARCH_MAX:
+                for k in sorted(disk, key=lambda k: disk[k].get("ts", 0))[
+                        :len(disk) - _CATSEARCH_MAX]:
+                    disk.pop(k, None)
+            _catsearch_save(disk)
+        except Exception:
+            pass
+    return jsonify({"items": items})
+
+
 @app.get("/catetresolve")
 def catetresolve():
     u = (request.args.get("u") or "").strip()
@@ -6126,9 +6163,10 @@ function tfetch(url,ms){var c=('AbortController'in window)?new AbortController()
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='';g.innerHTML=skelGrid();
  var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];_searchSeq++;var seq=_searchSeq;
  var more=$('buscar-more');var boxPend=(cd.length===6)?1:0;var boxAdded=0;var boxTO=false;var wfPend=(cd.length===6);
+ var dxPend=1;   // DivxTotal DIRECTO via Render (siempre; el box/ISP lo bloquea)
  var catState='pending';var wakeAtt=0;  // pending|ok|fail ; intentos de despertar
  function paint(){if(seq!==_searchSeq)return;
-  var waiting=(catState==='pending')||boxPend>0;
+  var waiting=(catState==='pending')||boxPend>0||dxPend>0;
   if(!LISTS.buscar.length){
    // AÚN sin resultados: distinguir relay dormido (reintentando) de vacío real.
    if(catState==='pending'&&wakeAtt>=2){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor…';if(more)more.textContent='';return;}
@@ -6157,11 +6195,18 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
    if(att<6){setTimeout(function(){csTry(att+1)},1200);paint();}
    else{catState='fail';paint();}});}
  csTry(1);
- // SALVAVIDAS solo para el BOX (et/dx/wf): a los 18s cerramos SU espera y pintamos
- // lo que haya. El catsearch tiene su propio reintento, no lo toca este salvavidas.
- setTimeout(function(){if(seq!==_searchSeq)return;if(boxPend>0||wfPend){boxPend=0;wfPend=false;paint();}},18000);
+ // DivxTotal DIRECTO via Render, EN PARALELO: llega tarde (~6s, Cloudflare) y se
+ // fusiona cuando esté -> DX aparece sin frenar a DT. Siempre (no necesita box).
+ dxMerge('buscar',g,q,seq,function(){if(seq!==_searchSeq)return;dxPend=0;paint();});
+ // SALVAVIDAS solo para BOX+DX: a los 18s cerramos SU espera y pintamos lo que haya.
+ // El catsearch tiene su propio reintento, no lo toca este salvavidas.
+ setTimeout(function(){if(seq!==_searchSeq)return;if(boxPend>0||wfPend||dxPend>0){boxPend=0;wfPend=false;dxPend=0;paint();}},18000);
  // EliteTorrent+DivxTotal+WolfMax via box (solo con Kodi/box, code de 6 dígitos).
  if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx',done,seq);boxMerge('buscar',g,'search',q,'wf',doneWf,seq);}}
+function dxMerge(list,g,q,seq,cb){
+ fetch('/catdxsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+  if(seq!==_searchSeq){if(cb)cb();return;}mergeResults(list,g,(d&&d.items)||[]);if(cb)cb();
+ }).catch(function(){if(cb)cb()})}
 function boxMerge(list,g,op,q,srcs,cb,seq){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  fetch(u).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b})}).catch(function(){if(cb)cb({})})}
