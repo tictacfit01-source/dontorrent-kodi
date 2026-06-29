@@ -917,10 +917,62 @@ def _playback_diag():
     }
 
 
+def _enrich_pending(base, kind, resp):
+    """Tras empujar /catfeed, el relay devuelve `pending`: titulos SIN poster TMDB
+    (la IP de datacenter de Render tiene TMDB baneado). Los enriquecemos con
+    NUESTRO TMDB (IP RESIDENCIAL del box, no baneada) y los empujamos a /catenrich
+    -> el Inicio sale en HD (poster + nota + año) aunque Render no pueda con TMDB.
+    Best-effort, acotado y CACHEADO (tmdb del box guarda en disco) -> tras la 1a
+    vuelta el relay rellena solo por content_id y `pending` llega vacio (0 llamadas
+    TMDB). Cualquier fallo: el Inicio degrada a la semilla, igual que hoy."""
+    try:
+        pending = (resp.json() or {}).get("pending") or []
+    except Exception:
+        pending = []
+    if not pending:
+        return 0
+    try:
+        from resources.lib import tmdb
+    except Exception:
+        return 0
+    import requests
+    meta = {}
+    for p in pending[:80]:
+        cid = p.get("cid")
+        title = p.get("title") or ""
+        if not cid or not title:
+            continue
+        k = "tv" if p.get("kind") == "serie" else "movie"
+        try:
+            info = tmdb.enrich(title, k)
+        except Exception:
+            info = None
+        if not info or not info.get("poster"):
+            continue
+        m = {"poster": info.get("poster"), "year": info.get("year"),
+             "rating": info.get("rating"), "overview": info.get("plot"),
+             "backdrop": info.get("fanart")}
+        if info.get("id"):
+            m["tmdb_id"] = info["id"]
+        meta[str(cid)] = m
+    if not meta:
+        return 0
+    try:
+        requests.post(base + "/catenrich",
+                      json={"kind": kind, "meta": meta}, timeout=45)
+        xbmc.log("[MejorWolf/service] catenrich %s -> %d posters HD"
+                 % (kind, len(meta)), xbmc.LOGINFO)
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] catenrich %s ERR: %r" % (kind, e),
+                 xbmc.LOGWARNING)
+    return len(meta)
+
+
 def _prefetch_catalog():
     """Pre-carga los listados de DonTorrent (IP RESIDENCIAL del box) y los empuja
     al relay -> catbrowse los sirve al INSTANTE de cache, aunque DonTorrent tenga
-    baneada la IP de datacenter de Render. Asi Inicio funciona y va rapido."""
+    baneada la IP de datacenter de Render. Asi Inicio funciona y va rapido.
+    Ademas ENRIQUECE con TMDB (IP residencial) lo que el relay no pudo -> Inicio HD."""
     try:
         from resources.lib import scraper_dontorrent as dt
         base = _relay_base()
@@ -938,6 +990,7 @@ def _prefetch_catalog():
                                       timeout=45)
                     if r.status_code == 200:
                         n += 1
+                        _enrich_pending(base, kind, r)   # Inicio HD via TMDB del box
                     else:
                         xbmc.log("[MejorWolf/service] catfeed %s HTTP %d: %s"
                                  % (kind, r.status_code, (r.text or "")[:140]),

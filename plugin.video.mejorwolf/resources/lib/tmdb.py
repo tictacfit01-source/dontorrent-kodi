@@ -330,6 +330,9 @@ def enrich(title, kind="movie", alt_title_fn=None):
         "title": top.get("title") or top.get("name"),
         # Titulo original (ingles normalmente): util como candidato alternativo.
         "original": top.get("original_title") or top.get("original_name"),
+        # id de TMDB: permite a la ficha pedir trailer/generos perezosamente
+        # (/catmeta) y enriquecer el Inicio empujado por el box (/catenrich).
+        "id": top.get("id"),
     }
     _cache_put(cache_key, out)
     return out

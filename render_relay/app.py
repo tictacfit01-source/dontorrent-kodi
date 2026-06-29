@@ -4901,6 +4901,70 @@ def _seed_meta_index():
     return _SEED_META_INDEX[0]
 
 
+# Cache de ENRICH por content_id CONSTRUIDA desde lo que el BOX enriquece (su IP
+# residencial SI alcanza TMDB; la de Render esta baneada). El box recibe `pending`
+# en la respuesta de /catfeed, enriquece esos titulos y empuja /catenrich con
+# {content_id: meta}. Aqui se acumula -> los siguientes /catfeed rellenan poster HD
+# + nota + año al INSTANTE por content_id (sin tocar TMDB desde Render), aunque el
+# box tarde en re-enriquecer. Persistente en /tmp (compartida entre workers); se
+# pierde en deploy (la SEMILLA del repo es el suelo que sobrevive) -> promovible a
+# la semilla con /catdump. Solo memoriza entradas con poster de TMDB.
+_CAT_ENRICH_FILE = "/tmp/mw_cat_enrich.json"
+_CAT_ENRICH_MAX = 4000     # tope de content_ids (Render 512MB)
+_CAT_ENRICH_KEYS = ("poster", "year", "rating", "overview",
+                    "backdrop", "genres", "tmdb_id")
+
+
+def _cat_enrich_load():
+    try:
+        with open(_CAT_ENRICH_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _cat_enrich_store(meta):
+    """Mezcla {content_id: meta} (solo entradas con poster TMDB) en la cache de
+    disco, bajo lock entre procesos. Devuelve cuantas entradas se guardaron."""
+    n = 0
+    with _FileLock(_CAT_ENRICH_FILE):
+        d = _cat_enrich_load()
+        for cid, m in (meta or {}).items():
+            if not isinstance(m, dict):
+                continue
+            if "image.tmdb.org" not in (m.get("poster") or ""):
+                continue
+            d[str(cid)] = {k: m[k] for k in _CAT_ENRICH_KEYS if m.get(k) is not None}
+            n += 1
+        if len(d) > _CAT_ENRICH_MAX:   # no crecer sin limite
+            for k in list(d.keys())[:-_CAT_ENRICH_MAX]:
+                d.pop(k, None)
+        try:
+            tmp = _CAT_ENRICH_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _CAT_ENRICH_FILE)
+        except Exception:
+            pass
+    return n
+
+
+def _cat_apply_meta(it, sm):
+    """Aplica un meta TMDB (de la semilla o de la cache de enrich del box) a un
+    item del Inicio: poster HD + año + nota + (overview/backdrop/genres/tmdb_id si
+    faltan). Devuelve True si puso un poster de TMDB."""
+    if not sm or "image.tmdb.org" not in (sm.get("poster") or ""):
+        return False
+    it["poster"] = sm["poster"]
+    it["year"] = it.get("year") or sm.get("year")
+    if it.get("rating") is None:
+        it["rating"] = sm.get("rating")
+    for k in ("overview", "backdrop", "genres", "tmdb_id"):
+        if sm.get(k) is not None and not it.get(k):
+            it[k] = sm[k]
+    return True
+
+
 def _catsearch_load():
     try:
         with open(_CATSEARCH_FILE, "r", encoding="utf-8") as f:
@@ -5026,14 +5090,17 @@ def catfeed():
     # (TMDB le banea la IP) -> sin esto el Inicio se DEGRADABA a la caratula propia
     # no-HD. No depende del hilo de fondo (que en Render free puede no completar).
     seed_idx = _seed_meta_index()
+    enr_idx = _cat_enrich_load()    # cache TMDB por content_id construida por el BOX
+    pending = []                    # items sin poster TMDB -> el box los enriquece
     for it in raw:
-        sm = seed_idx.get(it.get("content_id"))
-        if sm and sm.get("poster"):
-            it["poster"] = sm["poster"]
-            it["year"] = it.get("year") or sm.get("year")
-            it["rating"] = sm.get("rating")
-        elif not it.get("poster"):
-            it["poster"] = it.get("thumb")
+        cid = it.get("content_id")
+        sm = seed_idx.get(cid) or enr_idx.get(str(cid))
+        if not _cat_apply_meta(it, sm):
+            if not it.get("poster"):
+                it["poster"] = it.get("thumb")
+            if len(pending) < 80:    # candidatos a enrich por el box (TMDB no baneado)
+                pending.append({"cid": cid, "title": it.get("title"),
+                                "kind": it.get("kind")})
     rec = {"items": raw, "ts": _t.time()}
     _CATBROWSE_CACHE[key] = rec
     _CATFEED_LAST[kind] = _t.time()
@@ -5056,7 +5123,48 @@ def catfeed():
         except Exception:
             pass
     _thr.Thread(target=_bg_enrich, daemon=True).start()
-    return jsonify({"ok": True, "items": len(raw), "bg": True})
+    # `pending`: titulos sin poster TMDB para que el BOX (IP residencial) los
+    # enriquezca y los empuje a /catenrich. El box ANTIGUO ignora este campo
+    # (sigue funcionando con la semilla + el bg-enrich) -> backward-compatible.
+    return jsonify({"ok": True, "items": len(raw), "bg": True, "pending": pending})
+
+
+@app.post("/catenrich")
+def catenrich():
+    """El BOX enriquece con SU TMDB (IP residencial; Render lo tiene baneado) los
+    titulos que /catfeed devolvio en `pending` y los empuja aqui:
+        {kind, meta:{content_id: {poster, year, rating, overview, backdrop,
+                                  genres, tmdb_id}}}
+    Lo aplicamos por content_id a la cache del Inicio de ese kind (sin tocar TMDB
+    desde Render) y lo acumulamos en la cache de enrich -> el Inicio sale en HD
+    aunque la IP de Render este baneada por TMDB, y los proximos /catfeed se
+    rellenan solos por content_id."""
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    kind = (body.get("kind") or "").strip().lower()
+    meta = body.get("meta")
+    if kind not in _CAT_BROWSE or not isinstance(meta, dict):
+        return jsonify({"ok": False}), 400
+    saved = _cat_enrich_store(meta)             # acumula (persistente)
+    key = "%s:1" % kind
+    applied = 0
+    with _FileLock(_CATBROWSE_FILE):            # RMW seguro de la cache del Inicio
+        rec = _CATBROWSE_CACHE.get(key) or _catbrowse_load().get(key)
+        if rec and rec.get("items"):
+            for it in rec["items"]:
+                m = meta.get(str(it.get("content_id")))
+                if _cat_apply_meta(it, m):
+                    applied += 1
+            _CATBROWSE_CACHE[key] = rec
+            try:
+                disk = _catbrowse_load()
+                disk[key] = rec
+                _catbrowse_save(disk)
+            except Exception:
+                pass
+    return jsonify({"ok": True, "saved": saved, "applied": applied})
 
 
 _CAT_META_CACHE = {}
