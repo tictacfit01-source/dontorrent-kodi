@@ -5645,7 +5645,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .grid.lv .m .t{-webkit-line-clamp:1;font-size:14px}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden;transition:.15s}
 .card:active{transform:scale(.97)}
-.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320 center/cover no-repeat;cursor:pointer}
+.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320;cursor:pointer}
+/* carga PEREZOSA real: el navegador solo baja los posters visibles (loading=lazy);
+   antes iban como background-image inline -> el Inicio (scroll infinito) descargaba
+   TODAS las caratulas aunque estuvieran fuera de pantalla. */
+.card .ph .pimg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;border:0}
 .card .noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:8px;text-align:center;font-size:12px;color:var(--sub)}
 .card .tl{position:absolute;top:6px;left:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-start;z-index:1}
 .card .q{background:rgba(10,132,255,.85);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700}
@@ -5906,7 +5910,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 <div class="npbar" id="npbar" onclick="openRemote()">
  <div class="np-prog-wrap"><div class="np-prog" id="np-prog"></div></div>
  <div class="np-row"><div class="np-t" id="np-t"></div>
-  <button class="np-pp" id="np-pp" onclick="event.stopPropagation();cmd('playpause')"><svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg></button></div>
+  <button class="np-pp" id="np-pp" onclick="event.stopPropagation();pp()"><svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg></button></div>
 </div>
 <div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
  <div class="box">
@@ -5948,7 +5952,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div class="media">
    <div class="rb sk" onclick="cmd('seek_back')">-10<small>s</small></div>
    <div class="rb stop" onclick="cmd('stop')"><svg width="22" height="22" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg></div>
-   <div class="rb play" id="rm-pp" onclick="cmd('playpause')"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg></div>
+   <div class="rb play" id="rm-pp" onclick="pp()"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg></div>
    <div class="rb sk" onclick="cmd('seek_fwd')">+30<small>s</small></div>
   </div>
   <div class="jump">
@@ -6015,7 +6019,7 @@ var NP_PAUSE='<svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" 
 var EYE_OFF='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
 var EYE_ON='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C6 4.5 2.2 11.2 2.05 11.5a1 1 0 0 0 0 .9C2.2 12.8 6 19.5 12 19.5s9.8-6.7 9.95-7a1 1 0 0 0 0-.9C21.8 11.2 18 4.5 12 4.5Zm0 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>';
 function clk(d){return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
-var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='', lastPlayTs=0;
+var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='', lastPlayTs=0, npPaused=false;
 var ZPOSTER='', TRK='';   // portada para el zoom + clave del trailer (peli/serie)
 var INI={kind:'estrenos',page:1,loading:false,more:true}, OVDATA=null;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
@@ -6214,13 +6218,13 @@ function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();var b=$('vt
 function applyView(){var lv=localStorage.getItem('mw_lv')==='1';var g=$('lista-grid');if(g){var grid=g.querySelector('.grid');if(grid)grid.classList.toggle('lv',lv)}var b=$('vtog');if(b)b.innerHTML=lv?'▦ Vista cuadrícula':'☰ Vista lista'}
 function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')==='1'?'0':'1');applyView()}
 function cardHTML(x,list,i){
- var bg=x.poster?(' style="background-image:url('+x.poster+')"'):'';
+ var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" src="'+esc(x.poster)+'">'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
  var q='<div class="tl">'+(x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'')+'</div>';
  var kt='<div class="kindtag">'+kindLabel(x.kind)+'</div>';
  var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
- return '<div class="card"><div class="ph"'+bg+' onclick="openItem(\''+list+'\','+i+')">'+noimg+q+kt+src+
+ return '<div class="card"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
 function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';for(var i=0;i<items.length;i++)h+=cardHTML(items[i],list,i);h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0)}
@@ -6444,9 +6448,14 @@ function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){to
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}
 function fmt(s){s=Math.max(0,s||0);var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60);return (h?h+':':'')+(h?('0'+m).slice(-2):m)+':'+('0'+x).slice(-2)}
+// Play/pausa OPTIMISTA: al pulsar, volteamos el icono YA (sin esperar al sondeo)
+// -> el mando se siente instantaneo. El proximo pollNow (<=0.5s, lo dispara cmd)
+// confirma el estado real y corrige si hiciera falta.
+function applyPP(){var a=$('np-pp');if(a)a.innerHTML=npPaused?NP_PLAY:NP_PAUSE;var b=$('rm-pp');if(b)b.innerHTML=npPaused?SVG_PLAY:SVG_PAUSE;}
+function pp(){npPaused=!npPaused;applyPP();cmd('playpause');}
 function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000);return}
  fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(d){var np=d&&d.np;var bar=$('npbar');
-  if(np&&np.title){bar.classList.add('on');var _fb=$('fab');if(_fb)_fb.style.display='none';var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
+  if(np&&np.title){bar.classList.add('on');npPaused=!!np.paused;var _fb=$('fab');if(_fb)_fb.style.display='none';var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
    var fin='';if(!np.paused&&np.total>0)fin=clk(new Date(Date.now()+(np.total-np.elapsed)*1000));
    $('np-t').textContent=np.title+(fin?(' · Finaliza '+fin):'');
    $('np-prog').style.width=pct+'%';$('np-pp').innerHTML=np.paused?NP_PLAY:NP_PAUSE;
@@ -6454,8 +6463,12 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
    $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');
    $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
   else{bar.classList.remove('on');var _fb2=$('fab');if(_fb2)_fb2.style.display='';if($('remote').classList.contains('on')){$('rm-t').textContent='Preparando en la tele…';$('rm-time').textContent='';$('rm-fin').textContent='';}}
-  clearTimeout(npTimer);npTimer=setTimeout(pollNow,3000);
- }).catch(function(){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000)})}
+  // Sondeo AGIL (3s) solo si hay algo en marcha o el mando esta abierto (el usuario
+  // espera ver arrancar). IDLE navegando el catalogo -> 12s: menos bateria, menos
+  // datos y menos carga al relay gratis. Un play vuelve a 3s (cmd dispara pollNow).
+  var act=(np&&np.title)||$('remote').classList.contains('on');
+  clearTimeout(npTimer);npTimer=setTimeout(pollNow,act?3000:12000);
+ }).catch(function(){var act=$('npbar').classList.contains('on')||$('remote').classList.contains('on');clearTimeout(npTimer);npTimer=setTimeout(pollNow,act?4000:12000)})}
 function openRemote(){$('remote').classList.add('on');navOpen('remote',closeRemote)}
 function closeRemote(fb){$('remote').classList.remove('on');if(!fb)navClose('remote')}
 function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
