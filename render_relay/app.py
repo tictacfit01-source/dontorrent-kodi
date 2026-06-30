@@ -5819,6 +5819,24 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .skln.s2{width:60%;height:9px;margin-bottom:9px}
 .shim::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);animation:shm 1.15s infinite}
 @keyframes shm{100%{transform:translateX(100%)}}
+/* ===== Seguir viendo (carrusel horizontal arriba del Inicio) ===== */
+.cw-sec{margin:0 0 18px}
+.cw-h{display:flex;align-items:center;justify-content:space-between;margin:0 0 10px}
+.cw-h .t{font-size:15px;font-weight:800;letter-spacing:.2px}
+.cw-row{display:flex;gap:11px;overflow-x:auto;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;padding-bottom:4px;scrollbar-width:none}
+.cw-row::-webkit-scrollbar{display:none}
+.cw-card{flex:0 0 auto;width:128px;scroll-snap-align:start;cursor:pointer;transition:.15s}
+.cw-card:active{transform:scale(.97)}
+.cw-ph{position:relative;width:100%;aspect-ratio:2/3;border-radius:13px;overflow:hidden;background:#0e1320;border:1px solid var(--stroke)}
+.cw-ph img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.cw-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:44px;height:44px;border-radius:50%;background:rgba(8,10,16,.6);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;color:#fff;border:1px solid rgba(255,255,255,.35)}
+.cw-play svg{display:block;margin-left:2px}
+.cw-x{position:absolute;top:5px;right:5px;width:26px;height:26px;border-radius:50%;background:rgba(0,0,0,.5);color:#fff;border:0;display:flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer;z-index:2}
+.cw-x:active{transform:scale(.9)}
+.cw-bar{position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(255,255,255,.2)}
+.cw-bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue2),var(--blue))}
+.cw-t{font-size:12px;font-weight:600;line-height:1.25;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cw-lab{font-size:11px;color:var(--sub);margin-top:1px}
 /* ===== Ficha enriquecida (hero + sinopsis + generos + trailer) ===== */
 .sh-hero{position:relative;min-height:172px;background:#0e1320 center/cover no-repeat;border-radius:20px 20px 0 0}
 .sh-hero .grad{position:absolute;inset:0;border-radius:20px 20px 0 0;background:linear-gradient(180deg,rgba(14,19,32,.12) 0%,rgba(14,19,32,.55) 55%,#0e1320 100%)}
@@ -5886,6 +5904,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <button class="shared-x" onclick="closeShared()">&times;</button>
  </div></div>
  <section id="pane-inicio" class="pane">
+  <div id="cw-sec" class="cw-sec" style="display:none"></div>
   <div class="chips">
    <button class="chip on" data-k="estrenos" onclick="chip('estrenos')">Estrenos</button>
    <button class="chip" data-k="peliculas" onclick="chip('peliculas')">Cine</button>
@@ -6035,6 +6054,49 @@ var seen=[];try{seen=JSON.parse(localStorage.getItem('mw_seen')||'[]')||[]}catch
 function saveSeen(){try{localStorage.setItem('mw_seen',JSON.stringify(seen))}catch(e){}}
 function isSeen(id){return seen.indexOf(String(id))>=0}
 function toggleSeen(id){id=String(id);var i=seen.indexOf(id);if(i>=0)seen.splice(i,1);else seen.unshift(id);saveSeen()}
+// ===== "Seguir viendo": lo ultimo que empezaste, con barra de progreso, para
+// retomarlo sin volver a buscarlo. Se captura al pulsar Reproducir (resumeStart)
+// y el progreso se actualiza desde el sondeo del box (resumeTick: np.elapsed/total).
+// Todo en localStorage 'mw_resume' -> cero peticiones a fuentes, cero baneo. =====
+var CW_PLAY='<svg width="20" height="20" viewBox="0 0 24 24"><path d="M8 5 L19 12 L8 19 Z" fill="currentColor"/></svg>';
+var RESUME=[];try{RESUME=JSON.parse(localStorage.getItem('mw_resume')||'[]')||[]}catch(e){RESUME=[]}
+var _resumeKey=null,_cwList=[];
+function saveResume(){try{localStorage.setItem('mw_resume',JSON.stringify(RESUME.slice(0,16)))}catch(e){}}
+function resumeUpsert(rec){for(var i=0;i<RESUME.length;i++){if(RESUME[i].key===rec.key){RESUME.splice(i,1);break}}RESUME.unshift(rec);if(RESUME.length>16)RESUME.length=16;saveResume()}
+function resumeDrop(key){for(var i=0;i<RESUME.length;i++){if(RESUME[i].key===key){RESUME.splice(i,1);break}}saveResume()}
+// item = objeto peli/serie (title,poster,kind,content_id/url/path); label = episodio (series); ref = lo que se manda al box.
+function resumeStart(item,label,ref){if(!item||!ref)return;
+ var id=item.content_id||item.url||item.path||item.title||'';
+ var key=(item.kind||'movie')+':'+id;_resumeKey=key;
+ resumeUpsert({key:key,title:item.title||ref.t||'',label:label||'',poster:item.poster||'',kind:item.kind||'movie',ref:ref,pos:0,total:0,ts:Date.now()});
+ try{renderResume()}catch(e){}}
+// En cada sondeo con reproduccion viva: actualiza el progreso del registro activo
+// (o lo re-empareja por titulo tras recargar). Al 93% lo da por terminado -> fuera.
+function resumeTick(np){if(!np||!np.title)return;var key=_resumeKey,i;
+ if(!key){var nt=np.title.toLowerCase();for(i=0;i<RESUME.length;i++){var t=(RESUME[i].title||'').toLowerCase();if(t&&nt.indexOf(t)>=0){key=RESUME[i].key;_resumeKey=key;break}}}
+ if(!key)return;
+ for(i=0;i<RESUME.length;i++){if(RESUME[i].key===key){
+  RESUME[i].pos=Math.max(0,np.elapsed||0);if(np.total>0)RESUME[i].total=np.total;RESUME[i].ts=Date.now();
+  if(RESUME[i].total>0&&RESUME[i].pos/RESUME[i].total>=0.93){RESUME.splice(i,1);_resumeKey=null}
+  saveResume();break}}}
+function renderResume(){var sec=$('cw-sec');if(!sec)return;
+ _cwList=RESUME.filter(function(r){return r&&r.ref&&(r.title||r.label)});
+ if(!_cwList.length){sec.style.display='none';sec.innerHTML='';return}
+ var h='<div class="cw-h"><span class="t">▶ Seguir viendo</span></div><div class="cw-row">';
+ for(var i=0;i<_cwList.length;i++){var r=_cwList[i];
+  var pct=(r.total>0)?Math.min(100,Math.round(r.pos/r.total*100)):0;
+  var img=r.poster?('<img loading="lazy" decoding="async" alt="" src="'+esc(r.poster)+'">'):'';
+  h+='<div class="cw-card" onclick="resumePlay('+i+')">'+
+      '<div class="cw-ph">'+img+
+       '<button class="cw-x" onclick="event.stopPropagation();resumeRemove('+i+')" title="Quitar de la lista">✕</button>'+
+       '<div class="cw-play">'+CW_PLAY+'</div>'+
+       '<div class="cw-bar"><i style="width:'+pct+'%"></i></div></div>'+
+      '<div class="cw-t">'+esc(r.title||r.label)+'</div>'+
+      (r.label&&r.title?('<div class="cw-lab">'+esc(r.label)+'</div>'):'')+
+     '</div>';}
+ h+='</div>';sec.innerHTML=h;sec.style.display=''}
+function resumePlay(i){var r=_cwList[i];if(!r||!r.ref)return;_resumeKey=r.key;sendPlay(r.ref)}
+function resumeRemove(i){var r=_cwList[i];if(!r)return;resumeDrop(r.key);renderResume()}
 function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
 function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
@@ -6109,7 +6171,7 @@ function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'')
 function delDev(c){if(!confirm('¿Borrar este Kodi de la lista?'))return;
  saveDevs(loadDevs().filter(function(dev){return dev.code!==c}));renderDevs();refreshDevBtn()}
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
-function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs()}
+function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs();if(v==='inicio'){try{renderResume()}catch(e){}}}
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
  INI={kind:kind,page:1,loading:false,more:true};
  var g=$('inicio-grid');g.className='';g.innerHTML=skelGrid();
@@ -6362,13 +6424,13 @@ var sharedPlay=null;
 function showShared(t){$('shared-t').textContent=t||'Compartido';$('shared').classList.add('on');navOpen('shared',closeShared)}
 function playShared(){if(sharedPlay&&sendPlay(sharedPlay))closeShared()}
 function closeShared(fb){$('shared').classList.remove('on');if(!fb)navClose('shared')}
-function play(){if(!sel)return;
- if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
+function play(){if(!sel)return;var _x=sel;
+ if(_x.source&&_x.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
   toast('Resolviendo en tu box…');
-  fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
-   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
+  fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(_x.source)+'&url='+encodeURIComponent(_x.url||_x.content_id)).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.link){var ref={a:'pl',u:d.link,t:_x.title};if(sendPlay(ref)){resumeStart(_x,'',ref);closeSheet()}}else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
- var _x=sel;seedGate(_x.content_id,_x.tabla||'peliculas',function(){if(sendPlay({a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title}))closeSheet()})}
+ seedGate(_x.content_id,_x.tabla||'peliculas',function(){var ref={a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title};if(sendPlay(ref)){resumeStart(_x,'',ref);closeSheet()}})}
 function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
  if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
@@ -6441,9 +6503,12 @@ function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var ro
 function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(function(e){return (e.season||0)===s});
  var allseen=eps.every(function(e){return isSeen(e.content_id)});
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
-function playEp(id){var e=EPS[id];if(!e)return;
- if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim()}))closeOv();return}
- var ttl=(SHOW+' '+e.label).trim();seedGate(e.content_id,e.tabla||'series',function(){if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:ttl}))closeOv()})}
+// objeto-resumen de la SERIE abierta (para "Seguir viendo": nombre de serie + poster)
+function _seriesMeta(){var sx=(OVDATA&&OVDATA.x)||sel||{};var d=(OVDATA&&OVDATA.d)||{};
+ return {title:SHOW||sx.title||'',poster:d.poster||sx.poster||'',kind:'serie',content_id:sx.content_id,url:sx.url,path:sx.path};}
+function playEp(id){var e=EPS[id];if(!e)return;var sm=_seriesMeta();
+ if(e.link){var ref={a:'pl',u:e.link,t:(SHOW+' '+e.label).trim()};if(sendPlay(ref)){resumeStart(sm,e.label,ref);closeOv()}return}
+ var ttl=(SHOW+' '+e.label).trim();seedGate(e.content_id,e.tabla||'series',function(){var ref={a:'dt',c:e.content_id,tb:e.tabla,t:ttl};if(sendPlay(ref)){resumeStart(sm,e.label,ref);closeOv()}})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}
@@ -6461,7 +6526,7 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
    $('np-prog').style.width=pct+'%';$('np-pp').innerHTML=np.paused?NP_PLAY:NP_PAUSE;
    $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+(np.total?(' / '+fmt(np.total)):'');
    $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');
-   $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
+   $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;try{resumeTick(np)}catch(e){}}
   else{bar.classList.remove('on');var _fb2=$('fab');if(_fb2)_fb2.style.display='';if($('remote').classList.contains('on')){$('rm-t').textContent='Preparando en la tele…';$('rm-time').textContent='';$('rm-fin').textContent='';}}
   // Sondeo AGIL (3s) solo si hay algo en marcha o el mando esta abierto (el usuario
   // espera ver arrancar). IDLE navegando el catalogo -> 12s: menos bateria, menos
@@ -6470,7 +6535,7 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,act?3000:12000);
  }).catch(function(){var act=$('npbar').classList.contains('on')||$('remote').classList.contains('on');clearTimeout(npTimer);npTimer=setTimeout(pollNow,act?4000:12000)})}
 function openRemote(){$('remote').classList.add('on');navOpen('remote',closeRemote)}
-function closeRemote(fb){$('remote').classList.remove('on');if(!fb)navClose('remote')}
+function closeRemote(fb){$('remote').classList.remove('on');if(!fb)navClose('remote');try{renderResume()}catch(e){}}
 function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
  if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
@@ -6482,7 +6547,7 @@ $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
  else if(pl==='pl'&&p.get('u')){sharedPlay={a:'pl',u:p.get('u'),t:t};showShared(t);}
  else if(p.get('find')){setView('buscar');$('q').value=p.get('find');go();}
 }catch(e){}})();
-chip('estrenos');pollNow();
+chip('estrenos');try{renderResume()}catch(e){}pollNow();
 try{mlSync()}catch(e){}   // trae/respalda la lista de deseados si ya hay codigo
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){})}
 </script></body></html>"""
