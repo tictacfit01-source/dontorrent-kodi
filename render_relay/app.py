@@ -6095,7 +6095,10 @@ function renderResume(){var sec=$('cw-sec');if(!sec)return;
       (r.label&&r.title?('<div class="cw-lab">'+esc(r.label)+'</div>'):'')+
      '</div>';}
  h+='</div>';sec.innerHTML=h;sec.style.display=''}
-function resumePlay(i){var r=_cwList[i];if(!r||!r.ref)return;_resumeKey=r.key;sendPlay(r.ref)}
+function resumePlay(i){var r=_cwList[i];if(!r||!r.ref)return;_resumeKey=r.key;
+ var ref={};for(var k in r.ref){ref[k]=r.ref[k]}
+ var pos=Math.floor(r.pos||0);ref.resume=pos>15?(pos-8):0;   // reanuda ~8s antes del corte
+ sendPlay(ref)}
 function resumeRemove(i){var r=_cwList[i];if(!r)return;resumeDrop(r.key);renderResume()}
 function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
@@ -6434,6 +6437,7 @@ function play(){if(!sel)return;var _x=sel;
 function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
  if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
+ if(ref.resume>5)body.resume=ref.resume;   // "Seguir viendo": reanudar al segundo exacto (el box hace el seek)
  toast('Enviando a la tele...');
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
