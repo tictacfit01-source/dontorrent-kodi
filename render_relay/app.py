@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk27",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk28",
                     mimetype="text/plain")
 
 
@@ -1976,13 +1976,24 @@ def _dx_probe(domain):
     return None
 
 
-def _dx_domain():
+def _dx_domain(force_probe=False):
     now = _t.time()
-    if _DX_DOM_CACHE["dom"] and now - _DX_DOM_CACHE["ts"] < _DX_DOM_TTL:
-        return _DX_DOM_CACHE["dom"]
-    # Orden de prueba: dominio aprendido (persistido) primero -> ruta rapida; luego
-    # la lista conocida. _dx_probe aprende el host final si hubo redireccion.
     saved = _dx_load_domain()
+    if not force_probe:
+        if _DX_DOM_CACHE["dom"] and now - _DX_DOM_CACHE["ts"] < _DX_DOM_TTL:
+            return _DX_DOM_CACHE["dom"]
+        if saved:
+            # CONFIAR en el dominio persistido SIN re-sondear. El probe es otra
+            # conexion que puede caer en el TARPIT de Cloudflare (goteo lento
+            # aleatorio a IPs de datacenter que evade el timeout de requests):
+            # cada worker frio pagaba su sondeo-loteria y el presupuesto de la
+            # busqueda (14s) se esfumaba. Si el dominio ya roto, el fetch falla
+            # y el llamante re-entra con force_probe=True -> ahi si se sondea.
+            _DX_DOM_CACHE["dom"] = saved
+            _DX_DOM_CACHE["ts"] = now
+            return saved
+    # Descubrimiento: dominio aprendido primero, luego la lista conocida.
+    # _dx_probe aprende el host final si hubo redireccion.
     cand = ([saved] if saved else []) + [d for d in _DX_DOMAINS if d != saved]
     for d in cand:
         real = _dx_probe(d)
@@ -2008,8 +2019,7 @@ def dxsearch():
     html1 = _dx_get(f"https://{dom}/?s={qq}")
     if not html1:
         # un reintento resolviendo dominio de cero (por si rotó)
-        _DX_DOM_CACHE["ts"] = 0.0
-        dom = _dx_domain()
+        dom = _dx_domain(force_probe=True)
         html1 = _dx_get(f"https://{dom}/?s={qq}")
     if not html1:
         return Response("", status=502,
@@ -2140,10 +2150,20 @@ def _dx_search_items_inner(q, max_pages=5, proxy=False):
             _dx_mark(False)
         return []
     qq = _q(q)
-    html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy)
+    url1 = f"https://{dom}/?s={qq}"
+    if proxy:
+        html1 = _dx_get(url1, proxy=True)
+    else:
+        # Cloudflare TARPITEA al azar conexiones desde la IP de Render (goteo
+        # lento que evade el timeout de requests: cada byte reinicia el reloj).
+        # Tope duro CORTO + reintento en conexion NUEVA = redibujar la loteria
+        # (misma peticion iba en 1-2s o colgaba 60s segun la conexion que
+        # tocara). 2 intentos de 5s caben de sobra en el presupuesto de 14s.
+        html1 = _bounded(lambda: _dx_get(url1), 5.0, None)
+        if not html1:
+            html1 = _bounded(lambda: _dx_get(url1), 5.0, None)
     if not html1:
-        _DX_DOM_CACHE["ts"] = 0.0
-        dom = _dx_domain()
+        dom = _dx_domain(force_probe=True)   # ¿roto el dominio? re-sondear
         html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy) if dom else None
     if not html1:
         if not proxy:
@@ -2163,7 +2183,12 @@ def _dx_search_items_inner(q, max_pages=5, proxy=False):
         from concurrent.futures import ThreadPoolExecutor as _TPE
 
         def _fp(p):
-            return _dx_get(f"https://{dom}/page/{p}/?s={qq}", proxy=proxy) or ""
+            u = f"https://{dom}/page/{p}/?s={qq}"
+            if proxy:
+                return _dx_get(u, proxy=True) or ""
+            # tope duro por pagina: UNA conexion tarpiteada no bloquea el map
+            # entero (mejor perder una pagina que toda la busqueda)
+            return _bounded(lambda: _dx_get(u), 5.0, "") or ""
         with _TPE(max_workers=min(5, max_page - 1)) as ex:
             parts.extend(ex.map(_fp, range(2, max_page + 1)))
     items, seen = [], set()
@@ -2285,8 +2310,7 @@ def _dx_browse_items(kind, page=1):
     url = base if page <= 1 else (base.rstrip("/") + f"/page/{page}/")
     html = _dx_get(url)
     if not html:
-        _DX_DOM_CACHE["ts"] = 0.0          # por si el dominio rotó
-        dom = _dx_domain()
+        dom = _dx_domain(force_probe=True)   # por si el dominio rotó
         url = (f"https://{dom}/{section}/" if section else f"https://{dom}/")
         url = url if page <= 1 else (url.rstrip("/") + f"/page/{page}/")
         html = _dx_get(url) if dom else None
@@ -5428,7 +5452,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk27", "now": int(now)}
+    out = {"build": "dtbk28", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -6587,6 +6611,14 @@ def _self_keepalive():
     url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     while True:
         _warm_dt()
+        try:
+            # Descubrir el dominio de DivxTotal en 2o plano tras cada deploy
+            # (/tmp borrado): asi el sondeo-loteria (tarpit de Cloudflare) lo
+            # paga este hilo, nunca la busqueda de un usuario.
+            if not _dx_load_domain():
+                _dx_domain(force_probe=True)
+        except Exception:
+            pass
         if url:
             try:
                 requests.get(url + "/ping", timeout=20,
