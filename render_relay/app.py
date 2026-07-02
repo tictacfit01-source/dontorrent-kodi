@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk24",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk25",
                     mimetype="text/plain")
 
 
@@ -1005,23 +1005,6 @@ def _dt_anubis_session(domain, force=False):
     _DT_COOKIES[domain] = ent
     _dt_cookies_persist(domain, ent)   # comparte con el otro worker (no repaga PoW)
     return s, True
-
-
-def _dt_pick_domain(preferred=None):
-    """Selecciona un dominio DT activo. preferred va primero."""
-    candidates = []
-    if preferred:
-        candidates.append(preferred)
-    candidates.extend(d for d in DT_FALLBACK if d != preferred)
-    for d in candidates:
-        try:
-            r = requests.head(f"https://{d}/", timeout=8,
-                              headers=BROWSER_HEADERS, allow_redirects=False)
-            if r.status_code in (200, 302, 301):
-                return d
-        except Exception:
-            continue
-    return preferred or candidates[0]
 
 
 @app.route("/dtsearch", methods=["GET", "POST"])
@@ -3001,15 +2984,20 @@ def _rate_ok(ip):
     if len(q) >= _RL_MAX:
         return False
     q.append(now)
-    if len(_RL) > 800:        # poda para no crecer sin limite
-        _RL.clear()
+    if len(_RL) > 800:        # poda SOLO IPs inactivas: limpiar TODO reseteaba
+        for k, v in list(_RL.items()):   # tambien el contador de un atacante
+            if not v or (now - v[-1]) > _RL_WIN:
+                _RL.pop(k, None)
     return True
 
 
 @app.post("/kb/send")
 def kb_send():
+    # El ULTIMO valor de X-Forwarded-For lo añade el proxy de Render (fiable);
+    # los anteriores los pone el cliente y son FALSEABLES -> con el primero, un
+    # atacante rotaba el header y se saltaba el rate-limit.
     ip = (request.headers.get("X-Forwarded-For", "")
-          or request.remote_addr or "?").split(",")[0].strip()
+          or request.remote_addr or "?").split(",")[-1].strip()
     if not _rate_ok(ip):
         return jsonify({"ok": False, "error": "demasiadas peticiones"}), 429
     try:
@@ -3230,7 +3218,21 @@ def kb_qr():
 # referencia (content_id, tabla). El boton "Reproducir en la tele" REUSA
 # /kb/send (play_ref a=dt), que ya esta probado. Sin coste (TMDB free).
 _CAT_TMDB_KEY = "f090bb54758cabf231fb605d3e3e0468"   # misma key publica del addon
-_CAT_TMDB_CACHE = {}
+# Sesion HTTP COMPARTIDA para TMDB (keep-alive): el enrich hace decenas de
+# llamadas seguidas y sin pool cada una pagaba su handshake TLS entero. El pool
+# de urllib3 es thread-safe -> vale para los 8 hilos del enrich.
+_TMDB_SESS = requests.Session()
+try:
+    from requests.adapters import HTTPAdapter as _HTTPAdapter
+    _TMDB_SESS.mount("https://", _HTTPAdapter(pool_connections=4,
+                                              pool_maxsize=16))
+except Exception:
+    pass
+_CAT_TMDB_CACHE = {}       # (kind, titulo, año) -> {"m": meta, "ts": ...}
+_CAT_TMDB_MAX = 3000       # tope de titulos en memoria (Render 512MB)
+_CAT_TMDB_NULL_TTL = 600   # los SIN poster caducan a los 10 min: antes un titulo
+                           # sin match se cacheaba PARA SIEMPRE y nunca se
+                           # auto-sanaba aunque TMDB volviera a responder bien
 
 # Mapa de generos TMDB (movie + tv) -> nombre es-ES. La busqueda TMDB devuelve
 # `genre_ids` (no nombres); los traducimos aqui SIN llamada extra (lista fija y
@@ -3392,8 +3394,12 @@ def _cat_tmdb(title, kind="movie"):
     clean = _re_dt.sub(r"\b(19|20)\d{2}\b", "", clean)
     clean = _re_dt.sub(r"\s+", " ", clean).strip(" -.:")
     ckey = (kind, clean.lower(), year or "")
-    if ckey in _CAT_TMDB_CACHE:
-        return _CAT_TMDB_CACHE[ckey]
+    ent = _CAT_TMDB_CACHE.get(ckey)
+    if ent:
+        hit = ent["m"]
+        # acierto (con poster) vale para siempre; fallo caduca (_NULL_TTL)
+        if hit.get("poster") or (_t.time() - ent["ts"]) < _CAT_TMDB_NULL_TTL:
+            return hit
     out = {"poster": None, "year": year, "rating": None}
     if _tmdb_is_down():
         return out   # TMDB baneado -> sin poster al instante (no toca la red)
@@ -3410,8 +3416,8 @@ def _cat_tmdb(title, kind="movie"):
                       "query": q, "include_adult": "false"}
             if year and ep == "movie" and qi == len(tries) - 1:
                 params["year"] = year   # filtro de año solo en la query limpia
-            r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
-                             params=params, timeout=(3, 4))
+            r = _TMDB_SESS.get(f"https://api.themoviedb.org/3/search/{ep}",
+                               params=params, timeout=(3, 4))
             if r.status_code != 200:
                 # 429/403: TMDB rate-limita la IP de Render. NO lanza excepcion, asi
                 # que sin esto el breaker no saltaba y el enrich se atascaba (el
@@ -3441,7 +3447,11 @@ def _cat_tmdb(title, kind="movie"):
                 # out se queda SIN poster TMDB (el enrich usa la carátula propia de
                 # DonTorrent o ninguna, nunca una ajena). Ver _tmdb_accept.
         _tmdb_mark(True)
-        _CAT_TMDB_CACHE[ckey] = out
+        _CAT_TMDB_CACHE[ckey] = {"m": out, "ts": _t.time()}
+        if len(_CAT_TMDB_CACHE) > _CAT_TMDB_MAX:   # poda las mas viejas
+            for k in sorted(_CAT_TMDB_CACHE,
+                            key=lambda k: _CAT_TMDB_CACHE[k]["ts"])[:200]:
+                _CAT_TMDB_CACHE.pop(k, None)
     except Exception:
         _tmdb_mark(False)   # no cachear -> reintenta cuando TMDB se recupere
     return out
@@ -3463,8 +3473,7 @@ _DT_DOWN_FILE = "/tmp/mw_dt_down"
 # salte), como mucho 2 hilos quedan ocupados con DonTorrent -> SIEMPRE quedan
 # hilos libres para servir la pagina, /ping y las fuentes-box. El relay NO se
 # satura ni se cae. La 3a peticion concurrente devuelve al instante (cache/vacio).
-import threading as _thr
-_DT_SEM = _thr.Semaphore(2)
+_DT_SEM = _thr.Semaphore(2)   # _thr ya viene importado arriba del modulo
 
 
 def _dt_is_down():
@@ -4195,11 +4204,11 @@ def _tmdb_alt_titles(q):
     alts, seen = [], {qn}
     try:
         for ep in ("movie", "tv"):
-            r = requests.get(f"https://api.themoviedb.org/3/search/{ep}",
-                             params={"api_key": _CAT_TMDB_KEY,
-                                     "language": "es-ES", "query": q,
-                                     "include_adult": "false"},
-                             timeout=(2, 3))
+            r = _TMDB_SESS.get(f"https://api.themoviedb.org/3/search/{ep}",
+                               params={"api_key": _CAT_TMDB_KEY,
+                                       "language": "es-ES", "query": q,
+                                       "include_adult": "false"},
+                               timeout=(2, 3))
             if r.status_code != 200:
                 _tmdb_mark(False)
                 continue
@@ -5131,6 +5140,14 @@ def catfeed():
         try:
             en = _cat_enrich(_cat_parse_items(_html))
             if en:
+                # No DEGRADAR: mientras este hilo corria (~40s con TMDB baneado),
+                # el box pudo empujar /catenrich con posters HD. _cat_enrich solo
+                # mira la semilla, asi que sin esto su resultado PISABA esos
+                # posters al escribir la cache -> el Inicio parpadeaba a no-HD.
+                enr = _cat_enrich_load()
+                for it in en:
+                    if "image.tmdb.org" not in (it.get("poster") or ""):
+                        _cat_apply_meta(it, enr.get(str(it.get("content_id"))))
                 r2 = {"items": en, "ts": _t.time()}
                 _CATBROWSE_CACHE[_key] = r2
                 d = _catbrowse_load()
@@ -5138,7 +5155,9 @@ def catfeed():
                 _catbrowse_save(d)
         except Exception:
             pass
-    _thr.Thread(target=_bg_enrich, daemon=True).start()
+    if pending:   # sin pendientes = todo ya en HD por semilla/cache del box ->
+        # el re-enrich de fondo (que ademas toca TMDB desde Render) no aporta nada
+        _thr.Thread(target=_bg_enrich, daemon=True).start()
     # `pending`: titulos sin poster TMDB para que el BOX (IP residencial) los
     # enriquezca y los empuje a /catenrich. El box ANTIGUO ignora este campo
     # (sigue funcionando con la semilla + el bg-enrich) -> backward-compatible.
@@ -5195,7 +5214,7 @@ def _tmdb_detail(ep, tid):
     if _tmdb_is_down():
         return {}
     try:
-        r = requests.get(
+        r = _TMDB_SESS.get(
             f"https://api.themoviedb.org/3/{ep}/{tid}",
             params={"api_key": _CAT_TMDB_KEY, "language": "es-ES",
                     "append_to_response": "videos"},
@@ -5222,6 +5241,9 @@ def _tmdb_detail(ep, tid):
                "seasons": d.get("number_of_seasons") or 0}
         _tmdb_mark(True)
         _CAT_META_CACHE[ck] = out
+        if len(_CAT_META_CACHE) > 2000:   # poda FIFO: no crecer sin limite
+            for k in list(_CAT_META_CACHE)[:200]:
+                _CAT_META_CACHE.pop(k, None)
         return out
     except Exception:
         _tmdb_mark(False)
@@ -5376,7 +5398,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk24", "now": int(now)}
+    out = {"build": "dtbk25", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
