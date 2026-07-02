@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk32",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk33",
                     mimetype="text/plain")
 
 
@@ -1919,14 +1919,24 @@ def _dx_save_domain(host):
 def _dx_get(url, proxy=False):
     """HTML de una URL de DivxTotal: requests plano y, si hay challenge de
     Cloudflare, reintenta con cloudscraper. None si no se pudo.
-    proxy=True -> sale por ScraperAPI (IP no baneada); failover de la busqueda."""
-    px = _sapi_proxies(premium=False) if proxy else None
-    if proxy and not px:
-        return None   # pidieron proxy pero no hay key -> no insistir
+    proxy=True -> via ScraperAPI en modo API (el MISMO mecanismo probado que usa
+    WolfMax a diario). El modo-proxy (proxies= de requests) NUNCA llego a
+    ScraperAPI (el contador de peticiones de la cuenta no se movia): failover
+    roto en silencio. El modo-API es un GET normal a api.scraperapi.com."""
+    if proxy:
+        if not SCRAPERAPI_KEY:
+            return None   # pidieron failover pero no hay key -> no insistir
+        try:
+            wrapped = _scraperapi_url(url, premium=False)   # 1 credito
+            r = requests.get(wrapped, timeout=55)
+            if r.status_code == 200 and len(r.text or "") > 500:
+                return r.text
+        except Exception:
+            pass
+        return None
     try:
         r = requests.get(url, headers=BROWSER_HEADERS,
-                         timeout=(60 if proxy else 20), allow_redirects=True,
-                         proxies=px, verify=(not proxy))
+                         timeout=20, allow_redirects=True)
         t = r.text
         low = t[:4000].lower()
         if (r.status_code == 200 and "just a moment" not in low
@@ -1936,10 +1946,7 @@ def _dx_get(url, proxy=False):
         pass
     try:
         cs = _make_scraper()
-        if px:
-            cs.proxies.update(px)
-            cs.verify = False
-        r2 = cs.get(url, timeout=(70 if proxy else 35), allow_redirects=True)
+        r2 = cs.get(url, timeout=35, allow_redirects=True)
         if r2.status_code == 200:
             return r2.text
     except Exception:
@@ -5498,7 +5505,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk32", "now": int(now)}
+    out = {"build": "dtbk33", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
