@@ -7,6 +7,7 @@ abre los resultados en la tele.
 """
 import os
 import json
+import time
 import random
 import requests
 
@@ -58,13 +59,22 @@ def snap_mtime():
     return 0
 
 
+# El codigo NO cambia una vez creado -> se cachea en memoria. Antes se releia el
+# fichero de disco en CADA llamada, y el mando llama ~3 veces/segundo 24/7:
+# I/O constante que le roba CPU al reproductor sin aportar nada.
+_CODE_CACHE = [""]
+
+
 def get_code():
     """Codigo estable de 6 cifras de este box (se genera una vez y persiste)."""
+    if _CODE_CACHE[0]:
+        return _CODE_CACHE[0]
     if _CODE_FILE and os.path.exists(_CODE_FILE):
         try:
             with open(_CODE_FILE, "r", encoding="utf-8") as f:
                 c = "".join(ch for ch in f.read() if ch.isdigit())[:6]
             if len(c) == 6:
+                _CODE_CACHE[0] = c
                 return c
         except Exception:
             pass
@@ -75,15 +85,29 @@ def get_code():
             f.write(c)
     except Exception:
         pass
+    _CODE_CACHE[0] = c
     return c
 
 
+# La URL del relay casi nunca cambia -> cache con TTL corto (60s): se ahorra
+# la lectura del setting + posible fallback a Supabase en cada sondeo, pero un
+# cambio de URL en Ajustes se sigue cogiendo en <1 min sin reiniciar Kodi.
+_RELAY_CACHE = {"url": "", "ts": 0.0}
+
+
 def relay_base():
+    now = time.time()
+    if _RELAY_CACHE["url"] and (now - _RELAY_CACHE["ts"]) < 60:
+        return _RELAY_CACHE["url"]
     try:
         from . import scraper_dontorrent as dt
-        return (dt._render_relay_url() or "").rstrip("/")
+        url = (dt._render_relay_url() or "").rstrip("/")
     except Exception:
-        return ""
+        url = ""
+    if url:
+        _RELAY_CACHE["url"] = url
+        _RELAY_CACHE["ts"] = now
+    return url or _RELAY_CACHE["url"]
 
 
 def web_url():
