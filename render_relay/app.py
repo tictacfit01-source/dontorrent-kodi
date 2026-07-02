@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk28",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk29",
                     mimetype="text/plain")
 
 
@@ -2140,11 +2140,24 @@ def _dx_search_items(q, max_pages=5, proxy=False):
         _DX_SEM.release()
 
 
+_DX_TRACE = {}   # etapas/tiempos de la ULTIMA busqueda dx directa (ver /catdiag)
+
+
 def _dx_search_items_inner(q, max_pages=5, proxy=False):
     """Busca en DivxTotal DIRECTO (relay) y devuelve items del catalogo web.
     proxy=True -> via ScraperAPI (failover cuando el directo esta baneado)."""
     from urllib.parse import quote as _q
+    t0 = _t.time()
+    if not proxy:
+        _DX_TRACE.clear()
+        _DX_TRACE["q"] = q[:30]
+
+    def _tr(k, v):
+        if not proxy:
+            _DX_TRACE[k] = v
+            _DX_TRACE["t"] = round(_t.time() - t0, 1)
     dom = _dx_domain()
+    _tr("dom", dom)
     if not dom:
         if not proxy:
             _dx_mark(False)
@@ -2160,11 +2173,15 @@ def _dx_search_items_inner(q, max_pages=5, proxy=False):
         # (misma peticion iba en 1-2s o colgaba 60s segun la conexion que
         # tocara). 2 intentos de 5s caben de sobra en el presupuesto de 14s.
         html1 = _bounded(lambda: _dx_get(url1), 5.0, None)
+        _tr("fetch1", len(html1 or ""))
         if not html1:
             html1 = _bounded(lambda: _dx_get(url1), 5.0, None)
+            _tr("fetch2", len(html1 or ""))
     if not html1:
         dom = _dx_domain(force_probe=True)   # ¿roto el dominio? re-sondear
+        _tr("reprobe", dom)
         html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy) if dom else None
+        _tr("fetch3", len(html1 or ""))
     if not html1:
         if not proxy:
             _dx_mark(False)   # no se pudo ALCANZAR DivxTotal -> salta un rato
@@ -2198,7 +2215,10 @@ def _dx_search_items_inner(q, max_pages=5, proxy=False):
                 continue
             seen.add(it["url"])
             items.append(it)
-    return _dx_relevance(items, q)
+    _tr("parsed", len(items))
+    rel = _dx_relevance(items, q)
+    _tr("relevant", len(rel))
+    return rel
 
 
 # --- Ficha DivxTotal DIRECTO desde el relay (episodios + .torrent + semillas) -
@@ -5452,7 +5472,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk28", "now": int(now)}
+    out = {"build": "dtbk29", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -5479,6 +5499,19 @@ def catdiag():
         out["catbrowse_disk"] = _snap(_catbrowse_load(), "disk")
     except Exception:
         out["catbrowse_disk"] = {}
+    # 2b) Estado de DivxTotal en ESTE worker: breaker, semaforo (si sem_free=0,
+    # hay hilos zombis de intentos abandonados ocupando los 2 huecos) y dominio
+    # (memoria + persistido). Con esto un "DX no sale" se diagnostica en una
+    # peticion en vez de a ciegas.
+    dxd = _dx_is_down()
+    out["dx"] = {
+        "down": dxd,
+        "remaining_s": max(0, int(_DX_DOWN_UNTIL[0] - now)) if dxd else 0,
+        "sem_free": getattr(_DX_SEM, "_value", None),
+        "domain_mem": _DX_DOM_CACHE.get("dom"),
+        "domain_saved": _dx_load_domain(),
+        "trace": dict(_DX_TRACE),
+    }
     # 3) ¿Esta el box EMPUJANDO /catfeed? (segundos desde el ultimo empuje por kind)
     out["catfeed_last_s"] = {k: int(now - v) for k, v in _CATFEED_LAST.items()}
     # 4) Memoria del worker (Render free = 512MB; el usuario sospechaba OOM).
