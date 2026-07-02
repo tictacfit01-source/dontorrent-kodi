@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk29",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk30",
                     mimetype="text/plain")
 
 
@@ -1977,22 +1977,23 @@ def _dx_probe(domain):
 
 
 def _dx_domain(force_probe=False):
+    """Dominio de DivxTotal. El camino CALIENTE (busquedas/listados) NO sondea
+    JAMAS: cache -> persistido -> _DX_DOMAINS[0] (el canonico actual). El probe
+    es otra conexion que puede caer en el TARPIT de Cloudflare (goteo lento
+    aleatorio a IPs de datacenter que evade el timeout de requests): la traza
+    de /catdiag demostro que las busquedas morian AQUI dentro, sondeando en
+    frio. El descubrimiento (force_probe=True) queda SOLO para el 2o plano
+    (keepalive y _dx_reprobe_async)."""
     now = _t.time()
     saved = _dx_load_domain()
     if not force_probe:
         if _DX_DOM_CACHE["dom"] and now - _DX_DOM_CACHE["ts"] < _DX_DOM_TTL:
             return _DX_DOM_CACHE["dom"]
         if saved:
-            # CONFIAR en el dominio persistido SIN re-sondear. El probe es otra
-            # conexion que puede caer en el TARPIT de Cloudflare (goteo lento
-            # aleatorio a IPs de datacenter que evade el timeout de requests):
-            # cada worker frio pagaba su sondeo-loteria y el presupuesto de la
-            # busqueda (14s) se esfumaba. Si el dominio ya roto, el fetch falla
-            # y el llamante re-entra con force_probe=True -> ahi si se sondea.
             _DX_DOM_CACHE["dom"] = saved
             _DX_DOM_CACHE["ts"] = now
-            return saved
-    # Descubrimiento: dominio aprendido primero, luego la lista conocida.
+        return saved or _DX_DOMAINS[0]
+    # Descubrimiento (2o plano): dominio aprendido primero, luego la lista.
     # _dx_probe aprende el host final si hubo redireccion.
     cand = ([saved] if saved else []) + [d for d in _DX_DOMAINS if d != saved]
     for d in cand:
@@ -2003,6 +2004,22 @@ def _dx_domain(force_probe=False):
             _dx_save_domain(real)
             return real
     return _DX_DOM_CACHE["dom"] or saved or _DX_DOMAINS[0]
+
+
+_DX_REPROBE = {"ts": 0.0}
+_DX_REPROBE_LOCK = _thr.Lock()
+
+
+def _dx_reprobe_async():
+    """Re-descubre el dominio dx en un hilo aparte, como mucho 1 vez cada 2 min
+    (candado anti-tormenta: N busquedas fallidas concurrentes NO lanzan N
+    probes, que agravarian el tarpit). Fire-and-forget: nadie lo espera."""
+    with _DX_REPROBE_LOCK:
+        if _t.time() - _DX_REPROBE["ts"] < 120:
+            return
+        _DX_REPROBE["ts"] = _t.time()
+    _thr.Thread(target=lambda: _dx_domain(force_probe=True),
+                daemon=True).start()
 
 
 @app.route("/dxsearch", methods=["GET", "POST"])
@@ -2018,10 +2035,11 @@ def dxsearch():
     qq = _q(q)
     html1 = _dx_get(f"https://{dom}/?s={qq}")
     if not html1:
-        # un reintento resolviendo dominio de cero (por si rotó)
-        dom = _dx_domain(force_probe=True)
+        # reintento en conexion NUEVA (tarpit); si el dominio roto, el
+        # re-descubrimiento va en 2o plano (nunca sondear en linea)
         html1 = _dx_get(f"https://{dom}/?s={qq}")
     if not html1:
+        _dx_reprobe_async()
         return Response("", status=502,
                         headers={"X-MW-Dx-Domain": dom or ""})
     nums = [int(n) for n in re.findall(r"/page/(\d+)/", html1)]
@@ -2178,13 +2196,10 @@ def _dx_search_items_inner(q, max_pages=5, proxy=False):
             html1 = _bounded(lambda: _dx_get(url1), 5.0, None)
             _tr("fetch2", len(html1 or ""))
     if not html1:
-        dom = _dx_domain(force_probe=True)   # ¿roto el dominio? re-sondear
-        _tr("reprobe", dom)
-        html1 = _dx_get(f"https://{dom}/?s={qq}", proxy=proxy) if dom else None
-        _tr("fetch3", len(html1 or ""))
-    if not html1:
         if not proxy:
-            _dx_mark(False)   # no se pudo ALCANZAR DivxTotal -> salta un rato
+            _dx_mark(False)        # inalcanzable -> saltar DX un rato
+            _dx_reprobe_async()    # y re-descubrir el dominio en 2o PLANO
+            _tr("fail", "reprobe_bg")
         return []
     if not proxy:
         # Alcanzamos DivxTotal -> breaker ARRIBA (aunque la query no tenga matches o
@@ -2330,10 +2345,9 @@ def _dx_browse_items(kind, page=1):
     url = base if page <= 1 else (base.rstrip("/") + f"/page/{page}/")
     html = _dx_get(url)
     if not html:
-        dom = _dx_domain(force_probe=True)   # por si el dominio rotó
-        url = (f"https://{dom}/{section}/" if section else f"https://{dom}/")
-        url = url if page <= 1 else (url.rstrip("/") + f"/page/{page}/")
-        html = _dx_get(url) if dom else None
+        html = _dx_get(url)        # reintento en conexion nueva (tarpit)
+        if not html:
+            _dx_reprobe_async()    # dominio quiza rotado -> 2o plano
     if not html:
         return []
     items, seen = [], set()
@@ -5472,7 +5486,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk29", "now": int(now)}
+    out = {"build": "dtbk30", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
