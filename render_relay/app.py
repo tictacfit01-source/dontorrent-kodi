@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk25",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk26",
                     mimetype="text/plain")
 
 
@@ -3327,7 +3327,21 @@ def _tmdb_pick(results, clean, year, ep):
         # votos) en vez de la original (1995, 19998 votos). DonTorrent tiene pelis
         # ya asentadas -> el conteo de votos es mejor señal que la popularity volatil.
         vc = float(it.get("vote_count") or 0)
-        s *= max(0.2, min(1.0, vc / 800.0))
+        f = max(0.2, min(1.0, vc / 800.0))
+        # EXCEPCION: ESTRENO con titulo EXACTO. Pocos votos es lo NORMAL en una
+        # peli recien salida -> no aplastarla. Caso real: 'La residencia' (2025,
+        # 85 votos) perdia contra 'Asterix y la residencia de los dioses' (2014,
+        # 1480 votos, match por substring) y la ficha entera salia de Asterix.
+        # Solo EXACTO+reciente: 'Toy Story 5' (no exacto) sigue sin robarle el
+        # sitio a la original, y 'Profanacion' (exacta pero de 1934, oscura)
+        # sigue perdiendo contra la del Departamento Q.
+        if w >= 2.5 and yr:
+            try:
+                if int(yr) >= _t.localtime().tm_year - 2:
+                    f = max(f, 0.85)
+            except Exception:
+                pass
+        s *= f
         return s
 
     try:
@@ -4976,17 +4990,26 @@ def _cat_enrich_store(meta):
 
 def _cat_apply_meta(it, sm):
     """Aplica un meta TMDB (de la semilla o de la cache de enrich del box) a un
-    item del Inicio: poster HD + año + nota + (overview/backdrop/genres/tmdb_id si
-    faltan). Devuelve True si puso un poster de TMDB."""
+    item del Inicio. El meta va POR content_id (es la identidad de ESTE item),
+    asi que sus campos MANDAN: antes solo se rellenaban los huecos y, si el item
+    traia una ficha EQUIVOCADA de un match malo anterior (caso real: 'La
+    residencia' con sinopsis/generos/backdrop/duracion de 'Asterix y la
+    residencia de los dioses'), se corregia el poster pero la ficha ajena se
+    quedaba PEGADA. Ahora se sobreescribe todo, y lo que el meta no traiga se
+    QUITA: mejor sin dato que con el de otra peli. Devuelve True si puso un
+    poster de TMDB."""
     if not sm or "image.tmdb.org" not in (sm.get("poster") or ""):
         return False
     it["poster"] = sm["poster"]
-    it["year"] = it.get("year") or sm.get("year")
-    if it.get("rating") is None:
-        it["rating"] = sm.get("rating")
+    if sm.get("year"):
+        it["year"] = sm["year"]
+    if sm.get("rating") is not None:
+        it["rating"] = sm["rating"]
     for k in ("overview", "backdrop", "genres", "tmdb_id"):
-        if sm.get(k) is not None and not it.get(k):
+        if sm.get(k) is not None:
             it[k] = sm[k]
+        else:
+            it.pop(k, None)
     return True
 
 
@@ -5398,7 +5421,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk25", "now": int(now)}
+    out = {"build": "dtbk26", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
