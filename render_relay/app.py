@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk26",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk27",
                     mimetype="text/plain")
 
 
@@ -1960,8 +1960,15 @@ def _dx_probe(domain):
             else:
                 r = requests.get(url, headers=BROWSER_HEADERS, timeout=15,
                                  allow_redirects=True)
-            low = (r.text or "")[:6000].lower()
-            if r.status_code == 200 and "/peliculas/" in low:
+            # Pagina ENTERA (no solo la cabecera): DivxTotal antepone ahora un
+            # bloque JSON-LD enorme y '/peliculas/' no aparece hasta ~29000
+            # chars -> con la ventana de 6000 el probe RECHAZABA el dominio
+            # bueno, _dx_domain se eternizaba probando los 8 y DivxTotal
+            # desaparecia de la web. Se acepta tambien la forma escapada del
+            # JSON ('\\/peliculas\\/') por si el HTML fuera todo schema.org.
+            low = (r.text or "").lower()
+            if r.status_code == 200 and ("/peliculas/" in low
+                                         or "\\/peliculas\\/" in low):
                 host = _dx_valid_host(_up(r.url).hostname or "")
                 return host or domain
         except Exception:
@@ -5421,7 +5428,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk26", "now": int(now)}
+    out = {"build": "dtbk27", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
