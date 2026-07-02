@@ -28,7 +28,11 @@ _dirty = False
 _last_flush = 0.0
 _CACHE_FILE = os.path.join(_PROFILE, "tmdb_cache.json") if _PROFILE else ""
 _POS_TTL = 30 * 24 * 3600   # match positivo: 30 dias
-_NEG_TTL = 3 * 24 * 3600    # "sin match": 3 dias (por si TMDB lo añade luego)
+# "Sin match": 1 HORA. Era 3 dias, pero un fallo transitorio de red se colaba
+# como "sin match" (ver _search) y dejaba el box 3 dias sin poster para ese
+# titulo (el Inicio HD entero se quedo sin enriquecer por esto). Re-consultar
+# un no-match genuino cada hora es baratisimo (pocas y desde IP residencial).
+_NEG_TTL = 3600
 
 
 def _sig(kind, clean):
@@ -164,7 +168,9 @@ def _search(clean, kind, year):
         r.raise_for_status()
         return r.json().get("results") or []
     except Exception:
-        return []
+        # None = ERROR de red/API (≠ [] = TMDB respondio "sin resultados").
+        # La distincion importa: un error NUNCA debe acabar negative-cacheado.
+        return None
 
 
 def _kinds_to_try(kind):
@@ -250,14 +256,21 @@ def _best_across_kinds(queries, kinds, year):
     """Consulta todas las queries x kinds, agrega y devuelve el mejor match.
 
     `queries` es una lista: titulo principal + titulos alternativos (original
-    entre parentesis). Devuelve (None, kind) si ningun resultado tiene
+    entre parentesis). Devuelve (None, kind, net_ok) si ningun resultado tiene
     similitud real -> preferimos SIN caratula antes que una equivocada.
-    """
+    net_ok=False significa que NINGUNA consulta llego a TMDB (red/API caida):
+    el llamante NO debe negative-cachear ese "sin match" (era la causa de que
+    un traspies de red dejara el box dias sin posters)."""
     all_results = []
     seen = set()
+    net_ok = False
     for q in queries:
         for k in kinds:
-            for r in _search(q, k, year):
+            res = _search(q, k, year)
+            if res is None:      # error de red/API en ESTA consulta
+                continue
+            net_ok = True        # TMDB respondio (aunque sea lista vacia)
+            for r in res:
                 rid = (k, r.get("id"))
                 if rid in seen:
                     continue
@@ -265,7 +278,7 @@ def _best_across_kinds(queries, kinds, year):
                 r["_tmdb_kind"] = k
                 all_results.append(r)
     if not all_results:
-        return None, kinds[0]
+        return None, kinds[0], net_ok
     preferred = kinds[0]
     all_results.sort(
         key=lambda r: _score(r, preferred, queries, year),
@@ -273,8 +286,8 @@ def _best_across_kinds(queries, kinds, year):
     )
     best = all_results[0]
     if _best_sim(best, queries) <= 0:
-        return None, preferred   # nada casa de verdad
-    return best, best.get("_tmdb_kind", preferred)
+        return None, preferred, net_ok   # nada casa de verdad
+    return best, best.get("_tmdb_kind", preferred), net_ok
 
 
 def enrich(title, kind="movie", alt_title_fn=None):
@@ -296,7 +309,7 @@ def enrich(title, kind="movie", alt_title_fn=None):
     for a in _alt_titles(title):
         if a.lower() != clean.lower() and a not in queries:
             queries.append(a)
-    best, matched_kind = _best_across_kinds(queries, kinds, y)
+    best, matched_kind, net_ok = _best_across_kinds(queries, kinds, y)
 
     if best is None and alt_title_fn is not None:
         try:
@@ -310,12 +323,17 @@ def enrich(title, kind="movie", alt_title_fn=None):
                 if alt_key in _CACHE:
                     _cache_put(cache_key, _CACHE[alt_key])
                     return _CACHE[cache_key]
-                best, matched_kind = _best_across_kinds(
+                best, matched_kind, ok2 = _best_across_kinds(
                     [alt_clean], kinds, _year(alt) or y
                 )
+                net_ok = net_ok or ok2
 
     if best is None:
-        _cache_put(cache_key, {})   # negative cache (persistente, TTL corto)
+        if net_ok:
+            # negative cache SOLO si TMDB respondio de verdad "sin resultados".
+            # Un error de red cacheado aqui dejaba el titulo sin poster durante
+            # todo el TTL aunque TMDB volviera a funcionar al minuto.
+            _cache_put(cache_key, {})
         return {}
 
     top = best
