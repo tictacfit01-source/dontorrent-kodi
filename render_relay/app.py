@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk30",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk31",
                     mimetype="text/plain")
 
 
@@ -4561,6 +4561,16 @@ def catdxsearch():
         _CATSEARCH_CACHE[qkey] = cent
         return jsonify({"items": cent["items"], "cached": True})
     items = _bounded(lambda: _dx_search_items(q), 14.0, []) or []
+    if not items and _sapi_credits_ok():
+        # FAILOVER anti-tarpit via ScraperAPI (IP residencial): Cloudflare
+        # tarpitea el patron '/?s=' desde la IP de Render (la portada pasa, la
+        # BUSQUEDA no) -> el directo sale vacio aunque DivxTotal este vivo.
+        # Solo pagina 1 (1 credito; plan free 1000/mes, _sapi_credits_ok guarda
+        # el saldo) y SOLO cuando el directo fallo -> en uso normal no gasta.
+        # El front no aborta este endpoint (fusiona cuando llegue) -> el tiempo
+        # extra no rompe nada.
+        items = _bounded(lambda: _dx_search_items(q, max_pages=1, proxy=True),
+                         12.0, []) or []
     if items:
         items = _bounded(lambda: _cat_enrich(items, limit=40), 6.0, items) or items
         items = _cat_rank_dedup(items, q)
@@ -5486,7 +5496,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk30", "now": int(now)}
+    out = {"build": "dtbk31", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
