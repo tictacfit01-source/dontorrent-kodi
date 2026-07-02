@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk23",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk24",
                     mimetype="text/plain")
 
 
@@ -3063,14 +3063,10 @@ def kb_send():
                                 "error": "referencia inválida"}), 400
     else:
         return jsonify({"ok": False, "error": "nada que enviar"}), 400
-    d = _kb_clean(_kb_load())
-    entry = d.get(code) or {"ev": [], "ts": _t.time()}
-    evs = entry.get("ev", [])
-    evs.append(ev)
-    entry["ev"] = evs[-20:]   # tope para no acumular
-    entry["ts"] = _t.time()
-    d[code] = entry
-    _kb_save(d)
+    # Encolar BAJO el lock entre procesos (_kb_enqueue): este RMW compite con
+    # /kb/poll (load->pop->save cada ~0.3s); sin lock una orden del movil podia
+    # perderse o ejecutarse duplicada (la misma race que describe _FileLock).
+    _kb_enqueue(code, ev)
     return jsonify({"ok": True})
 
 
@@ -4279,7 +4275,19 @@ def catsearch():
         # EN PARALELO con el intento directo (antes era SECUENCIAL: 8s directo + 20s
         # box = >28s, imposible para el front).
         box = code if len(code) == 6 else _any_live_box()
-        _ready = _th.Event()   # lo activan DT-directo o el box al traer resultados
+        _ready = _th.Event()   # lo activan DT-directo o el box al traer resultados;
+        # tambien salta cuando AMBOS han TERMINADO aunque sea sin resultados: si
+        # DonTorrent esta caido (breaker -> "" al instante) y no hay box vivo, no
+        # queda nada que esperar -> antes se consumia el wait entero (16s) para
+        # servir un resultado solo-DivxTotal que estaba listo en ~3s.
+        _left = [2]                     # DT-directo + box pendientes
+        _left_lock = _th.Lock()
+
+        def _src_done():
+            with _left_lock:
+                _left[0] -= 1
+                if _left[0] <= 0:
+                    _ready.set()
 
         def _w_dt():
             try:
@@ -4289,11 +4297,13 @@ def catsearch():
                     _ready.set()
             except Exception:
                 pass
+            finally:
+                _src_done()
 
         def _w_box():
-            if not box:
-                return
             try:
+                if not box:
+                    return
                 job = "ds" + os.urandom(5).hex()
                 _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml", "q": q})
                 res = _catjob_wait(job, 16.0)
@@ -4305,6 +4315,8 @@ def catsearch():
                         _ready.set()
             except Exception:
                 pass
+            finally:
+                _src_done()
 
         def _w_et():
             try:
@@ -4339,7 +4351,11 @@ def catsearch():
         _rem = lambda: max(0.0, _dl - _t.time())
         _ready.wait(min(16.0, _rem()))          # box/DT-directo: espera completa
         _ths[2].join(min(0.4, _rem()))          # ET (off) -> instantaneo
-        _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 2.5, _rem()))  # DX
+        # DX: si DT/box trajeron algo, respiro corto (1.5s) para fusionar lo que ya
+        # este; si terminaron SIN resultados (el wait salio al instante por el
+        # contador), DivxTotal es la unica fuente restante -> se le da su tiempo
+        # real (reto Cloudflare ~3-6s), siempre acotado al deadline total.
+        _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 8.0, _rem()))  # DX
         dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
         et_items = _r["et"]
         dx_items = _r["dx"]
@@ -5360,7 +5376,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk23", "now": int(now)}
+    out = {"build": "dtbk24", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
