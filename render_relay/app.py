@@ -309,7 +309,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk31",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk32",
                     mimetype="text/plain")
 
 
@@ -4569,8 +4569,10 @@ def catdxsearch():
         # el saldo) y SOLO cuando el directo fallo -> en uso normal no gasta.
         # El front no aborta este endpoint (fusiona cuando llegue) -> el tiempo
         # extra no rompe nada.
+        # 30s de margen: ScraperAPI reintenta INTERNAMENTE (hasta 60s); con un
+        # tope corto el proxy casi nunca terminaba y el failover salia vacio.
         items = _bounded(lambda: _dx_search_items(q, max_pages=1, proxy=True),
-                         12.0, []) or []
+                         30.0, []) or []
     if items:
         items = _bounded(lambda: _cat_enrich(items, limit=40), 6.0, items) or items
         items = _cat_rank_dedup(items, q)
@@ -5496,7 +5498,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk31", "now": int(now)}
+    out = {"build": "dtbk32", "now": int(now)}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
