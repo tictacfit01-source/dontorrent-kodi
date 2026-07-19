@@ -15,6 +15,8 @@ Endpoints:
 """
 import os
 import re
+import gzip as _gzmod
+import hashlib as _hashmod
 import threading as _thr   # usado a nivel de modulo desde ~L1483 (_DT_BOX_SEM);
                            # DEBE importarse aqui arriba o el modulo crashea al
                            # cargar (NameError) y gunicorn no levanta -> relay 000.
@@ -24,6 +26,38 @@ from urllib.parse import urlencode, quote as urlquote
 from flask import Flask, request, Response, jsonify, send_file
 
 app = Flask(__name__)
+
+# === Ahorro de ancho de banda (Render Hobby = 5 GB/mes de egress) ==========
+# 2026-07-19: el workspace se SUSPENDIO por agotar los 5 GB. Todo lo textual
+# sale ahora comprimido (la pagina de 80 KB -> ~20 KB) y la pagina se sirve
+# con ETag/304 (reaperturas ~200 B). NO tocar sin medir el egress.
+_GZ_TYPES = ("text/html", "application/json", "text/plain", "text/css",
+             "application/javascript", "image/svg+xml", "application/xml",
+             "application/manifest+json")
+
+
+@app.after_request
+def _gzip_response(resp):
+    try:
+        if (resp.status_code != 200 or resp.direct_passthrough
+                or resp.headers.get("Content-Encoding")
+                or resp.mimetype not in _GZ_TYPES
+                or "gzip" not in (request.headers.get("Accept-Encoding")
+                                  or "").lower()):
+            return resp
+        body = resp.get_data()
+        if len(body) < 500:
+            return resp
+        gz = _gzmod.compress(body, 6)
+        if len(gz) >= len(body):
+            return resp
+        resp.set_data(gz)
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Content-Length"] = str(len(gz))
+        resp.headers.add("Vary", "Accept-Encoding")
+    except Exception:
+        pass
+    return resp
 
 # === ScraperAPI (residential proxy bypass) =================================
 # Si esta presente esta env var, todas las peticiones a wolfmax4k pasan por
@@ -213,9 +247,16 @@ def host_allowed(target_url: str) -> bool:
 
 
 def _serve_page(html):
-    """HTML sin cache (para que los cambios se vean al recargar)."""
-    r = Response(html, mimetype="text/html; charset=utf-8")
-    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    """HTML con revalidacion: el navegador SIEMPRE pregunta (los cambios se
+    ven al recargar), pero si la pagina no cambio recibe un 304 sin cuerpo
+    (~200 B) en vez de los ~80 KB. Ahorro de egress (limite 5 GB/mes)."""
+    etag = '"' + _hashmod.md5(html.encode("utf-8")).hexdigest()[:16] + '"'
+    if etag in (request.headers.get("If-None-Match") or ""):
+        r = Response(status=304)
+    else:
+        r = Response(html, mimetype="text/html; charset=utf-8")
+    r.headers["Cache-Control"] = "no-cache, must-revalidate"
+    r.headers["ETag"] = etag
     return r
 
 
@@ -279,8 +320,10 @@ def manifest():
 
 @app.get("/sw.js")
 def sw_js():
-    return Response(_SW_JS, mimetype="application/javascript",
-                    headers={"Cache-Control": "no-cache"})
+    r = Response(_SW_JS, mimetype="application/javascript",
+                 headers={"Cache-Control": "no-cache"})
+    r.add_etag()
+    return r.make_conditional(request)
 
 
 @app.get("/icon.svg")
@@ -309,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk33",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk34",
                     mimetype="text/plain")
 
 
@@ -2445,6 +2488,50 @@ def _kb_clean(d):
             if (now - v.get("ts", 0)) < _KB_TTL}
 
 
+# --- Actividad del MOVIL por codigo (sondeo adaptativo del box) ------------
+# El movil "se deja ver" en /kb/send, /kb/status, /kb/now y /kb/list (GET);
+# /kb/poll devuelve "fast": true si hubo movil hace <3 min y el box sondea a
+# 0.3s solo entonces (sin movil baja a ~1.2s -> ~4x menos egress 24/7).
+# Escritura throttled (20s por codigo); lectura sin lock (timestamps, un race
+# es inocuo). Boxes viejos ignoran la clave "fast" (compatible).
+_KB_SEEN_FILE = "/tmp/mw_kb_seen.json"
+_KB_SEEN_TTL = 180
+_KB_SEEN_WRITE_GAP = 20
+
+
+def _kb_seen_load():
+    try:
+        with open(_KB_SEEN_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _kb_phone_seen(code):
+    if not code:
+        return
+    try:
+        now = _t.time()
+        d = _kb_seen_load()
+        if now - d.get(code, 0) < _KB_SEEN_WRITE_GAP:
+            return
+        d[code] = now
+        d = {k: v for k, v in d.items() if now - v < 3600}
+        tmp = _KB_SEEN_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _KB_SEEN_FILE)
+    except Exception:
+        pass
+
+
+def _kb_phone_active(code):
+    try:
+        return (_t.time() - _kb_seen_load().get(code, 0)) < _KB_SEEN_TTL
+    except Exception:
+        return True   # ante la duda, sondeo rapido (no degradar el mando)
+
+
 _KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
                     "volup", "voldown", "mute",
                     "seek_fwd", "seek_back", "seekto",
@@ -3127,6 +3214,7 @@ def kb_send():
     # /kb/poll (load->pop->save cada ~0.3s); sin lock una orden del movil podia
     # perderse o ejecutarse duplicada (la misma race que describe _FileLock).
     _kb_enqueue(code, ev)
+    _kb_phone_seen(code)
     return jsonify({"ok": True})
 
 
@@ -3140,8 +3228,11 @@ def kb_poll():
         entry = d.pop(code, None)
         if entry:
             _kb_save(d)   # consumo: devolvemos los eventos pendientes y limpiamos
-    return jsonify({"events": entry.get("ev", [])}) if entry \
-        else jsonify({"events": []})
+    # "fast": hay un movil delante (visto <3 min) -> el box sondea a 0.3s;
+    # si no, el box (2.9.52+) espacia el sondeo. Boxes viejos la ignoran.
+    fast = _kb_phone_active(code)
+    return jsonify({"events": entry.get("ev", []), "fast": fast}) if entry \
+        else jsonify({"events": [], "fast": fast})
 
 
 @app.post("/kb/list")
@@ -3172,6 +3263,7 @@ def kb_list_get():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
         return jsonify({"items": [], "ts": 0})
+    _kb_phone_seen(code)
     d = _kblist_load()
     entry = d.get(code) or {}
     return jsonify({"items": entry.get("items", []),
@@ -3211,6 +3303,7 @@ def kb_now_get():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
         return jsonify({"np": None})
+    _kb_phone_seen(code)
     d = _kbnow_load()
     entry = d.get(code) or {}
     if entry and (_t.time() - entry.get("ts", 0)) < _KB_NOW_TTL:
@@ -3259,6 +3352,7 @@ def kb_status_get():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
         return jsonify({"connected": False})
+    _kb_phone_seen(code)
     entry = _kbstatus_load().get(code)
     if not entry:
         return jsonify({"connected": False})
