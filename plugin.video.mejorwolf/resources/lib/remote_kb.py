@@ -176,12 +176,20 @@ def push_etjob(out):
         pass
 
 
+# Hint del relay (dtbk34+): True si hay un movil usando el mando ahora mismo
+# -> el servicio sondea rapido (0.3s). Si el relay no manda la clave (relay
+# viejo) se asume True para NO degradar la latencia del mando.
+LAST_POLL_FAST = True
+
+
 def poll(timeout=10):
     """Devuelve los eventos pendientes del movil (y los consume).
 
     Cada evento es un dict: {"q": "<busqueda>"} o {"c": "<comando>"}.
     Lista vacia si no hay nada o falla la conexion.
+    Actualiza LAST_POLL_FAST con el hint "fast" del relay.
     """
+    global LAST_POLL_FAST
     base = relay_base()
     if not base:
         return []
@@ -189,7 +197,10 @@ def poll(timeout=10):
         r = _SESSION.get(f"{base}/kb/poll", params={"code": get_code()},
                          timeout=timeout)
         if r.status_code == 200:
-            return r.json().get("events") or []
+            js = r.json()
+            fast = js.get("fast")
+            LAST_POLL_FAST = True if fast is None else bool(fast)
+            return js.get("events") or []
     except Exception:
         pass
     return []

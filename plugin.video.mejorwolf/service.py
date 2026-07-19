@@ -21,6 +21,11 @@ MAIN_TICK = 5               # ciclo del bucle principal (keep-warm)
 KB_POLL_GAP = 0.3           # sondeo del teclado remoto al NAVEGAR: agil
 KB_POLL_GAP_PLAYING = 0.5   # al REPRODUCIR: un pelin mas espaciado para no
                             # robarle CPU/red al reproductor (evita micro-cortes)
+KB_POLL_GAP_IDLE = 1.2      # SIN movil delante (hint "fast" del relay a False):
+                            # sondeo espaciado -> ~4x menos trafico 24/7 (Render
+                            # solo da 5 GB/mes de egress; el 19/07/2026 se agoto
+                            # y suspendio el servicio). En cuanto el movil abre
+                            # la web vuelve a 0.3s en <=1.2s.
 NOW_GAP = 3                 # cada cuanto subimos "Estas viendo" (la web interpola
                             # los segundos localmente, asi que se ve igual de fino)
 CONT_GAP = 15               # cada cuanto guardamos la posicion de 'Continuar'
@@ -38,7 +43,9 @@ def _relay_base():
 def _ping(base):
     try:
         import requests
-        r = requests.get(f"{base}/", timeout=60,
+        # /ping (~60 B), NUNCA / (la pagina entera, ~80 KB): este keep-warm
+        # corre 24/7 y con / gastaba ~0,7 GB/mes de egress por caja.
+        r = requests.get(f"{base}/ping", timeout=60,
                          headers={"User-Agent": "MejorWolf/service"})
         xbmc.log(f"[MejorWolf/service] keep-warm ping -> HTTP "
                  f"{r.status_code}", xbmc.LOGINFO)
@@ -835,8 +842,15 @@ def _kb_thread(monitor):
                     was_playing = False
         except Exception:
             pass
-        # Al reproducir, sondeo un pelin mas espaciado (menos carga -> sin cortes)
-        if monitor.waitForAbort(KB_POLL_GAP_PLAYING if playing else KB_POLL_GAP):
+        # Ritmo del sondeo: agil SOLO si hay un movil usando el mando (hint
+        # "fast" del relay; si el relay es viejo y no lo manda, se asume que
+        # si). Sin movil: espaciado (ahorro de egress). Al reproducir, un
+        # pelin mas espaciado (menos carga -> sin cortes).
+        if rkb.LAST_POLL_FAST:
+            gap = KB_POLL_GAP_PLAYING if playing else KB_POLL_GAP
+        else:
+            gap = KB_POLL_GAP_IDLE
+        if monitor.waitForAbort(gap):
             break
 
 
