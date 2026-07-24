@@ -90,12 +90,17 @@ def _resolve_cache_put(content_id, tabla, url):
 # Probados 2026-05: science, irish, reisen, club, info, istanbul, lighting
 # son los que respondian. rocks/onl/live/kiwi/phd/pink suelen estar caidos.
 # Lista actualizada periodicamente desde Supabase (mw_config.dontorrent).
-# dontorrent.review es el dominio CANONICO vigente. Va primero: los mirrors
-# viejos (p.ej. .science) hacen 301 -> .review y el redirect convierte el POST
-# del PoW en GET -> api_validate_pow.php devuelve 405. Usando el canonico directo
-# no hay redirect.
-_CANONICAL_DOMAIN = "dontorrent.review"
+# dontorrent.management es el dominio CANONICO vigente (2026-07). Va primero:
+# los mirrors viejos (.science, .review...) hacen 301 -> .management y el
+# redirect convierte el POST del PoW en GET -> api_validate_pow.php devuelve 405
+# ("Metodo no permitido"). Usando el canonico directo no hay redirect.
+# OJO: DonTorrent ROTA de dominio; cuando este caduque tambien redirigira. Para
+# que se auto-cure, _probe_domain ADOPTA el destino del 301 (abajo) y hay que
+# anadir el viejo a _STALE en resolve_domain(). Historial: .science -> .review
+# -> .management.
+_CANONICAL_DOMAIN = "dontorrent.management"
 FALLBACK_DOMAINS = [
+    "dontorrent.management",
     "dontorrent.review",
     "dontorrent.science",
     "dontorrent.irish",
@@ -509,6 +514,13 @@ def _probe_domain(host):
         r = _doh_fetch("GET", url, timeout=15)
         body = r.text.lower()
         if any(k in body for k in ("torrent", "pelicula", "serie")):
+            # Auto-curativo: si el dominio redirigio (301) a otro dontorrent.*
+            # (rotacion de dominio), adoptamos el DESTINO. Asi el POST del PoW
+            # va directo al canonico vigente y no sufre el POST->GET->405.
+            final_host = (urlparse(r.url).hostname or host).lower()
+            if final_host != host and DOMAIN_RE.search(final_host):
+                _LOG(f"_probe_domain DoH: {host} -> redirect -> {final_host}")
+                return final_host
             _LOG(f"_probe_domain DoH OK: {host}")
             return host
     except Exception as e:
@@ -550,7 +562,8 @@ def resolve_domain(force=False):
         # redirect convierte el POST del PoW en GET -> api_validate_pow.php = 405.
         # Asi caemos a la auto-resolucion (fast-path canonico .review).
         _STALE = {"dontorrent.science", "www.dontorrent.science",
-                  "dontorrent.support", "www.dontorrent.support"}
+                  "dontorrent.support", "www.dontorrent.support",
+                  "dontorrent.review", "www.dontorrent.review"}
         if host and host not in _STALE:
             return host
 
