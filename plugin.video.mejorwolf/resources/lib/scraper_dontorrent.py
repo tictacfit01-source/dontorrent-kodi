@@ -441,7 +441,17 @@ def _proxy_post(url, data=None, json_data=None, **kwargs):
         r = requests.post(proxied, data=data, **kwargs)
 
     if anubis.is_anubis(r.text):
-        _LOG("Anubis en POST - resolviendo via GET")
+        # OJO: hay que TIRAR la cookie cacheada antes de re-pedirla. El JWT de
+        # Anubis va atado a la IP y el CF Worker rota de IP de salida, asi que
+        # la cookie guardada puede haber dejado de valer -- que es justo lo que
+        # nos ha devuelto el reto. Sin este clear, _ensure_anubis ve la cookie
+        # en cache, se sale sin resolver nada y el reintento repite la MISMA
+        # cookie muerta: el POST por proxy no se recuperaba jamas.
+        _LOG("Anubis en POST - cookie caducada, resolviendo de nuevo")
+        try:
+            anubis.clear_cache(urlparse(url).hostname)
+        except Exception:
+            pass
         _ensure_anubis(url)
         cached = _anubis_cookies_for(url)
         if cached:
@@ -664,23 +674,59 @@ def fetch_html(path=None, q=None):
     """HTML CRUDO de un listado (path: '/', '/peliculas', '/series', '/page/N')
     o de una busqueda (q) de DonTorrent, desde la IP RESIDENCIAL del box (DoH,
     resuelve Anubis). Lo usa el relay cuando DonTorrent le bloquea su IP de
-    datacenter: el box lo trae y el relay lo parsea con su parser. '' si falla."""
+    datacenter: el box lo trae y el relay lo parsea con su parser. '' si falla.
+
+    Los LISTADOS tienen DOS caminos, igual que _get/_post/download_torrent: DoH
+    y, si falla, el proxy (CF Worker). Antes solo habia DoH y ningun plan B:
+    cuando el ISP tumba el rango de IPs de DonTorrent (RESET de conexion, visto
+    2026-08-01: 4/4 fallos por DoH y el proxy sirviendo las 39 KB en 0,3 s) esta
+    funcion devolvia '' EN SILENCIO y con ella se caia la PRE-CARGA del catalogo
+    (Inicio se quedaba stale para todos).
+
+    La BUSQUEDA (q) se queda solo con DoH a proposito: es un POST y el JWT de
+    Anubis va atado a la IP, pero el CF Worker sale por una IP distinta en cada
+    peticion, asi que /buscar por proxy SIEMPRE responde con el reto (verificado
+    2026-08-01, incluso resolviendo un PoW nuevo por intento). Intentarlo solo
+    gastaria un PoW -- carisimo en una caja Android -- para acabar en '' igual."""
     host = resolve_domain()
+    if q:
+        url = f"https://{host}/buscar"
+        data = {"valor": q, "Buscar": "Buscar"}
+    else:
+        p = path or "/"
+        if not p.startswith("/"):
+            p = "/" + p
+        url = f"https://{host}{p}"
+        data = None
+    etq = f"q={q}" if q else (path or "/")
+
+    # 1) DoH: conexion residencial directa (el camino normal, ~1 s).
     try:
-        if q:
-            r = _doh_fetch("POST", f"https://{host}/buscar",
-                           data={"valor": q, "Buscar": "Buscar"})
-        else:
-            p = path or "/"
-            if not p.startswith("/"):
-                p = "/" + p
-            r = _doh_fetch("GET", f"https://{host}{p}")
+        r = (_doh_fetch("POST", url, data=data) if data is not None
+             else _doh_fetch("GET", url))
         html = r.text or ""
-        _LOG(f"fetch_html ({'q='+q if q else path}) -> {len(html)} bytes")
+        if len(html) > 500:
+            _LOG(f"fetch_html ({etq}) -> {len(html)} bytes")
+            return html
+        _LOG(f"fetch_html ({etq}) DoH: respuesta corta ({len(html)})")
+    except Exception as e:
+        _LOG(f"fetch_html ({etq}) DoH fallo: {e}")
+
+    if data is not None:      # busqueda: el proxy no puede (ver docstring)
+        return ""
+
+    # 2) Proxy CF Worker (residencial, resuelve Anubis). Mismo plan B que ya
+    #    usan _get/_post/download_torrent, aqui faltaba.
+    try:
+        html = _proxy_get(url).text or ""
+        if anubis.is_anubis(html):
+            _LOG(f"fetch_html ({etq}) proxy: sigue el reto Anubis")
+            return ""
+        _LOG(f"fetch_html ({etq}) -> {len(html)} bytes (via proxy)")
         return html
     except Exception as e:
-        _LOG(f"fetch_html error: {e}")
-        return ""
+        _LOG(f"fetch_html ({etq}) proxy fallo: {e}")
+    return ""
 
 
 def base_url():
