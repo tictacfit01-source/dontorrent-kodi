@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk34",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk35",
                     mimetype="text/plain")
 
 
@@ -858,9 +858,14 @@ from urllib.parse import quote as _uq
 
 
 DT_FALLBACK = [
-    "dontorrent.review", "dontorrent.support", "dontorrent.science",
-    "dontorrent.irish", "dontorrent.club", "dontorrent.info",
-    "dontorrent.istanbul", "dontorrent.lighting", "dontorrent.reisen",
+    # El canonico VIGENTE va primero (rotacion: .science -> .review -> .management).
+    # .review hoy hace 301 a .management, asi que como semilla ya solo cuesta un
+    # salto; el auto-curativo lo corrige en vivo, pero arrancar en frio por el
+    # bueno evita ese redirect en cada deploy (con /tmp recien borrado).
+    "dontorrent.management", "dontorrent.review", "dontorrent.support",
+    "dontorrent.science", "dontorrent.irish", "dontorrent.club",
+    "dontorrent.info", "dontorrent.istanbul", "dontorrent.lighting",
+    "dontorrent.reisen",
 ]
 
 # --- Auto-deteccion del dominio oficial vigente (AUTO-CURATIVO) --------------
@@ -1704,7 +1709,10 @@ def dtpacked():
             out["seeds"] = seeds
             _dtpacked_save(d)   # persistir seeders refrescados
         return jsonify(out)
-    url = _dt_download_url(request.args.get("domain", "").strip(), cid, tb)
+    # Mismo tope duro que en /dtseeds (ver el porque alli): el directo baneado
+    # se comia ~25s antes de rendirse y esto lo pide la ficha ANTES de reproducir.
+    _dom = request.args.get("domain", "").strip()
+    url = _bounded(lambda: _dt_download_url(_dom, cid, tb), 6.0)
     if not url:
         # Render baneado -> via box (IP residencial): rar+quality+info_hash;
         # el relay deriva seeders por scrape UDP. Cacheamos igual que el directo.
@@ -1779,7 +1787,14 @@ def dtseeds():
         s = _dtpacked_seeds(ent, now)
         _dtpacked_save(d)
         return jsonify({"seeds": s, "cached": True})
-    url = _dt_download_url("", cid, tb)
+    # TOPE DURO al camino directo. Render lo tiene baneado casi siempre, y
+    # `_dt_download_url_inner` recorre los 10 dominios de DT_FALLBACK resolviendo
+    # Anubis con timeout=8 en cada uno: medido 2026-08-06, las semillas tardaban
+    # ~40s en salir (39-42s) cuando el BOX las resuelve en ~14s. Con 6s de tope
+    # se abandona el directo y se va al box, que es quien puede. No se pierde el
+    # camino directo: el hilo sigue de fondo y, si DonTorrent no responde, BAJA
+    # el breaker compartido -> las siguientes peticiones ya ni lo intentan.
+    url = _bounded(lambda: _dt_download_url("", cid, tb), 6.0)
     if not url:
         # Render baneado -> el box trae el info_hash; el scrape UDP va aqui.
         mb = _dt_meta_via_box(cid, tb)
@@ -2333,7 +2348,25 @@ def _dx_detail(url):
         image = "https:" + image
     downloads, seen = [], set()
     rows = _DX_TR_RE.findall(html)
-    for row in (rows or [html]):
+    # Las SERIES traen un enlace por fila <tr> (con su NxNN). Las PELICULAS, en
+    # cambio, llevan el boton FUERA de la tabla (bloque "Opcion 2"): habia <tr>
+    # en la pagina (7) pero NINGUNO con enlace, y como el fallback era
+    # `rows or [html]` -> con la tabla presente el resto del HTML no se miraba
+    # JAMAS -> downloads=[] -> sin info_hash -> DivxTotal se quedaba SIN SEMILLAS
+    # (y sin .torrent para reproducir). Verificado 2026-08-06 contra fichas
+    # reales: pelicula 0/1, serie 9/9. Ahora, ademas de las filas, se miran
+    # VENTANAS locales alrededor de cada enlace suelto: la ventana acota el
+    # texto del que se deduce el NxNN, para que un "1x09" de otra parte de la
+    # pagina no cuele temporada/episodio falsos en una pelicula.
+    # Las ventanas van DESPUES de las filas: si un enlace ya salio por su fila,
+    # el dedup por `seen` descarta la ventana y se conserva el NxNN de la fila
+    # (mas fiable). No se filtra por "el b64 aparece en alguna fila": en la ficha
+    # real el mismo b64 asoma dentro de un <tr> escrito de otra forma que el
+    # regex NO captura, y ese filtro se cargaba el unico enlace de la pelicula.
+    chunks = list(rows)
+    for _m in _DX_DL_RE.finditer(html):
+        chunks.append(html[max(0, _m.start() - 400):_m.end() + 200])
+    for row in chunks:
         bm = _DX_DL_RE.search(row)
         if not bm:
             continue
@@ -5599,7 +5632,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk33", "now": int(now)}
+    out = {"build": "dtbk35", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
