@@ -7,14 +7,28 @@ name: Keep Render relay awake
 # se disparaban cada ~1.5-2h, no cada 5 min) -> huecos enormes -> Render dormia.
 #
 # SOLUCION: cada run es un BUCLE LARGO (~5h40m, justo bajo el limite de 6h de un
-# job) que pinguea cada 2 min. Con `concurrency` SIN cancelar, los runs se
+# job) que pinguea sin parar. Con `concurrency` SIN cancelar, los runs se
 # ENCADENAN (uno espera a que acabe el anterior) -> cobertura CONTINUA 24/7 aunque
-# el cron llegue tarde. El push y el dispatch re-arman la cadena si se cortara.
-# Repo PUBLICO => minutos de Actions ILIMITADOS y gratis.
+# el cron llegue tarde. Repo PUBLICO => minutos de Actions ILIMITADOS y gratis.
+#
+# 2026-08-06: la cadena SE ROMPIO. El run #605 murio con "The job was not acquired
+# by Runner of type hosted even after multiple attempts" (fallo de INFRA de GitHub:
+# no asigno maquina al job) y quedo CERO cobertura hasta el siguiente cron -> hasta
+# 3h de relay durmiendo, sin que nada avisara. Con UN solo hilo y UN solo cron, el
+# keepalive era un camino unico: si GitHub falla, no hay plan B. Ahora hay tres:
+#   1) DOS hilos (matrix, fail-fast:false) DESFASADOS 90s y en runs de 3 min: si un
+#      hilo no consigue runner o revienta, el otro solo ya cubre (3 min << 15 min).
+#   2) job `rearm` con `if: always()`: pase lo que pase con los pings (fallo,
+#      cancelacion, timeout) dispara el SIGUIENTE run -> la cadena se auto-cura en
+#      segundos en vez de esperar al cron. Es un job de segundos, asi que tiene
+#      mucha menos superficie para el fallo de "no runner disponible".
+#   3) cron cada HORA (antes cada 3h) como ultima red por si el rearm tambien cae.
+# Y si el relay estuvo caido >20 min seguidos, el job termina en ROJO a proposito:
+# aqui los fallos no dan error solos, hay que forzar que avisen por email.
 
 on:
   schedule:
-    - cron: "0 */3 * * *"     # cada 3h re-arma la cadena (best-effort; el run dura ~5h40m)
+    - cron: "7 * * * *"       # cada hora re-arma la cadena (best-effort; el run dura ~5h40m)
   workflow_dispatch:
   push:
     branches: [main]          # tras desplegar, re-arranca el keepalive ya
@@ -25,30 +39,79 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write              # necesario para que `rearm` dispare el siguiente run
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     timeout-minutes: 350       # ~5h50m (limite duro de GitHub es 6h)
+    strategy:
+      fail-fast: false         # CLAVE: si un hilo cae, el otro NO se cancela
+      matrix:
+        hilo: [a, b]
     steps:
       - name: Mantener el relay despierto (bucle largo)
+        env:
+          HILO: ${{ matrix.hilo }}
         run: |
           URL="https://mw-render-relay-6noq.onrender.com"
+          # El hilo b arranca desfasado: entre los dos el relay recibe un ping cada
+          # ~90s, y con un solo hilo vivo sigue siendo cada 3 min (< 15 min de sleep).
+          if [ "$HILO" = "b" ]; then sleep 90; fi
           END=$(( $(date +%s) + 20400 ))   # 5h40m de pings
-          warm=0
+          warm=0; caido_desde=0; peor=0
           while [ "$(date +%s)" -lt "$END" ]; do
-            code="000"
+            code=""
             # Hasta 3 intentos: el 1o despierta (cold start ~50s), los siguientes confirman.
             for t in 1 2 3; do
-              code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 70 "$URL/ping" || echo "000")
+              code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 70 "$URL/ping" 2>/dev/null) || true
               [ "$code" = "200" ] && break
               sleep 10
             done
             if [ "$code" = "200" ]; then
-              warm=$((warm+1)); echo "$(date -u +%H:%M:%S) OK ($code) [warm=$warm]"
+              warm=$((warm+1)); caido_desde=0
+              echo "$(date -u +%H:%M:%S) [$HILO] OK (200) [warm=$warm]"
             else
-              echo "$(date -u +%H:%M:%S) NO RESPONDE ($code) -> reintento en el proximo ciclo"
+              ahora=$(date +%s)
+              # Racha medida en MINUTOS REALES: con el relay caido cada ciclo dura
+              # ~7 min (3 intentos x 70s de timeout), no los 3 min del caso bueno.
+              if [ "$caido_desde" -eq 0 ]; then caido_desde=$ahora; fi
+              mins=$(( (ahora - caido_desde) / 60 ))
+              if [ "$mins" -gt "$peor" ]; then peor=$mins; fi
+              echo "$(date -u +%H:%M:%S) [$HILO] NO RESPONDE (${code:-000}) [caido ${mins} min] -> reintento en el proximo ciclo"
             fi
-            sleep 120   # siguiente ping a los 2 min (Render duerme a los 15)
+            sleep 180   # siguiente ping a los 3 min
           done
-          echo "Fin del ciclo. El proximo run (encadenado/cron) toma el relevo."
+          echo "Fin del ciclo [$HILO]: warm=$warm, peor caida seguida=${peor} min."
+          # Fallo VISIBLE solo si la caida fue larga de verdad (>=20 min): 1 email por
+          # run como mucho, y el job `rearm` mantiene la cadena viva igualmente.
+          if [ "$peor" -ge 20 ]; then
+            echo "::error::El relay no respondio durante ${peor} min seguidos. Revisa Render."
+            exit 1
+          fi
+          echo "El proximo run (rearm/cron) toma el relevo."
+
+  rearm:
+    # Re-arma la cadena PASE LO QUE PASE con los pings (success/failure/cancelled).
+    needs: ping
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Encolar el siguiente run del keepalive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PING_RESULT: ${{ needs.ping.result }}
+        run: |
+          echo "Resultado de los pings: $PING_RESULT"
+          # Freno anti-avalancha: si el run murio pronto (p.ej. GitHub sin runners),
+          # espera antes de reencolar para no encadenar runs cada pocos segundos.
+          if [ "$PING_RESULT" != "success" ]; then
+            echo "Los pings no acabaron OK -> espero 2 min antes de reencolar."
+            sleep 120
+          fi
+          # Ping de rescate: tapa el hueco entre que acaba este run y arranca el siguiente.
+          curl -s -o /dev/null -w "ping de rescate: %{http_code}\n" --max-time 70 \
+            "https://mw-render-relay-6noq.onrender.com/ping" || true
+          gh workflow run keepalive.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Siguiente run encolado -> cadena re-armada."
