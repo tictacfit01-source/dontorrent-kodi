@@ -534,10 +534,16 @@ def _do_etjob(ev):
                 # y DivxTotal en 10s (5), pero WolfMax tardaba 43s y se rendia
                 # VACIO -> el relay corta a los 24s (`wait` de /catetbox) -> se
                 # perdia la busqueda ENTERA y la web mostraba solo DonTorrent.
-                # Ahora se sube lo que haya a los 18s (por debajo de esos 24s):
-                # las fuentes rapidas llegan SIEMPRE y la lenta deja de arrastrar
-                # a las demas. Las que no lleguen quedan en [] (res.get abajo).
-                _dl = time.time() + 18
+                # Ahora se sube lo que haya al llegar al deadline: las fuentes
+                # rapidas llegan SIEMPRE y la lenta deja de arrastrar a las demas.
+                # Las que no lleguen quedan en [] (res.get abajo).
+                # 21s y no 18s: WolfMax CUANDO SI encuentra algo tarda ~20s
+                # (medido con "Disforia": brave da 429, reintenta por proxy y
+                # cierra en 20,3s) -> con 18s se perdia por 2 segundos justo
+                # cuando iba bien. 21s deja ~3s de margen para que el push llegue
+                # dentro de los 24s que espera /catetbox. Si WolfMax se atasca
+                # (43s cuando NO tiene el titulo), se corta y et/dx se salvan.
+                _dl = time.time() + 21
                 for t in ths:
                     t.join(max(0.0, _dl - time.time()))
                 allit = []
