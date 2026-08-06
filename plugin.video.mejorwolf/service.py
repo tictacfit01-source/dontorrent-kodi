@@ -526,9 +526,20 @@ def _do_etjob(ev):
 
                 ths = [threading.Thread(target=_one, args=(s,)) for s in srcs]
                 for t in ths:
+                    t.daemon = True    # que un hilo colgado no frene el cierre
                     t.start()
+                # DEADLINE GLOBAL, no 22s POR HILO. El join en serie sumaba hasta
+                # 66s con 3 fuentes y NADA se subia hasta que acababa la ultima:
+                # medido 2026-08-06, EliteTorrent respondia en 0,5s (4 resultados)
+                # y DivxTotal en 10s (5), pero WolfMax tardaba 43s y se rendia
+                # VACIO -> el relay corta a los 24s (`wait` de /catetbox) -> se
+                # perdia la busqueda ENTERA y la web mostraba solo DonTorrent.
+                # Ahora se sube lo que haya a los 18s (por debajo de esos 24s):
+                # las fuentes rapidas llegan SIEMPRE y la lenta deja de arrastrar
+                # a las demas. Las que no lleguen quedan en [] (res.get abajo).
+                _dl = time.time() + 18
                 for t in ths:
-                    t.join(timeout=22)
+                    t.join(max(0.0, _dl - time.time()))
                 allit = []
                 for src in srcs:
                     for it in res.get(src, []):
