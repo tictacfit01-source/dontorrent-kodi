@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk42",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk43",
                     mimetype="text/plain")
 
 
@@ -4599,6 +4599,8 @@ def catsearch():
             finally:
                 _src_done()
 
+        _box_done = _th.Event()   # el box TERMINO (con o sin resultados)
+
         def _w_box():
             try:
                 if not box:
@@ -4616,6 +4618,7 @@ def catsearch():
                 pass
             finally:
                 _src_done()
+                _box_done.set()
 
         def _w_et():
             try:
@@ -4651,12 +4654,20 @@ def catsearch():
         # ¿Tenemos ya la respuesta en la cache del catalogo? Es local e
         # INSTANTANEO (sin red), asi que se mira ANTES de esperar a nadie.
         _cache_hits = _cat_from_cache(q)
-        # Con algo en mano NO se agotan los 16s: 6s bastan para el box
-        # residencial (~5-8s) y, si la red esta muerta (Render baneado + ISP
-        # tumbando el DoH), salimos en 6s en vez de en 20. Sin nada en cache se
-        # espera lo de siempre: mas vale tardar que devolver vacio en falso.
+        # Con algo en mano, la espera la marca EL BOX, no el reloj: es el camino
+        # fiable (IP residencial). En cuanto termina —traiga resultados o no—
+        # salimos, sin quedarnos esperando al intento DIRECTO desde Render, que
+        # con DonTorrent baneado tarda una eternidad en rendirse y era el que
+        # inflaba la busqueda a 10-20s. Si el box va bien (~5-8s) se le espera
+        # igual, asi que NO se pierden los resultados del buscador completo; si
+        # esta muerto (hoy: ISP reseteando el DoH, falla en 150ms) salimos casi
+        # al instante con lo cacheado. Sin nada en cache, la espera de siempre:
+        # mas vale tardar que devolver vacio en falso.
         # (2026-08-07: el dueño lo dijo claro — 20s buscando es inaceptable.)
-        _ready.wait(min(6.0 if _cache_hits else 16.0, _rem()))
+        if _cache_hits:
+            _box_done.wait(min(9.0, _rem()))
+        else:
+            _ready.wait(min(16.0, _rem()))
         _ths[2].join(min(0.4, _rem()))          # ET (off) -> instantaneo
         # DX: si DT/box trajeron algo, respiro corto (1.5s) para fusionar lo que ya
         # este; si terminaron SIN resultados (el wait salio al instante por el
@@ -5779,7 +5790,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk42", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk43", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
