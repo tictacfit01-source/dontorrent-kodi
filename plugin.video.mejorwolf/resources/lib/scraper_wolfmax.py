@@ -933,6 +933,23 @@ def search(query):
     # primaria y GRATIS. El relay queda solo como respaldo.
     relay_items = []
 
+    # -1) INDICE LOCAL (INSTANTANEO): es un JSON en disco (~2300 entradas que el
+    #     propio addon va acumulando con cada crawl y cada busqueda), asi que
+    #     responde en milisegundos y SIN RED. Estaba al final, como mero
+    #     acumulador, y por eso una busqueda cuya respuesta YA estaba aqui pagaba
+    #     igualmente toda la cascada: medido el 2026-08-06 con "Disforia",
+    #     20,3s (catalogo -> relay -> brave con un 429 y reintento) para acabar
+    #     mezclando brave+indice; con el indice delante son ~0s. Si el indice no
+    #     lo tiene, no se pierde nada: sigue el camino de siempre y lo que se
+    #     descubra se guarda aqui para la proxima.
+    try:
+        idx_fast = wf_index.search(query, limit=500)
+        if idx_fast:
+            _LOG(f"search via_indice (local) -> {len(idx_fast)} items (FAST-EXIT)")
+            return idx_fast
+    except Exception as e:
+        _LOG(f"search via_indice error: {e.__class__.__name__}: {e}")
+
     # 0) CATALOGO LOCAL (PRIMARIO): crawl directo de listados desde el Kodi
     #    del usuario. ~1-2s, gratis, sin ScraperAPI. Si encuentra algo,
     #    salimos YA (fast-exit) -> evita brave/proximity (cascada de 40s).

@@ -543,9 +543,21 @@ def _do_etjob(ev):
                 # cuando iba bien. 21s deja ~3s de margen para que el push llegue
                 # dentro de los 24s que espera /catetbox. Si WolfMax se atasca
                 # (43s cuando NO tiene el titulo), se corta y et/dx se salvan.
+                # Tope duro 21s, pero con CORTE BLANDO a los 10s: si a esas
+                # alturas ya han terminado todas menos UNA, no se espera a la
+                # rezagada. Antes, con et listo en 0,5s y dx en 10s, la busqueda
+                # tardaba los 21s enteros por esperar a WolfMax; y WolfMax, si
+                # tiene el titulo, ahora responde INSTANTANEO desde su indice
+                # local (fast-exit nuevo), asi que quedarse esperandolo solo
+                # pasa cuando NO lo tiene y no iba a aportar nada.
                 _dl = time.time() + 21
-                for t in ths:
-                    t.join(max(0.0, _dl - time.time()))
+                _soft = time.time() + 10
+                while time.time() < _dl:
+                    if not any(t.is_alive() for t in ths):
+                        break                       # todas han terminado
+                    if time.time() >= _soft and len(res) >= len(srcs) - 1:
+                        break                       # solo falta la rezagada
+                    time.sleep(0.2)
                 allit = []
                 for src in srcs:
                     for it in res.get(src, []):
