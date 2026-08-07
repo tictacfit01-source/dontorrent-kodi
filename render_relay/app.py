@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk40",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk41",
                     mimetype="text/plain")
 
 
@@ -4480,6 +4480,44 @@ def _tmdb_alt_titles(q):
     return alts[:2]
 
 
+def _cat_from_cache(q):
+    """PLAN B de la BUSQUEDA, sin tocar la red: busca en los LISTADOS de
+    DonTorrent que ya tenemos cacheados (los que el box empuja por /catfeed cada
+    ~8 min y que /catbrowse sirve en el Inicio).
+
+    Por que hace falta (verificado 2026-08-07): la busqueda de DonTorrent es un
+    POST /buscar y era el UNICO camino sin plan B — el proxy CF Worker no puede
+    servir POST (el JWT de Anubis va atado a la IP, §9) asi que se dejo solo con
+    DoH. Ese dia coincidieron las dos desgracias: Render BANEADO por DonTorrent
+    y el ISP del box RESETEANDO el DoH (WinError 10054) -> `fetch_html
+    (q=obsession)` moria en 150ms y la web decia "Sin resultados"... mientras
+    "Obsession" estaba EN EL INICIO, en la cache, servida por el mismo relay.
+
+    No sustituye al buscador (solo ve lo que hay en los listados recientes),
+    pero convierte un "Sin resultados" en falso en los resultados que SI tenemos.
+    Los items ya vienen enriquecidos (poster HD + nota), asi que salen bien."""
+    out, seen = [], set()
+    try:
+        src = dict(_catbrowse_load())
+        for k, v in _CATBROWSE_CACHE.items():
+            src[k] = v
+        for key, rec in src.items():
+            if str(key).startswith("dx:"):      # solo DonTorrent, no el fallback dx
+                continue
+            for it in (rec or {}).get("items", []) or []:
+                title = it.get("title") or ""
+                if not title or not _q_relevant(title, q):
+                    continue
+                k = it.get("content_id") or title.lower()
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(dict(it))
+    except Exception:
+        pass
+    return out
+
+
 @app.get("/catsearch")
 def catsearch():
     q = (request.args.get("q") or "").strip()
@@ -4618,6 +4656,10 @@ def catsearch():
         # real (reto Cloudflare ~3-6s), siempre acotado al deadline total.
         _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 8.0, _rem()))  # DX
         dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
+        # Ningun camino a DonTorrent vivo (Render baneado Y el ISP del box
+        # tumbando el POST de /buscar) -> al menos lo que ya tenemos cacheado.
+        if not dt_items:
+            dt_items = _cat_from_cache(q)
         et_items = _r["et"]
         dx_items = _r["dx"]
         # FAILOVER anti-baneo via ScraperAPI (IPs residenciales). Solo si el directo
@@ -5721,7 +5763,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk40", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk41", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
