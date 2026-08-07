@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk45",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk46",
                     mimetype="text/plain")
 
 
@@ -5342,7 +5342,11 @@ def _seed_meta_index():
 _CAT_ENRICH_FILE = "/tmp/mw_cat_enrich.json"
 _CAT_ENRICH_MAX = 4000     # tope de content_ids (Render 512MB)
 _CAT_ENRICH_KEYS = ("poster", "year", "rating", "overview",
-                    "backdrop", "genres", "tmdb_id")
+                    "backdrop", "genres", "tmdb_id",
+                    # "title": el titulo OFICIAL que manda el box (addon 2.9.57+).
+                    # Sin persistirlo aqui se perdia al guardar y las tildes no
+                    # sobrevivian al siguiente /catfeed.
+                    "title")
 
 
 def _cat_enrich_load():
@@ -5545,7 +5549,14 @@ def catfeed():
     for it in raw:
         cid = it.get("content_id")
         sm = seed_idx.get(cid) or enr_idx.get(str(cid))
-        if not _cat_apply_meta(it, sm):
+        _ok = _cat_apply_meta(it, sm)
+        # Se pide enrich al box si falta el POSTER o si el meta guardado no trae
+        # TITULO. Sin lo segundo las tildes no llegaban nunca: los metas viejos
+        # (cache acumulada) ya tenian poster, asi que NINGUN item entraba en
+        # `pending`, el box no enriquecia nada y su titulo oficial —la unica via,
+        # porque TMDB banea a Render— no se pedia jamas. Es autolimitado: en
+        # cuanto el meta guardado tiene `title`, deja de pedirse.
+        if (not _ok) or not (sm or {}).get("title"):
             if not it.get("poster"):
                 it["poster"] = it.get("thumb")
             if len(pending) < 80:    # candidatos a enrich por el box (TMDB no baneado)
@@ -5837,7 +5848,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk45", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk46", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
