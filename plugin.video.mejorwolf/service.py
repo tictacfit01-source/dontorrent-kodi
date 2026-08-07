@@ -994,7 +994,15 @@ def _enrich_pending(base, kind, resp):
             continue
         m = {"poster": info.get("poster"), "year": info.get("year"),
              "rating": info.get("rating"), "overview": info.get("plot"),
-             "backdrop": info.get("fanart")}
+             "backdrop": info.get("fanart"),
+             # El titulo OFICIAL (con tildes). DonTorrent no las publica en sus
+             # listados —cada ficha es un <a> con la imagen y sin title/alt, y su
+             # propio slug viene sin la vocal ('La-ambicin-de-los-Savage')— asi
+             # que el Inicio salia con 'Obsesin' o 'Cmplices hasta el final'. El
+             # relay NO puede pedirlo (TMDB le banea la IP): tiene que venir de
+             # aqui. El relay solo lo aplica si coincide letra por letra salvo
+             # los acentos, nunca sustituye un titulo por otro distinto.
+             "title": info.get("title")}
         if info.get("id"):
             m["tmdb_id"] = info["id"]
         meta[str(cid)] = m

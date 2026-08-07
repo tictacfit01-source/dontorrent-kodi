@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk44",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk45",
                     mimetype="text/plain")
 
 
@@ -5392,6 +5392,17 @@ def _cat_apply_meta(it, sm):
     if not sm or "image.tmdb.org" not in (sm.get("poster") or ""):
         return False
     it["poster"] = sm["poster"]
+    # TILDES: DonTorrent no publica el titulo completo en sus listados (cada
+    # ficha es un <a> con la imagen, sin title ni alt, y su propio slug viene
+    # sin la vocal acentuada) -> el Inicio salia con 'Obsesin', 'Admisin
+    # imposible', 'Cmplices hasta el final'. El titulo OFICIAL lo trae el BOX en
+    # este meta (el relay no puede pedirlo: TMDB le banea la IP). Se aplica SOLO
+    # si es el MISMO titulo salvo acentos (_dt_mutila) -> nunca sustituye una
+    # peli por otra ni traduce al ingles (norma §0: espejo de la web original).
+    _tt = (sm.get("title") or "").strip()
+    _cur = (it.get("title") or "").strip()
+    if _tt and _cur and _tt != _cur and _dt_mutila(_tt).lower() == _cur.lower():
+        it["title"] = _tt
     if sm.get("year"):
         it["year"] = sm["year"]
     if sm.get("rating") is not None:
@@ -5826,7 +5837,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk44", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk45", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
