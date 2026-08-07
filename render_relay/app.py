@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk37",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk38",
                     mimetype="text/plain")
 
 
@@ -4851,7 +4851,11 @@ def catetbox():
     if prestada:
         if not _BOX_LEND_SEM.acquire(blocking=False):
             return jsonify({"items": [], "off": True})
-        wait = min(wait, 14.0)
+        # NO se recorta la espera: el semaforo ya acota a 2 los hilos ocupados,
+        # que era el problema. Recortarla a 14s ademas (dtbk37) hacia inutil el
+        # prestamo: `_any_live_box` devuelve la caja de latido MAS RECIENTE, que
+        # puede ser una TV lenta, y expiraba antes de que contestara (medido:
+        # timeout a los 14,3s con la caja sin llegar a arrancar el trabajo).
     try:
         job = "et" + os.urandom(5).hex()
         _kb_enqueue(box, {"c": "etjob", "job": job, "op": op, "q": q,
@@ -4944,7 +4948,7 @@ def catboxeps():
         job = "et" + os.urandom(5).hex()
         _kb_enqueue(box, {"c": "etjob", "job": job, "op": "episodes",
                           "src": src, "url": url})
-        res = _catjob_wait(job, 14.0 if prestada else 22.0)
+        res = _catjob_wait(job, 22.0)   # ver /catetbox: no se recorta por prestada
     finally:
         if prestada:
             _BOX_LEND_SEM.release()
@@ -5695,7 +5699,20 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk37", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk38", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
+    #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
+    #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
+    #    pantalla de UNA caja, no un listado). Se publican EDADES, nunca los
+    #    codigos: un code de 6 cifras permite mandar ordenes a esa tele.
+    try:
+        _now_b = _t.time()
+        _ages = sorted(int(_now_b - e.get("ts", 0))
+                       for e in _kbstatus_load().values()
+                       if (_now_b - e.get("ts", 0)) < 90)
+        out["boxes_live"] = {"n": len(_ages), "ages_s": _ages[:8]}
+    except Exception:
+        out["boxes_live"] = {"n": -1}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
