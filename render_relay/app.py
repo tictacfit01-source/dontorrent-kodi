@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk38",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk39",
                     mimetype="text/plain")
 
 
@@ -4879,7 +4879,15 @@ def catetbox():
         if not it.get("quality"):
             it["quality"] = ql
     if items:
-        items = _cat_enrich(items, limit=60)
+        # TOPE DURO al enrich. `_cat_enrich` dispara hasta 60 consultas a TMDB
+        # con ex.map y SIN limite de tiempo, y TMDB banea la IP de Render: la
+        # peticion se quedaba colgada MINUTOS (medido: >120s con el relay por lo
+        # demas sano, /ping en 200). Ademas cada una de esas se come un hilo de
+        # los 8 -> es el camino recto a tumbar el relay entero. Si expira se
+        # devuelven los items TAL CUAL: salen igual (con su caratula propia),
+        # solo sin poster HD ni nota, que es infinitamente mejor que colgarse.
+        items = _bounded(lambda: _cat_enrich(items, limit=60), 8.0,
+                         default=items)
     return jsonify({"items": items})
 
 
@@ -5699,7 +5707,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk38", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk39", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
