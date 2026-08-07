@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk43",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk44",
                     mimetype="text/plain")
 
 
@@ -3689,6 +3689,9 @@ def _cat_tmdb(title, kind="movie"):
                     # respuesta de busqueda -> 0 llamadas extra, 0 riesgo de baneo.
                     out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
                            "year": d[:4] or year, "rating": top.get("vote_average"),
+                           # El titulo viene GRATIS aqui y sirve para restaurar
+                           # las tildes que DonTorrent no publica (ver _dt_mutila).
+                           "title": (top.get("title") or top.get("name") or ""),
                            "overview": (top.get("overview") or "").strip(),
                            "backdrop": (f"https://image.tmdb.org/t/p/w780{bd}" if bd else None),
                            "genres": [_TMDB_GENRES[g] for g in gids
@@ -3982,6 +3985,30 @@ def _cat_parse_items(html):
     return out
 
 
+def _dt_mutila(s):
+    """Aplica a un titulo la MISMA mutilacion que hace DonTorrent en sus slugs:
+    BORRAR la letra acentuada entera ('Obsesión' -> 'Obsesin').
+
+    Por que existe (verificado 2026-08-07 sobre el HTML real del listado): en
+    /peliculas cada ficha es UN solo <a> con la imagen dentro, SIN atributo
+    `title` y SIN `alt` — el unico texto es el slug de la URL
+    (`/pelicula/30780/La-ambicin-de-los-Savage`), y DonTorrent lo genera ya sin
+    la vocal. Los unicos caracteres acentuados del HTML estan en los metadatos
+    de la pagina ("Películas", "Español"), NO en los titulos. Es decir: la web
+    original NO publica el titulo completo, asi que el catalogo salia con
+    'Obsesin', 'Admisin imposible' o 'Cmplices hasta el final'.
+
+    Se usa para comparar: si el titulo de TMDB, mutilado igual, coincide con el
+    nuestro, es el MISMO titulo y podemos poner el bueno."""
+    out = []
+    for ch in s or "":
+        d = _wud.normalize("NFD", ch)
+        if len(d) > 1 and _wud.combining(d[-1]):
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def _cat_enrich(items, limit=120):
     # NO descartamos resultados: la busqueda debe volcar TODO lo que da la web
     # original (DonTorrent puede traer 49+ en "batman"). Enriquecemos con TMDB
@@ -4004,6 +4031,15 @@ def _cat_enrich(items, limit=120):
                 poster = poster or sm.get("poster")
                 year = year or sm.get("year")
                 rating = rating if rating is not None else sm.get("rating")
+        # Restaurar las TILDES que DonTorrent no publica (ver _dt_mutila): solo
+        # si el titulo de TMDB, mutilado igual que el slug, coincide EXACTAMENTE
+        # con el nuestro. Asi 'Obsesin' -> 'Obsesión' y 'Cmplices hasta el final'
+        # -> 'Cómplices hasta el final', pero un titulo DISTINTO (TMDB en ingles,
+        # otra peli) NUNCA sustituye al de la web original (norma §0: espejo).
+        _tt = (meta.get("title") or "").strip()
+        _cur = (it.get("title") or "").strip()
+        if _tt and _cur and _tt != _cur and _dt_mutila(_tt).lower() == _cur.lower():
+            it["title"] = _tt
         it["poster"] = poster or it.get("thumb")   # TMDB/semilla > DT propia
         it["year"] = year or it.get("year")
         it["rating"] = rating
@@ -5790,7 +5826,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk43", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk44", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
