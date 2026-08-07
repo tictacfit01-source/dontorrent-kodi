@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk35",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk36",
                     mimetype="text/plain")
 
 
@@ -2662,6 +2662,35 @@ def _any_live_box(max_age=90):
         return None
 
 
+def _box_live(code, max_age=90):
+    """¿ESE code tiene latido reciente? (mismo criterio que /kb/status)."""
+    try:
+        ent = _kbstatus_load().get(code) or {}
+        return (_t.time() - ent.get("ts", 0)) < max_age
+    except Exception:
+        return False
+
+
+def _box_for(code):
+    """Caja a la que encolar un trabajo de DATOS (buscar, episodios, resolver un
+    link). La suya si esta ENCENDIDA; si esta apagada, CUALQUIER otra caja viva
+    del sistema; None si no hay ninguna.
+
+    El 2026-08-06 se vio el problema en vivo: con el salon apagado, /catetbox
+    encolaba igualmente al code muerto, el trabajo expiraba y la web se quedaba
+    SIN EliteTorrent, DivxTotal ni WolfMax ("solo DonTorrent"), aunque habia otra
+    caja encendida que podia haberlo hecho. El relay ya usaba este apaño para
+    dthtml/dtmeta (`code if len(code)==6 else _any_live_box()`), pero solo cubria
+    "no hay code", no "el code esta muerto", que es el caso normal.
+
+    OJO: esto vale para trabajos INVISIBLES (bajan datos en 2o plano y no tocan
+    la pantalla del dueño de la caja). Reproducir y el mando siguen yendo a SU
+    caja: eso no se toca."""
+    if len(code or "") == 6 and _box_live(code):
+        return code
+    return _any_live_box()
+
+
 _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -4797,7 +4826,8 @@ def catetbox():
     q = (request.args.get("q") or "").strip()
     op = (request.args.get("op") or "search").strip()
     srcs = (request.args.get("srcs") or "et").strip()
-    if len(code) != 6 or (op == "search" and not q):
+    box = _box_for(code)     # la suya si esta viva; si no, cualquier caja viva
+    if not box or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
     # WolfMax es lento (catalogo->brave). Para et/dx, 20s: las cajas LENTAS (TV)
     # no terminaban en 10s -> el salon devolvia 0 ("solo DonTorrent"). _catjob_wait
@@ -4805,8 +4835,8 @@ def catetbox():
     # penalizan; solo da margen a las lentas. DonTorrent sale ya; el box rellena.
     wait = 24.0 if "wf" in srcs else 20.0
     job = "et" + os.urandom(5).hex()
-    _kb_enqueue(code, {"c": "etjob", "job": job, "op": op, "q": q,
-                       "srcs": srcs})
+    _kb_enqueue(box, {"c": "etjob", "job": job, "op": op, "q": q,
+                      "srcs": srcs})
     res = _catjob_wait(job, wait)
     if res is None:
         return jsonify({"items": [], "timeout": True})
@@ -4832,11 +4862,12 @@ def catetboxresolve():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     url = (request.args.get("url") or "").strip()
     src = (request.args.get("src") or "et").strip()
-    if len(code) != 6 or not url.lower().startswith("http"):
+    box = _box_for(code)     # ver _box_for: la suya, o cualquier caja viva
+    if not box or not url.lower().startswith("http"):
         return jsonify({"link": ""}), 400
     job = "et" + os.urandom(5).hex()
-    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "resolve",
-                       "src": src, "url": url})
+    _kb_enqueue(box, {"c": "etjob", "job": job, "op": "resolve",
+                      "src": src, "url": url})
     res = _catjob_wait(job, 18.0)
     return jsonify({"link": (res or {}).get("link", "") or ""})
 
@@ -4847,11 +4878,12 @@ def catboxrar():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     url = (request.args.get("url") or "").strip()
     src = (request.args.get("src") or "dx").strip()
-    if len(code) != 6 or not url.lower().startswith("http"):
+    box = _box_for(code)     # ver _box_for: la suya, o cualquier caja viva
+    if not box or not url.lower().startswith("http"):
         return jsonify({"rar": False}), 400
     job = "et" + os.urandom(5).hex()
-    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "rarcheck",
-                       "src": src, "url": url})
+    _kb_enqueue(box, {"c": "etjob", "job": job, "op": "rarcheck",
+                      "src": src, "url": url})
     res = _catjob_wait(job, 16.0)
     return jsonify({"rar": bool((res or {}).get("rar")),
                     "quality": (res or {}).get("quality") or ""})
@@ -4871,19 +4903,20 @@ def catboxeps():
     # episodios no cargan" cuando el box esta apagado. Si DivxTotal banea la IP
     # de Render (directo vacio) Y hay box emparejado, cae al box (DoH de casa,
     # NO baneado) -> robusto pase lo que pase.
+    box = _box_for(code)     # ver _box_for: la suya, o cualquier caja viva
     if src == "dx" and "divxtotal" in url.lower():
         try:
             payload = _dx_episodes_payload(url)
         except Exception:
             payload = {"episodes": []}
-        if payload.get("episodes") or len(code) != 6:
+        if payload.get("episodes") or not box:
             return jsonify(payload)
-        # directo sin episodios + hay box -> resolver via el box (abajo)
-    if len(code) != 6:
+        # directo sin episodios + hay caja viva -> resolver via caja (abajo)
+    if not box:
         return jsonify({"episodes": []}), 400
     job = "et" + os.urandom(5).hex()
-    _kb_enqueue(code, {"c": "etjob", "job": job, "op": "episodes",
-                       "src": src, "url": url})
+    _kb_enqueue(box, {"c": "etjob", "job": job, "op": "episodes",
+                      "src": src, "url": url})
     res = _catjob_wait(job, 22.0)
     if res is None:
         return jsonify({"episodes": [], "timeout": True})
@@ -5632,7 +5665,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk35", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk36", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
