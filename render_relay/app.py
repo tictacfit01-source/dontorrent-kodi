@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk36",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk37",
                     mimetype="text/plain")
 
 
@@ -2662,6 +2662,16 @@ def _any_live_box(max_age=90):
         return None
 
 
+# Trabajos SIMULTANEOS hacia una caja PRESTADA (la de otro, porque la del
+# visitante esta apagada). Sin tope, cada peticion deja un hilo del relay
+# esperando hasta 24s: con 8 hilos (2 workers x 4 gthread) bastan unos pocos
+# visitantes a la vez para que hasta /ping deje de responder — pasó el
+# 2026-08-07 al desplegar dtbk36 (conectaba y negociaba TLS en 0,16s pero no
+# contestaba nunca; se arreglo con un reinicio limpio). Con la caja PROPIA no
+# se limita: ahi el visitante solo se hace esperar a si mismo.
+_BOX_LEND_SEM = _thr.Semaphore(2)
+
+
 def _box_live(code, max_age=90):
     """¿ESE code tiene latido reciente? (mismo criterio que /kb/status)."""
     try:
@@ -4834,10 +4844,22 @@ def catetbox():
     # devuelve en cuanto el box responde, asi que las cajas rapidas (PC) NO se
     # penalizan; solo da margen a las lentas. DonTorrent sale ya; el box rellena.
     wait = 24.0 if "wf" in srcs else 20.0
-    job = "et" + os.urandom(5).hex()
-    _kb_enqueue(box, {"c": "etjob", "job": job, "op": op, "q": q,
-                      "srcs": srcs})
-    res = _catjob_wait(job, wait)
+    # Caja PRESTADA: tope de concurrencia y espera mas corta -> el hilo del relay
+    # se libera antes y no se acumulan. Si no hay hueco se responde YA (lo mismo
+    # que se respondia antes de existir el prestamo), sin colgar a nadie.
+    prestada = (box != code)
+    if prestada:
+        if not _BOX_LEND_SEM.acquire(blocking=False):
+            return jsonify({"items": [], "off": True})
+        wait = min(wait, 14.0)
+    try:
+        job = "et" + os.urandom(5).hex()
+        _kb_enqueue(box, {"c": "etjob", "job": job, "op": op, "q": q,
+                          "srcs": srcs})
+        res = _catjob_wait(job, wait)
+    finally:
+        if prestada:
+            _BOX_LEND_SEM.release()
     if res is None:
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
@@ -4914,10 +4936,18 @@ def catboxeps():
         # directo sin episodios + hay caja viva -> resolver via caja (abajo)
     if not box:
         return jsonify({"episodes": []}), 400
-    job = "et" + os.urandom(5).hex()
-    _kb_enqueue(box, {"c": "etjob", "job": job, "op": "episodes",
-                      "src": src, "url": url})
-    res = _catjob_wait(job, 22.0)
+    # Mismo tope que en /catetbox cuando la caja es prestada (ver _BOX_LEND_SEM).
+    prestada = (box != code)
+    if prestada and not _BOX_LEND_SEM.acquire(blocking=False):
+        return jsonify({"episodes": []})
+    try:
+        job = "et" + os.urandom(5).hex()
+        _kb_enqueue(box, {"c": "etjob", "job": job, "op": "episodes",
+                          "src": src, "url": url})
+        res = _catjob_wait(job, 14.0 if prestada else 22.0)
+    finally:
+        if prestada:
+            _BOX_LEND_SEM.release()
     if res is None:
         return jsonify({"episodes": [], "timeout": True})
     eps = res.get("eps") or {}
@@ -5665,7 +5695,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk36", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk37", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
