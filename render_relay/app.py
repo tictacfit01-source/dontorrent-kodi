@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk39",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk40",
                     mimetype="text/plain")
 
 
@@ -5447,7 +5447,11 @@ def catfeed():
 
     def _bg_enrich(_html=html, _key=key):
         try:
-            en = _cat_enrich(_cat_parse_items(_html))
+            # Va en 2o plano (no bloquea el POST del box), pero igualmente
+            # acotado: con TMDB baneando a Render este hilo se eternizaba
+            # consumiendo CPU/red del proceso. 40s y a otra cosa.
+            _its = _cat_parse_items(_html)
+            en = _bounded(lambda: _cat_enrich(_its), 40.0, default=None)
             if en:
                 # No DEGRADAR: mientras este hilo corria (~40s con TMDB baneado),
                 # el box pudo empujar /catenrich con posters HD. _cat_enrich solo
@@ -5661,7 +5665,14 @@ def catbrowse():
             res = _catjob_wait(job, 9.0)
             html = (res or {}).get("html") or ""
     if html:
-        items = _cat_enrich(_cat_parse_items(html))
+        # TOPE DURO al enrich (ver /catetbox): `_cat_enrich` consulta TMDB, que
+        # BANEA la IP de Render, y sin limite se queda colgado ocupando uno de
+        # los 8 hilos de gunicorn. Esta es la ruta del INICIO, la que carga TODO
+        # el mundo: unas pocas visitas con la cache vencida bastaban para dejar
+        # el relay sordo (2026-08-07: el box no podia ni empujar /catfeed,
+        # ReadTimeout de 45s, y las busquedas devolvian 0).
+        items = _cat_parse_items(html)
+        items = _bounded(lambda: _cat_enrich(items), 10.0, default=items)
         rec = {"items": items, "ts": now}
         _store(key, rec)
         return jsonify({"items": items, "src": "dt"})
@@ -5678,7 +5689,10 @@ def catbrowse():
     if not (dx_ent and (now - dx_ent.get("ts", 0)) < _CATBROWSE_DX_TTL):
         dxit = _bounded(lambda: _dx_browse_items(kind, page), 6.0, []) or []
         if dxit:
-            dx_ent = {"items": _cat_enrich(dxit), "ts": now, "dx": True}
+            # mismo tope que arriba: TMDB no puede colgar un hilo del relay
+            dx_ent = {"items": _bounded(lambda: _cat_enrich(dxit), 10.0,
+                                        default=dxit),
+                      "ts": now, "dx": True}
             _store(dxkey, dx_ent)
     if dx_ent:
         return jsonify({"items": dx_ent["items"], "dx": True, "src": "dx"})
@@ -5707,7 +5721,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk39", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk40", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
