@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk41",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk42",
                     mimetype="text/plain")
 
 
@@ -4648,7 +4648,15 @@ def catsearch():
         # la espera al traer resultados y va rapido.
         _dl = now + 19.0
         _rem = lambda: max(0.0, _dl - _t.time())
-        _ready.wait(min(16.0, _rem()))          # box/DT-directo: espera completa
+        # ¿Tenemos ya la respuesta en la cache del catalogo? Es local e
+        # INSTANTANEO (sin red), asi que se mira ANTES de esperar a nadie.
+        _cache_hits = _cat_from_cache(q)
+        # Con algo en mano NO se agotan los 16s: 6s bastan para el box
+        # residencial (~5-8s) y, si la red esta muerta (Render baneado + ISP
+        # tumbando el DoH), salimos en 6s en vez de en 20. Sin nada en cache se
+        # espera lo de siempre: mas vale tardar que devolver vacio en falso.
+        # (2026-08-07: el dueño lo dijo claro — 20s buscando es inaceptable.)
+        _ready.wait(min(6.0 if _cache_hits else 16.0, _rem()))
         _ths[2].join(min(0.4, _rem()))          # ET (off) -> instantaneo
         # DX: si DT/box trajeron algo, respiro corto (1.5s) para fusionar lo que ya
         # este; si terminaron SIN resultados (el wait salio al instante por el
@@ -4657,9 +4665,10 @@ def catsearch():
         _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 8.0, _rem()))  # DX
         dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
         # Ningun camino a DonTorrent vivo (Render baneado Y el ISP del box
-        # tumbando el POST de /buscar) -> al menos lo que ya tenemos cacheado.
+        # tumbando el POST de /buscar) -> lo que ya teniamos cacheado (calculado
+        # arriba, antes de esperar a la red).
         if not dt_items:
-            dt_items = _cat_from_cache(q)
+            dt_items = _cache_hits
         et_items = _r["et"]
         dx_items = _r["dx"]
         # FAILOVER anti-baneo via ScraperAPI (IPs residenciales). Solo si el directo
@@ -4715,8 +4724,15 @@ def catsearch():
         # porque el dedup necesita el AÑO para no fundir remakes del mismo titulo
         # (Suspiria 1977 vs 2018); la cache TMDB por titulo hace que enriquecer las
         # versiones repetidas sea gratis (mismo titulo -> mismo año cacheado).
-        enr = _bounded(lambda: _cat_enrich(merged),
-                       max(1.5, now + 19.5 - _t.time()), merged) or merged
+        # Si TODO viene ya enriquecido (es el caso de la cache del catalogo:
+        # poster HD y nota ya resueltos), NO se toca TMDB — que ademas banea a
+        # Render y es justo lo que hace lenta esta ruta.
+        if merged and all(it.get("poster") and it.get("rating") is not None
+                          for it in merged):
+            enr = merged
+        else:
+            enr = _bounded(lambda: _cat_enrich(merged),
+                           max(1.5, now + 19.5 - _t.time()), merged) or merged
         # Homonimos (Suspiria 1977 vs 2018): DT no da año en el listado y TMDB le da
         # el mismo a ambos -> el dedup los fundiria. Si hay choque de titulo, leemos
         # el año REAL de la ficha DT (la propia funcion gestiona su presupuesto). Si
@@ -5763,7 +5779,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk41", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk42", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
