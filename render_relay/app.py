@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk47",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk48",
                     mimetype="text/plain")
 
 
@@ -5656,8 +5656,18 @@ def catfeed():
     except Exception:
         pass
 
-    def _bg_enrich(_html=html, _key=key):
+    def _bg_enrich(_html=html, _key=key, _wait=(45.0 if box_ficha else 0.0)):
         try:
+            # Si el box sabe leer la FICHA, se le DEJA LLEGAR PRIMERO: tarda unos
+            # 25 s (ficha + TMDB desde su IP) y trae el match bueno. Sin esta
+            # espera los dos caminos corrian a la vez y, cuando ganaba este, el
+            # Inicio se quedaba varios minutos con el cartel del homonimo famoso
+            # hasta el siguiente /catfeed. Con la espera, cuando este hilo
+            # arranca los metas del box ya estan puestos y _cat_enrich ni toca
+            # TMDB para ellos. Se mantiene como PLAN B (§9: ninguna funcion de
+            # red con un solo camino) por si el box no logra enriquecer.
+            if _wait:
+                _t.sleep(_wait)
             # Va en 2o plano (no bloquea el POST del box), pero igualmente
             # acotado: con TMDB baneando a Render este hilo se eternizaba
             # consumiendo CPU/red del proceso. 40s y a otra cosa.
@@ -5947,7 +5957,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk47", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk48", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
