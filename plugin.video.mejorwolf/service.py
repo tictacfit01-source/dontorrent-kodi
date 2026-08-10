@@ -960,14 +960,41 @@ def _playback_diag():
     }
 
 
-def _enrich_pending(base, kind, resp):
+_DTPATH_RE = re.compile(
+    r'href=["\'](/(?:pelicula|serie|documental)/(\d+)/[^"\'#?]+)["\']', re.I)
+# Fichas NUEVAS de DonTorrent por vuelta de pre-carga (cada ~8 min). El catalogo
+# entero se cubre en unas pocas vueltas y luego el coste es CERO (la ficha se
+# cachea en disco para siempre): nunca hay una rafaga contra DonTorrent.
+_FICHA_BUDGET = 10
+
+
+def _dtpaths_from_html(html):
+    """{content_id: ruta de su FICHA} del HTML del listado que acabamos de
+    empujar. El relay parsea el mismo HTML, pero el `pending` que devuelve solo
+    trae cid/titulo; el path con SLUG (que DonTorrent exige) lo sacamos aqui sin
+    pedir nada, y asi esto funciona tambien con un relay antiguo."""
+    out = {}
+    for path, cid in _DTPATH_RE.findall(html or ""):
+        out.setdefault(cid, path)
+    return out
+
+
+def _enrich_pending(base, kind, resp, html="", budget=None):
     """Tras empujar /catfeed, el relay devuelve `pending`: titulos SIN poster TMDB
     (la IP de datacenter de Render tiene TMDB baneado). Los enriquecemos con
     NUESTRO TMDB (IP RESIDENCIAL del box, no baneada) y los empujamos a /catenrich
     -> el Inicio sale en HD (poster + nota + año) aunque Render no pueda con TMDB.
     Best-effort, acotado y CACHEADO (tmdb del box guarda en disco) -> tras la 1a
     vuelta el relay rellena solo por content_id y `pending` llega vacio (0 llamadas
-    TMDB). Cualquier fallo: el Inicio degrada a la semilla, igual que hoy."""
+    TMDB). Cualquier fallo: el Inicio degrada a la semilla, igual que hoy.
+
+    Antes de preguntar a TMDB se lee la FICHA de DonTorrent (2.9.58), lo unico que
+    publica el titulo COMPLETO y el DIRECTOR. Con eso:
+      · la query a TMDB lleva el titulo de verdad ('Una Milla: Capítulo Uno' en
+        vez del slug mutilado 'Una Milla Captulo Uno', que no matcheaba), y
+      · los HOMONIMOS se resuelven por director en vez de por popularidad
+        ('La odisea' de The Asylum ya no se lleva el cartel de la de Nolan).
+    """
     try:
         pending = (resp.json() or {}).get("pending") or []
     except Exception:
@@ -976,9 +1003,13 @@ def _enrich_pending(base, kind, resp):
         return 0
     try:
         from resources.lib import tmdb
+        from resources.lib import scraper_dontorrent as dt
     except Exception:
         return 0
     import requests
+    dtpaths = _dtpaths_from_html(html)
+    if budget is None:
+        budget = [_FICHA_BUDGET]
     meta = {}
     for p in pending[:80]:
         cid = p.get("cid")
@@ -986,8 +1017,23 @@ def _enrich_pending(base, kind, resp):
         if not cid or not title:
             continue
         k = "tv" if p.get("kind") == "serie" else "movie"
+        # 1) Ficha de DonTorrent: gratis si ya la tenemos; si no, solo mientras
+        #    quede presupuesto de esta vuelta (el resto cae en la siguiente).
+        ficha = {}
+        path = p.get("dtpath") or dtpaths.get(str(cid))
+        if path:
+            try:
+                ficha = dt.detail_info(path, cid, fetch=False)
+                if not ficha and budget[0] > 0:
+                    budget[0] -= 1
+                    ficha = dt.detail_info(path, cid)
+            except Exception:
+                ficha = {}
+        # 2) TMDB con el titulo REAL y, si hay homonimos, desempatando por
+        #    director/reparto de la ficha.
         try:
-            info = tmdb.enrich(title, k)
+            info = tmdb.enrich(ficha.get("title") or title, k,
+                               hint=(ficha or None))
         except Exception:
             info = None
         if not info or not info.get("poster"):
@@ -1005,6 +1051,16 @@ def _enrich_pending(base, kind, resp):
              "title": info.get("title")}
         if info.get("id"):
             m["tmdb_id"] = info["id"]
+        if ficha.get("title"):
+            # El titulo TAL CUAL lo publica DonTorrent en su ficha: es la web
+            # ORIGINAL (norma §0, la app es su espejo), asi que el relay lo
+            # aplica sin validarlo contra TMDB -> restaura tildes Y puntuacion
+            # ('Una Milla: Capítulo Uno'), cosa que la via TMDB no podia porque
+            # los dos puntos no estan en el slug y la comparacion fallaba.
+            m["dt_title"] = ficha["title"]
+            m["dtok"] = 1        # resuelto con la fuente: no hay que re-pedirlo
+        if ficha.get("year"):
+            m["dt_year"] = ficha["year"]
         meta[str(cid)] = m
     if not meta:
         return 0
@@ -1031,17 +1087,25 @@ def _prefetch_catalog():
             return
         import requests
         n = 0
+        # Presupuesto de fichas COMPARTIDO por los 3 listados de esta vuelta.
+        budget = [_FICHA_BUDGET]
         for kind, path in (("estrenos", "/"), ("peliculas", "/peliculas"),
                            ("series", "/series")):
             try:
                 html = dt.fetch_html(path=path)
                 if html and len(html) > 500:
+                    # `ficha`: le dice al relay que este box sabe leer la FICHA
+                    # de DonTorrent, para que le pida enrich hasta resolverla
+                    # (a un box antiguo no tiene sentido pedirselo).
                     r = requests.post(base + "/catfeed",
-                                      json={"kind": kind, "html": html},
+                                      json={"kind": kind, "html": html,
+                                            "ficha": 1},
                                       timeout=45)
                     if r.status_code == 200:
                         n += 1
-                        _enrich_pending(base, kind, r)   # Inicio HD via TMDB del box
+                        # Inicio HD via TMDB del box; `html` le da el path de la
+                        # ficha de cada item (titulo real + director).
+                        _enrich_pending(base, kind, r, html, budget)
                     else:
                         xbmc.log("[MejorWolf/service] catfeed %s HTTP %d: %s"
                                  % (kind, r.status_code, (r.text or "")[:140]),

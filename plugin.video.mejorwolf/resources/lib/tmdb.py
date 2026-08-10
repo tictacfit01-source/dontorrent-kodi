@@ -3,6 +3,7 @@ import os
 import json
 import time
 import atexit
+import unicodedata
 import requests
 import xbmcaddon
 
@@ -252,7 +253,78 @@ def _score(result, preferred_kind, queries, year):
     return sim + pop_score + real_bonus + year_bonus + kind_bonus + ghost_penalty
 
 
-def _best_across_kinds(queries, kinds, year):
+def _norm_person(name):
+    """Nombre de persona comparable: sin acentos, sin puntuacion, minusculas.
+    ('Llana Barron.' -> 'llana barron'; 'Morade Aïssaoui' -> 'morade aissaoui')"""
+    s = unicodedata.normalize("NFD", name or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9 ]", " ", s.lower()).strip()
+
+
+_CREDITS_CACHE = {}
+
+
+def _credits(kind, tid):
+    """(directores, reparto) de un candidato TMDB. ([], []) si no responde."""
+    ck = (kind, tid)
+    if ck in _CREDITS_CACHE:
+        return _CREDITS_CACHE[ck]
+    ep = "movie" if kind == "movie" else "tv"
+    try:
+        r = requests.get(f"https://api.themoviedb.org/3/{ep}/{tid}/credits",
+                         params={"api_key": _key()}, timeout=8)
+        r.raise_for_status()
+        d = r.json() or {}
+        dirs = [_norm_person(c.get("name")) for c in (d.get("crew") or [])
+                if c.get("job") == "Director"]
+        cast = [_norm_person(c.get("name")) for c in (d.get("cast") or [])[:12]]
+        out = ([x for x in dirs if x], [x for x in cast if x])
+    except Exception:
+        out = ([], [])       # no cacheamos el fallo de red
+        return out
+    _CREDITS_CACHE[ck] = out
+    return out
+
+
+def _pick_by_credits(cands, hint):
+    """Desempata HOMONIMOS con la ficha de DonTorrent (la fuente original).
+
+    TMDB devuelve el mas POPULAR primero, asi que dos peliculas del mismo titulo
+    y año se resuelven siempre a favor del taquillazo. Caso real: 'La odisea' de
+    DonTorrent (mockbuster de The Asylum, dir. Marcel Walz) se llevaba el poster
+    y la sinopsis de 'La Odisea' de Nolan. El DIRECTOR (y el reparto) que publica
+    la propia ficha de DonTorrent lo resuelve sin ambiguedad posible.
+
+    Devuelve el candidato que casa, o None si ninguno casa (-> se mantiene el
+    ranking normal: nunca EMPEORA lo que ya habia)."""
+    director = _norm_person(hint.get("director"))
+    cast = [_norm_person(c) for c in (hint.get("cast") or [])]
+    cast = [c for c in cast if c]
+    if not director and not cast:
+        return None
+    best, best_score = None, 0
+    for c in cands[:3]:      # solo los empatados de arriba -> 3 llamadas maximo
+        tid = c.get("id")
+        if not tid:
+            continue
+        dirs, tcast = _credits(c.get("_tmdb_kind", "movie"), tid)
+        score = 0
+        if director and director in dirs:
+            score += 100
+        score += 10 * sum(1 for a in cast if a in tcast)
+        if score > best_score:
+            best, best_score = c, score
+    return best
+
+
+def _exact_ties(results, queries):
+    """Candidatos con el titulo EXACTO de la busqueda (sim maxima). Si hay mas de
+    uno, son homonimos y el ranking por popularidad es una apuesta -> hay que
+    desempatar con datos de la fuente original."""
+    return [r for r in results if _best_sim(r, queries) >= 1000.0]
+
+
+def _best_across_kinds(queries, kinds, year, hint=None):
     """Consulta todas las queries x kinds, agrega y devuelve el mejor match.
 
     `queries` es una lista: titulo principal + titulos alternativos (original
@@ -260,7 +332,11 @@ def _best_across_kinds(queries, kinds, year):
     similitud real -> preferimos SIN caratula antes que una equivocada.
     net_ok=False significa que NINGUNA consulta llego a TMDB (red/API caida):
     el llamante NO debe negative-cachear ese "sin match" (era la causa de que
-    un traspies de red dejara el box dias sin posters)."""
+    un traspies de red dejara el box dias sin posters).
+
+    `hint` = {director, cast, year} de la ficha de DonTorrent: si tras ordenar
+    hay VARIOS candidatos con el titulo exacto (homonimos), desempata con ellos
+    en vez de dejar ganar al mas popular (ver _pick_by_credits)."""
     all_results = []
     seen = set()
     net_ok = False
@@ -287,21 +363,38 @@ def _best_across_kinds(queries, kinds, year):
     best = all_results[0]
     if _best_sim(best, queries) <= 0:
         return None, preferred, net_ok   # nada casa de verdad
+    if hint:
+        ties = _exact_ties(all_results, queries)
+        if len(ties) > 1:                # homonimos: la popularidad no decide
+            winner = _pick_by_credits(ties, hint)
+            if winner is not None:
+                best = winner
     return best, best.get("_tmdb_kind", preferred), net_ok
 
 
-def enrich(title, kind="movie", alt_title_fn=None):
-    """TMDB enrichment con busqueda multi-endpoint y ranking por popularidad."""
+def enrich(title, kind="movie", alt_title_fn=None, hint=None):
+    """TMDB enrichment con busqueda multi-endpoint y ranking por popularidad.
+
+    `hint` (opcional) = {director, cast, year} leidos de la FICHA de DonTorrent.
+    Solo se usa para DESEMPATAR homonimos exactos; el resto del camino es el de
+    siempre. Va en su PROPIA clave de cache: el resultado desempatado no puede
+    ser servido a quien pregunta sin ficha, ni al reves quedar tapado por un
+    match antiguo (equivocado) ya cacheado."""
     if ADDON.getSetting("tmdb_enabled") != "true":
         return {}
     clean = _clean_title(title)
     if not clean:
         return {}
+    hint = hint or None
+    if hint and not (hint.get("director") or hint.get("cast")):
+        hint = None          # ficha sin datos utiles -> camino normal
     cache_key = _sig(kind, clean)
+    if hint:
+        cache_key += "|dt:" + _norm_person(hint.get("director") or "?")
     if cache_key in _CACHE:
         return _CACHE[cache_key]
 
-    y = _year(title)
+    y = (hint or {}).get("year") or _year(title)
     kinds = _kinds_to_try(kind)
     # Queries: titulo principal + titulos alternativos entre parentesis
     # (normalmente el ORIGINAL, p.ej. "(The Thing)"), que es la mejor pista.
@@ -309,7 +402,7 @@ def enrich(title, kind="movie", alt_title_fn=None):
     for a in _alt_titles(title):
         if a.lower() != clean.lower() and a not in queries:
             queries.append(a)
-    best, matched_kind, net_ok = _best_across_kinds(queries, kinds, y)
+    best, matched_kind, net_ok = _best_across_kinds(queries, kinds, y, hint)
 
     if best is None and alt_title_fn is not None:
         try:

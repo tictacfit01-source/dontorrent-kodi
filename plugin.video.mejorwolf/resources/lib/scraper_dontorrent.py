@@ -1194,6 +1194,144 @@ def fetch_detail_title(url):
     return txt
 
 
+# ── Ficha de DonTorrent: la VERDAD de la fuente ─────────────────────────
+# El LISTADO de DonTorrent no publica ni el titulo completo ni el director: cada
+# tarjeta es un <a> con la imagen dentro, sin `title` ni `alt`, y su unico texto
+# es el slug, que DonTorrent genera ya SIN las vocales acentuadas
+# ('/pelicula/30780/La-ambicin-de-los-Savage'). La FICHA si los publica:
+#
+#   <h1 class="descargarTitulo">N121: Última parada</h1>
+#   <p><b>Año:</b> 2026</p>  <p><b>Dirección:</b> Marcel Walz</p>
+#   <p><b>Reparto:</b> Myrom Kingery, Morgan Flanagan, ...</p>
+#
+# Sirve para DOS cosas que no se pueden resolver de ninguna otra forma:
+#   1) TILDES: el h1 trae el titulo entero ('Una Milla: Capítulo Uno').
+#   2) HOMONIMOS: el DIRECTOR desempata dos peliculas del MISMO titulo y año.
+#      Caso real (2026-08-10, lo vio el dueño): 'La odisea' de DonTorrent es el
+#      mockbuster de The Asylum (Marcel Walz) y la app le pegaba el poster de
+#      'La Odisea' de Nolan, que TMDB devuelve primero por popularidad. Con el
+#      director el desempate es EXACTO (ver tmdb._pick_by_credits).
+#
+# El parseo NO depende de tildes ni entidades HTML (la ficha mezcla encodings:
+# se ven 'A�o' y '&eacute;' en la misma pagina): se lee del onclick de cada
+# enlace, que es ASCII puro y estable -> post('/peliculas/buscar', {campo:
+# 'director', valor: 'Marcel Walz'}).
+_DETAIL_INFO_CACHE = {}
+_DETAIL_FAIL = {}          # key -> ts del ultimo fallo (solo en memoria)
+_DETAIL_FAIL_TTL = 3600
+_DETAIL_INFO_FILE = (os.path.join(_DT_PROFILE, "dt_fichas.json")
+                     if _DT_PROFILE else "")
+_DETAIL_FIELD_RE = re.compile(
+    r"campo:\s*'(anyo|director|actores|genero)'\s*,\s*valor2?\s*:\s*'([^']*)'")
+# Las fichas de PELICULA/DOCUMENTAL titulan con <h1 class="descargarTitulo"> y
+# publican Año/Dirección/Reparto. Las de SERIE usan <h2 class="descargarTitulo">
+# y NO traen ficha artistica (solo Formato/Tamaño), y su titulo incluye la
+# temporada: "Sandokan - 1ª Temporada [1080p]". De ahi solo se aprovechan los
+# ACENTOS (el relay sustituye el prefijo, nunca el titulo entero).
+_DETAIL_H1_RE = re.compile(
+    r"<h([12])[^>]*descargarTitulo[^>]*>(.*?)</h\1>", re.S | re.I)
+
+
+def _detail_info_load():
+    if _DETAIL_INFO_CACHE or not _DETAIL_INFO_FILE:
+        return _DETAIL_INFO_CACHE
+    try:
+        with open(_DETAIL_INFO_FILE, "r", encoding="utf-8") as f:
+            _DETAIL_INFO_CACHE.update(json.load(f) or {})
+    except Exception:
+        pass
+    return _DETAIL_INFO_CACHE
+
+
+def _detail_info_save():
+    # Titulo, año, director y reparto de una peli NO cambian nunca -> se guarda
+    # para siempre: cada ficha se pide UNA sola vez en la vida del box. Es lo que
+    # hace que esto no suponga trafico extra contra DonTorrent (§9: machacarlo
+    # escala a baneo de la IP).
+    if not _DETAIL_INFO_FILE:
+        return
+    try:
+        os.makedirs(os.path.dirname(_DETAIL_INFO_FILE), exist_ok=True)
+        tmp = _DETAIL_INFO_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(dict(list(_DETAIL_INFO_CACHE.items())[-4000:]), f)
+        os.replace(tmp, _DETAIL_INFO_FILE)
+    except Exception:
+        pass
+
+
+def parse_detail_info(html):
+    """{title, year, director, cast} del HTML de una ficha. {} si no es una."""
+    if not html or len(html) < 500:
+        return {}
+    out = {}
+    m = _DETAIL_H1_RE.search(html)
+    if m:
+        try:
+            t = BeautifulSoup(m.group(2), "html.parser").get_text(" ", strip=True)
+        except Exception:
+            t = re.sub(r"<[^>]+>", " ", m.group(2))
+        t = re.sub(r"\s+", " ", t or "").strip()
+        if t:
+            out["title"] = t
+    cast = []
+    for campo, valor in _DETAIL_FIELD_RE.findall(html):
+        v = (valor or "").strip()
+        if not v:
+            continue
+        if campo == "anyo" and re.fullmatch(r"(19|20)\d{2}", v):
+            out["year"] = v
+        elif campo == "director" and "director" not in out:
+            out["director"] = v
+        elif campo == "actores" and len(cast) < 8:
+            cast.append(v)
+    if cast:
+        out["cast"] = cast
+    return out
+
+
+def detail_info(path, cid=None, fetch=True):
+    """Ficha de DonTorrent (titulo con tildes + año + director + reparto).
+
+    `path` es la ruta con slug ('/pelicula/30825/La-odisea'); DonTorrent EXIGE el
+    slug (por id pelado da 404). Cachea en disco PARA SIEMPRE bajo `cid` (o el
+    path). Devuelve {} si no se pudo traer -> el llamante sigue como hasta ahora.
+
+    `fetch=False` = solo mirar la cache (no pedir nada a DonTorrent): permite al
+    servicio gastar un PRESUPUESTO de fichas por vuelta y repartir el catalogo
+    en varias vueltas en vez de disparar 60 peticiones seguidas (§9: machacar
+    DonTorrent escala a baneo)."""
+    if not path:
+        return {}
+    key = str(cid or path)
+    cache = _detail_info_load()
+    ent = cache.get(key)
+    if ent is not None:
+        return ent
+    if not fetch:
+        return {}
+    if (time.time() - _DETAIL_FAIL.get(key, 0)) < _DETAIL_FAIL_TTL:
+        return {}      # fallo reciente: no gastar el presupuesto de esta vuelta
+    html = ""
+    try:
+        html = fetch_html(path=path) or ""     # DoH y, si falla, proxy (2 caminos)
+    except Exception as e:
+        _LOG(f"detail_info ({path}) fallo: {e}")
+    info = parse_detail_info(html)
+    if not info:
+        # NO se cachea en disco como "sin datos" (seria permanente y el titulo
+        # real se perderia para siempre), pero SI se aparta un rato: si no, unas
+        # pocas fichas rotas se comerian el presupuesto en CADA vuelta y las
+        # demas no llegarian nunca a pedirse.
+        _DETAIL_FAIL[key] = time.time()
+        return {}
+    cache[key] = info
+    _detail_info_save()
+    _LOG(f"detail_info ({path}) -> {info.get('title')!r} "
+         f"{info.get('year')} dir={info.get('director')!r}")
+    return info
+
+
 # ── Detalle + Descargas ─────────────────────────────────────────────────
 
 _last_warm_ts = 0.0

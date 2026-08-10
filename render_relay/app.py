@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk46",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk47",
                     mimetype="text/plain")
 
 
@@ -4017,8 +4017,22 @@ def _cat_enrich(items, limit=120):
     head, tail = items[:limit], items[limit:]
     from concurrent.futures import ThreadPoolExecutor as _TPE
     seed_idx = _seed_meta_index()   # {content_id: {poster TMDB, year, rating}}
+    # Cache que llena el BOX resolviendo la FICHA de DonTorrent. Lo marcado con
+    # `dtok` es mejor que cualquier cosa que saquemos aqui (titulo de la fuente y
+    # homonimos ya desempatados por director), asi que se aplica TAL CUAL y ese
+    # item ni siquiera pasa por TMDB -> ademas de correcto, sale gratis y mas
+    # rapido. Vale para el Inicio y para la BUSQUEDA (mismo content_id).
+    enr_idx = _cat_enrich_load()
 
     def _go(it):
+        # Solo items de DonTorrent: el content_id es SU identificador y no tiene
+        # por que significar nada en dx/et/wf.
+        _dtm = (enr_idx.get(str(it.get("content_id"))) or {}
+                if it.get("source") == "dt" else {})
+        if _dtm.get("dtok") and _cat_apply_meta(it, _dtm):
+            if not it.get("poster"):
+                it["poster"] = it.get("thumb")
+            return it
         meta = _cat_tmdb(it["title"],
                          "tv" if it.get("kind") == "serie" else "movie")
         poster, year, rating = meta.get("poster"), meta.get("year"), meta.get("rating")
@@ -5346,7 +5360,13 @@ _CAT_ENRICH_KEYS = ("poster", "year", "rating", "overview",
                     # "title": el titulo OFICIAL que manda el box (addon 2.9.57+).
                     # Sin persistirlo aqui se perdia al guardar y las tildes no
                     # sobrevivian al siguiente /catfeed.
-                    "title")
+                    "title",
+                    # addon 2.9.58+: leidos de la FICHA de DonTorrent (la fuente
+                    # ORIGINAL). "dtok" marca que ese meta ya se resolvio contra
+                    # la ficha —titulo real y, si habia homonimos, desempatados
+                    # por director— asi que MANDA sobre cualquier match que el
+                    # relay saque por su cuenta de TMDB, y no hay que re-pedirlo.
+                    "dt_title", "dt_year", "dtok")
 
 
 def _cat_enrich_load():
@@ -5368,6 +5388,14 @@ def _cat_enrich_store(meta):
                 continue
             if "image.tmdb.org" not in (m.get("poster") or ""):
                 continue
+            # NO DEGRADAR: si lo guardado ya se resolvio contra la ficha de
+            # DonTorrent (`dtok`) y esto no, viene de un box ANTIGUO que solo
+            # sabe preguntar a TMDB por el titulo -> es justo el match a ciegas
+            # que pone el cartel del homonimo mas famoso. Con 7 cajas en el
+            # sistema y actualizaciones escalonadas, sin esto una caja vieja
+            # desharia en su siguiente vuelta lo que arreglo una nueva.
+            if (d.get(str(cid)) or {}).get("dtok") and not m.get("dtok"):
+                continue
             d[str(cid)] = {k: m[k] for k in _CAT_ENRICH_KEYS if m.get(k) is not None}
             n += 1
         if len(d) > _CAT_ENRICH_MAX:   # no crecer sin limite
@@ -5381,6 +5409,41 @@ def _cat_enrich_store(meta):
         except Exception:
             pass
     return n
+
+
+def _dt_title_fix(cur, dt_title, serie=False):
+    """Titulo del listado (`cur`, mutilado por el slug de DonTorrent) corregido con
+    el que publica la FICHA de DonTorrent (`dt_title`, con tildes). Devuelve None
+    si no corresponden -> nunca se sustituye una peli por otra.
+
+    SOLO restaura lo que el slug se come (acentos y puntuacion). NUNCA reescribe
+    el formato del titulo: las fichas de SERIE titulan 'Sandokan - 1ª Temporada
+    [1080p]' mientras el listado dice 'Sandokan 1 Temporada', y adoptar eso
+    cambiaria el nombre de TODAS las series de golpe — con el titulo de clave
+    que es (dedup de la busqueda, 'Mi lista' y capitulos vistos del movil), eso
+    es justo lo que no se debe tocar. En series se sustituye unicamente el
+    PREFIJO (lo anterior al ' - '), que es donde estan los acentos."""
+    cur = (cur or "").strip()
+    cand = _re_dt.sub(r"\s+", " ", (dt_title or "")).strip()
+    if not cur or not cand or cand.lower() == cur.lower():
+        return None          # igual salvo mayusculas -> no hay nada que ganar
+
+    def _loose(s):
+        # Mismo destrozo que hace el slug de DonTorrent (vocal acentuada FUERA)
+        # y ademas sin la puntuacion que el slug tampoco conserva.
+        return _re_dt.sub(r"[^a-z0-9]+", "", _dt_mutila(s).lower())
+
+    if serie:
+        base = cand.split(" - ")[0].strip()
+        if not base or _dt_mutila(base) == base:
+            return None                          # sin acentos que restaurar
+        mb = _dt_mutila(base)                    # el prefijo TAL COMO llega hoy
+        if _loose(cur[:len(mb)]) == _loose(mb):
+            return base + cur[len(mb):]
+        return None
+    if _loose(cand) == _loose(cur):
+        return cand
+    return None
 
 
 def _cat_apply_meta(it, sm):
@@ -5407,6 +5470,15 @@ def _cat_apply_meta(it, sm):
     _cur = (it.get("title") or "").strip()
     if _tt and _cur and _tt != _cur and _dt_mutila(_tt).lower() == _cur.lower():
         it["title"] = _tt
+    # Mejor aun: el titulo de la FICHA de DonTorrent (addon 2.9.58+). Ese no hay
+    # que validarlo contra TMDB porque viene de la web ORIGINAL, y cubre lo que
+    # la via TMDB no podia: los titulos con PUNTUACION que el slug se come
+    # ('Una Milla: Capítulo Uno' llegaba como 'Una Milla Captulo Uno' y la
+    # comparacion letra a letra fallaba por los dos puntos).
+    _fx = _dt_title_fix(it.get("title"), sm.get("dt_title"),
+                        (it.get("kind") == "serie"))
+    if _fx:
+        it["title"] = _fx
     if sm.get("year"):
         it["year"] = sm["year"]
     if sm.get("rating") is not None:
@@ -5525,6 +5597,10 @@ def catfeed():
         body = {}
     kind = (body.get("kind") or "").strip().lower()
     html = body.get("html") or ""
+    # El box 2.9.58+ sabe leer la FICHA de DonTorrent (titulo real + director) y
+    # lo anuncia aqui. Cambia a quien se le pide enrich (ver mas abajo): a un box
+    # que NO sabe no tiene sentido pedirle lo que no puede resolver.
+    box_ficha = bool(body.get("ficha"))
     if kind not in _CAT_BROWSE or len(html) < 500:
         return jsonify({"ok": False}), 400
     try:
@@ -5550,18 +5626,26 @@ def catfeed():
         cid = it.get("content_id")
         sm = seed_idx.get(cid) or enr_idx.get(str(cid))
         _ok = _cat_apply_meta(it, sm)
-        # Se pide enrich al box si falta el POSTER o si el meta guardado no trae
-        # TITULO. Sin lo segundo las tildes no llegaban nunca: los metas viejos
-        # (cache acumulada) ya tenian poster, asi que NINGUN item entraba en
-        # `pending`, el box no enriquecia nada y su titulo oficial —la unica via,
-        # porque TMDB banea a Render— no se pedia jamas. Es autolimitado: en
-        # cuanto el meta guardado tiene `title`, deja de pedirse.
-        if (not _ok) or not (sm or {}).get("title"):
+        # Se pide enrich al box si falta el POSTER o si el meta guardado aun no
+        # esta resuelto contra la FICHA de DonTorrent. Sin lo segundo nada de lo
+        # que solo publica la ficha llegaria jamas: los metas viejos (cache
+        # acumulada) ya tenian poster, asi que NINGUN item entraba en `pending`
+        # y el box no enriquecia nada. Es autolimitado —en cuanto el meta trae
+        # la marca deja de pedirse— y la marca depende de LO QUE SEPA el box:
+        # a uno antiguo se le sigue pidiendo solo hasta que manda `title`, que
+        # es todo lo que puede dar (si no, se le pediria en cada vuelta).
+        _done = ((sm or {}).get("dtok")
+                 or (not box_ficha and (sm or {}).get("title")))
+        if (not _ok) or not _done:
             if not it.get("poster"):
                 it["poster"] = it.get("thumb")
             if len(pending) < 80:    # candidatos a enrich por el box (TMDB no baneado)
-                pending.append({"cid": cid, "title": it.get("title"),
-                                "kind": it.get("kind")})
+                p = {"cid": cid, "title": it.get("title"),
+                     "kind": it.get("kind")}
+                if it.get("dtpath") or it.get("path"):
+                    # Ruta de la ficha CON SLUG (DonTorrent da 404 por id pelado).
+                    p["dtpath"] = it.get("dtpath") or it.get("path")
+                pending.append(p)
     rec = {"items": raw, "ts": _t.time()}
     _CATBROWSE_CACHE[key] = rec
     _CATFEED_LAST[kind] = _t.time()
@@ -5586,8 +5670,14 @@ def catfeed():
                 # posters al escribir la cache -> el Inicio parpadeaba a no-HD.
                 enr = _cat_enrich_load()
                 for it in en:
-                    if "image.tmdb.org" not in (it.get("poster") or ""):
-                        _cat_apply_meta(it, enr.get(str(it.get("content_id"))))
+                    _m = enr.get(str(it.get("content_id"))) or {}
+                    # El meta con `dtok` esta resuelto contra la FICHA de
+                    # DonTorrent (titulo real y homonimos desempatados por
+                    # director): MANDA siempre sobre lo que el relay saque de
+                    # TMDB a ciegas, que es justo lo que ponia el cartel de la
+                    # peli equivocada ('La odisea' -> la de Nolan).
+                    if _m.get("dtok") or "image.tmdb.org" not in (it.get("poster") or ""):
+                        _cat_apply_meta(it, _m)
                 r2 = {"items": en, "ts": _t.time()}
                 _CATBROWSE_CACHE[_key] = r2
                 d = _catbrowse_load()
@@ -5623,13 +5713,22 @@ def catenrich():
     if kind not in _CAT_BROWSE or not isinstance(meta, dict):
         return jsonify({"ok": False}), 400
     saved = _cat_enrich_store(meta)             # acumula (persistente)
+    # Lo que quedo guardado MANDA: _cat_enrich_store rechaza que un box antiguo
+    # pise un meta ya resuelto contra la ficha de DonTorrent, y aqui hay que
+    # respetar la misma decision (si no, el rechazo valdria para el disco pero el
+    # Inicio en memoria se quedaria igualmente con el poster equivocado).
+    stored = _cat_enrich_load()
     key = "%s:1" % kind
     applied = 0
     with _FileLock(_CATBROWSE_FILE):            # RMW seguro de la cache del Inicio
         rec = _CATBROWSE_CACHE.get(key) or _catbrowse_load().get(key)
         if rec and rec.get("items"):
             for it in rec["items"]:
-                m = meta.get(str(it.get("content_id")))
+                cid = str(it.get("content_id"))
+                m = meta.get(cid)
+                sd = stored.get(cid) or {}
+                if sd.get("dtok") and not (m or {}).get("dtok"):
+                    m = sd
                 if _cat_apply_meta(it, m):
                     applied += 1
             _CATBROWSE_CACHE[key] = rec
@@ -5848,7 +5947,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk46", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk47", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
