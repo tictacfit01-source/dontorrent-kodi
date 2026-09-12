@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk49",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk50",
                     mimetype="text/plain")
 
 
@@ -4711,9 +4711,30 @@ def catsearch():
             try:
                 if not box:
                     return
-                job = "ds" + os.urandom(5).hex()
-                _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml", "q": q})
-                res = _catjob_wait(job, 16.0)
+
+                def _ask(b):
+                    j = "ds" + os.urandom(5).hex()
+                    _kb_enqueue(b, {"c": "etjob", "job": j, "op": "dthtml",
+                                    "q": q})
+                    return j
+                _okh = lambda r: bool((r or {}).get("html"))
+                _jobs = [_ask(box)]
+                # HEDGE: si la caja elegida no ha traído el HTML en 6s, se lo
+                # pedimos TAMBIEN a otra caja viva y nos quedamos con la primera
+                # que llegue. El buscador de DonTorrent depende de que ESA caja
+                # tenga el Anubis caliente (~0,6s) o frío (~30s) y de que su ISP
+                # no le tumbe el POST /buscar: con 6 cajas encendidas casi
+                # siempre hay una en condiciones. En el caso normal NO cuesta
+                # nada: la segunda solo se pregunta cuando la primera se retrasa.
+                res = _catjob_wait_any(_jobs, 6.0, _okh)
+                if not _okh(res):
+                    b2 = next((b for b in _live_boxes() if b != box), None)
+                    if b2:
+                        _jobs.append(_ask(b2))
+                    if _jobs:
+                        res2 = _catjob_wait_any(_jobs, 10.0, _okh)
+                        if _okh(res2):
+                            res = res2
                 h = (res or {}).get("html") or ""
                 if h:
                     r = _cat_parse_items(h) or []
@@ -4987,6 +5008,35 @@ def _kb_enqueue(code, ev):
         entry["ts"] = _t.time()
         d[code] = entry
         _kb_save(d)
+
+
+def _catjob_wait_any(jobs, secs, ok=None):
+    """Espera a VARIOS trabajos de caja a la vez y devuelve el PRIMERO que sirva.
+    `jobs` es una lista MUTABLE: los que ya contestaron se van quitando (así se
+    puede volver a llamar sin re-esperar a los que ya respondieron). `ok(res)`
+    decide si un resultado vale; los que no valen se descartan y se sigue
+    esperando a los demás — una caja puede contestar VACÍA porque su ISP le tumba
+    la petición mientras otra la trae entera."""
+    end = _t.time() + secs
+    last = None
+    while jobs and _t.time() < end:
+        got = []
+        with _FileLock(_CATJOB_FILE):   # serializa con /catjob/done
+            d = _catjob_load()
+            for j in list(jobs):
+                r = d.pop(j, None)
+                if r is not None:
+                    got.append(r)
+                    jobs.remove(j)
+            if got:
+                _catjob_save(d)
+        for r in got:
+            if ok is None or ok(r):
+                return r
+            last = r
+        if not got:
+            _t.sleep(0.4)
+    return last
 
 
 def _catjob_wait(job, secs):
@@ -6103,7 +6153,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk49", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk50", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -6971,13 +7021,18 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  csTry(1);
  // DivxTotal DIRECTO via Render, EN PARALELO: llega tarde (~6s, Cloudflare) y se
  // fusiona cuando esté -> DX aparece sin frenar a DT. Siempre (no necesita box).
- dxMerge('buscar',g,q,seq,function(n){if(seq!==_searchSeq)return;dxPend=0;
-  // PLAN B de DivxTotal: si el camino DIRECTO (relay) vino vacío, se lo pedimos a
-  // una caja (IP residencial). Cloudflare "tarpitea" al azar a la IP de Render, y
-  // ninguna fuente puede depender de un solo camino. Si el directo trajo cosas,
-  // NO molestamos a ninguna caja: es trabajo duplicado y la deja ocupada.
-  if(!n){boxPend++;boxMerge('buscar',g,'search',q,'dx',done,seq,1);}
+ // PLAN B de DivxTotal por caja (IP residencial). Cloudflare "tarpitea" al azar a
+ // la IP de Render: el camino directo puede tardar 30s y volver VACÍO (medido hoy
+ // con 'dune'), y ninguna fuente puede depender de un solo camino. Se dispara si
+ // el directo vuelve vacío O si a los 7s aún no ha contestado — sin cancelarlo:
+ // corren los dos y pinta el primero que llegue. Si el directo trae resultados,
+ // NO se molesta a ninguna caja (sería trabajo duplicado).
+ var dxAns=0,dxB=0;
+ function dxPlanB(){if(dxB)return;dxB=1;boxPend++;boxMerge('buscar',g,'search',q,'dx',done,seq,1);}
+ dxMerge('buscar',g,q,seq,function(n){if(seq!==_searchSeq)return;dxAns=1;dxPend=0;
+  if(!n)dxPlanB();
   paint();});
+ setTimeout(function(){if(seq!==_searchSeq)return;if(!dxAns)dxPlanB();},7000);
  // SALVAVIDAS solo para BOX+DX: cerramos SU espera y pintamos lo que haya. 26s
  // porque WolfMax por caja puede tardar ~24s (su tope en el relay); los resultados
  // se fusionan igual cuando llegan, esto solo apaga el "Buscando…".
