@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk50",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk51",
                     mimetype="text/plain")
 
 
@@ -5095,10 +5095,25 @@ def catetbox():
             _lend_release(_lsem)   # (las otras fuentes no dependen de esta)
         return jsonify({"items": [], "off": True})
     try:
-        job = "et" + os.urandom(5).hex()
-        _kb_enqueue(box, {"c": "etjob", "job": job, "op": op, "q": q,
-                          "srcs": srcs})
-        res = _catjob_wait(job, wait)
+        def _ask(b):
+            j = "et" + os.urandom(5).hex()
+            _kb_enqueue(b, {"c": "etjob", "job": j, "op": op, "q": q,
+                            "srcs": srcs})
+            return j
+        _jobs = [_ask(box)]
+        # HEDGE (mismo patron que la busqueda de DonTorrent): si la caja no ha
+        # contestado NADA a los 8s, se lo pedimos tambien a otra caja viva. Las
+        # cajas no son iguales (una TV vieja tarda el triple que un PC) y con
+        # varias encendidas no tiene sentido que la busqueda la marque la lenta.
+        # Si contesto —aunque sea vacia— se acepta: no lo tiene y otra tampoco
+        # (es la MISMA web), asi que ahi no se molesta a nadie mas.
+        res = _catjob_wait_any(_jobs, min(8.0, wait))
+        if res is None:
+            b2 = next((b for b in _live_boxes() if b != box), None)
+            if b2:
+                _jobs.append(_ask(b2))
+            if _jobs:
+                res = _catjob_wait_any(_jobs, max(0.0, wait - 8.0))
     finally:
         if _lsem is not None:
             _lend_release(_lsem)
@@ -5365,13 +5380,38 @@ def seeds_ep():
                     _dxih_save(dih)
             except Exception:
                 pass
-    # 2) solo src+url (ficha): el box RESUELVE el link y el relay deriva el hash.
-    if len(ih) != 40 and code and src and url:
-        job = "ih" + os.urandom(5).hex()
-        _kb_enqueue(code, {"c": "etjob", "job": job, "op": "infohash",
-                           "src": src, "url": url})
-        res = _catjob_wait(job, 20.0)
-        ih = _ih_from_link((res or {}).get("link") or "")
+    # 2) solo src+url (ficha): una caja RESUELVE el link y el relay deriva el
+    # hash. Vale CUALQUIER caja viva (_box_for), no solo la del visitante: las
+    # semillas deben salir en TODAS las fuentes, tambien para quien no tiene
+    # codigo puesto — que es justo quien ve EliteTorrent/WolfMax desde que la
+    # busqueda los pide siempre. Se cachea url->infohash (7 dias, mismo almacen
+    # que DivxTotal): la 2a vez que alguien abre esa ficha, gratis y sin caja.
+    if len(ih) != 40 and src and url:
+        _dih = _dxih_load()
+        _c = _dih.get(url)
+        if _c and len(_c.get("ih", "")) == 40 and (now - _c.get("ts", 0) < _DXIH_TTL):
+            ih = _c["ih"]
+        else:
+            _sbox = _box_for(code)
+            _ssem = _lend_acquire(_sbox) if (_sbox and _sbox != code) else None
+            if _sbox and not (_sbox != code and _ssem is None):
+                try:
+                    job = "ih" + os.urandom(5).hex()
+                    _kb_enqueue(_sbox, {"c": "etjob", "job": job,
+                                        "op": "infohash", "src": src,
+                                        "url": url})
+                    res = _catjob_wait(job, 20.0)
+                finally:
+                    if _ssem is not None:
+                        _lend_release(_ssem)
+                ih = _ih_from_link((res or {}).get("link") or "")
+                if len(ih) == 40:
+                    _dih[url] = {"ih": ih, "ts": now}
+                    if len(_dih) > 2000:
+                        for k in sorted(_dih, key=lambda k: _dih[k].get("ts", 0))[
+                                :len(_dih) - 2000]:
+                            _dih.pop(k, None)
+                    _dxih_save(_dih)
     if len(ih) != 40:
         return jsonify({"seeds": None})
     ent = d.get(ih)
@@ -6153,7 +6193,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk50", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk51", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7119,10 +7159,13 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  var seedShow=function(p){if(sel!==x)return;$('sh-seeds').innerHTML=(p&&typeof p.seeds==='number')?seedTag(p.seeds):seedFail(s2,_cd);};
  if(s2==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x)return;if(p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';seedShow(p)}).catch(function(){seedShow(null)})}
  else if(s2==='dx'){fetch('/seeds?src=dx&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(seedShow).catch(function(){seedShow(null)})}
- else if(_cd.length===6){fetch('/seeds?code='+_cd+'&src='+encodeURIComponent(s2)+'&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(seedShow).catch(function(){seedShow(null)})}
- else{$('sh-seeds').innerHTML=seedFail(s2,_cd);}}
+ // ET/WF: SIEMPRE, con o sin código — el relay resuelve el enlace por cualquier
+ // caja viva. Las semillas tienen que verse en TODAS las fuentes.
+ else{fetch('/seeds?code='+_cd+'&src='+encodeURIComponent(s2)+'&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(seedShow).catch(function(){seedShow(null)})}}
 function seedTag(n){var c,t;if(n<=0){c='s-zero';t='⚠ Sin semillas';}else if(n<3){c='s-low';t='🌱 '+n+' semilla'+(n===1?'':'s');}else{c='s-ok';t='🌱 '+n+' semillas';}return '<span class="seedtag '+c+'">'+t+'</span>';}
-function seedFail(src,cd){var t=((src==='et'||src==='wf')&&(!cd||cd.length!==6))?'🌱 enciende tu Kodi para las semillas':'🌱 semillas no disponibles';return '<span class="seedtag" style="opacity:.6">'+t+'</span>';}
+// Ya no se pide el código para las semillas de ET/WF (el relay usa cualquier
+// caja viva), así que el aviso es el mismo para todas las fuentes.
+function seedFail(src,cd){return '<span class="seedtag" style="opacity:.6">🌱 semillas no disponibles</span>';}
 // INSTANTÁNEO: el play sale a la tele YA; las semillas se comprueban EN PARALELO
 // y solo avisan (sin bloquear ni preguntar) si el enjambre está muerto. Antes
 // esto esperaba hasta 6s ANTES de enviar -> delay regalado (la IP de Render
