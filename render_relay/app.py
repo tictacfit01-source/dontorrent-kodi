@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk72",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk73",
                     mimetype="text/plain")
 
 
@@ -6778,7 +6778,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk72", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk73", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7893,10 +7893,16 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
   }).catch(function(){if(seq!==_searchSeq)return;
    if(att<6){setTimeout(function(){csTry(att+1)},1200);paint();}
    else{catState='fail';progSet('dt',3);paint();}});}
- // WolfMax primero: se resuelve con el índice del relay (~0,3s) y es lo que
- // más se quiere ver. Detrás de /catsearch se comía su turno en la cola del
- // navegador (7s medidos para algo que tarda 0,3s).
- boxMerge('buscar',g,'search',q,'wf',function(r){progSet('wf',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);doneWf(r)},seq,1);
+ // WolfMax, SOLO y el primero. Se resuelve con el índice del relay (214 ms
+ // medidos) y es lo que más se quiere ver; lanzado a la vez que las demás, el
+ // navegador lo serializaba detrás de /catsearch y tardaba 7s en aparecer.
+ // El resto arranca en cuanto WolfMax contesta, o a los 1,2s como mucho.
+ var _resto=0;
+ function lanzarResto(){if(_resto||seq!==_searchSeq)return;_resto=1;arrancaResto();}
+ boxMerge('buscar',g,'search',q,'wf',function(r){
+   progSet('wf',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);doneWf(r);lanzarResto();},seq,1);
+ setTimeout(lanzarResto,1200);
+ function arrancaResto(){
  csTry(1);
  // DivxTotal DIRECTO via Render, EN PARALELO: llega tarde (~6s, Cloudflare) y se
  // fusiona cuando esté -> DX aparece sin frenar a DT. Siempre (no necesita box).
@@ -7928,7 +7934,8 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // EliteTorrent y WolfMax via caja (propia o PRESTADA): SIEMPRE, con o sin código.
  // DivxTotal NO se le pide a la caja aquí: ya va directo por /catdxsearch (más
  // rápido) y arriba está su plan B.
- boxMerge('buscar',g,'search',q,'et',function(r){progSet('et',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);done(r)},seq,1);}
+ boxMerge('buscar',g,'search',q,'et',function(r){progSet('et',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);done(r)},seq,1);
+ }}
 function dxMerge(list,g,q,seq,cb){
  // 14s de tope: Cloudflare "tarpitea" a la IP de Render y este endpoint ha
  // llegado a tardar 40s. Si no llega, el plan B por caja ya se habrá disparado.
