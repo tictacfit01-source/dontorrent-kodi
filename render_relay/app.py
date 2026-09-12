@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk55",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk56",
                     mimetype="text/plain")
 
 
@@ -4355,11 +4355,20 @@ _CAT_QUAL_RANK = {"4k": 5, "2160p": 5, "uhd": 5, "1080p": 4, "1080": 4,
 # saca PRIMERO de la URL, que es ASCII puro y fiable (misma leccion que con las
 # fichas de DonTorrent), y solo se cae al titulo cuando la URL no los lleva
 # (WolfMax usa /serie-online-4k/<id>).
-_EPU_RE = _re_dt.compile(r"[-/](\d{1,2})\s*x\s*(\d{1,3})/?$", _re_dt.I)
+# "the-office-9x22" y "the-office-8x24-final" (el sufijo es habitual: FINAL,
+# la calidad, un "-2" de version repetida...)
+_EPU_RE = _re_dt.compile(
+    r"[-/](\d{1,2})\s*x\s*(\d{1,3})(?:[-_][a-z0-9\-]{1,24})?/?$", _re_dt.I)
+# "...-temporada-2-capitulo-10": EliteTorrent tambien usa este formato entero
+_EPU_TC = _re_dt.compile(
+    r"temporada[-_](\d{1,2})[-_]cap[i\W]?tulos?[-_](\d{1,3})", _re_dt.I)
 _EPT_WF = _re_dt.compile(
     r"temporada\s*\[?\s*(\d{1,2})\s*\]?.*?cap[i\W]?tulos?\s*\[?\s*(\d{1,3})\s*\]?",
     _re_dt.I | _re_dt.S)
-_EPT_X = _re_dt.compile(r"(\d{1,2})\s*[x\u00d7]\s*(\d{1,3})\s*$", _re_dt.I)
+# "La casa del dragon 2x8" / "The office - 8x24 FINAL": el par va al final,
+# como mucho con un rabo corto SIN digitos detras (FINAL, [HDTV]...)
+_EPT_X = _re_dt.compile(
+    r"(\d{1,2})\s*[x\u00d7]\s*(\d{1,3})\b[^\d]{0,20}$", _re_dt.I)
 _EPT_SE = _re_dt.compile(r"\bS(\d{1,2})\s*E(\d{1,3})\b", _re_dt.I)
 # Corte del titulo: todo lo que venga desde aqui es paja de capitulo/temporada
 _EP_CUT = _re_dt.compile(
@@ -4371,9 +4380,10 @@ _EP_CUT = _re_dt.compile(
 def _ep_parse(it):
     """(season, episode) de un item de fuente-caja, o None si no es un capitulo."""
     u = (it.get("url") or it.get("content_id") or "").strip()
-    m = _EPU_RE.search(u)
-    if m:
-        return int(m.group(1)), int(m.group(2))
+    for rx in (_EPU_RE, _EPU_TC):
+        m = rx.search(u)
+        if m:
+            return int(m.group(1)), int(m.group(2))
     t = it.get("title") or ""
     for rx in (_EPT_WF, _EPT_X, _EPT_SE):
         m = rx.search(t)
@@ -4396,8 +4406,9 @@ def _ep_base_title(t, se=None):
     t = t or ""
     if se:
         try:
-            rx = _re_dt.compile(r"[\s\W_]*\b0*%d\s*[^\w]{0,4}\s*0*%d\s*$"
-                                % (int(se[0]), int(se[1])))
+            rx = _re_dt.compile(
+                r"[\s\W_]*\b0*%d\s*[^\w]{0,4}\s*0*%d\b[^\d]{0,20}$"
+                % (int(se[0]), int(se[1])))
             t2 = rx.sub("", t)
             if t2.strip():
                 t = t2
@@ -4409,6 +4420,21 @@ def _ep_base_title(t, se=None):
     # restos de la codificacion rota de EliteTorrent al final ("The office ?")
     t = _re_dt.sub(r"[\s\W_]+$", "", t)
     return t.strip()
+
+
+def _title_score(t):
+    """Cuanto de bien escrito esta un titulo (para elegir entre variantes)."""
+    t = t or ""
+    if not t:
+        return -99
+    sc = 0
+    sc -= 10 * t.count("\ufffd")            # caracteres de reemplazo = ilegible
+    sc -= 10 * t.count("?")
+    if any(c in t for c in "\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00c1\u00c9\u00cd\u00d3\u00da\u00d1"):
+        sc += 2                             # con tildes de verdad
+    # a igualdad, el mejor capitalizado ("The Office" > "The office")
+    sc += sum(1 for w in t.split() if w[:1].isupper()) * 0.1
+    return sc
 
 
 def _cat_group_episodes(items):
@@ -4443,6 +4469,12 @@ def _cat_group_episodes(items):
             card["eps"].append(ep)
         if not card.get("thumb") and it.get("thumb"):
             card["thumb"] = it.get("thumb")
+        # El mismo capitulo puede venir con el titulo bien o con la codificacion
+        # rota ("The Office" vs "The office \ufffd 9\ufffd21"): la tarjeta se
+        # queda con el MEJOR escrito (sin caracteres de reemplazo; a igualdad, el
+        # que conserve tildes, que es el que DonTorrent/ET publican bien).
+        if base != card["title"] and _title_score(base) > _title_score(card["title"]):
+            card["title"] = base
     for card in byk.values():
         card["eps"].sort(key=lambda e: (e["season"], e["episode"]))
     return out
@@ -6306,7 +6338,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk55", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk56", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
