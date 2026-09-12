@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk60",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk61",
                     mimetype="text/plain")
 
 
@@ -5362,7 +5362,7 @@ def catboxrar():
                     "quality": (res or {}).get("quality") or ""})
 
 
-def _box_eps_by_title(code, src, title, wait=None):
+def _box_eps_by_title(code, src, title, wait=None, cache_only=False):
     """Capitulos de una serie de ET/WF buscandola POR TITULO en su fuente.
     Devuelve la lista de capitulos (ya agrupados) o [] si no sale.
 
@@ -5377,6 +5377,8 @@ def _box_eps_by_title(code, src, title, wait=None):
     ckey = "search|%s|%s" % (src, q.lower())
     items = _catbox_get(ckey)
     if items is None:
+        if cache_only:     # solo mirar, sin tocar ninguna caja
+            return []
         box = _box_for(code)
         if not box:
             return []
@@ -5451,13 +5453,15 @@ def catboxeps():
         # directo sin episodios + hay caja viva -> resolver via caja (abajo)
     _t_ser = (request.args.get("t") or "").strip()[:120]
 
-    def _por_titulo():
+    def _por_titulo(cache_only=False):
         """PLAN B de ET/WF: buscar los capitulos por TITULO y agruparlos. Sirve
         para cajas con addon viejo (su op=episodes no sabe de WolfMax) y para
-        cuando la ficha no da nada."""
+        cuando la ficha no da nada. Con cache_only NO toca ninguna caja: solo
+        mira si ya lo tenemos (una busqueda reciente de esa serie lo deja ahi)."""
         if src not in ("wf", "et") or not _t_ser:
             return None
-        _eps = _box_eps_by_title(code, src, _t_ser, wait=14.0)
+        _eps = _box_eps_by_title(code, src, _t_ser, wait=14.0,
+                                 cache_only=cache_only)
         if not _eps:
             return None
         _meta = (_bounded(lambda: _cat_tmdb(_t_ser, "tv"), 6.0, {}) or {})
@@ -5465,6 +5469,9 @@ def catboxeps():
                         "year": _meta.get("year"),
                         "rating": _meta.get("rating"),
                         "episodes": _eps})
+    _ya = _por_titulo(cache_only=True)
+    if _ya is not None:
+        return _ya
     if not box:
         return _por_titulo() or (jsonify({"episodes": []}), 400)
     # Mismo tope que en /catetbox cuando la caja es prestada (ver _lend_acquire).
@@ -6456,7 +6463,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk60", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk61", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7174,13 +7181,26 @@ function toggleSeen(id){id=String(id);var i=seen.indexOf(id);if(i>=0)seen.splice
 function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
 function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
-function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime})}saveFavs();mlPushSoon()}
+// Los capítulos que ya venían con la tarjeta se guardan CON el favorito: si no,
+// abrirlo desde Mi lista obliga a pedirlos otra vez por red (29s medidos, al
+// borde de lo que espera la web -> "nunca carga"). Recortados a lo justo.
+function slimEps(a){return (a||[]).slice(0,60).map(function(e){
+ return {label:e.label,season:e.season,episode:e.episode,quality:e.quality,
+         url:e.url,content_id:e.content_id,link:e.link,src:e.src}})}
+function slimAlts(a){return (a||[]).slice(0,4).map(function(z){
+ return {source:z.source,quality:z.quality,url:z.url,content_id:z.content_id,
+         tabla:z.tabla,path:z.path,kind:z.kind,title:z.title,year:z.year,
+         poster:z.poster,rating:z.rating,eps:slimEps(z.eps)}})}
+function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts)})}saveFavs();mlPushSoon()}
 // --- Sincronizacion de la lista de deseados (espejo en el relay, ligado al
 // codigo). El movil es la COPIA MAESTRA: al cargar hacemos UNION (nunca borra ->
 // imposible perder la lista). Cero peticiones a fuentes -> cero baneo. ---
 var _mlPushT=null;
 function mlPush(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
- try{fetch('/mylist?code='+cd,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({list:favs})}).catch(function(){})}catch(e){}}
+ // Sin los capítulos: la lista compartida entre dispositivos se queda ligera
+ // (y el que la reciba los pide por red, que funciona igual).
+ var slim=favs.map(function(f){var c={};for(var k in f)if(k!=='eps'&&k!=='epsAlt'&&k!=='alts')c[k]=f[k];return c});
+ try{fetch('/mylist?code='+cd,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({list:slim})}).catch(function(){})}catch(e){}}
 function mlPushSoon(){clearTimeout(_mlPushT);_mlPushT=setTimeout(mlPush,1500)}
 function mlSync(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
  fetch('/mylist?code='+cd).then(function(r){return r.json()}).then(function(d){
