@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk54",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk55",
                     mimetype="text/plain")
 
 
@@ -4342,6 +4342,112 @@ _CAT_QUAL_RANK = {"4k": 5, "2160p": 5, "uhd": 5, "1080p": 4, "1080": 4,
                   "720p": 2, "720": 2, "480p": 1}
 
 
+# --- Capitulos sueltos -> UNA tarjeta de serie ------------------------------
+# EliteTorrent y WolfMax NO publican una ficha por serie: publican una ficha por
+# CAPITULO ("the-office-9x22", "Ted Lasso Temporada Temporada [ 4 ] Capitulo
+# [ 6 ]"). Volcarlos tal cual inundaba la busqueda (30 tarjetas de lo mismo), asi
+# que hasta ahora se TIRABAN y esas dos fuentes no aportaban series. Aqui se
+# agrupan por serie: 1 tarjeta con los episodios dentro (cada uno con la URL de
+# SU ficha, que la web resuelve al reproducir con /catetboxresolve).
+#
+# OJO con el titulo de EliteTorrent: llega con la codificacion rota ("The office
+# ? 9?22") porque su listado mezcla encodings. Por eso la temporada/episodio se
+# saca PRIMERO de la URL, que es ASCII puro y fiable (misma leccion que con las
+# fichas de DonTorrent), y solo se cae al titulo cuando la URL no los lleva
+# (WolfMax usa /serie-online-4k/<id>).
+_EPU_RE = _re_dt.compile(r"[-/](\d{1,2})\s*x\s*(\d{1,3})/?$", _re_dt.I)
+_EPT_WF = _re_dt.compile(
+    r"temporada\s*\[?\s*(\d{1,2})\s*\]?.*?cap[i\W]?tulos?\s*\[?\s*(\d{1,3})\s*\]?",
+    _re_dt.I | _re_dt.S)
+_EPT_X = _re_dt.compile(r"(\d{1,2})\s*[x\u00d7]\s*(\d{1,3})\s*$", _re_dt.I)
+_EPT_SE = _re_dt.compile(r"\bS(\d{1,2})\s*E(\d{1,3})\b", _re_dt.I)
+# Corte del titulo: todo lo que venga desde aqui es paja de capitulo/temporada
+_EP_CUT = _re_dt.compile(
+    r"\s*(?:[-\u2013\u00b7|]\s*)?(?:temporada|capitulo|cap[i\W]tulo|season|"
+    r"episodio|\d{1,2}\s*[x\u00d7]\s*\d{1,3}|S\d{1,2}\s*E\d{1,3}).*$",
+    _re_dt.I | _re_dt.S)
+
+
+def _ep_parse(it):
+    """(season, episode) de un item de fuente-caja, o None si no es un capitulo."""
+    u = (it.get("url") or it.get("content_id") or "").strip()
+    m = _EPU_RE.search(u)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    t = it.get("title") or ""
+    for rx in (_EPT_WF, _EPT_X, _EPT_SE):
+        m = rx.search(t)
+        if m:
+            try:
+                return int(m.group(1)), int(m.group(2))
+            except ValueError:
+                return None
+    return None
+
+
+def _ep_base_title(t, se=None):
+    """Titulo de la SERIE a partir del titulo del capitulo.
+
+    Con `se` (temporada/episodio ya sacados de la URL) se corta tambien el
+    "9x22" aunque la X llegue ROTA ("The office � 9�22"): se busca el
+    par de numeros AL FINAL separado por cualquier basura. Anclado al final a
+    proposito -> un titulo con numeros en medio ("Alerta 24 horas") no se toca.
+    """
+    t = t or ""
+    if se:
+        try:
+            rx = _re_dt.compile(r"[\s\W_]*\b0*%d\s*[^\w]{0,4}\s*0*%d\s*$"
+                                % (int(se[0]), int(se[1])))
+            t2 = rx.sub("", t)
+            if t2.strip():
+                t = t2
+        except Exception:
+            pass
+    t = _EP_CUT.sub("", t)
+    t = _re_dt.sub(r"\[[^\]]*\]|\([^)]*\)", " ", t)
+    t = _re_dt.sub(r"\s+", " ", t).strip(" -\u2013\u00b7|:.,")
+    # restos de la codificacion rota de EliteTorrent al final ("The office ?")
+    t = _re_dt.sub(r"[\s\W_]+$", "", t)
+    return t.strip()
+
+
+def _cat_group_episodes(items):
+    """Capitulos sueltos de et/wf -> 1 tarjeta de serie con `eps` dentro.
+    Lo que no sea un capitulo (peliculas) sale TAL CUAL y en su mismo sitio."""
+    out, byk = [], {}
+    for it in items:
+        src = it.get("source") or ""
+        se = _ep_parse(it) if src in ("et", "wf") else None
+        if not se:
+            out.append(it)
+            continue
+        base = _ep_base_title(it.get("title") or "", se)
+        if not base:
+            out.append(it)
+            continue
+        k = (src, _et_norm(base))
+        ep = {"label": "%dx%02d" % se, "season": se[0], "episode": se[1],
+              "quality": it.get("quality") or "",
+              "url": it.get("url") or it.get("content_id") or "",
+              "content_id": it.get("url") or it.get("content_id") or "",
+              "src": src}
+        card = byk.get(k)
+        if card is None:
+            card = {"title": base, "kind": "serie", "source": src,
+                    "url": ep["url"], "content_id": ep["url"],
+                    "thumb": it.get("thumb"), "quality": it.get("quality") or "",
+                    "tabla": src, "eps": []}
+            byk[k] = card
+            out.append(card)
+        if not any(e["label"] == ep["label"] for e in card["eps"]):
+            card["eps"].append(ep)
+        if not card.get("thumb") and it.get("thumb"):
+            card["thumb"] = it.get("thumb")
+    for card in byk.values():
+        card["eps"].sort(key=lambda e: (e["season"], e["episode"]))
+    return out
+
+
 def _cat_rank_dedup(items, q):
     qn = _et_norm(q)
     qtoks = [t for t in qn.split() if len(t) > 1 and t not in _DX_STOP]
@@ -5133,9 +5239,9 @@ def catetbox():
         # (para ver como vienen las series de EliteTorrent/WolfMax y decidir si
         # se pueden agrupar en una tarjeta). No cachea: es una sonda manual.
         return jsonify({"items": items, "raw": True})
-    # ET/WF dan 1 tarjeta por episodio en series -> solo DivxTotal aporta series
-    items = [it for it in items if not (it.get("kind") == "serie"
-             and (it.get("source") in ("et", "wf")))]
+    # ET/WF dan 1 tarjeta por CAPITULO -> se agrupan en una tarjeta de serie con
+    # sus episodios dentro (antes se tiraban y esas fuentes no daban series).
+    items = _cat_group_episodes(items)
     # relevancia ESTRICTA en busqueda (las fuentes-box traen sueltos/"ultimos")
     if op == "search" and q:
         items = [it for it in items if _q_relevant(it.get("title", ""), q)]
@@ -6200,7 +6306,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk54", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk55", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7378,6 +7484,12 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
  var src=x.source||'dt';var cd=(code.value||'').replace(/\D/g,'');
+ // EliteTorrent y WolfMax publican una ficha POR CAPÍTULO, así que el relay ya
+ // los agrupa y manda la lista DENTRO de la tarjeta: aquí no hay nada que pedir,
+ // los capítulos salen al instante (0 red, 0 trabajo para ninguna caja).
+ if(x.eps&&x.eps.length){OVDATA={d:{title:x.title,episodes:x.eps,poster:x.poster,
+   year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,genres:x.genres},x:x};
+  renderEpisodes();return;}
  // DT lleva el code -> si Render esta baneado por DonTorrent, el relay trae los
  // episodios por TU box (IP de casa). Sin code igualmente intenta directo.
  var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')+(cd.length===6?('&code='+cd):'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id));
@@ -7422,6 +7534,8 @@ var _epQ=[],_epActive=0,_epCache={};
 function lazyEps(){_epQ=[];var cd=(code.value||'').replace(/\D/g,'');var src=(OVDATA&&OVDATA.x&&(OVDATA.x.source||'dt'))||'dt';
  Object.keys(EPS).forEach(function(id){var e=EPS[id];if(!e)return;
   if(e.link){var u='/seeds?link='+encodeURIComponent(e.link)+(cd.length===6?('&code='+cd+'&src='+encodeURIComponent(src)):'');_epQ.push({id:id,key:'lk:'+e.link,url:u});}
+  else if(e.src==='et'||e.src==='wf'){var _u2=e.url||e.content_id;
+   if(_u2)_epQ.push({id:id,key:e.src+':'+_u2,url:'/seeds?code='+cd+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(_u2)});}
   else if(e.content_id&&e.tabla){_epQ.push({id:id,key:'dt:'+e.tabla+':'+e.content_id,url:'/dtpacked?c='+encodeURIComponent(e.content_id)+'&tb='+encodeURIComponent(e.tabla)});}
  });pumpEp();}
 function pumpEp(){while(_epActive<2&&_epQ.length){var job=_epQ.shift();var c=_epCache[job.key];
@@ -7441,6 +7555,19 @@ function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
 function playEp(id){var e=EPS[id];if(!e)return;
  if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim()}))closeOv();return}
+ // Capítulo de EliteTorrent/WolfMax: su enlace vive en la ficha del capítulo y
+ // lo resuelve una caja (IP residencial). Se avisa porque tarda 1-3s, y NO se
+ // cierra la ficha hasta que sale de verdad -> nada de "he pulsado y no pasa nada".
+ if(e.src==='et'||e.src==='wf'){var _t2=(SHOW+' '+e.label).trim();
+  var _cd2=(code.value||'').replace(/\D/g,'');
+  if(_cd2.length!==6){toast('Pon tu código de 6 cifras arriba');return}
+  toast('Preparando '+e.label+'…');
+  fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id))
+   .then(function(r){return r.json()}).then(function(d){
+    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2}))closeOv();}
+    else toast('No se pudo obtener el enlace de ese capítulo');
+   }).catch(function(){toast('No se pudo obtener el enlace de ese capítulo')});
+  return}
  var ttl=(SHOW+' '+e.label).trim();seedGate(e.content_id,e.tabla||'series',function(){if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:ttl}))closeOv()})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}

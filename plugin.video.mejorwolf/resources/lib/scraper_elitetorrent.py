@@ -17,6 +17,7 @@ Magnets: enlace a acortame-esto.com/s.php?i=BASE64
 
 import re
 import base64
+import html as _html
 from urllib.parse import urljoin, quote as urlquote
 from bs4 import BeautifulSoup
 import xbmc
@@ -150,7 +151,11 @@ def _decode_link(encoded_b64):
         data = _rot13(data)
 
     if data.startswith("magnet:") or data.startswith("http"):
-        return data
+        # El enlace viene de HTML y trae las entidades SIN convertir
+        # ("magnet:?xt=...&amp;dn=..."): asi, todo lo que va detras del primer
+        # &amp; (nombre y TRACKERS) queda inservible para el reproductor.
+        # Verificado el 12-09-2026 resolviendo un capitulo real.
+        return _html.unescape(data)
     return None
 
 

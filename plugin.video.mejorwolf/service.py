@@ -561,10 +561,12 @@ def _do_etjob(ev):
                 allit = []
                 for src in srcs:
                     for it in res.get(src, []):
-                        k = (it.get("kind") or "movie")
-                        is_serie = k.startswith("tvshow") or k == "serie"
-                        if is_serie and src not in ("dx", "et"):
-                            continue   # WolfMax: solo pelis de momento
+                        # Antes se TIRABAN las series de WolfMax porque no habia
+                        # forma de abrir sus capitulos. Ya la hay: WolfMax (igual
+                        # que EliteTorrent) publica una ficha por CAPITULO y el
+                        # relay las agrupa en UNA tarjeta de serie con los
+                        # capitulos dentro, que se resuelven al reproducir. Un
+                        # relay viejo las ignora, asi que esto no rompe nada.
                         allit.append(_src_item_compact(it, src))
                 out["items"] = allit[:60]
             elif op == "resolve":
