@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk65",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk66",
                     mimetype="text/plain")
 
 
@@ -5728,6 +5728,8 @@ def catboxeps():
             return jsonify(payload)
         # directo sin episodios + hay caja viva -> resolver via caja (abajo)
     _t_ser = (request.args.get("t") or "").strip()[:120]
+    _t0 = _t.time()
+    _via = []
 
     def _por_titulo(cache_only=False):
         """PLAN B de ET/WF: buscar los capitulos por TITULO y agruparlos. Sirve
@@ -5736,15 +5738,17 @@ def catboxeps():
         mira si ya lo tenemos (una busqueda reciente de esa serie lo deja ahi)."""
         if src not in ("wf", "et") or not _t_ser:
             return None
-        _eps = _box_eps_by_title(code, src, _t_ser, wait=14.0,
+        _eps = _box_eps_by_title(code, src, _t_ser, wait=12.0,
                                  cache_only=cache_only)
+        _via.append(("titulo-cache" if cache_only else "titulo") +
+                    ":%d/%.1fs" % (len(_eps), _t.time() - _t0))
         if not _eps:
             return None
         _meta = (_bounded(lambda: _cat_tmdb(_t_ser, "tv"), 6.0, {}) or {})
         return jsonify({"title": _t_ser, "poster": _meta.get("poster"),
                         "year": _meta.get("year"),
                         "rating": _meta.get("rating"),
-                        "episodes": _eps})
+                        "episodes": _eps, "via": ">".join(_via)})
     _ya = _por_titulo(cache_only=True)
     if _ya is not None:
         return _ya
@@ -5761,12 +5765,16 @@ def catboxeps():
                           "src": src, "url": url})
         # Con plan B disponible la caja tiene 10s y el resto es para el plan B:
         # los DOS caminos juntos han de caber en lo que espera la web (26s).
-        res = _catjob_wait(job, 10.0 if (_t_ser and src in ("wf", "et")) else 22.0)
+        res = _catjob_wait(job, 12.0 if (_t_ser and src in ("wf", "et")) else 22.0)
+        _via.append("caja:%s/%.1fs" % (
+            len(((res or {}).get("eps") or {}).get("episodes") or [])
+            if res else "None", _t.time() - _t0))
     finally:
         if _lsem is not None:
             _lend_release(_lsem)
     if res is None:
-        return _por_titulo() or jsonify({"episodes": [], "timeout": True})
+        return _por_titulo() or jsonify({"episodes": [], "timeout": True,
+                                         "via": ">".join(_via)})
     eps = res.get("eps") or {}
     if not (eps.get("episodes") or []):
         # la caja no supo (addon viejo con WolfMax, o ficha sin capitulos)
@@ -5777,7 +5785,9 @@ def catboxeps():
     # TOPE al enrich: TMDB banea a Render y una llamada colgada se come uno
     # de los 8 hilos (ver §9). Sin poster salen igual; colgados, no.
     meta = (_bounded(lambda: _cat_tmdb(title, "tv"), 6.0, {}) or {}) if title else {}
-    return jsonify({"title": title or "Serie", "poster": meta.get("poster"),
+    _via.append("fin:%.1fs" % (_t.time() - _t0))
+    return jsonify({"via": ">".join(_via),
+                    "title": title or "Serie", "poster": meta.get("poster"),
                     "year": meta.get("year"), "rating": meta.get("rating"),
                     "episodes": eps.get("episodes") or []})
 
@@ -6739,7 +6749,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk65", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk66", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
