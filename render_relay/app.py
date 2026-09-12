@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk59",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk60",
                     mimetype="text/plain")
 
 
@@ -5362,7 +5362,7 @@ def catboxrar():
                     "quality": (res or {}).get("quality") or ""})
 
 
-def _box_eps_by_title(code, src, title):
+def _box_eps_by_title(code, src, title, wait=None):
     """Capitulos de una serie de ET/WF buscandola POR TITULO en su fuente.
     Devuelve la lista de capitulos (ya agrupados) o [] si no sale.
 
@@ -5393,7 +5393,7 @@ def _box_eps_by_title(code, src, title):
             job = "et" + os.urandom(5).hex()
             _kb_enqueue(box, {"c": "etjob", "job": job, "op": "search",
                               "q": q, "srcs": src})
-            res = _catjob_wait(job, 24.0 if wf else 20.0)
+            res = _catjob_wait(job, wait or (24.0 if wf else 20.0))
         finally:
             if sem is not None:
                 _lend_release(sem)
@@ -5449,37 +5449,47 @@ def catboxeps():
         if payload.get("episodes") or not box:
             return jsonify(payload)
         # directo sin episodios + hay caja viva -> resolver via caja (abajo)
-    # ET/WF: si la tarjeta no traia los capitulos dentro, se buscan por TITULO
-    # (el addon no sabe sacar episodios de WolfMax, y su indice local devuelve a
-    # veces la ficha de la SERIE, sin capitulos). Va primero porque es el camino
-    # que SI funciona para esas dos fuentes, y suele estar ya cacheado.
     _t_ser = (request.args.get("t") or "").strip()[:120]
-    if src in ("wf", "et") and _t_ser:
-        _eps = _box_eps_by_title(code, src, _t_ser)
-        if _eps:
-            _meta = (_bounded(lambda: _cat_tmdb(_t_ser, "tv"), 6.0, {}) or {})
-            return jsonify({"title": _t_ser, "poster": _meta.get("poster"),
-                            "year": _meta.get("year"),
-                            "rating": _meta.get("rating"),
-                            "episodes": _eps})
+
+    def _por_titulo():
+        """PLAN B de ET/WF: buscar los capitulos por TITULO y agruparlos. Sirve
+        para cajas con addon viejo (su op=episodes no sabe de WolfMax) y para
+        cuando la ficha no da nada."""
+        if src not in ("wf", "et") or not _t_ser:
+            return None
+        _eps = _box_eps_by_title(code, src, _t_ser, wait=14.0)
+        if not _eps:
+            return None
+        _meta = (_bounded(lambda: _cat_tmdb(_t_ser, "tv"), 6.0, {}) or {})
+        return jsonify({"title": _t_ser, "poster": _meta.get("poster"),
+                        "year": _meta.get("year"),
+                        "rating": _meta.get("rating"),
+                        "episodes": _eps})
     if not box:
-        return jsonify({"episodes": []}), 400
+        return _por_titulo() or (jsonify({"episodes": []}), 400)
     # Mismo tope que en /catetbox cuando la caja es prestada (ver _lend_acquire).
     prestada = (box != code)
     _lsem = _lend_acquire(box) if prestada else None
     if prestada and _lsem is None:
-        return jsonify({"episodes": []})
+        return _por_titulo() or jsonify({"episodes": []})
     try:
         job = "et" + os.urandom(5).hex()
         _kb_enqueue(box, {"c": "etjob", "job": job, "op": "episodes",
                           "src": src, "url": url})
-        res = _catjob_wait(job, 22.0)   # ver /catetbox: no se recorta por prestada
+        # Con plan B disponible la caja tiene 10s y el resto es para el plan B:
+        # los DOS caminos juntos han de caber en lo que espera la web (26s).
+        res = _catjob_wait(job, 10.0 if (_t_ser and src in ("wf", "et")) else 22.0)
     finally:
         if _lsem is not None:
             _lend_release(_lsem)
     if res is None:
-        return jsonify({"episodes": [], "timeout": True})
+        return _por_titulo() or jsonify({"episodes": [], "timeout": True})
     eps = res.get("eps") or {}
+    if not (eps.get("episodes") or []):
+        # la caja no supo (addon viejo con WolfMax, o ficha sin capitulos)
+        _pb = _por_titulo()
+        if _pb is not None:
+            return _pb
     title = _cat_clean_quality(eps.get("title") or "")[0]
     # TOPE al enrich: TMDB banea a Render y una llamada colgada se come uno
     # de los 8 hilos (ver §9). Sin poster salen igual; colgados, no.
@@ -6446,7 +6456,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk59", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk60", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7697,7 +7707,7 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on
  var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')+(cd.length===6?('&code='+cd):'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id)+'&t='+encodeURIComponent(x.title||''));
  // Salvavidas: nunca dejar "Cargando episodios..." para siempre (relay saturado).
  var ac=(window.AbortController?new AbortController():null);var opt=ac?{signal:ac.signal}:undefined;
- var kill=setTimeout(function(){if(ac)try{ac.abort()}catch(e){}},20000);
+ var kill=setTimeout(function(){if(ac)try{ac.abort()}catch(e){}},26000);
  fetch(u,opt).then(function(r){return r.json()}).then(function(d){clearTimeout(kill);
   var eps=(d&&d.episodes)||[];
   // PLAN B: los capítulos que trajo otra fuente en la búsqueda (ver upgrade).

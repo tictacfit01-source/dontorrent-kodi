@@ -336,6 +336,65 @@ def _src_episodes(src, url):
                             "episode": e or 0, "quality": dl.get("quality") or "",
                             "link": link, "content_id": link})
             return {"title": title, "episodes": eps}
+        if src == "wf":
+            import concurrent.futures as _cf
+            d0 = mod.detail(url) or {}
+            t0 = (d0.get("title") or "")
+            base = ""
+            try:
+                base = mod._strip_show_markers(t0) or ""
+            except Exception:
+                base = ""
+            if not base:
+                base = t0.split(" - ")[0].strip() or t0
+            urls = [url]
+            try:
+                for it in (mod.search(base) or []):
+                    u = it.get("url")
+                    if u and u not in urls:
+                        urls.append(u)
+            except Exception as ex2:
+                xbmc.log("[MejorWolf/service] wf eps search: %s" % ex2,
+                         xbmc.LOGWARNING)
+            urls = urls[:24]          # tope: 24 fichas = ~1.5s con 6 hilos
+
+            def _wfq(u):
+                u = (u or "").lower()
+                u = u.split("//", 1)[-1]
+                u = u[u.find("/"):] if "/" in u else ""
+                for pat, q in (("4k", "4K"), ("2160", "4K"),
+                               ("1080", "1080p"), ("720", "720p")):
+                    if pat in u:
+                        return q
+                return ""
+
+            def _wfone(u):
+                try:
+                    dd = mod.detail(u) or {}
+                    tt = dd.get("title") or ""
+                    ss, ee = mod._parse_season_episode(tt)
+                    dls = dd.get("downloads") or dd.get("links") or []
+                    lk = (dls[0].get("torrent_url") or dls[0].get("magnet")
+                          if dls else "") or ""
+                    return (ss, ee, lk, tt, u)
+                except Exception:
+                    return None
+            with _cf.ThreadPoolExecutor(max_workers=6) as _ex:
+                for r in _ex.map(_wfone, urls):
+                    if not r:
+                        continue
+                    ss, ee, lk, tt, u = r
+                    if not lk:
+                        continue
+                    label = ("%dx%02d" % (ss, ee)) if (ss and ee) else (
+                        (tt or "Episodio")[:40])
+                    if any(x["label"] == label for x in eps):
+                        continue
+                    eps.append({"label": label, "season": ss or 0,
+                                "episode": ee or 0, "quality": _wfq(u),
+                                "link": lk, "content_id": lk})
+            eps.sort(key=lambda x: (x["season"], x["episode"]))
+            return {"title": base, "episodes": eps}
         if src == "et":
             results, info = mod.detail(url)
             title = (info or {}).get("title") or ""
