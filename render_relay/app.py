@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk67",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk68",
                     mimetype="text/plain")
 
 
@@ -5760,15 +5760,36 @@ def catboxeps():
     if prestada and _lsem is None:
         return _por_titulo() or jsonify({"episodes": []})
     try:
-        job = "et" + os.urandom(5).hex()
-        _kb_enqueue(box, {"c": "etjob", "job": job, "op": "episodes",
-                          "src": src, "url": url})
-        # Con plan B disponible la caja tiene 10s y el resto es para el plan B:
-        # los DOS caminos juntos han de caber en lo que espera la web (26s).
-        res = _catjob_wait(job, 12.0 if (_t_ser and src in ("wf", "et")) else 22.0)
-        _via.append("caja:%s/%.1fs" % (
-            len(((res or {}).get("eps") or {}).get("episodes") or [])
-            if res else "None", _t.time() - _t0))
+        def _pide(b):
+            j = "et" + os.urandom(5).hex()
+            _kb_enqueue(b, {"c": "etjob", "job": j, "op": "episodes",
+                            "src": src, "url": url})
+            return j
+        _okeps = lambda r: bool(((r or {}).get("eps") or {}).get("episodes"))
+        _jobs = [_pide(box)]
+        if _t_ser and src in ("wf", "et"):
+            # 1a caja: 5s. Si no trae capitulos, se le pregunta a DOS mas a la
+            # vez (cada caja tiene su propio catalogo local de WolfMax y su
+            # propia suerte con el ISP; el que traiga algo, gana).
+            res = _catjob_wait_any(_jobs, 5.0, _okeps)
+            _via.append("caja1:%s/%.1fs" % (
+                len(((res or {}).get("eps") or {}).get("episodes") or []),
+                _t.time() - _t0))
+            if not _okeps(res):
+                for _b2 in [b for b in _live_boxes() if b != box][:2]:
+                    _jobs.append(_pide(_b2))
+                if _jobs:
+                    r2 = _catjob_wait_any(_jobs, 7.0, _okeps)
+                    if _okeps(r2):
+                        res = r2
+                    _via.append("caja2:%s/%.1fs" % (
+                        len(((r2 or {}).get("eps") or {}).get("episodes") or []),
+                        _t.time() - _t0))
+        else:
+            res = _catjob_wait_any(_jobs, 22.0, _okeps)
+            _via.append("caja:%s/%.1fs" % (
+                len(((res or {}).get("eps") or {}).get("episodes") or []),
+                _t.time() - _t0))
     finally:
         if _lsem is not None:
             _lend_release(_lsem)
@@ -6749,7 +6770,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk67", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk68", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
