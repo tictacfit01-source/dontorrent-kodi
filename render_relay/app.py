@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk53",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk54",
                     mimetype="text/plain")
 
 
@@ -858,10 +858,13 @@ from urllib.parse import quote as _uq
 
 
 DT_FALLBACK = [
-    # El canonico VIGENTE va primero (rotacion: .science -> .review -> .management).
-    # .review hoy hace 301 a .management, asi que como semilla ya solo cuesta un
-    # salto; el auto-curativo lo corrige en vivo, pero arrancar en frio por el
-    # bueno evita ese redirect en cada deploy (con /tmp recien borrado).
+    # El canonico VIGENTE va primero (rotacion: .science -> .review ->
+    # .management -> .supply, comprobado end-to-end el 12-09-2026 desde la IP
+    # residencial: .management hace 301 a .supply). El auto-curativo lo corrige
+    # en vivo, pero arrancar en frio por el bueno evita ese redirect en CADA
+    # deploy (con /tmp recien borrado), y un 301 convierte el POST del PoW en
+    # GET -> 405 -> "no se puede reproducir".
+    "dontorrent.supply",
     "dontorrent.management", "dontorrent.review", "dontorrent.support",
     "dontorrent.science", "dontorrent.irish", "dontorrent.club",
     "dontorrent.info", "dontorrent.istanbul", "dontorrent.lighting",
@@ -2406,7 +2409,9 @@ def _dx_episodes_payload(url):
                     "quality": dl.get("quality") or "", "link": link,
                     "content_id": link})
     title = _cat_clean_quality(det.get("title") or "")[0]
-    meta = _cat_tmdb(title, "tv") if title else {}
+    # TOPE al enrich: TMDB banea a Render y una llamada colgada se come uno
+    # de los 8 hilos (ver §9). Sin poster salen igual; colgados, no.
+    meta = (_bounded(lambda: _cat_tmdb(title, "tv"), 6.0, {}) or {}) if title else {}
     return {"title": title or "Serie",
             "poster": meta.get("poster") or det.get("image"),
             "year": meta.get("year") or det.get("year"),
@@ -5230,7 +5235,9 @@ def catboxeps():
         return jsonify({"episodes": [], "timeout": True})
     eps = res.get("eps") or {}
     title = _cat_clean_quality(eps.get("title") or "")[0]
-    meta = _cat_tmdb(title, "tv") if title else {}
+    # TOPE al enrich: TMDB banea a Render y una llamada colgada se come uno
+    # de los 8 hilos (ver §9). Sin poster salen igual; colgados, no.
+    meta = (_bounded(lambda: _cat_tmdb(title, "tv"), 6.0, {}) or {}) if title else {}
     return jsonify({"title": title or "Serie", "poster": meta.get("poster"),
                     "year": meta.get("year"), "rating": meta.get("rating"),
                     "episodes": eps.get("episodes") or []})
@@ -6066,7 +6073,7 @@ def cattitlemeta():
     # El año (si no esta ya en el titulo) afina el matching de titulos comunes
     # ("Perdida", "Venganza"...). _cat_tmdb lo extrae del propio string.
     q = title if (not year or year in title) else f"{title} {year}"
-    meta = _cat_tmdb(q, ep)
+    meta = _bounded(lambda: _cat_tmdb(q, ep), 8.0, {}) or {}
     # SOLO los campos de la BUSQUEDA (1 llamada TMDB -> sinopsis/generos salen
     # rapido). El trailer/duracion los pide el front aparte via /catmeta(tmdb_id)
     # -> la ficha no espera al detalle para mostrar lo principal.
@@ -6193,7 +6200,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk53", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk54", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -6398,18 +6405,26 @@ def catdetail():
     #    leer / lento". Ahora lanzamos el job al BOX EN PARALELO con el intento
     #    directo: el box (IP residencial, no baneada) ya va trabajando y, si el
     #    directo falla, su HTML llega antes -> la serie abre en ~14s, no 22s.
-    box = code if len(code) == 6 else _any_live_box()
+    # DEADLINE TOTAL. Medido el 12-09-2026: esta ruta llego a estar 90s SIN
+    # contestar con un path que no estaba cacheado (el front se rinde a los 20s
+    # y, peor, cada peticion colgada se come uno de los 8 hilos del relay: es
+    # exactamente como se tumbo el relay el 07-08). Ahora TODAS las etapas
+    # (incluidos el parseo y TMDB, que antes no tenian tope) comen del mismo
+    # presupuesto y la peticion SIEMPRE responde.
+    _ddl = now + 19.0
+    _drem = lambda: max(0.0, _ddl - _t.time())
+    box = _box_for(code)      # la suya si esta viva; si no, cualquiera (§_box_for)
     job = None
     if box:
         job = "dd" + os.urandom(5).hex()
         _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml",
                           "path": path})
     html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
-                    6.0, "") or ""
+                    min(6.0, _drem()), "") or ""
     if not html:
         _dt_mark(False)        # marca el baneo -> siguientes aperturas saltan DT ya
         if job:                # el box ya lleva ~6s adelantado -> responde antes
-            res = _catjob_wait(job, 14.0)
+            res = _catjob_wait(job, min(14.0, _drem()))
             html = (res or {}).get("html") or ""
     if not html:
         # 4) stale: mejor lo ultimo conocido que una lista vacia.
@@ -6418,8 +6433,10 @@ def catdetail():
             d["stale"] = True
             return jsonify(d)
         return jsonify({"episodes": []})
-    title, eps = _cat_parse_detail(html)
-    meta = _cat_tmdb(title, "tv")
+    title, eps = _bounded(lambda: _cat_parse_detail(html),
+                          max(1.0, min(4.0, _drem())), ("", []))
+    meta = (_bounded(lambda: _cat_tmdb(title, "tv"),
+                     max(1.0, min(6.0, _drem())), {}) or {}) if title else {}
     data = {"title": title, "poster": meta.get("poster"),
             "year": meta.get("year"), "rating": meta.get("rating"),
             "episodes": eps}
