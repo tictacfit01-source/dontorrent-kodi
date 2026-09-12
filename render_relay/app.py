@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk66",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk67",
                     mimetype="text/plain")
 
 
@@ -2411,7 +2411,7 @@ def _dx_episodes_payload(url):
     title = _cat_clean_quality(det.get("title") or "")[0]
     # TOPE al enrich: TMDB banea a Render y una llamada colgada se come uno
     # de los 8 hilos (ver §9). Sin poster salen igual; colgados, no.
-    meta = (_bounded(lambda: _cat_tmdb(title, "tv"), 6.0, {}) or {}) if title else {}
+    meta = (_bounded(lambda: _cat_tmdb(title, "tv"), 2.5, {}) or {}) if title else {}
     return {"title": title or "Serie",
             "poster": meta.get("poster") or det.get("image"),
             "year": meta.get("year") or det.get("year"),
@@ -5744,7 +5744,7 @@ def catboxeps():
                     ":%d/%.1fs" % (len(_eps), _t.time() - _t0))
         if not _eps:
             return None
-        _meta = (_bounded(lambda: _cat_tmdb(_t_ser, "tv"), 6.0, {}) or {})
+        _meta = (_bounded(lambda: _cat_tmdb(_t_ser, "tv"), 2.5, {}) or {})
         return jsonify({"title": _t_ser, "poster": _meta.get("poster"),
                         "year": _meta.get("year"),
                         "rating": _meta.get("rating"),
@@ -5784,7 +5784,7 @@ def catboxeps():
     title = _cat_clean_quality(eps.get("title") or "")[0]
     # TOPE al enrich: TMDB banea a Render y una llamada colgada se come uno
     # de los 8 hilos (ver §9). Sin poster salen igual; colgados, no.
-    meta = (_bounded(lambda: _cat_tmdb(title, "tv"), 6.0, {}) or {}) if title else {}
+    meta = (_bounded(lambda: _cat_tmdb(title, "tv"), 2.5, {}) or {}) if title else {}
     _via.append("fin:%.1fs" % (_t.time() - _t0))
     return jsonify({"via": ">".join(_via),
                     "title": title or "Serie", "poster": meta.get("poster"),
@@ -6749,7 +6749,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk66", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk67", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
