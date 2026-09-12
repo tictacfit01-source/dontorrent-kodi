@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk51",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk52",
                     mimetype="text/plain")
 
 
@@ -6193,7 +6193,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk51", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk52", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -6710,6 +6710,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 /* zoom de portada (tocar la portada -> a pantalla) */
 .zoom{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:48;padding:24px;cursor:zoom-out}
 .zoom.on{display:flex}
+/* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
+.mwback{transition:transform .18s ease-out,opacity .18s ease-out}
 .zoom img{max-width:100%;max-height:100%;border-radius:14px;box-shadow:0 16px 50px rgba(0,0,0,.7)}
 /* modal de trailer */
 .trm{position:fixed;inset:0;background:rgba(0,0,0,.95);display:none;align-items:center;justify-content:center;z-index:50;padding:14px}
@@ -6737,9 +6739,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <input id="code" type="hidden">
  </div>
  <div class="tabs">
-  <button id="tab-inicio" class="tab on" onclick="setView('inicio')">Inicio</button>
-  <button id="tab-buscar" class="tab" onclick="setView('buscar')">Buscar</button>
-  <button id="tab-lista" class="tab" onclick="setView('lista')">Mi lista</button>
+  <button id="tab-inicio" class="tab on" onclick="goView('inicio')">Inicio</button>
+  <button id="tab-buscar" class="tab" onclick="goView('buscar')">Buscar</button>
+  <button id="tab-lista" class="tab" onclick="goView('lista')">Mi lista</button>
  </div>
  <div class="srclegend">
   <span><i style="background:#4a9eff"></i>DonTorrent</span>
@@ -6923,8 +6925,9 @@ function setActiveCode(c){c=(c||'').replace(/\D/g,'').slice(0,6);code.value=c;
 function openDevs(){var cur=(code.value||'').replace(/\D/g,'');
  var dc=$('devc');if(dc)dc.value=(cur.length===6&&!devName(cur))?cur:'';
  var dn=$('devn');if(dn)dn.value='';
- renderDevs();$('devsheet').classList.add('on')}
-function closeDevs(){$('devsheet').classList.remove('on')}
+ renderDevs();$('devsheet').classList.add('on');mwOpen('devs',$('devsheet').querySelector('.box'),_closeDevs)}
+function _closeDevs(){$('devsheet').classList.remove('on')}
+function closeDevs(){mwBack('devs')}
 function liveDot(dot,c){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(function(j){
  dot.className='devdot '+((j&&j.connected)?'on':'off')}).catch(function(){})}
 function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var cur=(code.value||'').replace(/\D/g,'');
@@ -6962,7 +6965,63 @@ function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'')
 function delDev(c){if(!confirm('¿Borrar este Kodi de la lista?'))return;
  saveDevs(loadDevs().filter(function(dev){return dev.code!==c}));renderDevs();refreshDevBtn()}
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
+// ====== GESTO / BOTON DE RETROCESO (movil) ======
+// Cada panel que se abre EMPUJA un estado en el historial, asi el gesto de
+// volver atras del movil (y el boton Atras de Android) CIERRA ese panel en vez
+// de salir de la app. Ademas se puede arrastrar desde el borde izquierdo con el
+// panel siguiendo al dedo: en iOS instalada como app no hay gesto del sistema,
+// y asi el comportamiento es el mismo en los dos.
+var MWL=[];   // pila de paneles abiertos (el ultimo es el de arriba)
+var MWC={};   // nombre -> cierre CRUDO (sin tocar el historial)
+function mwTop(){return MWL.length?MWL[MWL.length-1]:null}
+function mwHas(n){for(var i=0;i<MWL.length;i++)if(MWL[i].n===n)return true;return false}
+function mwOpen(n,el,closer){
+ MWC[n]=closer;
+ if(mwHas(n))return;                 // reabrir el mismo panel no apila otro estado
+ var h=1;try{history.pushState({mw:n},'')}catch(e){h=0}
+ MWL.push({n:n,el:el||null,c:closer,h:h});}
+// Cierre desde la INTERFAZ (boton, tocar fuera, enviar a la tele...): si ese
+// panel es el ultimo y tiene estado, se deshace el estado y el popstate hace el
+// cierre -> el historial NUNCA se desincroniza (sin esto quedarian estados
+// muertos y habria que dar varias veces atras para salir de la app).
+function mwBack(n){
+ var t=mwTop();
+ if(t&&t.n===n&&t.h){try{history.back();return}catch(e){}}
+ for(var i=MWL.length-1;i>=0;i--)if(MWL[i].n===n){var c=MWL[i].c;MWL.splice(i,1);if(c)c();return}
+ if(MWC[n])MWC[n]();}
+function mwPop(){var t=MWL.pop();if(t&&t.c)t.c();return !!t}
+window.addEventListener('popstate',function(){if(MWL.length)mwPop()});
+// --- Arrastrar desde el borde izquierdo para cerrar --------------------------
+var MWD=null;
+function mwDragEnd(el,anim){if(!el)return;
+ if(anim){el.classList.add('mwback');setTimeout(function(){el.classList.remove('mwback');el.style.transform='';el.style.opacity=''},190)}
+ else{el.style.transform='';el.style.opacity=''}}
+document.addEventListener('touchstart',function(e){
+ MWD=null;if(!MWL.length||!e.touches||e.touches.length!==1)return;
+ var t=mwTop();if(!t||!t.el)return;
+ if(e.touches[0].clientX>26)return;                   // solo desde el borde
+ MWD={x:e.touches[0].clientX,y:e.touches[0].clientY,el:t.el,n:t.n,on:0};},{passive:true});
+document.addEventListener('touchmove',function(e){
+ if(!MWD||!e.touches||!e.touches.length)return;
+ var dx=e.touches[0].clientX-MWD.x,dy=Math.abs(e.touches[0].clientY-MWD.y);
+ if(!MWD.on){if(dx>12&&dx>dy){MWD.on=1;MWD.el.style.transition='none'}
+  else if(dy>12||dx<-12){MWD=null;return}else return}
+ dx=Math.max(0,dx);
+ MWD.el.style.transform='translateX('+dx+'px)';
+ MWD.el.style.opacity=String(Math.max(.3,1-dx/Math.max(1,window.innerWidth)));},{passive:true});
+document.addEventListener('touchend',function(e){
+ if(!MWD)return;var d=MWD;MWD=null;if(!d.on)return;
+ var x=(e.changedTouches&&e.changedTouches.length)?e.changedTouches[0].clientX:d.x;
+ d.el.style.transition='';
+ if((x-d.x)>Math.min(110,window.innerWidth*0.28)){mwDragEnd(d.el,0);mwBack(d.n)}
+ else{mwDragEnd(d.el,1)}});
+document.addEventListener('touchcancel',function(){if(MWD){mwDragEnd(MWD.el,1);MWD=null}});
+// Pestanas: estar en Buscar / Mi lista es tambien un "sitio del que se vuelve".
+// Una sola entrada en la pila por mucho que se salte entre pestanas.
 function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs()}
+function goView(v){
+ if(v==='inicio'){if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
+ mwOpen('tab',null,function(){setView('inicio')});setView(v);}
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
  INI={kind:kind,page:1,loading:false,more:true};
  var g=$('inicio-grid');g.className='';g.innerHTML=skelGrid();
@@ -7039,7 +7098,10 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
    g.className='msg';g.textContent='Sin resultados para "'+q+'".';if(more)more.textContent='';return;}
   // YA hay resultados:
   if(waiting){if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
-  if(boxTO&&!boxAdded&&cd.length===6){if(more)more.innerHTML='💡 Enciende tu Kodi ('+cd+') para ver EliteTorrent · DivxTotal · WolfMax';}
+  // Ya NO es "para ver ET/DX/WF" (se ven siempre, por cualquier caja viva):
+  // encender la suya solo hace que su búsqueda vaya por su propia casa y sea
+  // más rápida y fiable.
+  if(boxTO&&!boxAdded&&cd.length===6){if(more)more.innerHTML='💡 Enciende tu Kodi ('+cd+') y las búsquedas irán más rápidas';}
   else if(wfPend){if(more)more.innerHTML='<span class="spin" style="opacity:.5"></span> <span style="opacity:.6">buscando también en WolfMax…</span>';}
   else if(more)more.textContent='';}
  function done(r){if(seq!==_searchSeq)return;if(r){if(r.timeout)boxTO=true;if(r.added)boxAdded+=r.added;}boxPend--;paint();}
@@ -7154,7 +7216,7 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  enrichItem(x,function(){if(sel===x)shEnrich(x);});
  // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
  // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
- $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;
+ $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;mwOpen('sheet',_bx,_closeSheet);
  var _cd=(code.value||'').replace(/\D/g,'');
  var seedShow=function(p){if(sel!==x)return;$('sh-seeds').innerHTML=(p&&typeof p.seeds==='number')?seedTag(p.seeds):seedFail(s2,_cd);};
  if(s2==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x)return;if(p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';seedShow(p)}).catch(function(){seedShow(null)})}
@@ -7177,7 +7239,8 @@ function seedGate(ci,tb,proceed){proceed();
  }).catch(function(){})}
 function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
 function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
-function closeSheet(){$('sheet').classList.remove('on')}
+function _closeSheet(){$('sheet').classList.remove('on')}
+function closeSheet(){mwBack('sheet')}
 // Pinta la parte enriquecida de la ficha de PELI con lo que el item tenga
 // (backdrop + generos + duracion + sinopsis + trailer). Reentrante: se vuelve a
 // llamar cuando enrichItem/catmeta rellenan datos -> rerender suave.
@@ -7216,12 +7279,14 @@ function skelGrid(n){n=n||9;var c='<div class="skcard"><div class="skph shim"></
 // Sinopsis: alternar recortada/completa.
 function toggleOv(){var o=$('sh-ov');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
 // Zoom de portada: tocar el póster de la ficha lo agranda a pantalla completa.
-function zoomPoster(){var p=ZPOSTER||(sel&&sel.poster);if(!p)return;event&&event.stopPropagation&&event.stopPropagation();$('zoom-img').src=p.replace('/w342','/w500');$('zoom').classList.add('on')}
-function closeZoom(){$('zoom').classList.remove('on');$('zoom-img').src=''}
+function zoomPoster(){var p=ZPOSTER||(sel&&sel.poster);if(!p)return;event&&event.stopPropagation&&event.stopPropagation();$('zoom-img').src=p.replace('/w342','/w500');$('zoom').classList.add('on');mwOpen('zoom',$('zoom'),_closeZoom)}
+function _closeZoom(){$('zoom').classList.remove('on');$('zoom-img').src=''}
+function closeZoom(){mwBack('zoom')}
 // Tráiler: reproduce el vídeo de YouTube en un modal (clave de /catmeta).
-function openTrailer(){if(!TRK)return;$('trm-mount').innerHTML='<iframe src="https://www.youtube.com/embed/'+TRK+'?autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('trm').classList.add('on')}
+function openTrailer(){if(!TRK)return;$('trm-mount').innerHTML='<iframe src="https://www.youtube.com/embed/'+TRK+'?autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';$('trm').classList.add('on');mwOpen('trm',$('trm'),_closeTrailer)}
 function toggleOvSyn(){var o=$('ov-syn');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
-function closeTrailer(){$('trm').classList.remove('on');$('trm-mount').innerHTML=''}
+function _closeTrailer(){$('trm').classList.remove('on');$('trm-mount').innerHTML=''}
+function closeTrailer(){mwBack('trm')}
 // ---- Compartir enlace directo (como el mando): link que reproduce al abrirlo ----
 function doShare(t,yr,qs){var link=location.origin+'/cat?'+qs+'&t='+encodeURIComponent(t)+(yr?('&yr='+encodeURIComponent(yr)):'');
  var nice=t+(yr?(' ('+yr+')'):'');
@@ -7264,7 +7329,7 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
-function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');$('ov-title').textContent=x.title;
+function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
@@ -7323,7 +7388,8 @@ function epBadge(job,info){var el=document.getElementById('epb-'+job.id);if(!el)
   if(info.rar)h+='<span class="ep-rar">📦 RAR</span>';
   if(typeof info.seeds==='number'){var cls=info.seeds<=0?'s-zero':(info.seeds<3?'s-low':'s-ok');h+='<span class="ep-seed '+cls+'">🌱 '+info.seeds+'</span>';}
   el.innerHTML=h;}
-function closeOv(){$('ov').classList.remove('on')}
+function _closeOv(){$('ov').classList.remove('on')}
+function closeOv(){mwBack('ov')}
 function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var row=$('row-'+id);
  if(row){var sn=isSeen(e.content_id);row.classList.toggle('seen',sn);var ey=row.querySelector('.eye');if(ey)ey.innerHTML=sn?EYE_ON:EYE_OFF;}}
 function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(function(e){return (e.season||0)===s});
@@ -7357,8 +7423,9 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
   var act=(np&&np.title)||$('remote').classList.contains('on');
   clearTimeout(npTimer);npTimer=setTimeout(pollNow,act?3000:12000);
  }).catch(function(){var act=$('npbar').classList.contains('on')||$('remote').classList.contains('on');clearTimeout(npTimer);npTimer=setTimeout(pollNow,act?4000:12000)})}
-function openRemote(){$('remote').classList.add('on')}
-function closeRemote(){$('remote').classList.remove('on')}
+function openRemote(){$('remote').classList.add('on');mwOpen('remote',$('remote'),_closeRemote)}
+function _closeRemote(){$('remote').classList.remove('on')}
+function closeRemote(){mwBack('remote')}
 function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
  if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
@@ -7368,7 +7435,7 @@ $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
  else if(op==='peli'){openCard({kind:'movie',source:p.get('src')||'dt',content_id:p.get('ci')||'',tabla:p.get('tb')||'peliculas',url:p.get('url')||'',quality:p.get('q')||'',title:t,poster:p.get('ps')||'',year:p.get('yr')||''});}
  else if(pl==='dt'&&p.get('ci')){sharedPlay={a:'dt',c:p.get('ci'),tb:p.get('tb')||'peliculas',t:t};showShared(t);}
  else if(pl==='pl'&&p.get('u')){sharedPlay={a:'pl',u:p.get('u'),t:t};showShared(t);}
- else if(p.get('find')){setView('buscar');$('q').value=p.get('find');go();}
+ else if(p.get('find')){goView('buscar');$('q').value=p.get('find');go();}
 }catch(e){}})();
 chip('estrenos');pollNow();
 try{mlSync()}catch(e){}   // trae/respalda la lista de deseados si ya hay codigo
