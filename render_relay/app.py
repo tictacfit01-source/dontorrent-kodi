@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk58",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk59",
                     mimetype="text/plain")
 
 
@@ -5406,6 +5406,12 @@ def _box_eps_by_title(code, src, title):
             if not it.get("quality") and it.get("source") == "wf":
                 it["quality"] = _wf_quality_from_url(
                     it.get("url") or it.get("content_id"))
+        # MISMA cache que /catetbox (misma clave) -> hay que dejarlos igual de
+        # enriquecidos, o abrir una serie antes de buscarla dejaria la busqueda
+        # sin posters 10 min. Acotado: TMDB banea a Render (§9).
+        if items:
+            items = _bounded(lambda: _cat_enrich(items, limit=60), 8.0,
+                             default=items) or items
         _catbox_put(ckey, items)
     # la tarjeta que mejor case con el titulo pedido
     qn = _et_norm(q)
@@ -6440,7 +6446,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk58", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk59", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
