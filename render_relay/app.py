@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk57",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk58",
                     mimetype="text/plain")
 
 
@@ -4437,6 +4437,27 @@ def _title_score(t):
     return sc
 
 
+# La calidad de WolfMax va en la URL, no en el titulo: /serie-online-4k/<id>,
+# /online-1080p/<id>, /peliculas-4k-2160p/... Sin ella su 4K (capitulos de 9 GB,
+# lo mejor que hay en el sistema) perdia TODOS los desempates y quedaba escondido
+# detras de un 1080p de otra fuente.
+_WFQ = (("4k", "4K"), ("2160", "4K"), ("1080", "1080p"), ("720", "720p"))
+
+
+def _wf_quality_from_url(u):
+    u = (u or "").lower()
+    # OJO: el DOMINIO ya lleva "4k" (wolfmax4k.com) -> si se mira la URL entera,
+    # hasta /serie-online-1080p/ sale como 4K. Solo la RUTA.
+    i = u.find("//")
+    if i >= 0:
+        j = u.find("/", i + 2)
+        u = u[j:] if j >= 0 else ""
+    for pat, q in _WFQ:
+        if pat in u:
+            return q
+    return ""
+
+
 def _cat_group_episodes(items):
     """Capitulos sueltos de et/wf -> 1 tarjeta de serie con `eps` dentro.
     Lo que no sea un capitulo (peliculas) sale TAL CUAL y en su mismo sitio."""
@@ -4457,6 +4478,8 @@ def _cat_group_episodes(items):
               "url": it.get("url") or it.get("content_id") or "",
               "content_id": it.get("url") or it.get("content_id") or "",
               "src": src}
+        if not ep["quality"] and src == "wf":
+            ep["quality"] = _wf_quality_from_url(ep["url"])
         card = byk.get(k)
         if card is None:
             card = {"title": base, "kind": "serie", "source": src,
@@ -4477,6 +4500,11 @@ def _cat_group_episodes(items):
             card["title"] = base
     for card in byk.values():
         card["eps"].sort(key=lambda e: (e["season"], e["episode"]))
+        if not card.get("quality"):
+            # la calidad de la tarjeta = la de sus capitulos (si coinciden)
+            qs = {e.get("quality") for e in card["eps"] if e.get("quality")}
+            if len(qs) == 1:
+                card["quality"] = qs.pop()
     return out
 
 
@@ -5282,6 +5310,9 @@ def catetbox():
         it["title"] = disp
         if not it.get("quality"):
             it["quality"] = ql
+        if not it.get("quality") and it.get("source") == "wf":
+            it["quality"] = _wf_quality_from_url(
+                it.get("url") or it.get("content_id"))
     if items:
         # TOPE DURO al enrich. `_cat_enrich` dispara hasta 60 consultas a TMDB
         # con ex.map y SIN limite de tiempo, y TMDB banea la IP de Render: la
@@ -5331,6 +5362,64 @@ def catboxrar():
                     "quality": (res or {}).get("quality") or ""})
 
 
+def _box_eps_by_title(code, src, title):
+    """Capitulos de una serie de ET/WF buscandola POR TITULO en su fuente.
+    Devuelve la lista de capitulos (ya agrupados) o [] si no sale.
+
+    Por que hace falta: la tarjeta no siempre trae los capitulos dentro. WolfMax
+    responde a veces desde su INDICE LOCAL con la ficha de la SERIE
+    (/serie-online-4k/<id>, sin capitulos), y el addon no sabe sacar episodios de
+    WolfMax. Buscar el titulo SI funciona (es lo que hace la busqueda) y la
+    respuesta ya esta cacheada si el usuario acaba de buscar eso mismo."""
+    q = (title or "").strip()
+    if not q or src not in ("wf", "et"):
+        return []
+    ckey = "search|%s|%s" % (src, q.lower())
+    items = _catbox_get(ckey)
+    if items is None:
+        box = _box_for(code)
+        if not box:
+            return []
+        prestada = (box != code)
+        sem = _lend_acquire(box) if prestada else None
+        if prestada and sem is None:
+            return []
+        wf = (src == "wf")
+        if wf and not _WF_SEM.acquire(blocking=False):
+            if sem is not None:
+                _lend_release(sem)
+            return []
+        try:
+            job = "et" + os.urandom(5).hex()
+            _kb_enqueue(box, {"c": "etjob", "job": job, "op": "search",
+                              "q": q, "srcs": src})
+            res = _catjob_wait(job, 24.0 if wf else 20.0)
+        finally:
+            if sem is not None:
+                _lend_release(sem)
+            if wf:
+                _WF_SEM.release()
+        if res is None:
+            return []
+        items = _cat_group_episodes(res.get("items") or [])
+        for it in items:
+            if not it.get("quality") and it.get("source") == "wf":
+                it["quality"] = _wf_quality_from_url(
+                    it.get("url") or it.get("content_id"))
+        _catbox_put(ckey, items)
+    # la tarjeta que mejor case con el titulo pedido
+    qn = _et_norm(q)
+    mejor, mejor_n = None, -1
+    for it in items:
+        if not it.get("eps"):
+            continue
+        tn = _et_norm(it.get("title") or "")
+        if tn == qn or tn in qn or qn in tn:
+            if len(it["eps"]) > mejor_n:
+                mejor, mejor_n = it, len(it["eps"])
+    return (mejor or {}).get("eps") or []
+
+
 @app.get("/catboxeps")
 def catboxeps():
     """Episodios de una serie de una fuente-box (EliteTorrent/WolfMax) resueltos
@@ -5354,6 +5443,19 @@ def catboxeps():
         if payload.get("episodes") or not box:
             return jsonify(payload)
         # directo sin episodios + hay caja viva -> resolver via caja (abajo)
+    # ET/WF: si la tarjeta no traia los capitulos dentro, se buscan por TITULO
+    # (el addon no sabe sacar episodios de WolfMax, y su indice local devuelve a
+    # veces la ficha de la SERIE, sin capitulos). Va primero porque es el camino
+    # que SI funciona para esas dos fuentes, y suele estar ya cacheado.
+    _t_ser = (request.args.get("t") or "").strip()[:120]
+    if src in ("wf", "et") and _t_ser:
+        _eps = _box_eps_by_title(code, src, _t_ser)
+        if _eps:
+            _meta = (_bounded(lambda: _cat_tmdb(_t_ser, "tv"), 6.0, {}) or {})
+            return jsonify({"title": _t_ser, "poster": _meta.get("poster"),
+                            "year": _meta.get("year"),
+                            "rating": _meta.get("rating"),
+                            "episodes": _eps})
     if not box:
         return jsonify({"episodes": []}), 400
     # Mismo tope que en /catetbox cuando la caja es prestada (ver _lend_acquire).
@@ -6338,7 +6440,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk57", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk58", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -6867,6 +6969,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Versiones de la misma peli en otras fuentes (la 4K de WolfMax, sobre todo) */
+.sh-alts{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
+.sh-alts .altb{background:rgba(255,255,255,.07);border:1px solid var(--stroke);
+ color:var(--txt);border-radius:999px;padding:6px 11px;font-size:12.5px;font-weight:600;
+ cursor:pointer;display:flex;align-items:center;gap:5px}
+.sh-alts .altb.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.sh-alts .altq{opacity:.75;font-weight:500}
 .zoom img{max-width:100%;max-height:100%;border-radius:14px;box-shadow:0 16px 50px rgba(0,0,0,.7)}
 /* modal de trailer */
 .trm{position:fixed;inset:0;background:rgba(0,0,0,.95);display:none;align-items:center;justify-content:center;z-index:50;padding:14px}
@@ -6946,6 +7055,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   </div>
   <div class="sh-body">
    <div class="sh-meta" id="sh-seeds"></div>
+   <div class="sh-alts" id="sh-alts"></div>
    <div class="sh-meta" id="sh-genres"></div>
    <div id="sh-ovwrap"></div>
    <div class="rar" id="sh-rar"></div>
@@ -7238,7 +7348,10 @@ function mergeResults(list,g,items){
  // puede estar haciendo scroll y no se le mueve nada de sitio).
  for(var s2=0;s2<swapped.length;s2++)repaintCard(g,list,swapped[s2]);}
 var QRANK={'4k':5,'2160p':5,'uhd':5,'1080p':4,'1080':4,'bdremux':4,'720p':2,'720':2,'480p':1};
-var SRANK={dt:3,dx:2,et:1,wf:0};
+// A igualdad de etiqueta de calidad: DonTorrent (fuente principal, con aviso
+// de RAR, semillas y reproducción propia) > WolfMax (su 4K es el de mayor
+// bitrate que hay: capítulos de 9 GB) > DivxTotal > EliteTorrent.
+var SRANK={dt:3,wf:2,dx:1,et:0};
 function srcScore(x){var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
  return q*10+(SRANK[x.source||'dt']||0);}
 // Une dos listas de capítulos sin repetir, en orden.
@@ -7262,10 +7375,22 @@ function upgrade(list,k,x,at,swapped){var i=at[k];if(i===undefined)return;
   if(union)x.eps=union;
   else if(!xe&&ce)x.epsAlt=ce;
   else if(!xe&&cur.epsAlt)x.epsAlt=cur.epsAlt;
+  x.alts=addAlt(x.alts,cur);
   LISTS[list][i]=x;if(swapped.indexOf(i)<0)swapped.push(i);}
  else{
   if(union){cur.eps=union;if(swapped.indexOf(i)<0)swapped.push(i);}
-  else if(!ce&&xe)cur.epsAlt=xe;}}
+  else if(!ce&&xe)cur.epsAlt=xe;
+  cur.alts=addAlt(cur.alts,x);}}
+// Guarda la version que PIERDE la tarjeta (otra fuente, quizá mejor calidad)
+// para poder elegirla luego en la ficha. Sin anidar: las alternativas de la
+// perdedora se suben al mismo nivel, y nunca se repite una fuente.
+function addAlt(alts,otra){
+ var out=(alts||[]).slice();
+ var pool=[otra].concat(otra.alts||[]);
+ pool.forEach(function(a){if(!a||!a.source)return;
+  var c={};for(var k in a)if(k!=='alts')c[k]=a[k];
+  if(!out.some(function(z){return z.source===c.source&&(z.content_id||z.url)===(c.content_id||c.url)}))out.push(c);});
+ return out;}
 function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return;
  var c=grid.children[i];if(!c)return;
  var tmp=document.createElement('div');tmp.innerHTML=cardHTML(LISTS[list][i],list,i);
@@ -7403,6 +7528,23 @@ function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var card
 function qualBadge(job,q){if(!q)return;var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.q'))return;var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
 function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
 function openItem(list,i){openCard(LISTS[list][i])}
+// Versiones de la MISMA peli en otras fuentes. El 4K de WolfMax (capítulos de
+// 9 GB) es lo mejor que da el sistema y antes se perdía en cuanto otra fuente
+// ganaba la tarjeta: aquí se puede elegir a mano, siempre.
+var ALTLBL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax'};
+function altsInner(x){var all=[x].concat(x.alts||[]);
+ if(all.length<2)return '';
+ return '<span class="altq" style="align-self:center">También en:</span>'+
+  all.map(function(a,i){return '<button class="altb'+(a===x?' on':'')+'" onclick="pickAlt('+i+')">'+
+   esc(ALTLBL[a.source||'dt']||'?')+(a.quality?('<span class="altq">'+esc(a.quality)+'</span>'):'')+'</button>'}).join('');}
+function altsHTML(x){var h=altsInner(x);return h?('<div class="sh-alts">'+h+'</div>'):'';}
+function renderAlts(x){var el=$('sh-alts');if(el)el.innerHTML=altsInner(x);}
+function pickAlt(i){var all=[sel].concat(sel.alts||[]);var a=all[i];
+ if(!a||a===sel)return;
+ var resto=all.filter(function(z){return z!==a});
+ var c={};for(var k in a)if(k!=='alts')c[k]=a[k];c.alts=resto;
+ if(c.kind==='serie'){openSeries(c);return}
+ openCard(c);}
 // Abre la FICHA de un item (sheet de peli u overlay de serie) a partir del
 // OBJETO -> sirve igual para una tarjeta de la cuadricula que para un enlace
 // COMPARTIDO reconstruido (abrir directo la peli/serie, sin buscar).
@@ -7411,7 +7553,8 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  ZPOSTER=x.poster||'';
- $('sh-t').textContent=x.title;$('sh-y').textContent=sy;$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';
+ $('sh-t').textContent=x.title;$('sh-y').textContent=sy;
+ renderAlts(x);$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';
  // backdrop + géneros + sinopsis + tráiler. shEnrich pinta lo que el item TENGA;
  // enrichItem rellena los favoritos GUARDADOS sin enriquecer (1 vez, se persiste).
  shEnrich(x);
@@ -7545,7 +7688,7 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on
   renderEpisodes();return;}
  // DT lleva el code -> si Render esta baneado por DonTorrent, el relay trae los
  // episodios por TU box (IP de casa). Sin code igualmente intenta directo.
- var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')+(cd.length===6?('&code='+cd):'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id));
+ var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')+(cd.length===6?('&code='+cd):'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id)+'&t='+encodeURIComponent(x.title||''));
  // Salvavidas: nunca dejar "Cargando episodios..." para siempre (relay saturado).
  var ac=(window.AbortController?new AbortController():null);var opt=ac?{signal:ac.signal}:undefined;
  var kill=setTimeout(function(){if(ac)try{ac.abort()}catch(e){}},20000);
@@ -7580,6 +7723,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
    '<div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div>'+
    (genh?('<div class="ovgen">'+genh+'</div>'):'')+'</div></div></div>'+
    (ovw?('<div class="ovsyn"><div class="sh-ov clamp" id="ov-syn">'+esc(ovw)+'</div><span class="sh-more" onclick="toggleOvSyn()">Leer más</span></div>'):'')+
+   altsHTML(x)+
    '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
  keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
