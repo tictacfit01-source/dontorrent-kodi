@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk52",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk53",
                     mimetype="text/plain")
 
 
@@ -6193,7 +6193,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk52", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk53", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7062,14 +7062,41 @@ function mergeResults(list,g,items){
  // en cualquier homónimo del mismo título ya presente (evita una tarjeta "pelada" de
  // otra fuente sin enriquecer). Antes el dedup por título a secas TIRABA el remake
  // -> en la web solo salía una aunque el relay devolviera las dos.
- var byKey={},titles={};
- LISTS[list].forEach(function(x){var t=norm(x.title);if(!t)return;titles[t]=1;byKey[t+'|'+(x.year||'')]=1;});
+ // Y cuando la MISMA peli viene de varias fuentes, se queda la MEJOR, no la que
+ // llegue antes: gana la calidad mas alta y, a igualdad, DonTorrent (es la fuente
+ // principal, con aviso de RAR, semillas y reproduccion propia). Antes ganaba la
+ // primera en llegar, y como DivxTotal sale directo del relay (~2s) y DonTorrent
+ // va por una caja (~4s), 'matrix' acababa mostrando la tarjeta de DivxTotal.
+ var byKey={},titles={},at={};
+ LISTS[list].forEach(function(x,i){var t=norm(x.title);if(!t)return;titles[t]=1;
+  var k=t+'|'+(x.year||'');byKey[k]=1;if(at[k]===undefined)at[k]=i;if(at[t+'|*']===undefined)at[t+'|*']=i;});
+ var swapped=[];
  var fresh=items.filter(function(x){var t=norm(x.title);if(!t)return true;var y=String(x.year||'');
-  if(y){var k=t+'|'+y;if(byKey[k])return false;byKey[k]=1;titles[t]=1;return true;}
-  if(titles[t])return false;titles[t]=1;byKey[t+'|']=1;return true;});
- if(!fresh.length)return;
- var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
- if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
+  var k=t+'|'+y;
+  if(y){if(byKey[k]){upgrade(list,k,x,at,swapped);return false}byKey[k]=1;titles[t]=1;return true;}
+  if(titles[t]){upgrade(list,t+'|*',x,at,swapped);return false}titles[t]=1;byKey[t+'|']=1;return true;});
+ if(fresh.length){var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
+  for(var j=0;j<fresh.length;j++){var tt=norm(fresh[j].title);if(!tt)continue;
+   var kk=tt+'|'+(fresh[j].year||'');if(at[kk]===undefined)at[kk]=from+j;if(at[tt+'|*']===undefined)at[tt+'|*']=from+j;}
+  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
+ // Repintar SOLO las tarjetas sustituidas (no toda la cuadricula: el usuario
+ // puede estar haciendo scroll y no se le mueve nada de sitio).
+ for(var s2=0;s2<swapped.length;s2++)repaintCard(g,list,swapped[s2]);}
+var QRANK={'4k':5,'2160p':5,'uhd':5,'1080p':4,'1080':4,'bdremux':4,'720p':2,'720':2,'480p':1};
+var SRANK={dt:3,dx:2,et:1,wf:0};
+function srcScore(x){var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
+ return q*10+(SRANK[x.source||'dt']||0);}
+function upgrade(list,k,x,at,swapped){var i=at[k];if(i===undefined)return;
+ var cur=LISTS[list][i];if(!cur)return;
+ if(srcScore(x)>srcScore(cur)){
+  // conservamos lo que la otra fuente SI trajo (poster/nota/sinopsis de TMDB)
+  ['poster','rating','year','overview','genres','backdrop','tmdb_id'].forEach(function(f){
+   if(x[f]===undefined||x[f]===null||x[f]==='')if(cur[f]!==undefined)x[f]=cur[f];});
+  LISTS[list][i]=x;if(swapped.indexOf(i)<0)swapped.push(i);}}
+function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return;
+ var c=grid.children[i];if(!c)return;
+ var tmp=document.createElement('div');tmp.innerHTML=cardHTML(LISTS[list][i],list,i);
+ if(tmp.firstChild)grid.replaceChild(tmp.firstChild,c);}
 var _searchSeq=0;
 // fetch con TIMEOUT real (AbortController): un relay dormido (Render free, cold
 // start ~50s) NO deja la promesa colgada -> abortamos y reintentamos.
