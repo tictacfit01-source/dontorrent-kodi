@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk69",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk70",
                     mimetype="text/plain")
 
 
@@ -6778,7 +6778,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk69", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk70", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7319,25 +7319,36 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
-/* Progreso de la búsqueda: qué fuente ha contestado y cuánto lleva */
-.prog{display:none;margin:2px 0 12px}
-.prog.on{display:block}
-.prog .ptop{display:flex;align-items:center;gap:9px}
-.prog .pbar{flex:1;height:3px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden}
-.prog .pbar i{display:block;height:100%;width:0;border-radius:3px;
- background:linear-gradient(90deg,var(--blue2),var(--blue));transition:width .35s ease}
-.prog .prow{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:7px;
- font-size:10.5px;color:var(--sub)}
-.prog .pf{display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:999px;
- background:rgba(255,255,255,.055);opacity:.4;letter-spacing:.1px;
- white-space:nowrap;transition:opacity .2s ease}
-.prog .pf.on{opacity:1}
-.prog .pf.on{background:rgba(255,255,255,.09)}
-.prog .pf.dt{color:#0a84ff}.prog .pf.et{color:#ff9f0a}
-.prog .pf.dx{color:#30d158}.prog .pf.wf{color:#bf5af2}
-.prog .pf b{color:var(--txt);font-weight:700}
-.prog .psec{font-size:11.5px;color:var(--sub);font-variant-numeric:tabular-nums;
- opacity:.85;flex:0 0 auto;min-width:42px;text-align:right}
+/* Progreso de la búsqueda: qué fuente ha contestado y cuánto lleva.
+   OJO: se llama `srcp` y NO `prog` porque `.prog` ya es la barra del
+   reproductor (height:5px + overflow:hidden) y recortaba esto a una rayita. */
+.srcp{display:none;margin:10px 0 14px;padding:11px 12px 12px;border-radius:14px;
+ background:rgba(255,255,255,.045);border:1px solid var(--stroke)}
+.srcp.on{display:block;animation:srcpIn .22s ease}
+@keyframes srcpIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.srcp-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px}
+.srcp-ttl{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--txt)}
+.srcp-sec{font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums;flex:0 0 auto}
+.srcp-bar{height:5px;border-radius:5px;background:rgba(255,255,255,.09);overflow:hidden}
+.srcp-bar i{display:block;height:100%;width:0;border-radius:5px;
+ background:linear-gradient(90deg,var(--blue2),var(--blue));
+ box-shadow:0 0 10px rgba(10,132,255,.5);transition:width .45s cubic-bezier(.4,0,.2,1)}
+/* Rejilla: en el movil salen 2x2 (alineados, legibles) y en pantalla
+   ancha las cuatro en fila. Con flex-wrap quedaban 3+1, descolocados. */
+.srcp-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+ gap:6px;margin-top:10px}
+.srcp-f{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:999px;
+ font-size:11px;font-weight:600;letter-spacing:.1px;white-space:nowrap;
+ background:rgba(255,255,255,.05);color:var(--sub);
+ border:1px solid transparent;transition:all .25s ease}
+.srcp-f i{width:7px;height:7px;border-radius:50%;background:var(--c);flex:0 0 auto}
+.srcp-f.on{color:var(--txt);background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.12)}
+.srcp-f b{color:var(--c);font-weight:800;margin-left:1px}
+.srcp-f.wait i{animation:srcpPulse 1.1s ease-in-out infinite}
+@keyframes srcpPulse{0%,100%{opacity:.3;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
+.srcp-f.dt{--c:#0a84ff}.srcp-f.et{--c:#ff9f0a}
+.srcp-f.dx{--c:#30d158}.srcp-f.wf{--c:#bf5af2}
+.srcp-f.zero i{opacity:.35}
 /* Versiones de la misma peli en otras fuentes (la 4K de WolfMax, sobre todo) */
 .sh-alts{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
 .sh-alts .altb{background:rgba(255,255,255,.07);border:1px solid var(--stroke);
@@ -7400,7 +7411,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <input id="q" type="search" placeholder="Buscar película o serie..." autocomplete="off">
    <button onclick="go()">Buscar</button>
   </div>
-  <div id="buscar-prog" class="prog"></div>
+  <div id="buscar-prog" class="srcp"></div>
   <div id="buscar-grid" class="msg">Busca pelis y series y envíalas a tu tele 📺</div>
   <div id="buscar-more" class="morebar"></div>
  </section>
@@ -7791,13 +7802,19 @@ function progSet(src,estado,n){if(PROG.seq!==_searchSeq)return;
  var fin=['dt','et','dx','wf'].every(function(k){return PROG.st[k]>0});
  if(fin)setTimeout(function(){if(PROG.seq===_searchSeq)progStop(1)},1400);}
 function progPaint(){var el=$('buscar-prog');if(!el)return;
- var ks=['dt','dx','et','wf'],hechas=0;
- var chips=ks.map(function(k){var e=PROG.st[k]||0;if(e>0)hechas++;
-  var txt=PROGN[k]+(e===1?(' <b>'+PROG.n[k]+'</b>'):(e===2?' 0':(e===3?' —':'')));
-  return '<span class="pf '+k+(e>0?' on':'')+'">'+txt+'</span>'}).join('');
+ var ks=['dt','dx','et','wf'],hechas=0,total=0;
+ var chips=ks.map(function(k){var e=PROG.st[k]||0;if(e>0)hechas++;if(e===1)total+=PROG.n[k]||0;
+  var cls='srcp-f '+k+(e>0?' on':' wait')+(e===2?' zero':'');
+  var txt=PROGN[k]+(e===1?(' <b>'+PROG.n[k]+'</b>'):(e===2?' <b>0</b>':(e===3?' —':'')));
+  return '<span class="'+cls+'"><i></i>'+txt+'</span>'}).join('');
  var seg=((Date.now()-PROG.t0)/1000).toFixed(1).replace('.',',');
- el.innerHTML='<div class="ptop"><div class="pbar"><i style="width:'+Math.round(hechas/4*100)+'%"></i></div>'+
-  '<span class="psec">'+seg+' s</span></div><div class="prow">'+chips+'</div>';}
+ var fin=(hechas===4);
+ var ttl=fin?('✓ '+total+' resultado'+(total===1?'':'s')+' en '+ks.filter(function(k){return PROG.st[k]===1}).length+' fuente'+(ks.filter(function(k){return PROG.st[k]===1}).length===1?'':'s'))
+            :('<span class="spin"></span> Buscando en '+(4-hechas)+' fuente'+((4-hechas)===1?'':'s')+'…');
+ el.innerHTML='<div class="srcp-top"><span class="srcp-ttl">'+ttl+'</span>'+
+  '<span class="srcp-sec">'+seg+' s</span></div>'+
+  '<div class="srcp-bar"><i style="width:'+Math.round(hechas/4*100)+'%"></i></div>'+
+  '<div class="srcp-row">'+chips+'</div>';}
 function progStop(suave){if(PROG.tick){clearInterval(PROG.tick);PROG.tick=null}
  var el=$('buscar-prog');if(!el)return;
  if(suave){setTimeout(function(){if(!PROG.tick)el.classList.remove('on')},2200)}
@@ -7977,14 +7994,23 @@ var ALTLBL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax'};
 function altsInner(x){var all=[x].concat(x.alts||[]);
  if(all.length<2)return '';
  return '<span class="altq" style="align-self:center">También en:</span>'+
-  all.map(function(a,i){return '<button class="altb'+(a===x?' on':'')+'" onclick="pickAlt('+i+')">'+
+  all.map(function(a){return '<button class="altb'+(a===x?' on':'')+'" onclick="pickAlt(\''+(a.source||'dt')+'\')">'+
    esc(ALTLBL[a.source||'dt']||'?')+(a.quality?('<span class="altq">'+esc(a.quality)+'</span>'):'')+'</button>'}).join('');}
 function altsHTML(x){var h=altsInner(x);return h?('<div class="sh-alts">'+h+'</div>'):'';}
 function renderAlts(x){var el=$('sh-alts');if(el)el.innerHTML=altsInner(x);}
-function pickAlt(i){var all=[sel].concat(sel.alts||[]);var a=all[i];
- if(!a||a===sel)return;
+function pickAlt(src){
+ // el item que se está viendo: el del overlay de serie si está abierto, si no
+ // el de la ficha. (Antes se usaba `sel` siempre y en las series no se
+ // actualizaba -> no se podía volver a la fuente anterior.)
+ var ov=$('ov')&&$('ov').classList.contains('on');
+ var act=(ov&&OVDATA&&OVDATA.x)?OVDATA.x:sel;
+ if(!act)return;
+ var all=[act].concat(act.alts||[]);
+ var a=null;for(var j=0;j<all.length;j++){if((all[j].source||'dt')===src){a=all[j];break}}
+ if(!a||a===act)return;
  var resto=all.filter(function(z){return z!==a});
  var c={};for(var k in a)if(k!=='alts')c[k]=a[k];c.alts=resto;
+ sel=c;
  if(c.kind==='serie'){openSeries(c);return}
  openCard(c);}
 // Abre la FICHA de un item (sheet de peli u overlay de serie) a partir del
@@ -8117,7 +8143,7 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
-function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
+function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
