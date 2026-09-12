@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk61",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk62",
                     mimetype="text/plain")
 
 
@@ -6463,7 +6463,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk61", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk62", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7522,6 +7522,15 @@ function dxMerge(list,g,q,seq,cb){
 function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6&&!always){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  fetch(u).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b})}).catch(function(){if(cb)cb({})})}
+// Un favorito guardado ANTES de que las tarjetas trajeran capitulos no los
+// tiene. La primera vez que se abren por red, se los quedamos -> la proxima vez
+// abre al instante. (Sin esto habria que quitarlo y volver a añadirlo a mano.)
+function favLearnEps(x,eps){
+ if(!x||!eps||!eps.length)return;
+ for(var i=0;i<favs.length;i++){
+  if(fk(favs[i])!==fk(x))continue;
+  if(!(favs[i].eps&&favs[i].eps.length)){favs[i].eps=slimEps(eps);saveFavs()}
+  return;}}
 function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();var b=$('vtog');if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';if(b)b.style.display='none';return}if(b)b.style.display='';renderGrid(g,'lista');applyView()}
 function applyView(){var lv=localStorage.getItem('mw_lv')==='1';var g=$('lista-grid');if(g){var grid=g.querySelector('.grid');if(grid)grid.classList.toggle('lv',lv)}var b=$('vtog');if(b)b.innerHTML=lv?'▦ Vista cuadrícula':'☰ Vista lista'}
 function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')==='1'?'0':'1');applyView()}
@@ -7735,7 +7744,7 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on
     poster:x.poster,year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,
     genres:x.genres},x:x};renderEpisodes();return;}
   if(!eps.length){OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>';return}
-  OVDATA={d:d,x:x};renderEpisodes();
+  OVDATA={d:d,x:x};favLearnEps(x,eps);renderEpisodes();
  }).catch(function(){clearTimeout(kill);
   if(x.epsAlt&&x.epsAlt.length){OVDATA={d:{title:x.title,episodes:x.epsAlt,poster:x.poster,
     year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,genres:x.genres},x:x};
