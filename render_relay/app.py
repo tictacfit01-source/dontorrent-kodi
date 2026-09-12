@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk64",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk65",
                     mimetype="text/plain")
 
 
@@ -5647,6 +5647,10 @@ def _box_eps_by_title(code, src, title, wait=None, cache_only=False):
         return []
     ckey = "search|%s|%s" % (src, q.lower())
     items = _catbox_get(ckey)
+    if items is not None and not any((it or {}).get("eps") for it in items):
+        # cache de BUSQUEDA (p.ej. la del indice de WolfMax, que guarda titulos
+        # pero no episodios): no sirve para esto -> se busca de verdad.
+        items = None
     if items is None:
         if cache_only:     # solo mirar, sin tocar ninguna caja
             return []
@@ -6735,7 +6739,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk64", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk65", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -6746,7 +6750,14 @@ def catdiag():
         _ages = sorted(int(_now_b - e.get("ts", 0))
                        for e in _kbstatus_load().values()
                        if (_now_b - e.get("ts", 0)) < 90)
-        out["boxes_live"] = {"n": len(_ages), "ages_s": _ages[:8]}
+        # Versiones del addon en las cajas vivas (sin exponer codigos): saber
+        # cuantas se han actualizado explica por que unas cosas van rapidas y
+        # otras no (p.ej. los capitulos de WolfMax necesitan 2.9.61+).
+        _vers = {}
+        for e in _kbstatus_load().values():
+            if (_now_b - e.get("ts", 0)) < 90:
+                _vers[e.get("v") or "?"] = _vers.get(e.get("v") or "?", 0) + 1
+        out["boxes_live"] = {"n": len(_ages), "ages_s": _ages[:8], "vers": _vers}
     except Exception:
         out["boxes_live"] = {"n": -1}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
@@ -7850,8 +7861,8 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // EliteTorrent y WolfMax via caja (propia o PRESTADA): SIEMPRE, con o sin código.
  // DivxTotal NO se le pide a la caja aquí: ya va directo por /catdxsearch (más
  // rápido) y arriba está su plan B.
- boxMerge('buscar',g,'search',q,'et',function(r){progSet('et',(r&&r.added)?1:((r&&r.timeout)?3:2),(r&&r.added)||0);done(r)},seq,1);
- boxMerge('buscar',g,'search',q,'wf',function(r){progSet('wf',(r&&r.added)?1:((r&&r.timeout)?3:2),(r&&r.added)||0);doneWf(r)},seq,1);}
+ boxMerge('buscar',g,'search',q,'et',function(r){progSet('et',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);done(r)},seq,1);
+ boxMerge('buscar',g,'search',q,'wf',function(r){progSet('wf',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);doneWf(r)},seq,1);}
 function dxMerge(list,g,q,seq,cb){
  // 14s de tope: Cloudflare "tarpitea" a la IP de Render y este endpoint ha
  // llegado a tardar 40s. Si no llega, el plan B por caja ya se habrá disparado.
@@ -7864,7 +7875,7 @@ function dxMerge(list,g,q,seq,cb){
 // por visita); la BÚSQUEDA sí, que es donde importa tener todas las fuentes.
 function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6&&!always){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
- fetch(u).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b})}).catch(function(){if(cb)cb({})})}
+ fetch(u).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b,got:got})}).catch(function(){if(cb)cb({})})}
 // Un favorito guardado ANTES de que las tarjetas trajeran capitulos no los
 // tiene. La primera vez que se abren por red, se los quedamos -> la proxima vez
 // abre al instante. (Sin esto habria que quitarlo y volver a añadirlo a mano.)
