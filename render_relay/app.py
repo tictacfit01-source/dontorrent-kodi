@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk70",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk71",
                     mimetype="text/plain")
 
 
@@ -6778,7 +6778,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk70", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk71", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7878,7 +7878,10 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
     setTimeout(function(){csTry(att+1)},2500);paint();return;}
    catState='ok';mergeResults('buscar',g,(d&&d.items)||[]);
    var _ndt=((d&&d.items)||[]).filter(function(z){return (z.source||'dt')==='dt'}).length;
-   if(!(d&&d.partial))progSet('dt',_ndt?1:2,_ndt);
+   // se marca SIEMPRE con lo que traiga: si viene parcial, la 2ª pasada
+   // actualiza el número. (Antes, si era parcial, DonTorrent no se marcaba
+   // nunca y el chip se quedaba "buscando" con sus resultados ya en pantalla.)
+   progSet('dt',_ndt?1:2,_ndt);
    if(d&&d.partial&&!csDone){csDone=1;dtPend=1;
     setTimeout(function(){if(seq!==_searchSeq)return;
      tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,16000).then(function(r){return r.json()})
