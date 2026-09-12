@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk63",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk64",
                     mimetype="text/plain")
 
 
@@ -5103,19 +5103,26 @@ def catsearch():
                           for it in merged):
             enr = merged
         else:
+            # Dentro del presupuesto COMUN (_dl). Si TMDB no da tiempo, los
+            # items salen con su caratula propia -> mejor eso que 20s de rueda;
+            # ademas la respuesta se cachea con TTL corto y la 2a pasada del
+            # front los enriquece (para entonces la cache TMDB ya esta caliente).
             enr = _bounded(lambda: _cat_enrich(merged),
-                           max(1.5, now + 19.5 - _t.time()), merged) or merged
+                           max(1.5, min(5.0, _rem())), merged) or merged
         # Homonimos (Suspiria 1977 vs 2018): DT no da año en el listado y TMDB le da
         # el mismo a ambos -> el dedup los fundiria. Si hay choque de titulo, leemos
         # el año REAL de la ficha DT (la propia funcion gestiona su presupuesto). Si
         # NO logra resolver la colision (sin margen/box/DT) -> _disok=False y NO se
         # cachea largo (TTL corto) para que el siguiente intento la resuelva.
-        enr, _disok = _cat_disambiguate_years(enr, now + 18.5, box)
+        enr, _disok = _cat_disambiguate_years(enr, min(_dl, now + 10.5), box)
         items = _cat_rank_dedup(enr, q)   # dedup (titulo+año) + orden por relevancia
         # ¿Falta el buscador de DonTorrent? Entonces esto es PARCIAL: el front
         # volvera a preguntar en unos segundos y para entonces el hilo de la caja
         # habra dejado su resultado en _DTQ.
         _parcial = not (_r["dt"] or _r["box"])
+        # sin poster = el enrich no cupo -> tampoco es una respuesta "definitiva"
+        if enr and not all(it.get("poster") for it in enr):
+            _parcial = True
         if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
             # Si una colision de homonimos quedo SIN resolver, TTL corto (90s) -> se
             # reintenta pronto (y al resolverla se cachea ya el TTL largo), pero sin
@@ -6728,7 +6735,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk63", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk64", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
