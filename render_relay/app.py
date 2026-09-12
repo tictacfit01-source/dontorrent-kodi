@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk62",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk63",
                     mimetype="text/plain")
 
 
@@ -4795,6 +4795,57 @@ def _cat_from_cache(q):
     return out
 
 
+# --- Lo que DonTorrent trae por QUERY, aunque llegue TARDE -------------------
+# La busqueda responde rapido con lo que tenga; el hilo de la caja sigue vivo y,
+# cuando llega (a veces 15-20s: Anubis frio, o el ISP tumbando el POST /buscar y
+# teniendo que probar otra caja), deja aqui su resultado. Asi el siguiente
+# vistazo -el reintento del front, u otra persona buscando lo mismo- ya lo tiene.
+_DTQ_CACHE = {}
+_DTQ_TTL = 600
+_DTQ_MAX = 80
+_DTQ_FILE = "/tmp/mw_dtq.json"
+
+
+def _dtq_load():
+    try:
+        with open(_DTQ_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _dtq_get(q):
+    k = (q or "").lower()
+    ent = _DTQ_CACHE.get(k)
+    if not ent:
+        ent = _dtq_load().get(k)
+        if ent:
+            _DTQ_CACHE[k] = ent
+    if ent and (_t.time() - ent.get("ts", 0)) < _DTQ_TTL:
+        return ent.get("items") or []
+    return []
+
+
+def _dtq_put(q, items):
+    if not items:
+        return
+    k = (q or "").lower()
+    rec = {"items": items, "ts": _t.time()}
+    _DTQ_CACHE[k] = rec
+    try:
+        d = _dtq_load()
+        d[k] = rec
+        if len(d) > _DTQ_MAX:
+            for kk in sorted(d, key=lambda x: d[x].get("ts", 0))[:len(d) - _DTQ_MAX]:
+                d.pop(kk, None)
+        tmp = _DTQ_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _DTQ_FILE)
+    except Exception:
+        pass
+
+
 @app.get("/catsearch")
 def catsearch():
     q = (request.args.get("q") or "").strip()
@@ -4870,6 +4921,7 @@ def catsearch():
                 r = _cat_parse_items(_cat_dt_html(q)) or []
                 _r["dt"] = r
                 if r:
+                    _dtq_put(q, r)     # aunque la peticion ya haya respondido
                     _ready.set()
             except Exception:
                 pass
@@ -4911,6 +4963,7 @@ def catsearch():
                     r = _cat_parse_items(h) or []
                     _r["box"] = r
                     if r:
+                        _dtq_put(q, r)   # aunque la peticion ya haya respondido
                         _ready.set()
             except Exception:
                 pass
@@ -4947,7 +5000,10 @@ def catsearch():
         # VACIO en falso); el RESTO (DX, ScraperAPI, fallback, enrich) solo consume lo
         # que QUEDA -> el total nunca pasa del tope. El caso comun (box ~5-8s) corta
         # la espera al traer resultados y va rapido.
-        _dl = now + 19.0
+        # TOPE TOTAL de 12s (el front espera 20). La busqueda ya NO se queda
+        # esperando a un camino que hoy no trae nada: responde con lo que tenga
+        # y lo que llegue tarde se guarda para el siguiente vistazo (_DTQ).
+        _dl = now + 12.0
         _rem = lambda: max(0.0, _dl - _t.time())
         # ¿Tenemos ya la respuesta en la cache del catalogo? Es local e
         # INSTANTANEO (sin red), asi que se mira ANTES de esperar a nadie.
@@ -4962,16 +5018,25 @@ def catsearch():
         # al instante con lo cacheado. Sin nada en cache, la espera de siempre:
         # mas vale tardar que devolver vacio en falso.
         # (2026-08-07: el dueño lo dijo claro — 20s buscando es inaceptable.)
-        if _cache_hits:
-            _box_done.wait(min(9.0, _rem()))
-        else:
-            _ready.wait(min(16.0, _rem()))
+        # Lo que la caja trajo en una busqueda ANTERIOR de esto mismo (puede
+        # haber llegado despues de responder): es local y vale como resultado.
+        _late_hits = _dtq_get(q)
+        if _late_hits:
+            _cache_hits = _cat_merge(_late_hits, _cache_hits)
+        # Con algo en mano se espera POCO; sin nada, un respiro mas largo pero
+        # tampoco eterno: mas vale enseñar 8 resultados en 4s que 30 en 20s.
+        # Si ya tenemos el resultado REAL de DonTorrent (lo trajo la caja en la
+        # pasada anterior y quedo en _DTQ), casi no hay que esperar a nadie.
+        _ready.wait(min(1.5 if _late_hits else (4.0 if _cache_hits else 8.0),
+                        _rem()))
         _ths[2].join(min(0.4, _rem()))          # ET (off) -> instantaneo
         # DX: si DT/box trajeron algo, respiro corto (1.5s) para fusionar lo que ya
         # este; si terminaron SIN resultados (el wait salio al instante por el
         # contador), DivxTotal es la unica fuente restante -> se le da su tiempo
         # real (reto Cloudflare ~3-6s), siempre acotado al deadline total.
-        _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 8.0, _rem()))  # DX
+        # DX: el front lo pide APARTE (/catdxsearch) y lo fusiona al llegar, asi
+        # que aqui solo se recoge lo que ya este; no se le espera.
+        _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 3.0, _rem()))  # DX
         dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
         # Ningun camino a DonTorrent vivo (Render baneado Y el ISP del box
         # tumbando el POST de /buscar) -> lo que ya teniamos cacheado (calculado
@@ -4989,22 +5054,19 @@ def catsearch():
         if not dt_items and not et_items and not dx_items:
             # FALLBACK DE IDIOMA: la web puede tener el titulo en OTRO idioma
             # ('interestelar'->'Interstellar'). Solo si la busqueda salio VACIA.
-            # TODO el fallback (incluida la resolucion TMDB) respeta el DEADLINE
-            # TOTAL de la peticion (now+18.5s) -> el front (20s) NUNCA se rinde,
-            # pase lo que pase con TMDB/box. Si no queda margen, no se intenta.
-            _fdl = now + 18.5
-            # Solo merece la pena si queda margen para resolver TMDB **y** reintentar.
-            # Si la pasada principal agoto el presupuesto (box ocupado reproduciendo o
-            # Render baneado) -> "sin resultados" YA, no colgamos. La resolucion TMDB
-            # va ACOTADA (_bounded) -> nunca revienta el tope total.
+            # Vive DENTRO del presupuesto comun (_dl): antes tenia el suyo
+            # propio de 18,5s y por eso una busqueda vacia acababa tardando 15,8s
+            # (medido). Si no cabe, no se intenta: la respuesta sale `partial` y
+            # la 2a pasada del front, ya con la cache caliente, tendra margen.
+            _fdl = _dl
             _alts = (_bounded(lambda: _tmdb_alt_titles(q),
-                              min(5.0, _fdl - _t.time()), [])
-                     if (_fdl - _t.time()) > 8.0 else [])
+                              min(3.5, _fdl - _t.time()), [])
+                     if (_fdl - _t.time()) > 5.0 else [])
             for _alt in _alts:
                 if _fdl - _t.time() <= 2.0:
                     break
                 try:   # DT-directo ACOTADO al presupuesto (Anubis frio no lo revienta)
-                    _b = min(6.0, _fdl - _t.time())
+                    _b = min(3.5, _fdl - _t.time())
                     r2 = _cat_parse_items(
                         _bounded(lambda a=_alt: _cat_dt_html(a), _b, "") or "") or []
                 except Exception:
@@ -5015,7 +5077,7 @@ def catsearch():
                         j2 = "da" + os.urandom(5).hex()
                         _kb_enqueue(box, {"c": "etjob", "job": j2,
                                           "op": "dthtml", "q": _alt})
-                        h2 = (_catjob_wait(j2, min(7.0, _fr)) or {}).get("html") or ""
+                        h2 = (_catjob_wait(j2, min(4.0, _fr)) or {}).get("html") or ""
                         if h2:
                             r2 = _cat_parse_items(h2) or []
                     except Exception:
@@ -5024,7 +5086,8 @@ def catsearch():
                     dt_items = r2
                     break
             if not dt_items:
-                return jsonify({"items": []})
+                return jsonify({"items": [],
+                                "partial": not (_r["dt"] or _r["box"])})
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
         # Enrich (poster/AÑO/genero TMDB) ACOTADO al deadline total: con TMDB
         # lento/frio podia añadir ~5s y pasarse del tope. Si no le da tiempo,
@@ -5049,6 +5112,10 @@ def catsearch():
         # cachea largo (TTL corto) para que el siguiente intento la resuelva.
         enr, _disok = _cat_disambiguate_years(enr, now + 18.5, box)
         items = _cat_rank_dedup(enr, q)   # dedup (titulo+año) + orden por relevancia
+        # ¿Falta el buscador de DonTorrent? Entonces esto es PARCIAL: el front
+        # volvera a preguntar en unos segundos y para entonces el hilo de la caja
+        # habra dejado su resultado en _DTQ.
+        _parcial = not (_r["dt"] or _r["box"])
         if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
             # Si una colision de homonimos quedo SIN resolver, TTL corto (90s) -> se
             # reintenta pronto (y al resolverla se cachea ya el TTL largo), pero sin
@@ -5056,6 +5123,8 @@ def catsearch():
             rec = {"items": items, "ts": now}
             if not _disok:
                 rec["ttl"] = 90
+            if _parcial:
+                rec["ttl"] = 45   # parcial -> caduca pronto y se completa solo
             _CATSEARCH_CACHE[qkey] = rec
             try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
                 disk = _catsearch_load()
@@ -5073,13 +5142,16 @@ def catsearch():
                     _CATSEARCH_CACHE.pop(old, None)
                 except Exception:
                     _CATSEARCH_CACHE.clear()
-        return jsonify({"items": items})
+        return jsonify({"items": items, "partial": _parcial})
     finally:
         # SIEMPRE liberamos el single-flight (aunque haya excepcion) -> nunca deja
         # una query "bloqueada" para siempre, y despierta a los que esperan.
         with _CATSEARCH_INFLIGHT_LOCK:
             _CATSEARCH_INFLIGHT.pop(qkey, None)
         _ev.set()
+
+
+_DXBG = {}   # queries con el failover de ScraperAPI corriendo en 2o plano
 
 
 @app.get("/catdxsearch")
@@ -5100,8 +5172,8 @@ def catdxsearch():
     if cent and (now - cent.get("ts", 0)) < cent.get("ttl", _CATSEARCH_TTL):
         _CATSEARCH_CACHE[qkey] = cent
         return jsonify({"items": cent["items"], "cached": True})
-    items = _bounded(lambda: _dx_search_items(q), 14.0, []) or []
-    if not items and _sapi_credits_ok():
+    items = _bounded(lambda: _dx_search_items(q), 8.0, []) or []
+    if not items and _sapi_credits_ok() and qkey not in _DXBG:
         # FAILOVER anti-tarpit via ScraperAPI (IP residencial): Cloudflare
         # tarpitea el patron '/?s=' desde la IP de Render (la portada pasa, la
         # BUSQUEDA no) -> el directo sale vacio aunque DivxTotal este vivo.
@@ -5111,8 +5183,31 @@ def catdxsearch():
         # extra no rompe nada.
         # 30s de margen: ScraperAPI reintenta INTERNAMENTE (hasta 60s); con un
         # tope corto el proxy casi nunca terminaba y el failover salia vacio.
-        items = _bounded(lambda: _dx_search_items(q, max_pages=1, proxy=True),
-                         30.0, []) or []
+        # Pero ESPERARLO dejaba la peticion en 44s y al front mirando una rueda:
+        # ahora va en SEGUNDO PLANO y deja el resultado en la cache -> quien
+        # vuelva a buscar eso (el propio front, que reintenta) ya lo tiene.
+        _DXBG[qkey] = _t.time()
+
+        def _dx_bg(q=q, qkey=qkey):
+            try:
+                r = _dx_search_items(q, max_pages=1, proxy=True) or []
+                if r:
+                    r = _bounded(lambda: _cat_enrich(r, limit=40), 8.0, r) or r
+                    r = _cat_rank_dedup(r, q)
+                    rec = {"items": r, "ts": _t.time()}
+                    _CATSEARCH_CACHE[qkey] = rec
+                    try:
+                        disk = _catsearch_load()
+                        disk[qkey] = rec
+                        _catsearch_save(disk)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            finally:
+                _DXBG.pop(qkey, None)
+        _thr.Thread(target=_dx_bg, daemon=True).start()
+        items = []
     if items:
         items = _bounded(lambda: _cat_enrich(items, limit=40), 6.0, items) or items
         items = _cat_rank_dedup(items, q)
@@ -5224,6 +5319,153 @@ def _catjob_wait(job, secs):
     return None
 
 
+# === INDICE DE WOLFMAX EN EL RELAY ==========================================
+# Lo empujan las cajas (POST /wffeed) desde su indice local. Con esto la busqueda
+# de WolfMax es LOCAL: milisegundos, sin cola, sin depender de que haya una caja
+# despierta y sin que el bloqueo del ISP pinte nada. Se persiste en /tmp (se
+# pierde en cada deploy) y se re-pide a una caja en cuanto hace falta.
+_WFIDX = {}                      # url -> {"t": titulo, "k": kind, "q": calidad}
+_WFIDX_TS = [0.0]
+_WFIDX_FILE = "/tmp/mw_wfidx.json"
+_WFIDX_MAX = 15000
+_WFIDX_ASKED = [0.0]             # ultima vez que se pidio a una caja
+
+
+def _wfidx_load():
+    if _WFIDX:
+        return _WFIDX
+    try:
+        with open(_WFIDX_FILE, "r", encoding="utf-8") as f:
+            d = _json.load(f) or {}
+        _WFIDX.update(d.get("e") or {})
+        _WFIDX_TS[0] = d.get("ts", 0)
+    except Exception:
+        pass
+    return _WFIDX
+
+
+def _wfidx_save():
+    try:
+        tmp = _WFIDX_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump({"ts": _WFIDX_TS[0], "e": _WFIDX}, f)
+        os.replace(tmp, _WFIDX_FILE)
+    except Exception:
+        pass
+
+
+def _wf_norm(s):
+    s = _wud.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not _wud.combining(c)).lower()
+    return _re_dt.sub(r"[^a-z0-9 ]", " ", s)
+
+
+def _wfidx_ask_box():
+    """Pedir a una caja que empuje su indice (como mucho una vez por minuto)."""
+    if _t.time() - _WFIDX_ASKED[0] < 60:
+        return
+    box = _any_live_box()
+    if not box:
+        return
+    _WFIDX_ASKED[0] = _t.time()
+    try:
+        _kb_enqueue(box, {"c": "wfidx"})
+    except Exception:
+        pass
+
+
+def _wf_idx_search(q, limit=40):
+    """Busqueda LOCAL en el indice de WolfMax. AND de tokens, sin red."""
+    idx = _wfidx_load()
+    if not idx:
+        return []
+    toks = [t for t in _wf_norm(q).split() if len(t) > 1]
+    if not toks:
+        return []
+    out = []
+    for url, e in idx.items():
+        tn = _wf_norm(e.get("t"))
+        if not tn:
+            continue
+        if all(t in tn for t in toks):
+            kind = "serie" if (e.get("k") or "").startswith("tvshow") else "movie"
+            out.append({"title": e.get("t") or "", "kind": kind, "source": "wf",
+                        "url": url, "content_id": url, "thumb": None,
+                        "quality": e.get("q") or _wf_quality_from_url(url),
+                        "tabla": "wf"})
+            if len(out) >= limit * 4:
+                break
+    # los de MAS calidad primero (4K arriba: es lo que el dueño quiere ver)
+    out.sort(key=lambda it: -_CAT_QUAL_RANK.get(
+        (it.get("quality") or "").lower(), 0))
+    return out[:limit]
+
+
+def _wfidx_learn(items):
+    """Guarda en el indice lo que una caja acaba de traer de WolfMax."""
+    if not items:
+        return
+    try:
+        idx = _wfidx_load()
+        n = 0
+        for it in items:
+            if (it or {}).get("source") != "wf":
+                continue
+            u = it.get("url") or it.get("content_id")
+            t = it.get("title")
+            if not u or not t or "wolfmax" not in u.lower():
+                continue
+            rec = {"t": t[:160], "k": ("tvshow" if it.get("kind") == "serie"
+                                       else "movie"),
+                   "q": (it.get("quality") or "")[:12]}
+            if idx.get(u) != rec:
+                idx[u] = rec
+                n += 1
+        if n:
+            _WFIDX_TS[0] = _t.time()
+            _wfidx_save()
+    except Exception:
+        pass
+
+
+@app.post("/wffeed")
+def wffeed():
+    """Una caja empuja su indice local de WolfMax. Se fusiona con lo que haya."""
+    body = request.get_json(silent=True) or {}
+    ent = body.get("entries") or {}
+    if not isinstance(ent, dict) or not ent:
+        items = body.get("items") or []
+        ent = {}
+        for it in (items if isinstance(items, list) else [])[:_WFIDX_MAX]:
+            u = (it or {}).get("url")
+            if u:
+                ent[u] = {"t": it.get("title") or "", "k": it.get("kind") or "",
+                          "q": it.get("quality") or ""}
+    if not ent:
+        return jsonify({"ok": False}), 400
+    idx = _wfidx_load()
+    n = 0
+    for u, e in list(ent.items())[:_WFIDX_MAX]:
+        if not isinstance(u, str) or "wolfmax" not in u.lower():
+            continue
+        if not isinstance(e, dict):
+            continue
+        rec = {"t": (e.get("t") or e.get("title") or "")[:160],
+               "k": (e.get("k") or e.get("kind") or "")[:16],
+               "q": (e.get("q") or e.get("quality") or "")[:12]}
+        if not rec["t"]:
+            continue
+        if idx.get(u) != rec:
+            idx[u] = rec
+            n += 1
+    if len(idx) > _WFIDX_MAX:      # poda simple: nos quedamos con las primeras
+        for k in list(idx.keys())[_WFIDX_MAX:]:
+            idx.pop(k, None)
+    _WFIDX_TS[0] = _t.time()
+    _wfidx_save()
+    return jsonify({"ok": True, "n": len(idx), "nuevas": n})
+
+
 @app.get("/catetbox")
 def catetbox():
     """Busqueda/estrenos en fuentes que necesitan el box (EliteTorrent, DivxTotal,
@@ -5240,6 +5482,27 @@ def catetbox():
     _hit = _catbox_get(ckey)
     if _hit is not None:
         return jsonify({"items": _hit, "cached": True})
+    # WOLFMAX AL INSTANTE: si el indice local del relay tiene el titulo, se
+    # responde sin cola, sin caja y sin red (ver _wf_idx_search). Si el indice
+    # esta vacio (deploy reciente) se le pide a una caja y se sigue por el
+    # camino de siempre para no dejar al usuario sin nada.
+    if op == "search" and q and srcs.replace(" ", "") == "wf":
+        _idx = _wf_idx_search(q)
+        if _idx:
+            _idx = _cat_group_episodes(_idx)
+            _idx = [it for it in _idx if _q_relevant(it.get("title", ""), q)]
+            for it in _idx:
+                disp, ql = _cat_clean_quality(it.get("title", ""))
+                it["title"] = disp
+                if not it.get("quality"):
+                    it["quality"] = ql or _wf_quality_from_url(it.get("url"))
+            if _idx:
+                _idx = _bounded(lambda: _cat_enrich(_idx, limit=40), 6.0,
+                                default=_idx) or _idx
+                _catbox_put(ckey, _idx)
+                return jsonify({"items": _idx, "idx": True})
+        else:
+            _wfidx_ask_box()
     box = _box_for(code)     # la suya si esta viva; si no, cualquier caja viva
     if not box or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
@@ -5327,6 +5590,7 @@ def catetbox():
     # (TTL corto): "WolfMax no tiene esta peli" es un dato estable y ahorra 24s
     # de espera la proxima vez que alguien la busque.
     _catbox_put(ckey, items)
+    _wfidx_learn(items)     # lo de WolfMax, al indice: la proxima vez va en 10ms
     return jsonify({"items": items})
 
 
@@ -5415,6 +5679,7 @@ def _box_eps_by_title(code, src, title, wait=None, cache_only=False):
             items = _bounded(lambda: _cat_enrich(items, limit=60), 8.0,
                              default=items) or items
         _catbox_put(ckey, items)
+        _wfidx_learn(items)
     # la tarjeta que mejor case con el titulo pedido
     qn = _et_norm(q)
     mejor, mejor_n = None, -1
@@ -6463,7 +6728,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk62", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk63", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -6532,6 +6797,11 @@ def catdiag():
     # Fuentes-por-caja (EliteTorrent/WolfMax/DivxTotal-plan-B): cuanto hay
     # cacheado y cuantos huecos de prestamo quedan. Si lend_free=0 de forma
     # sostenida, las busquedas se estan quedando sin ET/WF por saturacion.
+    try:
+        out["wfidx"] = {"n": len(_wfidx_load()),
+                        "age_s": int(now - _WFIDX_TS[0]) if _WFIDX_TS[0] else None}
+    except Exception:
+        out["wfidx"] = {"n": -1}
     out["catbox"] = {
         "cached": len(_CATBOX_CACHE),
         "lend_free": getattr(_BOX_LEND_SEM, "_value", None),
@@ -6992,6 +7262,25 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Progreso de la búsqueda: qué fuente ha contestado y cuánto lleva */
+.prog{display:none;margin:2px 0 12px}
+.prog.on{display:block}
+.prog .ptop{display:flex;align-items:center;gap:9px}
+.prog .pbar{flex:1;height:3px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden}
+.prog .pbar i{display:block;height:100%;width:0;border-radius:3px;
+ background:linear-gradient(90deg,var(--blue2),var(--blue));transition:width .35s ease}
+.prog .prow{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:7px;
+ font-size:10.5px;color:var(--sub)}
+.prog .pf{display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:999px;
+ background:rgba(255,255,255,.055);opacity:.4;letter-spacing:.1px;
+ white-space:nowrap;transition:opacity .2s ease}
+.prog .pf.on{opacity:1}
+.prog .pf.on{background:rgba(255,255,255,.09)}
+.prog .pf.dt{color:#0a84ff}.prog .pf.et{color:#ff9f0a}
+.prog .pf.dx{color:#30d158}.prog .pf.wf{color:#bf5af2}
+.prog .pf b{color:var(--txt);font-weight:700}
+.prog .psec{font-size:11.5px;color:var(--sub);font-variant-numeric:tabular-nums;
+ opacity:.85;flex:0 0 auto;min-width:42px;text-align:right}
 /* Versiones de la misma peli en otras fuentes (la 4K de WolfMax, sobre todo) */
 .sh-alts{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
 .sh-alts .altb{background:rgba(255,255,255,.07);border:1px solid var(--stroke);
@@ -7054,6 +7343,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <input id="q" type="search" placeholder="Buscar película o serie..." autocomplete="off">
    <button onclick="go()">Buscar</button>
   </div>
+  <div id="buscar-prog" class="prog"></div>
   <div id="buscar-grid" class="msg">Busca pelis y series y envíalas a tu tele 📺</div>
   <div id="buscar-more" class="morebar"></div>
  </section>
@@ -7431,6 +7721,30 @@ function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return
  var c=grid.children[i];if(!c)return;
  var tmp=document.createElement('div');tmp.innerHTML=cardHTML(LISTS[list][i],list,i);
  if(tmp.firstChild)grid.replaceChild(tmp.firstChild,c);}
+// ---- Progreso de la búsqueda -------------------------------------------
+// 0 = buscando · 1 = ha traído cosas · 2 = no tiene nada · 3 = no contestó
+var PROG={t0:0,st:{},n:{},tick:null,seq:0};
+var PROGN={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax'};
+function progStart(seq){PROG={t0:Date.now(),st:{dt:0,et:0,dx:0,wf:0},n:{dt:0,et:0,dx:0,wf:0},tick:null,seq:seq};
+ var el=$('buscar-prog');if(el)el.classList.add('on');
+ PROG.tick=setInterval(function(){if(PROG.seq!==_searchSeq){progStop();return}progPaint()},150);
+ progPaint();}
+function progSet(src,estado,n){if(PROG.seq!==_searchSeq)return;
+ PROG.st[src]=estado;if(n!=null)PROG.n[src]=n;progPaint();
+ var fin=['dt','et','dx','wf'].every(function(k){return PROG.st[k]>0});
+ if(fin)setTimeout(function(){if(PROG.seq===_searchSeq)progStop(1)},1400);}
+function progPaint(){var el=$('buscar-prog');if(!el)return;
+ var ks=['dt','dx','et','wf'],hechas=0;
+ var chips=ks.map(function(k){var e=PROG.st[k]||0;if(e>0)hechas++;
+  var txt=PROGN[k]+(e===1?(' <b>'+PROG.n[k]+'</b>'):(e===2?' 0':(e===3?' —':'')));
+  return '<span class="pf '+k+(e>0?' on':'')+'">'+txt+'</span>'}).join('');
+ var seg=((Date.now()-PROG.t0)/1000).toFixed(1).replace('.',',');
+ el.innerHTML='<div class="ptop"><div class="pbar"><i style="width:'+Math.round(hechas/4*100)+'%"></i></div>'+
+  '<span class="psec">'+seg+' s</span></div><div class="prow">'+chips+'</div>';}
+function progStop(suave){if(PROG.tick){clearInterval(PROG.tick);PROG.tick=null}
+ var el=$('buscar-prog');if(!el)return;
+ if(suave){setTimeout(function(){if(!PROG.tick)el.classList.remove('on')},2200)}
+ else el.classList.remove('on');}
 var _searchSeq=0;
 // fetch con TIMEOUT real (AbortController): un relay dormido (Render free, cold
 // start ~50s) NO deja la promesa colgada -> abortamos y reintentamos.
@@ -7439,6 +7753,7 @@ function tfetch(url,ms){var c=('AbortController'in window)?new AbortController()
  return fetch(url,c?{signal:c.signal}:{}).then(function(r){if(to)clearTimeout(to);if(!r.ok)throw new Error('http'+r.status);return r;},function(e){if(to)clearTimeout(to);throw e;});}
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='';g.innerHTML=skelGrid();
  var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];_searchSeq++;var seq=_searchSeq;
+ progStart(seq);
  // TODAS las fuentes para TODO EL MUNDO: EliteTorrent y WolfMax necesitan una IP
  // residencial (un Kodi), pero el relay ya PRESTA cualquier caja encendida del
  // sistema (_box_for/_any_live_box), asi que no hace falta tener codigo puesto
@@ -7446,9 +7761,10 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // configurado se quedaba sin EliteTorrent ni WolfMax en cada busqueda.
  var more=$('buscar-more');var boxPend=1;var boxAdded=0;var boxTO=false;var wfPend=true;
  var dxPend=1;   // DivxTotal DIRECTO via Render (siempre; el box/ISP lo bloquea)
+ var dtPend=0;   // 2ª pasada para recoger DonTorrent si vino parcial
  var catState='pending';var wakeAtt=0;  // pending|ok|fail ; intentos de despertar
  function paint(){if(seq!==_searchSeq)return;
-  var waiting=(catState==='pending')||boxPend>0||dxPend>0;
+  var waiting=(catState==='pending')||boxPend>0||dxPend>0||dtPend>0;
   if(!LISTS.buscar.length){
    // AÚN sin resultados: distinguir relay dormido (reintentando) de vacío real.
    if(catState==='pending'&&wakeAtt>=2){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor…';if(more)more.textContent='';return;}
@@ -7475,12 +7791,27 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // mostraba "Despertando..." EN FALSO con el relay vivo. 20s cubre el caso lento
  // sin alargar de mas el aviso si el relay esta de verdad dormido (cold ~50s -> los
  // reintentos lo cubren). Reintentos 16s (ya en modo "despertando").
+ // La respuesta puede venir PARCIAL: el relay contesta rápido con lo que tiene
+ // y el buscador de DonTorrent (que va por una caja de casa y a veces tarda 15s)
+ // deja su resultado listo para el siguiente vistazo. Se vuelve a preguntar UNA
+ // vez, sin rueda eterna: mientras tanto ya hay resultados en pantalla.
+ var csDone=0;
  function csTry(att){if(seq!==_searchSeq)return;wakeAtt=att;
   tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,att===1?20000:16000).then(function(r){return r.json()}).then(function(d){
-   if(seq!==_searchSeq)return;catState='ok';mergeResults('buscar',g,(d&&d.items)||[]);paint();
+   if(seq!==_searchSeq)return;catState='ok';mergeResults('buscar',g,(d&&d.items)||[]);
+   var _ndt=((d&&d.items)||[]).filter(function(z){return (z.source||'dt')==='dt'}).length;
+   if(!(d&&d.partial))progSet('dt',_ndt?1:2,_ndt);
+   if(d&&d.partial&&!csDone){csDone=1;dtPend=1;
+    setTimeout(function(){if(seq!==_searchSeq)return;
+     tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,16000).then(function(r){return r.json()})
+      .then(function(d2){if(seq!==_searchSeq)return;mergeResults('buscar',g,(d2&&d2.items)||[]);dtPend=0;
+        var n2=((d2&&d2.items)||[]).filter(function(z){return (z.source||'dt')==='dt'}).length;
+        progSet('dt',n2?1:2,n2);paint();})
+      .catch(function(){dtPend=0;progSet('dt',3);paint()});},7000);}
+   paint();
   }).catch(function(){if(seq!==_searchSeq)return;
    if(att<6){setTimeout(function(){csTry(att+1)},1200);paint();}
-   else{catState='fail';paint();}});}
+   else{catState='fail';progSet('dt',3);paint();}});}
  csTry(1);
  // DivxTotal DIRECTO via Render, EN PARALELO: llega tarde (~6s, Cloudflare) y se
  // fusiona cuando esté -> DX aparece sin frenar a DT. Siempre (no necesita box).
@@ -7493,6 +7824,7 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  var dxAns=0,dxB=0;
  function dxPlanB(){if(dxB)return;dxB=1;boxPend++;boxMerge('buscar',g,'search',q,'dx',done,seq,1);}
  dxMerge('buscar',g,q,seq,function(n){if(seq!==_searchSeq)return;dxAns=1;dxPend=0;
+  progSet('dx',n?1:2,n);
   if(!n)dxPlanB();
   paint();});
  setTimeout(function(){if(seq!==_searchSeq)return;if(!dxAns)dxPlanB();},7000);
@@ -7500,7 +7832,8 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // porque WolfMax por caja puede tardar ~24s (su tope en el relay); los resultados
  // se fusionan igual cuando llegan, esto solo apaga el "Buscando…".
  // El catsearch tiene su propio reintento, no lo toca este salvavidas.
- setTimeout(function(){if(seq!==_searchSeq)return;if(boxPend>0||wfPend||dxPend>0){boxPend=0;wfPend=false;dxPend=0;paint();}},26000);
+ setTimeout(function(){if(seq!==_searchSeq)return;if(boxPend>0||wfPend||dxPend>0){boxPend=0;wfPend=false;dxPend=0;paint();}
+  ['dt','et','dx','wf'].forEach(function(k){if(!PROG.st[k])progSet(k,3)});},26000);
  // ...pero si a los 12s TODO lo demás terminó SIN NADA, no hacemos esperar al
  // usuario los 26s de WolfMax para decirle que no hay resultados: se lo decimos
  // ya. Si WolfMax llega después con algo, la cuadrícula se pinta igual (el
@@ -7510,9 +7843,12 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // EliteTorrent y WolfMax via caja (propia o PRESTADA): SIEMPRE, con o sin código.
  // DivxTotal NO se le pide a la caja aquí: ya va directo por /catdxsearch (más
  // rápido) y arriba está su plan B.
- boxMerge('buscar',g,'search',q,'et',done,seq,1);boxMerge('buscar',g,'search',q,'wf',doneWf,seq,1);}
+ boxMerge('buscar',g,'search',q,'et',function(r){progSet('et',(r&&r.added)?1:((r&&r.timeout)?3:2),(r&&r.added)||0);done(r)},seq,1);
+ boxMerge('buscar',g,'search',q,'wf',function(r){progSet('wf',(r&&r.added)?1:((r&&r.timeout)?3:2),(r&&r.added)||0);doneWf(r)},seq,1);}
 function dxMerge(list,g,q,seq,cb){
- fetch('/catdxsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+ // 14s de tope: Cloudflare "tarpitea" a la IP de Render y este endpoint ha
+ // llegado a tardar 40s. Si no llega, el plan B por caja ya se habrá disparado.
+ tfetch('/catdxsearch?q='+encodeURIComponent(q),14000).then(function(r){return r.json()}).then(function(d){
   var n=((d&&d.items)||[]).length;
   if(seq!==_searchSeq){if(cb)cb(n);return;}mergeResults(list,g,(d&&d.items)||[]);if(cb)cb(n);
  }).catch(function(){if(cb)cb(0)})}

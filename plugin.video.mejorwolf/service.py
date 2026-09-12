@@ -275,6 +275,10 @@ def _poll_remote_kb():
                 _play_ref(ev)
             elif c == "etjob":
                 _do_etjob(ev)   # ya lanza su propio hilo (no bloquea el sondeo)
+            elif c == "wfidx":
+                # el relay se ha quedado sin indice de WolfMax (deploy) y lo pide
+                import threading as _th2
+                _th2.Thread(target=_push_wf_index, daemon=True).start()
             elif c == "home":
                 _go_home()
             elif c == "seek_fwd":
@@ -901,6 +905,63 @@ def _get_now_playing():
         return None
 
 
+def _push_wf_index(force=False):
+    """Sube el indice local de WolfMax al relay (POST /wffeed).
+
+    El relay NO puede construirlo (WolfMax le bloquea la IP de datacenter), pero
+    las cajas lo tienen completo de los sitemaps. Subiendolo, la busqueda de
+    WolfMax en la web pasa de ~10s (ida y vuelta a una caja) a milisegundos, y
+    deja de depender de que haya alguna caja despierta.
+
+    Se manda SIN imagenes (la caratula la pone TMDB): ~320 KB en vez de 620 KB.
+    """
+    import requests
+    try:
+        base = _relay_base()
+        if not base:
+            return 0
+        from resources.lib import wf_index
+        entries = wf_index._load() or {}
+        if not entries:
+            return 0
+        slim = {}
+        for u, e in entries.items():
+            t = (e or {}).get("title")
+            if not u or not t:
+                continue
+            slim[u] = {"t": t[:160], "k": (e.get("kind") or "")[:16],
+                       "q": (e.get("quality") or "")[:12]}
+        if not slim:
+            return 0
+        r = requests.post(base + "/wffeed", json={"entries": slim}, timeout=45,
+                          headers={"Content-Type": "application/json"})
+        n = 0
+        try:
+            n = (r.json() or {}).get("n", 0)
+        except Exception:
+            pass
+        xbmc.log("[MejorWolf/service] wfidx -> relay: %d entradas (HTTP %s)"
+                 % (len(slim), r.status_code), xbmc.LOGINFO)
+        return n
+    except Exception as e:
+        xbmc.log("[MejorWolf/service] wfidx error: %s" % e, xbmc.LOGWARNING)
+        return 0
+
+
+def _wf_index_loop(monitor):
+    """Empuja el indice al arrancar (tras 90s, sin estorbar el arranque) y cada
+    6 horas. El relay ademas lo pide expresamente cuando se queda sin el."""
+    if monitor.waitForAbort(90):
+        return
+    while not monitor.abortRequested():
+        try:
+            _push_wf_index()
+        except Exception:
+            pass
+        if monitor.waitForAbort(6 * 3600):
+            return
+
+
 def _kb_thread(monitor):
     """Hilo dedicado al Teclado Remoto: sondea rapido para que el mando vaya
     agil, sin que el bucle principal (FA/keep-warm) lo frene. Tambien sube el
@@ -1211,6 +1272,7 @@ def main():
     # Pre-carga del catalogo DonTorrent al relay (Inicio instantaneo aunque
     # DonTorrent banee la IP de Render).
     threading.Thread(target=_prefetch_loop, args=(monitor,), daemon=True).start()
+    threading.Thread(target=_wf_index_loop, args=(monitor,), daemon=True).start()  # indice WolfMax -> relay
 
     last_ping = time.time()
     last_beat = 0.0        # ultimo latido de estado al relay
