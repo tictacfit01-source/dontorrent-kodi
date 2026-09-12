@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk56",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk57",
                     mimetype="text/plain")
 
 
@@ -6338,7 +6338,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk56", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk57", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7241,13 +7241,31 @@ var QRANK={'4k':5,'2160p':5,'uhd':5,'1080p':4,'1080':4,'bdremux':4,'720p':2,'720
 var SRANK={dt:3,dx:2,et:1,wf:0};
 function srcScore(x){var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
  return q*10+(SRANK[x.source||'dt']||0);}
+// Une dos listas de capítulos sin repetir, en orden.
+function mergeEps(a,b){var by={},out=[];
+ (a||[]).concat(b||[]).forEach(function(e){var kk=e.label||((e.season||0)+'x'+(e.episode||0));
+  if(!by[kk]){by[kk]=1;out.push(e)}});
+ out.sort(function(p,q){return ((p.season||0)-(q.season||0))||((p.episode||0)-(q.episode||0))});
+ return out;}
 function upgrade(list,k,x,at,swapped){var i=at[k];if(i===undefined)return;
  var cur=LISTS[list][i];if(!cur)return;
+ // CAPÍTULOS: si las dos fuentes traen, se FUSIONAN (cada capítulo recuerda de
+ // quién es y se resuelve por ahí); si solo trae la perdedora, la tarjeta que
+ // queda se los guarda como PLAN B -> si su propia fuente no da capítulos, la
+ // ficha usa estos en vez de decir "no se pudieron leer".
+ var ce=(cur.eps&&cur.eps.length)?cur.eps:null,xe=(x.eps&&x.eps.length)?x.eps:null;
+ var union=(ce&&xe)?mergeEps(ce,xe):null;
  if(srcScore(x)>srcScore(cur)){
   // conservamos lo que la otra fuente SI trajo (poster/nota/sinopsis de TMDB)
   ['poster','rating','year','overview','genres','backdrop','tmdb_id'].forEach(function(f){
    if(x[f]===undefined||x[f]===null||x[f]==='')if(cur[f]!==undefined)x[f]=cur[f];});
-  LISTS[list][i]=x;if(swapped.indexOf(i)<0)swapped.push(i);}}
+  if(union)x.eps=union;
+  else if(!xe&&ce)x.epsAlt=ce;
+  else if(!xe&&cur.epsAlt)x.epsAlt=cur.epsAlt;
+  LISTS[list][i]=x;if(swapped.indexOf(i)<0)swapped.push(i);}
+ else{
+  if(union){cur.eps=union;if(swapped.indexOf(i)<0)swapped.push(i);}
+  else if(!ce&&xe)cur.epsAlt=xe;}}
 function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return;
  var c=grid.children[i];if(!c)return;
  var tmp=document.createElement('div');tmp.innerHTML=cardHTML(LISTS[list][i],list,i);
@@ -7350,7 +7368,10 @@ function cardHTML(x,list,i){
  var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" src="'+esc(x.poster)+'">'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
  var q='<div class="tl">'+(x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'')+'</div>';
- var kt='<div class="kindtag">'+kindLabel(x.kind)+'</div>';
+ // Las series de EliteTorrent/WolfMax llegan agrupadas con sus capítulos
+ // dentro: decir cuántos trae evita la duda de "¿esto es la serie entera?".
+ var _nc=(x.eps&&x.eps.length)||0;
+ var kt='<div class="kindtag">'+kindLabel(x.kind)+(_nc?(' · '+_nc+' cap.'):'')+'</div>';
  var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
  return '<div class="card"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
@@ -7529,9 +7550,18 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;$('ov').classList.add('on
  var ac=(window.AbortController?new AbortController():null);var opt=ac?{signal:ac.signal}:undefined;
  var kill=setTimeout(function(){if(ac)try{ac.abort()}catch(e){}},20000);
  fetch(u,opt).then(function(r){return r.json()}).then(function(d){clearTimeout(kill);
-  var eps=(d&&d.episodes)||[];if(!eps.length){OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>';return}
+  var eps=(d&&d.episodes)||[];
+  // PLAN B: los capítulos que trajo otra fuente en la búsqueda (ver upgrade).
+  if(!eps.length&&x.epsAlt&&x.epsAlt.length){OVDATA={d:{title:x.title,episodes:x.epsAlt,
+    poster:x.poster,year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,
+    genres:x.genres},x:x};renderEpisodes();return;}
+  if(!eps.length){OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>';return}
   OVDATA={d:d,x:x};renderEpisodes();
- }).catch(function(){clearTimeout(kill);OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron cargar los episodios. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>'})}
+ }).catch(function(){clearTimeout(kill);
+  if(x.epsAlt&&x.epsAlt.length){OVDATA={d:{title:x.title,episodes:x.epsAlt,poster:x.poster,
+    year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,genres:x.genres},x:x};
+   renderEpisodes();return;}
+  OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron cargar los episodios. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>'})}
 var OVRETRY=null;
 function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var _epi=0;
  var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
