@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk68",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk69",
                     mimetype="text/plain")
 
 
@@ -4879,13 +4879,19 @@ def catsearch():
     if not _owner:
         # Otra peticion identica manda; esperamos SU resultado (no abrimos otro
         # fan-out). Cuando termine, servimos su cache.
-        _ev.wait(15.0)
+        _ev.wait(8.0)
         cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
         if cent and (_t.time() - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
             return jsonify({"items": cent["items"], "cached": True})
-        # el dueño aun no termino (o salio vacio) -> 503 para que el front REINTENTE
-        # (no "Sin resultados" en falso); el reintento sera el nuevo dueño.
-        return Response("", status=503)
+        if cent and cent.get("items"):
+            # caducada pero utilizable: mejor lo de hace un rato que nada
+            return jsonify({"items": cent["items"], "cached": True,
+                            "stale": True, "partial": True})
+        # El dueño aun no ha terminado. OJO: aqui se devolvia un 503 con el
+        # cuerpo VACIO y eso REVIENTA el r.json() del navegador -> el front lo
+        # tomaba por error de red y acababa pintando "Despertando el
+        # servidor...". Respuesta valida con `retry` y que el front vuelva.
+        return jsonify({"items": [], "retry": True, "partial": True})
     try:
         code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
         # Probes con TOPE DURO (hilos daemon): si DonTorrent/ET cuelgan la conexion
@@ -5131,7 +5137,9 @@ def catsearch():
             if not _disok:
                 rec["ttl"] = 90
             if _parcial:
-                rec["ttl"] = 45   # parcial -> caduca pronto y se completa solo
+                rec["ttl"] = 150  # parcial -> caduca pronto y se completa solo
+                                  # (45s era tan corto que recalculaba en cadena
+                                  #  y disparaba el single-flight a todas horas)
             _CATSEARCH_CACHE[qkey] = rec
             try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
                 disk = _catsearch_load()
@@ -6770,7 +6778,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk68", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk69", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7847,7 +7855,11 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  var csDone=0;
  function csTry(att){if(seq!==_searchSeq)return;wakeAtt=att;
   tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,att===1?20000:16000).then(function(r){return r.json()}).then(function(d){
-   if(seq!==_searchSeq)return;catState='ok';mergeResults('buscar',g,(d&&d.items)||[]);
+   if(seq!==_searchSeq)return;
+   // `retry`: otra búsqueda igual está en curso; NO es un fallo del servidor.
+   if(d&&d.retry&&!(d.items&&d.items.length)&&att<6){
+    setTimeout(function(){csTry(att+1)},2500);paint();return;}
+   catState='ok';mergeResults('buscar',g,(d&&d.items)||[]);
    var _ndt=((d&&d.items)||[]).filter(function(z){return (z.source||'dt')==='dt'}).length;
    if(!(d&&d.partial))progSet('dt',_ndt?1:2,_ndt);
    if(d&&d.partial&&!csDone){csDone=1;dtPend=1;
