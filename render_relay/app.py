@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk73",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk74",
                     mimetype="text/plain")
 
 
@@ -6778,7 +6778,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk73", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk74", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7001,20 +7001,32 @@ def catdetail():
     # exactamente como se tumbo el relay el 07-08). Ahora TODAS las etapas
     # (incluidos el parseo y TMDB, que antes no tenian tope) comen del mismo
     # presupuesto y la peticion SIEMPRE responde.
-    _ddl = now + 19.0
+    _ddl = now + 24.0     # el front espera 26s
     _drem = lambda: max(0.0, _ddl - _t.time())
     box = _box_for(code)      # la suya si esta viva; si no, cualquiera (§_box_for)
-    job = None
+    # A DOS cajas: traer esta ficha cuesta 21-38s en una caja con el ISP
+    # tumbando el DoH y ~1s en una que lo tenga sano. Preguntando a dos, casi
+    # siempre contesta una rapido (antes salia 0 capitulos en TODAS las series
+    # del Inicio).
+    _jobs = []
     if box:
-        job = "dd" + os.urandom(5).hex()
-        _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml",
-                          "path": path})
+        def _pide_html(b):
+            j = "dd" + os.urandom(5).hex()
+            _kb_enqueue(b, {"c": "etjob", "job": j, "op": "dthtml",
+                            "path": path})
+            return j
+        _jobs.append(_pide_html(box))
+        _b2 = next((b for b in _live_boxes() if b != box), None)
+        if _b2:
+            _jobs.append(_pide_html(_b2))
+    # El intento DIRECTO, corto: la IP de Render esta baneada casi siempre.
     html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
-                    min(6.0, _drem()), "") or ""
+                    min(2.5, _drem()), "") or ""
     if not html:
         _dt_mark(False)        # marca el baneo -> siguientes aperturas saltan DT ya
-        if job:                # el box ya lleva ~6s adelantado -> responde antes
-            res = _catjob_wait(job, min(14.0, _drem()))
+        if _jobs:              # las cajas ya llevan ~2,5s adelantadas
+            res = _catjob_wait_any(_jobs, _drem(),
+                                   lambda r: bool((r or {}).get("html")))
             html = (res or {}).get("html") or ""
     if not html:
         # 4) stale: mejor lo ultimo conocido que una lista vacia.

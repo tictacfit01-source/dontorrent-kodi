@@ -672,6 +672,32 @@ def resolve_domain(force=False):
     return _cached_domain or FALLBACK_DOMAINS[0]
 
 
+# --- Breaker del DoH ---------------------------------------------------------
+# El ISP de casa no solo bloquea por DNS: RESETEA la conexion contra las IPs de
+# Cloudflare de DonTorrent (WinError 10054 / errno 104). Cuando eso pasa, el
+# camino DoH esta muerto para todo el mundo en esa casa, pero cada peticion
+# seguia gastando 15-30s en descubrirlo (timeout 25s + reintentos) antes de
+# tirar del proxy, que responde en ~6s. Medido: la ficha de una serie, 21-38s;
+# el relay espera 14s -> el Inicio se quedaba SIN capitulos en todas las series.
+# Con el breaker: el primer fallo marca el DoH caido 10 min y el resto va
+# directo al proxy.
+_DOH_DOWN_UNTIL = [0.0]
+_DOH_COOLDOWN = 600
+
+
+def _doh_alive():
+    return time.time() >= _DOH_DOWN_UNTIL[0]
+
+
+def _doh_mark(ok):
+    if ok:
+        _DOH_DOWN_UNTIL[0] = 0.0
+    else:
+        _DOH_DOWN_UNTIL[0] = time.time() + _DOH_COOLDOWN
+        _LOG("DoH marcado CAIDO %ds (el ISP esta reseteando): se tira de proxy"
+             % _DOH_COOLDOWN)
+
+
 def fetch_html(path=None, q=None):
     """HTML CRUDO de un listado (path: '/', '/peliculas', '/series', '/page/N')
     o de una busqueda (q) de DonTorrent, desde la IP RESIDENCIAL del box (DoH,
@@ -702,17 +728,28 @@ def fetch_html(path=None, q=None):
         data = None
     etq = f"q={q}" if q else (path or "/")
 
-    # 1) DoH: conexion residencial directa (el camino normal, ~1 s).
-    try:
-        r = (_doh_fetch("POST", url, data=data) if data is not None
-             else _doh_fetch("GET", url))
-        html = r.text or ""
-        if len(html) > 500:
-            _LOG(f"fetch_html ({etq}) -> {len(html)} bytes")
-            return html
-        _LOG(f"fetch_html ({etq}) DoH: respuesta corta ({len(html)})")
-    except Exception as e:
-        _LOG(f"fetch_html ({etq}) DoH fallo: {e}")
+    # 1) DoH: conexion residencial directa (el camino normal, ~1 s). Se salta
+    #    si esta marcado caido: con el ISP reseteando, insistir cuesta 15-30s
+    #    para acabar en el proxy igual (ver breaker arriba).
+    if _doh_alive():
+        try:
+            # 10s basta: el DoH sano responde en ~1s. Con 25s, cada fallo se
+            # llevaba media vida y el relay ya se habia rendido.
+            r = (_doh_fetch("POST", url, data=data, timeout=10)
+                 if data is not None else _doh_fetch("GET", url, timeout=10))
+            html = r.text or ""
+            if len(html) > 500:
+                _doh_mark(True)
+                _LOG(f"fetch_html ({etq}) -> {len(html)} bytes")
+                return html
+            _LOG(f"fetch_html ({etq}) DoH: respuesta corta ({len(html)})")
+        except Exception as e:
+            _LOG(f"fetch_html ({etq}) DoH fallo: {e}")
+            if isinstance(e, (requests.exceptions.ConnectionError,
+                              requests.exceptions.Timeout)):
+                _doh_mark(False)   # el ISP esta tumbando el rango: al proxy
+    else:
+        _LOG(f"fetch_html ({etq}): DoH en cuarentena -> proxy directo")
 
     if data is not None:      # busqueda: el proxy no puede (ver docstring)
         return ""
