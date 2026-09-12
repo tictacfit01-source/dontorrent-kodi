@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk48",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk49",
                     mimetype="text/plain")
 
 
@@ -2644,22 +2644,39 @@ def _kbstatus_save(d):
         pass
 
 
+def _live_boxes(max_age=90):
+    """Codes de TODAS las cajas con latido reciente, de más reciente a menos."""
+    try:
+        now = _t.time()
+        out = [(ent.get("ts", 0), code)
+               for code, ent in _kbstatus_load().items()
+               if (now - ent.get("ts", 0)) < max_age]
+        out.sort(reverse=True)
+        return [c for _ts, c in out]
+    except Exception:
+        return []
+
+
+_LIVE_RR = [0]     # cursor del reparto (round-robin) entre cajas vivas
+
+
 def _any_live_box(max_age=90):
-    """Code de CUALQUIER box con latido reciente (vivo), o None — el más reciente.
+    """Code de CUALQUIER box con latido reciente (vivo), o None.
     Sirve para que lo que necesita IP residencial (dthtml de DonTorrent cuando
     Render está baneado) funcione AUNQUE el visitante no tenga su código puesto:
     si hay algún Kodi del sistema encendido, lo usamos. El op dthtml es invisible
-    para el dueño del box (solo descarga HTML en 2º plano, no toca su pantalla)."""
-    try:
-        now = _t.time()
-        best, best_ts = None, 0
-        for code, ent in _kbstatus_load().items():
-            ts = ent.get("ts", 0)
-            if (now - ts) < max_age and ts > best_ts:
-                best, best_ts = code, ts
-        return best
-    except Exception:
+    para el dueño del box (solo descarga HTML en 2º plano, no toca su pantalla).
+
+    REPARTE (round-robin) en vez de devolver siempre la de latido más reciente:
+    antes UNA sola caja cargaba con todo el trabajo prestado del sistema (y el
+    tope de concurrencia la ahogaba), mientras las otras 5 estaban ociosas. Los
+    trabajos son independientes entre sí, así que repartir no rompe nada y
+    multiplica el paralelismo real."""
+    boxes = _live_boxes(max_age)
+    if not boxes:
         return None
+    _LIVE_RR[0] = (_LIVE_RR[0] + 1) % 1000000
+    return boxes[_LIVE_RR[0] % len(boxes)]
 
 
 # Trabajos SIMULTANEOS hacia una caja PRESTADA (la de otro, porque la del
@@ -2669,7 +2686,46 @@ def _any_live_box(max_age=90):
 # 2026-08-07 al desplegar dtbk36 (conectaba y negociaba TLS en 0,16s pero no
 # contestaba nunca; se arreglo con un reinicio limpio). Con la caja PROPIA no
 # se limita: ahi el visitante solo se hace esperar a si mismo.
-_BOX_LEND_SEM = _thr.Semaphore(2)
+_BOX_LEND_SEM = _thr.Semaphore(4)
+# ...y ADEMAS un tope POR CAJA (2): el global protege los hilos del RELAY, este
+# protege a cada Kodi de que le caigan encima todos los trabajos del sistema.
+# Con el reparto de `_any_live_box` los trabajos van a cajas distintas, asi que
+# el global de 4 se reparte de verdad (antes 2 trabajos a la MISMA caja).
+_BOX_LEND_PER = {}
+_BOX_LEND_LOCK = _thr.Lock()
+
+
+def _lend_acquire(box):
+    """Hueco para un trabajo hacia una caja PRESTADA. Devuelve el semáforo de la
+    caja (para soltarlo luego) o None si no hay hueco -> responder YA, sin colgar
+    un hilo del relay."""
+    with _BOX_LEND_LOCK:
+        sem = _BOX_LEND_PER.get(box)
+        if sem is None:
+            sem = _thr.Semaphore(2)
+            _BOX_LEND_PER[box] = sem
+    if not sem.acquire(blocking=False):
+        return None
+    if not _BOX_LEND_SEM.acquire(blocking=False):
+        sem.release()
+        return None
+    return sem
+
+
+def _lend_release(sem):
+    try:
+        _BOX_LEND_SEM.release()
+        sem.release()
+    except Exception:
+        pass
+
+
+# WolfMax es la fuente LENTA (hasta 24s por peticion) y por tanto la que mas
+# tiempo tiene un hilo del relay (solo hay 8) parado esperando. Tope propio:
+# como mucho 2 busquedas de WolfMax a la vez EN TODO EL SISTEMA; el resto se
+# responde al instante sin WolfMax (las demas fuentes salen igual). Con la cache
+# de /catetbox, repetir una busqueda de WolfMax no consume hueco.
+_WF_SEM = _thr.Semaphore(2)
 
 
 def _box_live(code, max_age=90):
@@ -4955,6 +5011,14 @@ def catetbox():
     q = (request.args.get("q") or "").strip()
     op = (request.args.get("op") or "search").strip()
     srcs = (request.args.get("srcs") or "et").strip()
+    # CACHE (antes de tocar ninguna caja): repetir la misma busqueda es gratis e
+    # INSTANTANEO. Es lo que hace que "buscar en todas las fuentes" no salga caro:
+    # la 2a vez que alguien busca lo mismo, EliteTorrent/WolfMax ya estan ahi.
+    ckey = "%s|%s|%s" % (op, ",".join(sorted(
+        s for s in srcs.split(",") if s)), q.lower())
+    _hit = _catbox_get(ckey)
+    if _hit is not None:
+        return jsonify({"items": _hit, "cached": True})
     box = _box_for(code)     # la suya si esta viva; si no, cualquier caja viva
     if not box or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
@@ -4963,29 +5027,42 @@ def catetbox():
     # devuelve en cuanto el box responde, asi que las cajas rapidas (PC) NO se
     # penalizan; solo da margen a las lentas. DonTorrent sale ya; el box rellena.
     wait = 24.0 if "wf" in srcs else 20.0
-    # Caja PRESTADA: tope de concurrencia y espera mas corta -> el hilo del relay
-    # se libera antes y no se acumulan. Si no hay hueco se responde YA (lo mismo
-    # que se respondia antes de existir el prestamo), sin colgar a nadie.
+    # Caja PRESTADA: tope de concurrencia -> el hilo del relay se libera y no se
+    # acumulan. Si no hay hueco se responde YA (lo mismo que se respondia antes de
+    # existir el prestamo), sin colgar a nadie. El tope es global (protege los 8
+    # hilos del relay) Y por caja (protege a cada Kodi) -> ver _lend_acquire.
     prestada = (box != code)
-    if prestada:
-        if not _BOX_LEND_SEM.acquire(blocking=False):
-            return jsonify({"items": [], "off": True})
-        # NO se recorta la espera: el semaforo ya acota a 2 los hilos ocupados,
-        # que era el problema. Recortarla a 14s ademas (dtbk37) hacia inutil el
-        # prestamo: `_any_live_box` devuelve la caja de latido MAS RECIENTE, que
-        # puede ser una TV lenta, y expiraba antes de que contestara (medido:
-        # timeout a los 14,3s con la caja sin llegar a arrancar el trabajo).
+    _lsem = _lend_acquire(box) if prestada else None
+    if prestada and _lsem is None:
+        return jsonify({"items": [], "off": True})
+    # NO se recorta la espera cuando la caja es prestada: el semaforo ya acota
+    # los hilos ocupados, que era el problema. Recortarla a 14s ademas (dtbk37)
+    # hacia inutil el prestamo: la caja elegida puede ser una TV lenta y
+    # expiraba antes de que contestara (medido: 14,3s sin arrancar el trabajo).
+    _wf = "wf" in srcs.split(",")
+    if _wf and not _WF_SEM.acquire(blocking=False):
+        if _lsem is not None:      # sin hueco para la lenta -> responder YA
+            _lend_release(_lsem)   # (las otras fuentes no dependen de esta)
+        return jsonify({"items": [], "off": True})
     try:
         job = "et" + os.urandom(5).hex()
         _kb_enqueue(box, {"c": "etjob", "job": job, "op": op, "q": q,
                           "srcs": srcs})
         res = _catjob_wait(job, wait)
     finally:
-        if prestada:
-            _BOX_LEND_SEM.release()
+        if _lsem is not None:
+            _lend_release(_lsem)
+        if _wf:
+            _WF_SEM.release()
     if res is None:
+        # TIMEOUT: NO se cachea (puede ser un pico puntual; la proxima reintenta).
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
+    if request.args.get("raw") == "1":
+        # DIAGNOSTICO: el dato TAL CUAL lo manda la caja, sin filtros ni enrich
+        # (para ver como vienen las series de EliteTorrent/WolfMax y decidir si
+        # se pueden agrupar en una tarjeta). No cachea: es una sonda manual.
+        return jsonify({"items": items, "raw": True})
     # ET/WF dan 1 tarjeta por episodio en series -> solo DivxTotal aporta series
     items = [it for it in items if not (it.get("kind") == "serie"
              and (it.get("source") in ("et", "wf")))]
@@ -5007,6 +5084,10 @@ def catetbox():
         # solo sin poster HD ni nota, que es infinitamente mejor que colgarse.
         items = _bounded(lambda: _cat_enrich(items, limit=60), 8.0,
                          default=items)
+    # La caja CONTESTO (con o sin resultados) -> a la cache. El vacio tambien
+    # (TTL corto): "WolfMax no tiene esta peli" es un dato estable y ahorra 24s
+    # de espera la proxima vez que alguien la busque.
+    _catbox_put(ckey, items)
     return jsonify({"items": items})
 
 
@@ -5067,9 +5148,10 @@ def catboxeps():
         # directo sin episodios + hay caja viva -> resolver via caja (abajo)
     if not box:
         return jsonify({"episodes": []}), 400
-    # Mismo tope que en /catetbox cuando la caja es prestada (ver _BOX_LEND_SEM).
+    # Mismo tope que en /catetbox cuando la caja es prestada (ver _lend_acquire).
     prestada = (box != code)
-    if prestada and not _BOX_LEND_SEM.acquire(blocking=False):
+    _lsem = _lend_acquire(box) if prestada else None
+    if prestada and _lsem is None:
         return jsonify({"episodes": []})
     try:
         job = "et" + os.urandom(5).hex()
@@ -5077,8 +5159,8 @@ def catboxeps():
                           "src": src, "url": url})
         res = _catjob_wait(job, 22.0)   # ver /catetbox: no se recorta por prestada
     finally:
-        if prestada:
-            _BOX_LEND_SEM.release()
+        if _lsem is not None:
+            _lend_release(_lsem)
     if res is None:
         return jsonify({"episodes": [], "timeout": True})
     eps = res.get("eps") or {}
@@ -5489,6 +5571,70 @@ def _cat_apply_meta(it, sm):
         else:
             it.pop(k, None)
     return True
+
+
+# --- Cache de las fuentes que van POR CAJA (/catetbox) ----------------------
+# Mismo motivo que _CATSEARCH_CACHE pero para EliteTorrent/WolfMax/DivxTotal-por
+# -caja: cada peticion ocupa un hilo del relay ESPERANDO a un Kodi de casa (hasta
+# 24s con WolfMax) y encima le da trabajo a la caja de otro. Repetir la misma
+# busqueda (volver atras, otro amigo buscando lo mismo, un reintento) no puede
+# volver a pagar eso. Compartida por disco: hay 2 workers.
+_CATBOX_CACHE = {}
+_CATBOX_TTL = 600          # 10 min con resultados
+_CATBOX_TTL_EMPTY = 300    # 5 min si la caja contesto "no lo tengo" (es estable)
+_CATBOX_MAX = 120
+_CATBOX_FILE = "/tmp/mw_catbox.json"
+
+
+def _catbox_load():
+    try:
+        with open(_CATBOX_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _catbox_save(d):
+    try:
+        tmp = _CATBOX_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _CATBOX_FILE)
+    except Exception:
+        pass
+
+
+def _catbox_get(key):
+    ent = _CATBOX_CACHE.get(key)
+    if not ent:
+        ent = _catbox_load().get(key)
+        if ent:
+            _CATBOX_CACHE[key] = ent
+    if ent and (_t.time() - ent.get("ts", 0)) < ent.get("ttl", _CATBOX_TTL):
+        return ent.get("items") or []
+    return None
+
+
+def _catbox_put(key, items):
+    rec = {"items": items, "ts": _t.time(),
+           "ttl": _CATBOX_TTL if items else _CATBOX_TTL_EMPTY}
+    _CATBOX_CACHE[key] = rec
+    try:
+        disk = _catbox_load()
+        disk[key] = rec
+        if len(disk) > _CATBOX_MAX:
+            for k in sorted(disk, key=lambda k: disk[k].get("ts", 0))[
+                    :len(disk) - _CATBOX_MAX]:
+                disk.pop(k, None)
+        _catbox_save(disk)
+    except Exception:
+        pass
+    if len(_CATBOX_CACHE) > _CATBOX_MAX:
+        try:
+            old = min(_CATBOX_CACHE, key=lambda k: _CATBOX_CACHE[k]["ts"])
+            _CATBOX_CACHE.pop(old, None)
+        except Exception:
+            _CATBOX_CACHE.clear()
 
 
 def _catsearch_load():
@@ -5957,7 +6103,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk48", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk49", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -6023,6 +6169,14 @@ def catdiag():
         out["mem_rss_mb"] = None
     # 5) Contadores baratos ya cacheados (NO consultan la API).
     out["catsearch_cached"] = len(_CATSEARCH_CACHE)
+    # Fuentes-por-caja (EliteTorrent/WolfMax/DivxTotal-plan-B): cuanto hay
+    # cacheado y cuantos huecos de prestamo quedan. Si lend_free=0 de forma
+    # sostenida, las busquedas se estan quedando sin ET/WF por saturacion.
+    out["catbox"] = {
+        "cached": len(_CATBOX_CACHE),
+        "lend_free": getattr(_BOX_LEND_SEM, "_value", None),
+        "lend_boxes": len(_BOX_LEND_PER),
+    }
     out["sapi_credits_left"] = _SAPI_CRED.get("left")
     # Diagnostico de la semilla: si seed_meta=0 el blindaje no puede actuar (el
     # Inicio se degradaria a la caratula no-HD) -> archivo no cargado / ruta mala.
@@ -6775,7 +6929,12 @@ function tfetch(url,ms){var c=('AbortController'in window)?new AbortController()
  return fetch(url,c?{signal:c.signal}:{}).then(function(r){if(to)clearTimeout(to);if(!r.ok)throw new Error('http'+r.status);return r;},function(e){if(to)clearTimeout(to);throw e;});}
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='';g.innerHTML=skelGrid();
  var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];_searchSeq++;var seq=_searchSeq;
- var more=$('buscar-more');var boxPend=(cd.length===6)?1:0;var boxAdded=0;var boxTO=false;var wfPend=(cd.length===6);
+ // TODAS las fuentes para TODO EL MUNDO: EliteTorrent y WolfMax necesitan una IP
+ // residencial (un Kodi), pero el relay ya PRESTA cualquier caja encendida del
+ // sistema (_box_for/_any_live_box), asi que no hace falta tener codigo puesto
+ // para verlas. Antes solo se pedian con codigo de 6 cifras -> un amigo sin Kodi
+ // configurado se quedaba sin EliteTorrent ni WolfMax en cada busqueda.
+ var more=$('buscar-more');var boxPend=1;var boxAdded=0;var boxTO=false;var wfPend=true;
  var dxPend=1;   // DivxTotal DIRECTO via Render (siempre; el box/ISP lo bloquea)
  var catState='pending';var wakeAtt=0;  // pending|ok|fail ; intentos de despertar
  function paint(){if(seq!==_searchSeq)return;
@@ -6783,7 +6942,9 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
   if(!LISTS.buscar.length){
    // AÚN sin resultados: distinguir relay dormido (reintentando) de vacío real.
    if(catState==='pending'&&wakeAtt>=2){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor…';if(more)more.textContent='';return;}
-   if(catState==='pending'||waiting){if(!g.querySelector('.skgrid')){g.className='';g.innerHTML=skelGrid();}if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
+   // Sin NADA que enseñar aun: esperamos tambien a WolfMax (es la mas lenta)
+   // antes de decir "Sin resultados" -> nunca se descarta una fuente en falso.
+   if(catState==='pending'||waiting||wfPend){if(!g.querySelector('.skgrid')){g.className='';g.innerHTML=skelGrid();}if(more)more.innerHTML='<span class="spin"></span> Buscando en más fuentes…';return;}
    if(catState==='fail'){g.className='msg';g.innerHTML='⚠️ El servidor estaba dormido y no respondió a tiempo.<br><br><button onclick="go()" style="background:#1c64f2;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer">↻ Reintentar</button>';if(more)more.textContent='';return;}
    g.className='msg';g.textContent='Sin resultados para "'+q+'".';if(more)more.textContent='';return;}
   // YA hay resultados:
@@ -6810,17 +6971,37 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  csTry(1);
  // DivxTotal DIRECTO via Render, EN PARALELO: llega tarde (~6s, Cloudflare) y se
  // fusiona cuando esté -> DX aparece sin frenar a DT. Siempre (no necesita box).
- dxMerge('buscar',g,q,seq,function(){if(seq!==_searchSeq)return;dxPend=0;paint();});
- // SALVAVIDAS solo para BOX+DX: a los 18s cerramos SU espera y pintamos lo que haya.
+ dxMerge('buscar',g,q,seq,function(n){if(seq!==_searchSeq)return;dxPend=0;
+  // PLAN B de DivxTotal: si el camino DIRECTO (relay) vino vacío, se lo pedimos a
+  // una caja (IP residencial). Cloudflare "tarpitea" al azar a la IP de Render, y
+  // ninguna fuente puede depender de un solo camino. Si el directo trajo cosas,
+  // NO molestamos a ninguna caja: es trabajo duplicado y la deja ocupada.
+  if(!n){boxPend++;boxMerge('buscar',g,'search',q,'dx',done,seq,1);}
+  paint();});
+ // SALVAVIDAS solo para BOX+DX: cerramos SU espera y pintamos lo que haya. 26s
+ // porque WolfMax por caja puede tardar ~24s (su tope en el relay); los resultados
+ // se fusionan igual cuando llegan, esto solo apaga el "Buscando…".
  // El catsearch tiene su propio reintento, no lo toca este salvavidas.
- setTimeout(function(){if(seq!==_searchSeq)return;if(boxPend>0||wfPend||dxPend>0){boxPend=0;wfPend=false;dxPend=0;paint();}},18000);
- // EliteTorrent+DivxTotal+WolfMax via box (solo con Kodi/box, code de 6 dígitos).
- if(cd.length===6){boxMerge('buscar',g,'search',q,'et,dx',done,seq);boxMerge('buscar',g,'search',q,'wf',doneWf,seq);}}
+ setTimeout(function(){if(seq!==_searchSeq)return;if(boxPend>0||wfPend||dxPend>0){boxPend=0;wfPend=false;dxPend=0;paint();}},26000);
+ // ...pero si a los 12s TODO lo demás terminó SIN NADA, no hacemos esperar al
+ // usuario los 26s de WolfMax para decirle que no hay resultados: se lo decimos
+ // ya. Si WolfMax llega después con algo, la cuadrícula se pinta igual (el
+ // merge repinta sobre el mensaje). Rapidez sin perder fuentes.
+ setTimeout(function(){if(seq!==_searchSeq)return;
+  if(wfPend&&!LISTS.buscar.length&&boxPend<=0&&dxPend<=0&&catState!=='pending'){wfPend=false;paint();}},12000);
+ // EliteTorrent y WolfMax via caja (propia o PRESTADA): SIEMPRE, con o sin código.
+ // DivxTotal NO se le pide a la caja aquí: ya va directo por /catdxsearch (más
+ // rápido) y arriba está su plan B.
+ boxMerge('buscar',g,'search',q,'et',done,seq,1);boxMerge('buscar',g,'search',q,'wf',doneWf,seq,1);}
 function dxMerge(list,g,q,seq,cb){
  fetch('/catdxsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
-  if(seq!==_searchSeq){if(cb)cb();return;}mergeResults(list,g,(d&&d.items)||[]);if(cb)cb();
- }).catch(function(){if(cb)cb()})}
-function boxMerge(list,g,op,q,srcs,cb,seq){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){if(cb)cb({});return;}
+  var n=((d&&d.items)||[]).length;
+  if(seq!==_searchSeq){if(cb)cb(n);return;}mergeResults(list,g,(d&&d.items)||[]);if(cb)cb(n);
+ }).catch(function(){if(cb)cb(0)})}
+// always=1 -> no exige código: el relay presta una caja viva del sistema. El
+// Inicio NO lo usa (lo carga todo el mundo al abrir: serían 2 trabajos de caja
+// por visita); la BÚSQUEDA sí, que es donde importa tener todas las fuentes.
+function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6&&!always){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  fetch(u).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b})}).catch(function(){if(cb)cb({})})}
 function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();var b=$('vtog');if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';if(b)b.style.display='none';return}if(b)b.style.display='';renderGrid(g,'lista');applyView()}
