@@ -97,9 +97,10 @@ def _resolve_cache_put(content_id, tabla, url):
 # OJO: DonTorrent ROTA de dominio; cuando este caduque tambien redirigira. Para
 # que se auto-cure, _probe_domain ADOPTA el destino del 301 (abajo) y hay que
 # anadir el viejo a _STALE en resolve_domain(). Historial: .science -> .review
-# -> .management.
-_CANONICAL_DOMAIN = "dontorrent.management"
+# -> .management -> .supply (12-09-2026).
+_CANONICAL_DOMAIN = "dontorrent.supply"
 FALLBACK_DOMAINS = [
+    "dontorrent.supply",
     "dontorrent.management",
     "dontorrent.review",
     "dontorrent.science",
@@ -573,7 +574,8 @@ def resolve_domain(force=False):
         # Asi caemos a la auto-resolucion (fast-path canonico .review).
         _STALE = {"dontorrent.science", "www.dontorrent.science",
                   "dontorrent.support", "www.dontorrent.support",
-                  "dontorrent.review", "www.dontorrent.review"}
+                  "dontorrent.review", "www.dontorrent.review",
+                  "dontorrent.management", "www.dontorrent.management"}
         if host and host not in _STALE:
             return host
 
@@ -1535,7 +1537,7 @@ def _dl_pow(challenge):
         nonce += 1
 
 
-def _render_resolve_torrent(content_id, tabla, domain=""):
+def _render_resolve_torrent(content_id, tabla, domain="", timeout=8):
     """Resuelve PoW de descarga via Render relay."""
     base = _render_relay_url()
     if not base:
@@ -1545,8 +1547,8 @@ def _render_resolve_torrent(content_id, tabla, domain=""):
             "domain": domain,
             "content_id": int(content_id),
             "tabla": tabla,
-        }, timeout=8, headers={"Content-Type": "application/json",
-                                "User-Agent": UA})
+        }, timeout=timeout, headers={"Content-Type": "application/json",
+                                     "User-Agent": UA})
         if r.status_code == 200:
             data = r.json()
             if data.get("success") and data.get("download_url"):
@@ -1601,11 +1603,26 @@ def _resolve_torrent_uncached(content_id, tabla, page_url=None,
 
     # 1) Generar challenge (directo -> proxy)
     _LOG(f"resolve_torrent: generando challenge para {content_id}/{tabla}")
-    res = _robust_post_json(api_url, {
-        "action": "generate",
-        "content_id": int(content_id),
-        "tabla": tabla,
-    })
+    try:
+        res = _robust_post_json(api_url, {
+            "action": "generate",
+            "content_id": int(content_id),
+            "tabla": tabla,
+        })
+    except Exception:
+        # ULTIMO CARTUCHO: el relay OTRA VEZ, con mas paciencia. Cuando el ISP
+        # resetea el DoH (WinError 10054 / errno 104) los tres caminos locales
+        # mueren a la vez y el relay es el UNICO vivo -> si antes fallo pudo ser
+        # solo porque estaba ARRANCANDO (Render free: frio ~50s) o reiniciandose
+        # por un despliegue, y 8s no le daban. 30s si. Sin esto, un parpadeo del
+        # relay = "no se puede reproducir" en la tele (visto en vivo 12-09-2026).
+        if not prefer_direct:
+            url = _render_resolve_torrent(content_id, tabla, domain=host,
+                                          timeout=30)
+            if url:
+                _LOG("resolve_torrent: rescatado por el relay al 2o intento")
+                return url
+        raise
     if not res.get("success"):
         raise RuntimeError(res.get("error") or "PoW: sin challenge")
     challenge = res["challenge"]

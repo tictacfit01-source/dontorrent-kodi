@@ -1341,7 +1341,18 @@ def dt_play(content_id, tabla, page_url="", title=""):
         except Exception:
             pass
         xbmc.log(f"[MejorWolf] dt_play error: {e}", xbmc.LOGERROR)
-        _error(f"Error: {e}")
+        # Lo que ve el USUARIO tiene que ser una frase, no una traza. El caso
+        # tipico ("POST JSON fallo: doh: ConnectionReset...") es el operador
+        # cortando la conexion con DonTorrent mientras el relay no estaba: se
+        # arregla solo en un minuto, asi que eso es lo que hay que decirle.
+        _msg = str(e)
+        if ("doh" in _msg or "JSON fallo" in _msg or "Connection" in _msg
+                or "sin challenge" in _msg):
+            _msg = ("No se pudo preparar la descarga ahora mismo. "
+                    "Inténtalo de nuevo en un minuto.")
+        elif len(_msg) > 90:
+            _msg = _msg[:90] + "…"
+        _error(_msg)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 
