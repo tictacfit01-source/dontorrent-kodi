@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk75",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk76",
                     mimetype="text/plain")
 
 
@@ -6778,7 +6778,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk75", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk76", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7901,13 +7901,22 @@ function progStop(suave){if(PROG.tick){clearInterval(PROG.tick);PROG.tick=null}
  if(suave){setTimeout(function(){if(!PROG.tick)el.classList.remove('on')},2200)}
  else el.classList.remove('on');}
 var _searchSeq=0;
+// Peticiones de la busqueda EN CURSO. Cambiar de busqueda no basta con ignorar
+// las respuestas: mientras siguen en vuelo ocupan un hilo del relay (5 por
+// busqueda, de 8 que hay). Se apuntan aqui y se abortan al empezar otra.
+var SREQ=[];
+function sreqAdd(c){if(c)SREQ.push(c)}
+function sreqAbort(){var l=SREQ;SREQ=[];l.forEach(function(c){try{c.abort()}catch(e){}})}
 // fetch con TIMEOUT real (AbortController): un relay dormido (Render free, cold
 // start ~50s) NO deja la promesa colgada -> abortamos y reintentamos.
 function tfetch(url,ms){var c=('AbortController'in window)?new AbortController():null;
+ sreqAdd(c);
  var to=c?setTimeout(function(){try{c.abort()}catch(e){}},ms):0;
  return fetch(url,c?{signal:c.signal}:{}).then(function(r){if(to)clearTimeout(to);if(!r.ok)throw new Error('http'+r.status);return r;},function(e){if(to)clearTimeout(to);throw e;});}
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='';g.innerHTML=skelGrid();
- var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];_searchSeq++;var seq=_searchSeq;
+ var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];
+ sreqAbort();            // devuelve al relay los hilos de la busqueda anterior
+ _searchSeq++;var seq=_searchSeq;
  progStart(seq);
  // TODAS las fuentes para TODO EL MUNDO: EliteTorrent y WolfMax necesitan una IP
  // residencial (un Kodi), pero el relay ya PRESTA cualquier caja encendida del
@@ -8029,7 +8038,9 @@ function dxMerge(list,g,q,seq,cb){
 // por visita); la BÚSQUEDA sí, que es donde importa tener todas las fuentes.
 function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6&&!always){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
- fetch(u).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b,got:got})}).catch(function(){if(cb)cb({})})}
+ var _c=('AbortController'in window)?new AbortController():null;
+ if(op==='search')sreqAdd(_c);   // las del INICIO no: no las cancela nadie
+ fetch(u,_c?{signal:_c.signal}:{}).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b,got:got})}).catch(function(){if(cb)cb({})})}
 // Un favorito guardado ANTES de que las tarjetas trajeran capitulos no los
 // tiene. La primera vez que se abren por red, se los quedamos -> la proxima vez
 // abre al instante. (Sin esto habria que quitarlo y volver a añadirlo a mano.)

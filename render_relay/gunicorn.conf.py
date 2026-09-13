@@ -11,10 +11,20 @@
 # peticiones rapidas del mando cogen un hilo libre al instante.
 #
 # 2 PROCESOS (uno libre para el mando mientras el otro resuelve el PoW de
-# DonTorrent, que es CPU/GIL) x 4 HILOS = 8 peticiones simultaneas.
+# DonTorrent, que es CPU/GIL) x 6 HILOS = 12 peticiones simultaneas.
+#
+# 13-sep: eran 4 hilos (8 a la vez) y se QUEDO SIN NINGUNO. Cada busqueda de la
+# web lanza CINCO peticiones (catsearch + catetbox x3 + catdxsearch) que pueden
+# durar 26s; dos busquedas solapadas (una persona que cambia de idea, o dos
+# personas a la vez) ocupan las 8 y el relay deja de contestar a TODO -- ni
+# /ping ni /kb/poll: parece caido con el servicio perfectamente vivo. El front
+# ya aborta las de la busqueda anterior (SREQ/sreqAbort en app.py), y aqui va el
+# margen para cuando de verdad haya varias personas. Es trabajo de ESPERA de
+# red: los hilos de mas casi no cuestan memoria (el limite del plan free son
+# 512 MB y los dos workers rondan los 300).
 worker_class = "gthread"
 workers = 2
-threads = 4
+threads = 6
 timeout = 120
 graceful_timeout = 30
 keepalive = 5
