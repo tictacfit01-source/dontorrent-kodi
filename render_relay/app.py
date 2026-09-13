@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk89",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk90",
                     mimetype="text/plain")
 
 
@@ -5493,6 +5493,75 @@ _WF_CAP_RE = re.compile(r"(cap[ií]tulo|\bcap\.?\s*\d|\d+\s*x\s*\d{2}|temporada)
 _WF_EP_URL_RE = re.compile(r"/(?:serie-online[\w-]*|online|capitulo|episodio)/\d+", re.I)
 
 
+def _wf_palabras(t):
+    """Palabras del titulo, en minusculas y sin signos (para comparar)."""
+    return [w for w in re.split(r"[^\w]+", (t or "").lower(), flags=re.U) if w]
+
+
+def _wf_completa_partidas(items):
+    """Completa cada serie de WolfMax con los trozos que en el indice estan
+    titulados con una PARTE de su nombre.
+
+    En WolfMax los capitulos de una misma serie aparecen titulados de varias
+    maneras ("Widows Bay" y "La maldicion de Widows Bay"). El filtro de
+    relevancia se lleva por delante los que no contienen todas las palabras de
+    la busqueda, asi que la serie salia con la mitad de capitulos segun como se
+    escribiera. Aqui se recuperan: se buscan en el indice las entradas cuyo
+    titulo sea una tira de palabras SEGUIDAS del titulo de la serie (dos o
+    mas), y se dejan en manos de `_une_series_partidas`, que sigue exigiendo
+    misma calidad y capitulos que no se solapen.
+    """
+    series = [it for it in (items or [])
+              if (it or {}).get("source") == "wf" and it.get("kind") == "serie"]
+    if not series:
+        return items
+    try:
+        idx = _wfidx_load()
+    except Exception:
+        return items
+    if not idx:
+        return items
+    extra = []
+    for it in series:
+        pal = _wf_palabras(it.get("title"))
+        if len(pal) < 2:
+            continue
+        # todas las tiras de 2+ palabras seguidas del titulo, menos el entero
+        tiras = set()
+        for i in range(len(pal)):
+            for j in range(i + 2, len(pal) + 1):
+                if j - i < len(pal):
+                    tiras.add(" ".join(pal[i:j]))
+        if not tiras:
+            continue
+        for u, e in idx.items():
+            t = (e or {}).get("t") or ""
+            if _wf_pobre(u, t, e.get("k")):
+                continue
+            base = " ".join(_wf_palabras(_ep_base_title(t)))
+            if base and base in tiras:
+                extra.append({"title": t, "url": u, "content_id": u,
+                              "kind": ("serie" if (e.get("k") or "").startswith("tvshow")
+                                       else "movie"),
+                              "quality": e.get("q") or "", "source": "wf",
+                              "tabla": "wf"})
+    if not extra:
+        return items
+    extra = _cat_group_episodes(extra)
+    for x in extra:
+        if not x.get("quality"):
+            x["quality"] = _wf_quality_from_url(x.get("url") or x.get("content_id"))
+        disp, ql = _cat_clean_quality(x.get("title", ""))
+        x["title"] = disp
+        if not x.get("quality"):
+            x["quality"] = ql
+    # Solo interesan como RELLENO: se unen a las que ya estaban y lo que no se
+    # una se descarta (no vamos a sacar tarjetas que el usuario no ha buscado).
+    unido = _une_series_partidas(list(items) + [x for x in extra
+                                                if x.get("kind") == "serie"])
+    return [it for it in unido if it in items]
+
+
 def _une_series_partidas(items):
     """Une tarjetas de la MISMA fuente que son trozos de la misma serie.
 
@@ -5727,7 +5796,7 @@ def catetbox():
                 it["title"] = disp
                 if not it.get("quality"):
                     it["quality"] = ql or _wf_quality_from_url(it.get("url"))
-            _idx = _une_series_partidas(_wf_colapsa(_idx))
+            _idx = _wf_completa_partidas(_une_series_partidas(_wf_colapsa(_idx)))
             if _idx:
                 _idx = _bounded(lambda: _cat_enrich(_idx, limit=40), 6.0,
                                 default=_idx) or _idx
@@ -5837,7 +5906,7 @@ def catetbox():
     # La caja CONTESTO (con o sin resultados) -> a la cache. El vacio tambien
     # (TTL corto): "WolfMax no tiene esta peli" es un dato estable y ahorra 24s
     # de espera la proxima vez que alguien la busque.
-    items = _une_series_partidas(_wf_colapsa(items))
+    items = _wf_completa_partidas(_une_series_partidas(_wf_colapsa(items)))
     _catbox_put(ckey, items)
     _wfidx_learn(_wf_crudo)   # el CRUDO (ver arriba): la proxima vez va en 10ms
     return jsonify({"items": items})
@@ -7039,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk89", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk90", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
