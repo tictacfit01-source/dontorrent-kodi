@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk83",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk84",
                     mimetype="text/plain")
 
 
@@ -5416,6 +5416,25 @@ def _wf_idx_search(q, limit=40):
     return out[:limit]
 
 
+# Marca de capitulo en el titulo: sin ella no hay forma de agrupar una serie.
+_WF_CAP_RE = re.compile(r"(cap[ií]tulo|\bcap\.?\s*\d|\d+\s*x\s*\d{2}|temporada)",
+                        re.I)
+# URL de WolfMax que apunta a UN capitulo (no a la ficha de la serie).
+_WF_EP_URL_RE = re.compile(r"/(?:serie-online[\w-]*|online|capitulo|episodio)/\d+", re.I)
+
+
+def _wf_pobre(url, titulo, kind=""):
+    """True si esta entrada del indice perdio su "[Cap.301]" y por tanto no
+    sirve para agrupar (ver cabecera del arreglo de los indices envenenados)."""
+    u = (url or "").lower()
+    t = titulo or ""
+    if not _WF_EP_URL_RE.search(u):
+        return False                     # peli o ficha de serie: normal
+    if (kind or "").startswith("movie"):
+        return False
+    return not _WF_CAP_RE.search(t)
+
+
 def _wfidx_learn(items):
     """Guarda en el indice lo que una caja acaba de traer de WolfMax."""
     if not items:
@@ -5433,7 +5452,12 @@ def _wfidx_learn(items):
             rec = {"t": t[:160], "k": ("tvshow" if it.get("kind") == "serie"
                                        else "movie"),
                    "q": (it.get("quality") or "")[:12]}
-            if idx.get(u) != rec:
+            # una entrada POBRE no pisa a una buena (ver _wf_pobre)
+            _ant = idx.get(u)
+            if _ant and _wf_pobre(u, rec["t"], rec["k"]) and \
+                    not _wf_pobre(u, _ant.get("t"), _ant.get("k")):
+                continue
+            if _ant != rec:
                 idx[u] = rec
                 n += 1
         if n:
@@ -5470,7 +5494,13 @@ def wffeed():
                "q": (e.get("q") or e.get("quality") or "")[:12]}
         if not rec["t"]:
             continue
-        if idx.get(u) != rec:
+        # lo que empuja una caja tampoco puede DEGRADAR lo que ya hay: sus
+        # indices locales arrastran el dano viejo (ver cabecera del arreglo).
+        _ant = idx.get(u)
+        if _ant and _wf_pobre(u, rec["t"], rec["k"]) and \
+                not _wf_pobre(u, _ant.get("t"), _ant.get("k")):
+            continue
+        if _ant != rec:
             idx[u] = rec
             n += 1
     if len(idx) > _WFIDX_MAX:      # poda simple: nos quedamos con las primeras
@@ -5501,8 +5531,26 @@ def catetbox():
     # responde sin cola, sin caja y sin red (ver _wf_idx_search). Si el indice
     # esta vacio (deploy reciente) se le pide a una caja y se sigue por el
     # camino de siempre para no dejar al usuario sin nada.
+    _idx_respaldo = []
     if op == "search" and q and srcs.replace(" ", "") == "wf":
         _idx = _wf_idx_search(q)
+        # Si TODO lo que sale del indice esta pobre, no vale para agrupar: se
+        # va por la caja (que lo trae con sus capitulos) y de paso el indice se
+        # corrige. Estas quedan de respaldo, UNA por titulo+calidad.
+        if _idx and all(_wf_pobre(it.get("url") or it.get("content_id"),
+                                  it.get("title"), it.get("kind"))
+                        for it in _idx):
+            _vistos, _uno = set(), []
+            for it in _idx:
+                k = ((it.get("title") or "").lower().strip(), it.get("quality") or
+                     _wf_quality_from_url(it.get("url") or it.get("content_id")) or "")
+                if k in _vistos:
+                    continue
+                _vistos.add(k)
+                _uno.append(it)
+            _idx_respaldo = _uno
+            _idx = []
+            _wfidx_ask_box()
         if _idx:
             _idx = _cat_group_episodes(_idx)
             _idx = [it for it in _idx if _q_relevant(it.get("title", ""), q)]
@@ -5570,6 +5618,15 @@ def catetbox():
             _WF_SEM.release()
     if res is None:
         # TIMEOUT: NO se cachea (puede ser un pico puntual; la proxima reintenta).
+        # Si el indice tenia algo (aunque fuera pobre), mejor eso que nada.
+        if _idx_respaldo:
+            for it in _idx_respaldo:
+                disp, ql = _cat_clean_quality(it.get("title", ""))
+                it["title"] = disp
+                if not it.get("quality"):
+                    it["quality"] = ql or _wf_quality_from_url(
+                        it.get("url") or it.get("content_id"))
+            return jsonify({"items": _idx_respaldo, "idx": True})
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
     if request.args.get("raw") == "1":
@@ -6812,7 +6869,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk83", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk84", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
