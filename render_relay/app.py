@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk82",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk83",
                     mimetype="text/plain")
 
 
@@ -6812,7 +6812,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk82", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk83", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7426,6 +7426,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ls-row.on .lsk{background:#ff375f;border-color:#ff375f}
 .ls-row .lsn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ls-row .lsc{flex:0 0 auto;font-size:12px;color:var(--sub);font-weight:600}
+.ls-quita{width:100%;background:transparent;border:1px solid var(--stroke);color:#ff6b6b;
+ border-radius:14px;padding:12px;font-size:13.5px;font-weight:700;cursor:pointer;margin-top:2px}
 .ls-foot{display:flex;gap:9px;padding:6px 12px 16px}
 .ls-new{flex:1;background:rgba(255,255,255,.07);border:1px solid var(--stroke);color:var(--txt);
  border-radius:14px;padding:13px;font-size:14.5px;font-weight:700;cursor:pointer}
@@ -7574,7 +7576,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div class="selbar" id="selbar">
    <span id="sel-n">0 seleccionados</span>
    <div class="selb">
-    <button class="selmv" onclick="selMover()">Añadir a…</button>
+    <button class="selmv" onclick="selMover()">Mover a…</button>
     <button class="selq" onclick="selQuitar()">Quitar</button>
     <button class="selx" onclick="selSalir()">✕</button>
    </div>
@@ -7741,6 +7743,11 @@ function lstDe(f){
   return LST.some(function(l){return l.id===id})});
  return a.length?a:[LST[0].id]}
 function lstItems(id){return favs.filter(function(f){return lstDe(f).indexOf(id)>=0})}
+// Lo guardado ANTES de que las listas fueran exclusivas puede estar en varias:
+// se queda en la ULTIMA a la que se mando (la que el usuario eligio despues).
+(function(){try{var c=false;
+ favs.forEach(function(f){if(f&&f.ls&&f.ls.length>1){f.ls=[f.ls[f.ls.length-1]];c=true}});
+ if(c)saveFavs();}catch(e){}})();
 function lstNueva(nombre){
  var n=(nombre||'').trim();if(!n)return null;
  var id='l'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
@@ -7767,11 +7774,13 @@ function slimAlts(a){return (a||[]).slice(0,4).map(function(z){
 function favCopia(x,ls){return {kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),ls:ls}}
 function favBuscar(x){for(var i=0;i<favs.length;i++)if(fk(favs[i])===fk(x))return favs[i];return null}
 function favEnLista(x,id){var f=favBuscar(x);return !!f&&lstDe(f).indexOf(id)>=0}
-// Guardar en UNA lista (creando el favorito si aun no estaba).
+// Guardar en una lista = MOVER a esa lista. Un titulo esta en UNA lista y solo
+// una: si estaba en "Mi lista" y lo mandas a "Pendiente", desaparece de "Mi
+// lista" en el acto (es como lo quiere el dueno, y es lo que uno espera).
 function favAdd(x,id){
  var f=favBuscar(x);
  if(!f){favs.unshift(favCopia(x,[id]))}
- else{var a=lstDe(f);if(a.indexOf(id)<0)a.push(id);f.ls=a;}
+ else{f.ls=[id];}
  saveFavs();mlPushSoon();}
 // Quitar de UNA lista; si no queda en ninguna, deja de estar guardado.
 function favQuitar(x,id){
@@ -8462,7 +8471,7 @@ function guardarEn(x,cb){
  mwOpen('lsheet',$('lsheet').querySelector('.box'),_closeLS);}
 function renderLS(){
  var b=$('ls-body');if(!b)return;
- if(LSVAR){          // varios a la vez: la lista donde estan TODOS sale marcada
+ if(LSVAR){          // varios a la vez
   b.innerHTML=LST.map(function(l){
    var n=lstItems(l.id).length;
    var todos=LSVAR.every(function(x){return favEnLista(x,l.id)});
@@ -8470,37 +8479,46 @@ function renderLS(){
     '<span class="lsk">'+(todos?'\u2713':'')+'</span>'+
     '<span class="lsn">'+esc(l.n)+'</span>'+
     '<span class="lsc">'+n+'</span></button>'}).join('');
-  $('ls-t').textContent=LSVAR.length+' t\u00edtulo(s) a\u2026';
+  $('ls-t').textContent='Mover '+LSVAR.length+' a\u2026';
   return;}
  if(!LSX)return;
+ // ELECCION UNICA: cada titulo esta en UNA lista. Se marca en la que esta y
+ // tocar otra lo MUEVE alli.
  b.innerHTML=LST.map(function(l){
   var on=favEnLista(LSX,l.id),n=lstItems(l.id).length;
   return '<button class="ls-row'+(on?' on':'')+'" onclick="lsTog(\''+l.id+'\')">'+
    '<span class="lsk">'+(on?'\u2713':'')+'</span>'+
    '<span class="lsn">'+esc(l.n)+'</span>'+
-   '<span class="lsc">'+n+'</span></button>'}).join('');
- $('ls-t').textContent=isFav(LSX)?'En tus listas':'Guardar en\u2026';}
+   '<span class="lsc">'+n+'</span></button>'}).join('')+
+  (isFav(LSX)?('<button class="ls-quita" onclick="lsQuita()">Quitar de mis listas</button>'):'');
+ $('ls-t').textContent=isFav(LSX)?'Mover a\u2026':'Guardar en\u2026';}
+function lsQuita(){
+ if(!LSX)return;
+ favQuitarTodo(LSX);
+ if(LSCB)LSCB();
+ if(CURVIEW==='lista')renderFavs();
+ toast('Quitado de tus listas');closeLS();}
 function lsTog(id){
  if(LSVAR){
-  // si ya estan TODOS en esa lista, el toque los saca; si no, los mete
-  var todos=LSVAR.every(function(x){return favEnLista(x,id)});
-  LSVAR.forEach(function(x){if(todos)favQuitar(x,id);else favAdd(x,id)});
-  renderLS();
+  var n=LSVAR.length;
+  LSVAR.forEach(function(x){favAdd(x,id)});     // MOVER: salen de donde estaban
   if(CURVIEW==='lista')renderFavs();
-  toast(todos?('Quitados de \u00ab'+lstNombre(id)+'\u00bb'):(LSVAR.length+' en \u00ab'+lstNombre(id)+'\u00bb'));
-  return;}
+  toast(n+' en \u00ab'+lstNombre(id)+'\u00bb');
+  closeLS();return;}
  if(!LSX)return;
- if(favEnLista(LSX,id)){favQuitar(LSX,id)}else{favAdd(LSX,id);toast('Guardado en \u00ab'+lstNombre(id)+'\u00bb')}
- renderLS();
+ if(favEnLista(LSX,id)){closeLS();return}       // ya esta ahi: nada que hacer
+ favAdd(LSX,id);                                // MOVER a esta lista
+ toast('En \u00ab'+lstNombre(id)+'\u00bb');
  if(LSCB)LSCB();
- if(CURVIEW==='lista')renderFavs();}
+ if(CURVIEW==='lista')renderFavs();
+ closeLS();}
 function lsNueva(){
  var n=prompt('Nombre de la lista nueva:','');
  if(n===null)return;
  n=(n||'').trim();if(!n){toast('Ponle un nombre');return}
  var id=lstNueva(n);if(!id)return;
- if(LSVAR){LSVAR.forEach(function(x){favAdd(x,id)});renderLS();
-  if(CURVIEW==='lista')renderFavs();toast(LSVAR.length+' en \u00ab'+n+'\u00bb');return}
+ if(LSVAR){var k=LSVAR.length;LSVAR.forEach(function(x){favAdd(x,id)});
+  if(CURVIEW==='lista')renderFavs();toast(k+' en \u00ab'+n+'\u00bb');closeLS();return}
  if(LSX)favAdd(LSX,id);
  renderLS();if(LSCB)LSCB();
  if(CURVIEW==='lista'){lstSel(id);renderFavs()}
@@ -8762,7 +8780,7 @@ function seedGate(ci,tb,proceed){proceed();
 function favLabel(x){
  if(!isFav(x))return '♡ Guardar en una lista';
  var f=favBuscar(x),ls=lstDe(f).map(lstNombre).filter(Boolean);
- return '♥ '+(ls.length===1?('En \u00ab'+ls[0]+'\u00bb'):('En '+ls.length+' listas'));}
+ return '♥ En \u00ab'+(ls[0]||'')+'\u00bb';}
 function sheetFav(){guardarEn(sel,function(){var b=$('sh-fav');if(b)b.textContent=favLabel(sel)})}
 function ovFav(){guardarEn(sel,function(){var b=$('ov-fav');if(b)b.textContent=favLabel(sel)})}
 function _closeSheet(){$('sheet').classList.remove('on')}
