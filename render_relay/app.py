@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk88",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk89",
                     mimetype="text/plain")
 
 
@@ -5359,6 +5359,76 @@ def _wfidx_load():
     return _WFIDX
 
 
+# --- Copia del indice fuera de /tmp (sobrevive a los despliegues) --------
+_WFIDX_SYNC = "https://mw-sync.israeldm93.workers.dev/wfidx"
+_WFIDX_SUBIDO = [0.0]        # cuando se subio por ultima vez
+_WFIDX_CAMBIOS = [0]         # entradas nuevas desde la ultima subida
+
+
+def _wfidx_nube_baja():
+    """Trae el indice guardado en el worker (solo si aqui no hay nada)."""
+    try:
+        if _wfidx_load():
+            return 0
+        import base64
+        import gzip
+        r = requests.get(_WFIDX_SYNC, timeout=12)
+        d = r.json() if r.status_code == 200 else {}
+        gz = (d or {}).get("gz")
+        if not gz:
+            return 0
+        crudo = gzip.decompress(base64.b64decode(gz)).decode("utf-8")
+        ent = _json.loads(crudo) or {}
+        if not isinstance(ent, dict) or not ent:
+            return 0
+        _WFIDX.update(ent)
+        _WFIDX_TS[0] = _t.time()
+        _wfidx_save()
+        return len(ent)
+    except Exception:
+        return 0
+
+
+def _wfidx_nube_sube(forzar=False):
+    """Guarda el indice en el worker, como mucho cada 5 minutos."""
+    try:
+        ahora = _t.time()
+        if not forzar and (ahora - _WFIDX_SUBIDO[0] < 300 or _WFIDX_CAMBIOS[0] < 25):
+            return 0
+        idx = _wfidx_load()
+        if not idx:
+            return 0
+        import base64
+        import gzip
+        gz = base64.b64encode(
+            gzip.compress(_json.dumps(idx).encode("utf-8"), 6)).decode("ascii")
+        _WFIDX_SUBIDO[0] = ahora
+        _WFIDX_CAMBIOS[0] = 0
+        r = requests.post(_WFIDX_SYNC, json={"gz": gz}, timeout=20)
+        return len(idx) if r.status_code == 200 else 0
+    except Exception:
+        return 0
+
+
+def _wfidx_arranca():
+    """Al arrancar: recuperar el indice (en un hilo, sin frenar el arranque)."""
+    def _ir():
+        try:
+            _t.sleep(2)
+            n = _wfidx_nube_baja()
+            if n:
+                print("[wfidx] recuperadas %d entradas de la copia" % n)
+        except Exception:
+            pass
+    try:
+        _thr.Thread(target=_ir, daemon=True).start()
+    except Exception:
+        pass
+
+
+_wfidx_arranca()      # recupera el indice nada mas arrancar (hilo aparte)
+
+
 def _wfidx_save():
     try:
         tmp = _WFIDX_FILE + ".tmp"
@@ -5549,7 +5619,9 @@ def _wfidx_learn(items):
                 n += 1
         if n:
             _WFIDX_TS[0] = _t.time()
+            _WFIDX_CAMBIOS[0] += n
             _wfidx_save()
+            _wfidx_nube_sube()
     except Exception:
         pass
 
@@ -5595,6 +5667,9 @@ def wffeed():
             idx.pop(k, None)
     _WFIDX_TS[0] = _t.time()
     _wfidx_save()
+    if n:
+        _WFIDX_CAMBIOS[0] += n
+        _wfidx_nube_sube()
     return jsonify({"ok": True, "n": len(idx), "nuevas": n})
 
 
@@ -6964,7 +7039,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk88", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk89", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de

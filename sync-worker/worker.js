@@ -104,6 +104,12 @@ async function googleUser(credential, clientId) {
 }
 
 // ===== Almacen ============================================================
+async function ensureKV(env) {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, ts INTEGER NOT NULL)"
+  ).run();
+}
+
 async function ensure(env) {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS users (uid TEXT PRIMARY KEY, data TEXT NOT NULL, ts INTEGER NOT NULL)"
@@ -169,6 +175,33 @@ export default {
         "ON CONFLICT(uid) DO UPDATE SET data = excluded.data, ts = excluded.ts"
       ).bind(u.sub, txt, ts).run();
       return json({ ok: true, ts });
+    }
+
+    // --- Copia del indice de WolfMax del relay ---------------------------
+    // Render borra /tmp en CADA despliegue, asi que el relay perdia el indice
+    // entero y WolfMax se quedaba cojo 10-20 minutos hasta que las cajas lo
+    // repoblaban. Aqui sobrevive. Llega ya comprimido (gzip+base64): el worker
+    // no mira dentro, solo lo guarda. Sin sesion, igual que /wffeed del relay.
+    if (path === "/wfidx") {
+      await ensureKV(env);
+      if (request.method === "GET") {
+        const row = await env.DB.prepare("SELECT v, ts FROM kv WHERE k = ?")
+          .bind("wfidx").first();
+        if (!row) return json({ ok: true, gz: null, ts: 0 });
+        return json({ ok: true, gz: row.v, ts: row.ts });
+      }
+      if (request.method === "POST") {
+        const body = await request.json().catch(() => null);
+        const gz = body && body.gz;
+        if (typeof gz !== "string" || !gz) return json({ ok: false, error: "sin gz" }, 400);
+        if (gz.length > 3 * 1024 * 1024) return json({ ok: false, error: "demasiado grande" }, 413);
+        const ts = Date.now();
+        await env.DB.prepare(
+          "INSERT INTO kv (k, v, ts) VALUES (?, ?, ?) " +
+          "ON CONFLICT(k) DO UPDATE SET v = excluded.v, ts = excluded.ts"
+        ).bind("wfidx", gz, ts).run();
+        return json({ ok: true, ts, bytes: gz.length });
+      }
     }
 
     return json({ ok: false, error: "no encontrado" }, 404);
