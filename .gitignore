@@ -30,3 +30,6 @@ kodi_log_relevant.txt
 pf.txt
 pf2.txt
 t.txt
+
+# Cache local de wrangler (estado de D1 en local, no va al repo)
+.wrangler/
