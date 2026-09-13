@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk81",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk82",
                     mimetype="text/plain")
 
 
@@ -6812,7 +6812,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk81", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk82", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7370,6 +7370,28 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Seleccion multiple en Mis listas (dejar pulsado) */
+.selbar{display:none;align-items:center;justify-content:space-between;gap:10px;
+ margin-bottom:10px;padding:9px 11px;border-radius:14px;background:rgba(10,132,255,.14);
+ border:1px solid rgba(10,132,255,.42);font-size:13.5px;font-weight:700}
+.selbar.on{display:flex}
+.selb{display:flex;gap:7px;flex:0 0 auto}
+.selb button{border:0;border-radius:11px;padding:9px 13px;font-size:13px;font-weight:700;cursor:pointer}
+.selmv{background:var(--blue);color:#fff}
+.selq{background:rgba(255,255,255,.10);color:var(--txt)}
+.selx{background:transparent;color:var(--sub);font-size:17px;padding:6px 8px}
+/* la cuadricula en modo seleccion: sin menu del navegador al dejar pulsado */
+.picking .card{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+.card.picked .ph{outline:3px solid var(--blue);outline-offset:-3px;border-radius:12px}
+.card.picked{opacity:.97}
+/* la marca va CENTRADA sobre la caratula: en las esquinas se pisaba con la
+   calidad, el corazon, la fuente y la etiqueta Pelicula/Serie */
+.card .tick{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+ width:38px;height:38px;border-radius:50%;background:rgba(8,12,22,.62);
+ border:2.5px solid rgba(255,255,255,.92);display:flex;align-items:center;
+ justify-content:center;font-size:20px;font-weight:800;color:#fff;z-index:3;
+ box-shadow:0 4px 14px rgba(0,0,0,.45)}
+.card.picked .tick{background:var(--blue);border-color:var(--blue)}
 /* Copia de seguridad (entrar con Google) */
 .cuenta{margin:4px 14px 14px;padding:13px 14px;border:1px solid var(--stroke);
  border-radius:16px;background:var(--card)}
@@ -7549,6 +7571,14 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  </section>
  <section id="pane-lista" class="pane hidden">
   <div class="lstbar" id="lstbar"></div>
+  <div class="selbar" id="selbar">
+   <span id="sel-n">0 seleccionados</span>
+   <div class="selb">
+    <button class="selmv" onclick="selMover()">Añadir a…</button>
+    <button class="selq" onclick="selQuitar()">Quitar</button>
+    <button class="selx" onclick="selSalir()">✕</button>
+   </div>
+  </div>
   <div class="listbar">
    <button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
   <div id="lista-grid" class="msg"></div>
@@ -8409,7 +8439,14 @@ function gsiEntra(resp){
    syncBajar(function(){toast('Copia de seguridad activada')});})
   .catch(function(){toast('No se pudo entrar')});}
 // ---- Hoja "Guardar en...": elegir a que lista va el titulo -------------
-var LSX=null,LSCB=null;
+// LSVAR = varios titulos a la vez (seleccion multiple de Mis listas).
+var LSX=null,LSCB=null,LSVAR=null;
+function guardarVarios(items){
+ if(!items||!items.length)return;
+ LSVAR=items;LSX=null;LSCB=null;
+ renderLS();
+ $('lsheet').classList.add('on');
+ mwOpen('lsheet',$('lsheet').querySelector('.box'),_closeLS);}
 function guardarEn(x,cb){
  if(!x)return;
  // Con UNA sola lista no hay nada que elegir: un toque y ya (lo de siempre).
@@ -8424,7 +8461,18 @@ function guardarEn(x,cb){
  $('lsheet').classList.add('on');
  mwOpen('lsheet',$('lsheet').querySelector('.box'),_closeLS);}
 function renderLS(){
- var b=$('ls-body');if(!b||!LSX)return;
+ var b=$('ls-body');if(!b)return;
+ if(LSVAR){          // varios a la vez: la lista donde estan TODOS sale marcada
+  b.innerHTML=LST.map(function(l){
+   var n=lstItems(l.id).length;
+   var todos=LSVAR.every(function(x){return favEnLista(x,l.id)});
+   return '<button class="ls-row'+(todos?' on':'')+'" onclick="lsTog(\''+l.id+'\')">'+
+    '<span class="lsk">'+(todos?'\u2713':'')+'</span>'+
+    '<span class="lsn">'+esc(l.n)+'</span>'+
+    '<span class="lsc">'+n+'</span></button>'}).join('');
+  $('ls-t').textContent=LSVAR.length+' t\u00edtulo(s) a\u2026';
+  return;}
+ if(!LSX)return;
  b.innerHTML=LST.map(function(l){
   var on=favEnLista(LSX,l.id),n=lstItems(l.id).length;
   return '<button class="ls-row'+(on?' on':'')+'" onclick="lsTog(\''+l.id+'\')">'+
@@ -8433,6 +8481,14 @@ function renderLS(){
    '<span class="lsc">'+n+'</span></button>'}).join('');
  $('ls-t').textContent=isFav(LSX)?'En tus listas':'Guardar en\u2026';}
 function lsTog(id){
+ if(LSVAR){
+  // si ya estan TODOS en esa lista, el toque los saca; si no, los mete
+  var todos=LSVAR.every(function(x){return favEnLista(x,id)});
+  LSVAR.forEach(function(x){if(todos)favQuitar(x,id);else favAdd(x,id)});
+  renderLS();
+  if(CURVIEW==='lista')renderFavs();
+  toast(todos?('Quitados de \u00ab'+lstNombre(id)+'\u00bb'):(LSVAR.length+' en \u00ab'+lstNombre(id)+'\u00bb'));
+  return;}
  if(!LSX)return;
  if(favEnLista(LSX,id)){favQuitar(LSX,id)}else{favAdd(LSX,id);toast('Guardado en \u00ab'+lstNombre(id)+'\u00bb')}
  renderLS();
@@ -8443,12 +8499,86 @@ function lsNueva(){
  if(n===null)return;
  n=(n||'').trim();if(!n){toast('Ponle un nombre');return}
  var id=lstNueva(n);if(!id)return;
+ if(LSVAR){LSVAR.forEach(function(x){favAdd(x,id)});renderLS();
+  if(CURVIEW==='lista')renderFavs();toast(LSVAR.length+' en \u00ab'+n+'\u00bb');return}
  if(LSX)favAdd(LSX,id);
  renderLS();if(LSCB)LSCB();
  if(CURVIEW==='lista'){lstSel(id);renderFavs()}
  toast('Guardado en \u00ab'+n+'\u00bb');}
-function _closeLS(){$('lsheet').classList.remove('on');LSX=null;LSCB=null}
+function _closeLS(){$('lsheet').classList.remove('on');LSX=null;LSCB=null;
+ if(LSVAR){LSVAR=null;selSalir()}}
 function closeLS(){mwBack('lsheet')}
+// ===== SELECCION MULTIPLE (Mis listas) =================================
+// Dejar pulsado medio segundo marca el primero; luego cada toque marca o
+// desmarca. Sirve para mandar varios titulos a una lista de una vez.
+var PICK=false,PICKED={};
+function pickN(){var n=0;for(var k in PICKED)if(PICKED[k])n++;return n}
+function pickPinta(){
+ var b=$('selbar');if(b){b.classList.toggle('on',PICK);
+  var e=$('sel-n');if(e){var n=pickN();e.textContent=n===1?'1 seleccionado':(n+' seleccionados')}}
+ var g=$('lista-grid');if(g)g.classList.toggle('picking',PICK);
+ // marcas en las tarjetas, sin repintar la cuadricula entera
+ var cards=(g&&g.querySelectorAll('.card'))||[];
+ for(var i=0;i<cards.length;i++){
+  var x=LISTS.lista[i];if(!x)continue;
+  var on=!!PICKED[fk(x)];
+  cards[i].classList.toggle('picked',on);
+  var ph=cards[i].querySelector('.ph'),t=cards[i].querySelector('.tick');
+  if(PICK){if(!t&&ph){t=document.createElement('div');t.className='tick';ph.appendChild(t)}
+   if(t)t.textContent=on?'\u2713':''}
+  else if(t)t.remove();}}
+function pickEntra(i){
+ if(PICK)return;
+ PICK=true;PICKED={};
+ var x=LISTS.lista[i];if(x)PICKED[fk(x)]=1;
+ mwOpen('pick',null,function(){PICK=false;PICKED={};pickPinta()});
+ pickPinta();
+ try{if(navigator.vibrate)navigator.vibrate(12)}catch(e){}}
+function pickTog(i){
+ var x=LISTS.lista[i];if(!x)return;
+ var k=fk(x);
+ if(PICKED[k])delete PICKED[k];else PICKED[k]=1;
+ if(!pickN()){selSalir();return}
+ pickPinta();}
+function selSalir(){if(!PICK)return;mwBack('pick')}
+function selItems(){return LISTS.lista.filter(function(x){return !!PICKED[fk(x)]})}
+function selMover(){
+ var its=selItems();if(!its.length)return;
+ guardarVarios(its);}
+function selQuitar(){
+ var its=selItems();if(!its.length)return;
+ var l=lstNombre(LSTSEL);
+ if(!confirm('\u00bfQuitar '+its.length+' t\u00edtulo(s) de \u00ab'+l+'\u00bb?'))return;
+ its.forEach(function(x){favQuitar(x,LSTSEL)});
+ selSalir();renderFavs();toast('Quitados de \u00ab'+l+'\u00bb');}
+// Los toques de la cuadricula de Mis listas (delegado: sobrevive a repintados)
+function pickEngancha(){
+ var g=$('lista-grid');if(!g||g._pick)return;g._pick=1;
+ var t0=0,tid=null,idx=-1,movido=false;
+ function indiceDe(ev){
+  var c=ev.target&&ev.target.closest?ev.target.closest('.card'):null;
+  if(!c||!c.parentNode)return -1;
+  return Array.prototype.indexOf.call(c.parentNode.children,c);}
+ g.addEventListener('touchstart',function(ev){
+  idx=indiceDe(ev);movido=false;if(idx<0)return;
+  clearTimeout(tid);
+  tid=setTimeout(function(){if(!movido&&idx>=0)pickEntra(idx)},480);},{passive:true});
+ g.addEventListener('touchmove',function(){movido=true;clearTimeout(tid)},{passive:true});
+ g.addEventListener('touchend',function(){clearTimeout(tid)},{passive:true});
+ g.addEventListener('touchcancel',function(){clearTimeout(tid)},{passive:true});
+ // raton (para probar desde el PC)
+ g.addEventListener('mousedown',function(ev){
+  idx=indiceDe(ev);movido=false;if(idx<0)return;
+  clearTimeout(tid);tid=setTimeout(function(){if(idx>=0)pickEntra(idx)},480);});
+ g.addEventListener('mouseup',function(){clearTimeout(tid)});
+ g.addEventListener('mouseleave',function(){clearTimeout(tid)});
+ // en modo seleccion, el toque marca en vez de abrir
+ g.addEventListener('click',function(ev){
+  if(!PICK)return;
+  var i=indiceDe(ev);if(i<0)return;
+  ev.preventDefault();ev.stopPropagation();
+  pickTog(i);},true);
+ g.addEventListener('contextmenu',function(ev){if(PICK)ev.preventDefault()});}
 function renderLstBar(){var b=$('lstbar');if(!b)return;
  b.innerHTML=LST.map(function(l){
   var n=lstItems(l.id).length;
@@ -8495,7 +8625,11 @@ function renderFavs(){
   g.innerHTML=favs.length?('\u00ab'+esc(lstNombre(LSTSEL))+'\u00bb est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo y elige esta lista.')
     :'Tu lista est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo.';
   if(b)b.style.display='none';return}
- if(b)b.style.display='';renderGrid(g,'lista');applyView()}
+ if(b)b.style.display='';renderGrid(g,'lista');applyView();
+ pickEngancha();
+ // si al repintar ya no queda nada marcado (se movio todo), se sale del modo
+ if(PICK){var vivos=0;for(var i=0;i<LISTS.lista.length;i++)if(PICKED[fk(LISTS.lista[i])])vivos++;
+  if(!vivos){selSalir();return}pickPinta();}}
 function applyView(){var lv=localStorage.getItem('mw_lv')==='1';var g=$('lista-grid');if(g){var grid=g.querySelector('.grid');if(grid)grid.classList.toggle('lv',lv)}var b=$('vtog');if(b)b.innerHTML=lv?'▦ Vista cuadrícula':'☰ Vista lista'}
 function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')==='1'?'0':'1');applyView()}
 function cardHTML(x,list,i){
@@ -8745,13 +8879,18 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;sel=x;$('ov').classList.a
   if(!eps.length&&x.epsAlt&&x.epsAlt.length){OVDATA={d:{title:x.title,episodes:x.epsAlt,
     poster:x.poster,year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,
     genres:x.genres},x:x};renderEpisodes();return;}
-  if(!eps.length){OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>';return}
+  if(!eps.length){OVRETRY=x;
+   // CON LAS ALTERNATIVAS: sin ellas no se puede volver a la fuente que si
+   // tenia los capitulos y hay que cerrar la ficha entera.
+   $('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a>'+
+    (((x.alts||[]).length)?'<br><br>O prueba otra fuente aquí arriba ↑':'')+'</div>';return}
   OVDATA={d:d,x:x};favLearnEps(x,eps);renderEpisodes();
  }).catch(function(){clearTimeout(kill);
   if(x.epsAlt&&x.epsAlt.length){OVDATA={d:{title:x.title,episodes:x.epsAlt,poster:x.poster,
     year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,genres:x.genres},x:x};
    renderEpisodes();return;}
-  OVRETRY=x;$('ov-body').innerHTML='<div class="msg">No se pudieron cargar los episodios. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>'})}
+  OVRETRY=x;$('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron cargar los episodios. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a>'+
+    (((x.alts||[]).length)?'<br><br>O prueba otra fuente aquí arriba ↑':'')+'</div>'})}
 var OVRETRY=null;
 function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var _epi=0;
  var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
