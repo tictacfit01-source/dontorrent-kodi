@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk86",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk87",
                     mimetype="text/plain")
 
 
@@ -6901,7 +6901,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk86", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk87", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -8296,10 +8296,13 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  function wfPide(){
   boxMerge('buscar',g,'search',q,'wf',function(r){
     if(seq!==_searchSeq)return;
-    if(!(r&&r.got)&&!wfRe){wfRe=1;   // expiro O vino vacio (ver _CATBOX_TTL_EMPTY_WF)
+    // DOS reintentos, no uno: un titulo que ninguna caja tiene indexado le
+    // cuesta ~88s de rastreo y el primer reintento (35s) llegaba demasiado
+    // pronto. Al segundo (95s) ya esta en el indice y contesta en milisegundos.
+    if(!(r&&r.got)&&wfRe<2){wfRe++;
      progSet('wf',0);                       // sigue buscando, no es un cero
      if(more)paint();
-     setTimeout(function(){if(seq===_searchSeq)wfPide()},35000);
+     setTimeout(function(){if(seq===_searchSeq)wfPide()},wfRe===1?35000:60000);
      lanzarResto();return;}
     progSet('wf',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);
     // llega DESPUES de que la barra se cerrara: se vuelve a asomar un momento
