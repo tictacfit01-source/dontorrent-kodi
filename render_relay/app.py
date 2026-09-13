@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk74",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk75",
                     mimetype="text/plain")
 
 
@@ -6778,7 +6778,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk74", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk75", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7331,6 +7331,25 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Historial: lo último mandado a la tele, para repetirlo de un toque */
+.histbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;
+ font-size:12.5px;color:var(--sub);min-height:30px}
+.hitem{display:flex;align-items:center;gap:11px;padding:9px;border-radius:14px;
+ background:var(--card);border:1px solid var(--stroke);margin-bottom:9px}
+.hitem .hp{width:44px;height:64px;flex:0 0 auto;border-radius:8px;background:#131a2a center/cover no-repeat;
+ display:flex;align-items:center;justify-content:center;font-size:17px;opacity:.98}
+.hitem .hp.np::after{content:'🎬';opacity:.35}
+.hitem .hm{flex:1;min-width:0}
+.hitem .ht{font-size:14px;font-weight:700;line-height:1.25;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hitem .hs{font-size:11.5px;color:var(--sub);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.hitem .hsrc{font-weight:700;font-size:10.5px;padding:1px 7px;border-radius:999px;background:rgba(255,255,255,.08)}
+.hitem .hsrc.dt{color:#0a84ff}.hitem .hsrc.et{color:#ff9f0a}
+.hitem .hsrc.dx{color:#30d158}.hitem .hsrc.wf{color:#bf5af2}
+.hitem .hb{flex:0 0 auto;display:flex;gap:7px}
+.hitem button{border:0;border-radius:12px;padding:10px 13px;font-size:15px;cursor:pointer;
+ background:rgba(255,255,255,.08);color:var(--txt)}
+.hitem button.play{background:var(--green);color:#08210f;font-weight:800}
 /* Progreso de la búsqueda: qué fuente ha contestado y cuánto lleva.
    OJO: se llama `srcp` y NO `prog` porque `.prog` ya es la barra del
    reproductor (height:5px + overflow:hidden) y recortaba esto a una rayita. */
@@ -7341,6 +7360,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srcp-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px}
 .srcp-ttl{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--txt)}
 .srcp-sec{font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums;flex:0 0 auto}
+.srcp-x{color:var(--sub);font-weight:500}
 .srcp-bar{height:5px;border-radius:5px;background:rgba(255,255,255,.09);overflow:hidden}
 .srcp-bar i{display:block;height:100%;width:0;border-radius:5px;
  background:linear-gradient(90deg,var(--blue2),var(--blue));
@@ -7398,6 +7418,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <button id="tab-inicio" class="tab on" onclick="goView('inicio')">Inicio</button>
   <button id="tab-buscar" class="tab" onclick="goView('buscar')">Buscar</button>
   <button id="tab-lista" class="tab" onclick="goView('lista')">Mi lista</button>
+  <button id="tab-hist" class="tab" onclick="goView('hist')">Historial</button>
  </div>
  <div class="srclegend">
   <span><i style="background:#4a9eff"></i>DonTorrent</span>
@@ -7426,6 +7447,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div id="buscar-prog" class="srcp"></div>
   <div id="buscar-grid" class="msg">Busca pelis y series y envíalas a tu tele 📺</div>
   <div id="buscar-more" class="morebar"></div>
+ </section>
+ <section id="pane-hist" class="pane hidden">
+  <div class="histbar"><span id="hist-n"></span>
+   <button class="vtog" id="hist-clear" onclick="histClear()" style="display:none">🗑 Vaciar historial</button></div>
+  <div id="hist-list" class="msg"></div>
  </section>
  <section id="pane-lista" class="pane hidden">
   <div class="listbar"><button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
@@ -7689,7 +7715,14 @@ document.addEventListener('touchend',function(e){
 document.addEventListener('touchcancel',function(){if(MWD){mwDragEnd(MWD.el,1);MWD=null}});
 // Pestanas: estar en Buscar / Mi lista es tambien un "sitio del que se vuelve".
 // Una sola entrada en la pila por mucho que se salte entre pestanas.
-function setView(v){['inicio','buscar','lista'].forEach(function(k){$('pane-'+k).classList.toggle('hidden',k!==v);$('tab-'+k).classList.toggle('on',k===v)});if(v==='lista')renderFavs()}
+var CURVIEW='inicio';
+function setView(v){CURVIEW=v;
+ ['inicio','buscar','lista','hist'].forEach(function(k){
+  var pa=$('pane-'+k),tb=$('tab-'+k);
+  if(pa)pa.classList.toggle('hidden',k!==v);
+  if(tb)tb.classList.toggle('on',k===v)});
+ if(v==='lista')renderFavs();
+ if(v==='hist')renderHist()}
 function goView(v){
  if(v==='inicio'){if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
  mwOpen('tab',null,function(){setView('inicio')});setView(v);}
@@ -7781,22 +7814,47 @@ function upgrade(list,k,x,at,swapped){var i=at[k];if(i===undefined)return;
   if(union)x.eps=union;
   else if(!xe&&ce)x.epsAlt=ce;
   else if(!xe&&cur.epsAlt)x.epsAlt=cur.epsAlt;
-  x.alts=addAlt(x.alts,cur);
+  x.alts=addAlt(x.alts,cur,x);
+  LISTS[list][i]=x;if(swapped.indexOf(i)<0)swapped.push(i);}
+ else if(altKey(x)===altKey(cur)&&altMejor(cur,x)===x){
+  // MISMA fuente y MISMA calidad, pero la que llega es mas completa (trae
+  // capitulos): se queda ella. Antes se descartaba y la serie abria vacia.
+  ['poster','rating','year','overview','genres','backdrop','tmdb_id'].forEach(function(f){
+   if(x[f]===undefined||x[f]===null||x[f]==='')if(cur[f]!==undefined)x[f]=cur[f];});
+  if(union)x.eps=union;
+  else if(!xe&&ce)x.epsAlt=ce;
+  else if(!xe&&cur.epsAlt)x.epsAlt=cur.epsAlt;
+  x.alts=addAlt(cur.alts,x,x);
   LISTS[list][i]=x;if(swapped.indexOf(i)<0)swapped.push(i);}
  else{
   if(union){cur.eps=union;if(swapped.indexOf(i)<0)swapped.push(i);}
   else if(!ce&&xe)cur.epsAlt=xe;
-  cur.alts=addAlt(cur.alts,x);}}
+  cur.alts=addAlt(cur.alts,x,cur);}}
 // Guarda la version que PIERDE la tarjeta (otra fuente, quizá mejor calidad)
 // para poder elegirla luego en la ficha. Sin anidar: las alternativas de la
 // perdedora se suben al mismo nivel, y nunca se repite una fuente.
-function addAlt(alts,otra){
- var out=(alts||[]).slice();
- var pool=[otra].concat(otra.alts||[]);
- pool.forEach(function(a){if(!a||!a.source)return;
+// Clave de una versión: fuente + calidad. Antes se deduplicaba por
+// (fuente, content_id) y salían SEIS chips "WolfMax 4K" de la misma peli.
+function altKey(a){return (a&&a.source||'dt')+'|'+((a&&a.quality)||'');}
+// Entre dos versiones de la misma fuente+calidad, la más completa: la que trae
+// capítulos, y a igualdad la que tenga póster/nota.
+function altMejor(a,b){
+ var ea=(a.eps||[]).length,eb=(b.eps||[]).length;
+ if(ea!==eb)return ea>eb?a:b;
+ if(!!a.poster!==!!b.poster)return a.poster?a:b;
+ return a;}
+// `activa` es la tarjeta que se esta mostrando: su version NO puede figurar
+// tambien como alternativa (salia un chip repetido que al pulsarlo no hacia
+// nada, porque ya estabas en el).
+function addAlt(alts,otra,activa){
+ var by={},orden=[],ka=activa?altKey(activa):null;
+ (alts||[]).concat([otra]).concat(otra&&otra.alts||[]).forEach(function(a){
+  if(!a||!a.source)return;
   var c={};for(var k in a)if(k!=='alts')c[k]=a[k];
-  if(!out.some(function(z){return z.source===c.source&&(z.content_id||z.url)===(c.content_id||c.url)}))out.push(c);});
- return out;}
+  var kk=altKey(c);
+  if(kk===ka)return;
+  if(by[kk]){by[kk]=altMejor(by[kk],c)}else{by[kk]=c;orden.push(kk)}});
+ return orden.slice(0,6).map(function(k){return by[k]});}
 function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return;
  var c=grid.children[i];if(!c)return;
  var tmp=document.createElement('div');tmp.innerHTML=cardHTML(LISTS[list][i],list,i);
@@ -7821,7 +7879,18 @@ function progPaint(){var el=$('buscar-prog');if(!el)return;
   return '<span class="'+cls+'"><i></i>'+txt+'</span>'}).join('');
  var seg=((Date.now()-PROG.t0)/1000).toFixed(1).replace('.',',');
  var fin=(hechas===4);
- var ttl=fin?('✓ '+total+' resultado'+(total===1?'':'s')+' en '+ks.filter(function(k){return PROG.st[k]===1}).length+' fuente'+(ks.filter(function(k){return PROG.st[k]===1}).length===1?'':'s'))
+ // Lo que se CUENTA arriba son las tarjetas que hay en pantalla, no la suma
+ // de las fuentes: la misma peli en cuatro fuentes es UNA tarjeta (las otras
+ // tres viven dentro, en "Tambien en"). Sumando salia "34 resultados" con 11
+ // tarjetas a la vista y parecia que se perdian.
+ var vis=((window.LISTS&&LISTS.buscar)||[]).length;
+ var nf=ks.filter(function(k){return PROG.st[k]===1}).length;
+ // Las versiones que se pueden ELEGIR de verdad (los chips "Tambien en"), no la
+ // resta contra la suma de las fuentes: esa incluye copias identicas de la
+ // misma fuente y calidad, que no se muestran porque no aportan nada.
+ var extra=0;((window.LISTS&&LISTS.buscar)||[]).forEach(function(x){extra+=((x&&x.alts)||[]).length});
+ var ttl=fin?('✓ '+vis+' título'+(vis===1?'':'s')+' en '+nf+' fuente'+(nf===1?'':'s')+
+   (extra?(' <span class="srcp-x">+'+extra+(extra===1?' versión':' versiones')+'</span>'):''))
             :('<span class="spin"></span> Buscando en '+(4-hechas)+' fuente'+((4-hechas)===1?'':'s')+'…');
  el.innerHTML='<div class="srcp-top"><span class="srcp-ttl">'+ttl+'</span>'+
   '<span class="srcp-sec">'+seg+' s</span></div>'+
@@ -7970,6 +8039,57 @@ function favLearnEps(x,eps){
   if(fk(favs[i])!==fk(x))continue;
   if(!(favs[i].eps&&favs[i].eps.length)){favs[i].eps=slimEps(eps);saveFavs()}
   return;}}
+// ===== HISTORIAL =====================================================
+// Lo último que se ha mandado a la tele, para volver a ponerlo de UN TOQUE
+// (guardamos la propia referencia de reproducción: no hay que buscar de nuevo
+// ni abrir la ficha). Vive en este móvil (localStorage), como los vistos.
+var hist=[];try{hist=JSON.parse(localStorage.getItem('mw_hist')||'[]')||[]}catch(e){hist=[]}
+function histSave(){try{localStorage.setItem('mw_hist',JSON.stringify(hist.slice(0,60)))}catch(e){}}
+function histKey(h){return (h.ref&&(h.ref.u||((h.ref.c||'')+':'+(h.ref.tb||''))))||h.t||''}
+// Foto de lo que se esta mandando. Hay que tomarla EN EL MOMENTO del envio:
+// para cuando contesta la tele, `sel` ya puede ser otra cosa.
+function histSnap(ref){
+ if(!ref||!ref.t)return null;
+ var x=sel||{};
+ return {t:ref.t,ref:ref,ts:Date.now(),src:x.source||'dt',q:x.quality||'',
+         poster:x.poster||'',kind:x.kind||'movie'};}
+function histPush(e){
+ if(!e)return;
+ e.ts=Date.now();
+ var k=histKey(e);
+ hist=hist.filter(function(h){return histKey(h)!==k});   // sin repetir: sube arriba
+ hist.unshift(e);hist=hist.slice(0,60);histSave();
+ if(CURVIEW==='hist')renderHist();}
+function histAdd(ref){histPush(histSnap(ref))}
+function histDel(i){hist.splice(i,1);histSave();renderHist()}
+function histClear(){if(!hist.length)return;
+ if(!confirm('¿Vaciar todo el historial?'))return;
+ hist=[];histSave();renderHist()}
+function histHace(ts){var s=Math.max(0,(Date.now()-ts)/1000);
+ if(s<90)return 'hace un momento';
+ var m=Math.round(s/60);if(m<60)return 'hace '+m+' min';
+ var h=Math.round(m/60);if(h<24)return 'hace '+h+' h';
+ var d=Math.round(h/24);return d===1?'ayer':('hace '+d+' días')}
+function histPlay(i){var e=hist[i];if(!e||!e.ref)return;
+ var g=sel;sel=e;          // asi la foto del registro conserva fuente/calidad/poster
+ try{sendPlay(e.ref)}finally{sel=g}}
+function renderHist(){
+ var el=$('hist-list'),bar=$('hist-n'),bt=$('hist-clear');if(!el)return;
+ if(!hist.length){el.className='msg';
+  el.textContent='Aquí aparecerá lo que mandes a la tele, para repetirlo de un toque.';
+  if(bar)bar.textContent='';if(bt)bt.style.display='none';return}
+ if(bar)bar.textContent=hist.length+(hist.length===1?' título':' títulos');
+ if(bt)bt.style.display='';
+ var SL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax'};
+ el.className='';
+ el.innerHTML=hist.map(function(h,i){
+  var ph=h.poster?(' style="background-image:url('+esc(h.poster)+')"'):'';
+  return '<div class="hitem"><div class="hp'+(h.poster?'':' np')+'"'+ph+'></div>'+
+   '<div class="hm"><div class="ht">'+esc(h.t)+'</div>'+
+   '<div class="hs"><span class="hsrc '+(h.src||'dt')+'">'+esc(SL[h.src]||'?')+'</span>'+
+   (h.q?('<span>'+esc(h.q)+'</span>'):'')+'<span>'+esc(histHace(h.ts))+'</span></div></div>'+
+   '<div class="hb"><button class="play" onclick="histPlay('+i+')" title="Volver a poner">▶</button>'+
+   '<button onclick="histDel('+i+')" title="Quitar del historial">✕</button></div></div>'}).join('');}
 function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();var b=$('vtog');if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';if(b)b.style.display='none';return}if(b)b.style.display='';renderGrid(g,'lista');applyView()}
 function applyView(){var lv=localStorage.getItem('mw_lv')==='1';var g=$('lista-grid');if(g){var grid=g.querySelector('.grid');if(grid)grid.classList.toggle('lv',lv)}var b=$('vtog');if(b)b.innerHTML=lv?'▦ Vista cuadrícula':'☰ Vista lista'}
 function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')==='1'?'0':'1');applyView()}
@@ -8016,14 +8136,20 @@ function openItem(list,i){openCard(LISTS[list][i])}
 // 9 GB) es lo mejor que da el sistema y antes se perdía en cuanto otra fuente
 // ganaba la tarjeta: aquí se puede elegir a mano, siempre.
 var ALTLBL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax'};
-function altsInner(x){var all=[x].concat(x.alts||[]);
+function altsInner(x){
+ // la actual + sus alternativas, SIN repetir fuente+calidad (ver addAlt)
+ var by={},all=[];
+ [x].concat(x.alts||[]).forEach(function(a){if(!a||!a.source)return;
+  var k=altKey(a);if(by[k])return;by[k]=1;all.push(a)});
  if(all.length<2)return '';
+ var kx=altKey(x);
  return '<span class="altq" style="align-self:center">También en:</span>'+
-  all.map(function(a){return '<button class="altb'+(a===x?' on':'')+'" onclick="pickAlt(\''+(a.source||'dt')+'\')">'+
+  all.map(function(a){var k=altKey(a);
+   return '<button class="altb'+(k===kx?' on':'')+'" onclick="pickAlt(\''+esc(k)+'\')">'+
    esc(ALTLBL[a.source||'dt']||'?')+(a.quality?('<span class="altq">'+esc(a.quality)+'</span>'):'')+'</button>'}).join('');}
 function altsHTML(x){var h=altsInner(x);return h?('<div class="sh-alts">'+h+'</div>'):'';}
 function renderAlts(x){var el=$('sh-alts');if(el)el.innerHTML=altsInner(x);}
-function pickAlt(src){
+function pickAlt(clave){
  // el item que se está viendo: el del overlay de serie si está abierto, si no
  // el de la ficha. (Antes se usaba `sel` siempre y en las series no se
  // actualizaba -> no se podía volver a la fuente anterior.)
@@ -8031,7 +8157,10 @@ function pickAlt(src){
  var act=(ov&&OVDATA&&OVDATA.x)?OVDATA.x:sel;
  if(!act)return;
  var all=[act].concat(act.alts||[]);
- var a=null;for(var j=0;j<all.length;j++){if((all[j].source||'dt')===src){a=all[j];break}}
+ var a=null;
+ for(var j=0;j<all.length;j++){if(altKey(all[j])===clave){a=all[j];break}}
+ // por compatibilidad: si viene solo la fuente, la primera de esa fuente
+ if(!a)for(var j2=0;j2<all.length;j2++){if((all[j2].source||'dt')===clave){a=all[j2];break}}
  if(!a||a===act)return;
  var resto=all.filter(function(z){return z!==a});
  var c={};for(var k in a)if(k!=='alts')c[k]=a[k];c.alts=resto;
@@ -8165,8 +8294,9 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
  if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
  toast('Enviando a la tele...');
+ var hsnap=null;try{hsnap=histSnap(ref)}catch(e){}   // ver histSnap: `sel` cambia
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-  .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
+  .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');try{histPush(hsnap)}catch(e){};closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
