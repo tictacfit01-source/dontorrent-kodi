@@ -14,6 +14,6 @@ database_id = "8543520f-9ac9-49c8-9f27-55e83522f63b"
 [vars]
 # Client ID de Google (es PUBLICO por diseno: va en la propia pagina).
 # El origen de la web tiene que estar autorizado en la consola de Google Cloud.
-GOOGLE_CLIENT_ID = ""
+GOOGLE_CLIENT_ID = "839927719843-4pv0bo17vmqcfmdl35dbbds08t02c4ms.apps.googleusercontent.com"
 # APP_JWT_SECRET va como SECRETO (wrangler secret put APP_JWT_SECRET), nunca aqui:
 # este repositorio es PUBLICO.
