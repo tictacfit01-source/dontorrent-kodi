@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk85",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk86",
                     mimetype="text/plain")
 
 
@@ -5558,23 +5558,29 @@ def catetbox():
     _idx_respaldo = []
     if op == "search" and q and srcs.replace(" ", "") == "wf":
         _idx = _wf_idx_search(q)
-        # Si TODO lo que sale del indice esta pobre, no vale para agrupar: se
-        # va por la caja (que lo trae con sus capitulos) y de paso el indice se
-        # corrige. Estas quedan de respaldo, UNA por titulo+calidad.
-        if _idx and all(_wf_pobre(it.get("url") or it.get("content_id"),
-                                  it.get("title"), it.get("kind"))
-                        for it in _idx):
-            _vistos, _uno = set(), []
-            for it in _idx:
-                k = ((it.get("title") or "").lower().strip(), it.get("quality") or
-                     _wf_quality_from_url(it.get("url") or it.get("content_id")) or "")
-                if k in _vistos:
-                    continue
-                _vistos.add(k)
-                _uno.append(it)
-            _idx_respaldo = _uno
-            _idx = []
-            _wfidx_ask_box()
+        # Las entradas degradadas se descartan SIEMPRE, no solo cuando lo son
+        # todas: en cuanto hubo mezcla (las buenas que traen las cajas 2.9.64 y
+        # las viejas) se colaban otra vez -> "silo" daba DIECIOCHO tarjetas sin
+        # capitulos. Quedan de respaldo, UNA por titulo+calidad, por si la caja
+        # tampoco contesta.
+        if _idx:
+            _malas = [it for it in _idx
+                      if _wf_pobre(it.get("url") or it.get("content_id"),
+                                   it.get("title"), it.get("kind"))]
+            _idx = [it for it in _idx if it not in _malas]
+            if _malas:
+                _vistos, _uno = set(), []
+                for it in _malas:
+                    k = ((it.get("title") or "").lower().strip(),
+                         it.get("quality") or _wf_quality_from_url(
+                             it.get("url") or it.get("content_id")) or "")
+                    if k in _vistos:
+                        continue
+                    _vistos.add(k)
+                    _uno.append(it)
+                _idx_respaldo = _uno
+            if not _idx:
+                _wfidx_ask_box()
         if _idx:
             _idx = _cat_group_episodes(_idx)
             _idx = [it for it in _idx if _q_relevant(it.get("title", ""), q)]
@@ -5583,6 +5589,7 @@ def catetbox():
                 it["title"] = disp
                 if not it.get("quality"):
                     it["quality"] = ql or _wf_quality_from_url(it.get("url"))
+            _idx = _wf_colapsa(_idx)
             if _idx:
                 _idx = _bounded(lambda: _cat_enrich(_idx, limit=40), 6.0,
                                 default=_idx) or _idx
@@ -6894,7 +6901,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk85", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk86", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
