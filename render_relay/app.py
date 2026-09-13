@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk87",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk88",
                     mimetype="text/plain")
 
 
@@ -5423,6 +5423,69 @@ _WF_CAP_RE = re.compile(r"(cap[ií]tulo|\bcap\.?\s*\d|\d+\s*x\s*\d{2}|temporada)
 _WF_EP_URL_RE = re.compile(r"/(?:serie-online[\w-]*|online|capitulo|episodio)/\d+", re.I)
 
 
+def _une_series_partidas(items):
+    """Une tarjetas de la MISMA fuente que son trozos de la misma serie.
+
+    Ver la cabecera del arreglo: "Widows Bay" y "La maldicion de Widows Bay"
+    eran la misma serie con los capitulos repartidos. Solo se unen si un titulo
+    contiene al otro (palabras completas), comparten fuente y calidad, y sus
+    capitulos NO se solapan -> dos series que se parezcan de nombre pero tengan
+    el mismo 1x01 NUNCA se mezclan.
+    """
+    def _pal(t):
+        t = _cat_norm_title(t) if "_cat_norm_title" in globals() else (t or "").lower()
+        return [w for w in re.split(r"[^\w]+", t, flags=re.U) if w]
+
+    def _clave_eps(it):
+        out = set()
+        for e in (it.get("eps") or []):
+            s_, e_ = e.get("season"), e.get("episode")
+            if s_ or e_:
+                out.add((s_ or 0, e_ or 0))
+            elif e.get("label"):
+                out.add(("l", e["label"]))
+        return out
+
+    series = [it for it in (items or [])
+              if (it or {}).get("kind") == "serie" and (it.get("eps") or [])]
+    if len(series) < 2:
+        return items
+    fuera = set()
+    for i, a in enumerate(series):
+        if id(a) in fuera:
+            continue
+        for b in series[i + 1:]:
+            if id(b) in fuera:
+                continue
+            if (a.get("source") or "") != (b.get("source") or ""):
+                continue
+            if (a.get("quality") or "") != (b.get("quality") or ""):
+                continue
+            pa, pb = _pal(a.get("title")), _pal(b.get("title"))
+            if not pa or not pb:
+                continue
+            corto, largo = (pa, pb) if len(pa) <= len(pb) else (pb, pa)
+            # el titulo corto tiene que estar ENTERO dentro del largo, seguido
+            if not any(largo[k:k + len(corto)] == corto
+                       for k in range(len(largo) - len(corto) + 1)):
+                continue
+            if _clave_eps(a) & _clave_eps(b):
+                continue                       # se solapan: son series distintas
+            # gana el del titulo mas largo; se lleva los capitulos de los dos
+            ganador, perdedor = (a, b) if len(pa) >= len(pb) else (b, a)
+            eps = (ganador.get("eps") or []) + (perdedor.get("eps") or [])
+            eps.sort(key=lambda e: (e.get("season") or 0, e.get("episode") or 0,
+                                    e.get("label") or ""))
+            ganador["eps"] = eps
+            for campo in ("poster", "year", "rating", "overview", "tmdb_id"):
+                if not ganador.get(campo) and perdedor.get(campo):
+                    ganador[campo] = perdedor[campo]
+            fuera.add(id(perdedor))
+    if not fuera:
+        return items
+    return [it for it in items if id(it) not in fuera]
+
+
 def _wf_colapsa(items):
     """Una sola tarjeta de WolfMax por titulo+calidad, la que trae CAPITULOS.
 
@@ -5589,7 +5652,7 @@ def catetbox():
                 it["title"] = disp
                 if not it.get("quality"):
                     it["quality"] = ql or _wf_quality_from_url(it.get("url"))
-            _idx = _wf_colapsa(_idx)
+            _idx = _une_series_partidas(_wf_colapsa(_idx))
             if _idx:
                 _idx = _bounded(lambda: _cat_enrich(_idx, limit=40), 6.0,
                                 default=_idx) or _idx
@@ -5699,7 +5762,7 @@ def catetbox():
     # La caja CONTESTO (con o sin resultados) -> a la cache. El vacio tambien
     # (TTL corto): "WolfMax no tiene esta peli" es un dato estable y ahorra 24s
     # de espera la proxima vez que alguien la busque.
-    items = _wf_colapsa(items)
+    items = _une_series_partidas(_wf_colapsa(items))
     _catbox_put(ckey, items)
     _wfidx_learn(_wf_crudo)   # el CRUDO (ver arriba): la proxima vez va en 10ms
     return jsonify({"items": items})
@@ -6901,7 +6964,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk87", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk88", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
