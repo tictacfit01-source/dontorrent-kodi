@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk80",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk81",
                     mimetype="text/plain")
 
 
@@ -6812,7 +6812,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk80", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk81", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7370,6 +7370,19 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Copia de seguridad (entrar con Google) */
+.cuenta{margin:4px 14px 14px;padding:13px 14px;border:1px solid var(--stroke);
+ border-radius:16px;background:var(--card)}
+.cta-t{font-size:14.5px;font-weight:800;margin-bottom:4px}
+.cta-s{font-size:12.5px;color:var(--sub);line-height:1.45;margin-bottom:11px}
+.gbtn{min-height:44px;display:flex;justify-content:center}
+.cta-who{display:flex;align-items:center;gap:11px}
+.cta-who img{width:38px;height:38px;border-radius:50%;background:#131a2a;flex:0 0 auto}
+.cta-nom{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.cta-nom b{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cta-nom span{font-size:11.5px;color:var(--sub)}
+.cta-out{flex:0 0 auto;background:rgba(255,255,255,.08);border:1px solid var(--stroke);
+ color:var(--txt);border-radius:12px;padding:9px 15px;font-size:13px;font-weight:700;cursor:pointer}
 /* El corazón */
 .hsvg{width:20px;height:20px;display:block;fill:none;stroke:#fff;stroke-width:1.9;
  stroke-linejoin:round;transition:fill .18s ease,stroke .18s ease}
@@ -7407,6 +7420,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .lstc b{font-weight:700;opacity:.65;margin-left:5px;font-size:12px}
 .lstc.on b{opacity:.85}
 .lstc.add{color:var(--blue);font-weight:700}
+/* Poner nombre / quitar la lista abierta: al lado de ella, sin menus */
+.lstb{flex:0 0 auto;border:1px solid var(--stroke);background:var(--card);
+ border-radius:999px;width:38px;height:38px;font-size:15px;cursor:pointer;
+ color:var(--sub);display:flex;align-items:center;justify-content:center;padding:0}
+.lstb:active{background:rgba(255,255,255,.12)}
 /* Historial: lo último mandado a la tele, para repetirlo de un toque */
 .histbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;
  font-size:12.5px;color:var(--sub);min-height:30px}
@@ -7532,7 +7550,6 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <section id="pane-lista" class="pane hidden">
   <div class="lstbar" id="lstbar"></div>
   <div class="listbar">
-   <button class="vtog" id="lst-mas" onclick="lstMenu()">⋯ Lista</button>
    <button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
   <div id="lista-grid" class="msg"></div>
  </section>
@@ -7630,6 +7647,17 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <div class="box">
   <div class="devsheet-h">Mis Kodis <button class="devsheet-x" onclick="closeDevs()">✕</button></div>
   <div class="devsub">Guarda el código de cada tele/dispositivo y elige a cuál mandar.</div>
+  <div class="cuenta" id="cuenta">
+   <div class="cta-t">Copia de seguridad</div>
+   <div class="cta-s" id="cta-s">Entra con Google y tus listas, tu historial y tus Kodis
+    quedan guardados: los recuperas en cualquier móvil.</div>
+   <div id="gbtn" class="gbtn"></div>
+   <div class="cta-who" id="cta-who" style="display:none">
+    <img id="cta-img" alt="">
+    <div class="cta-nom"><b id="cta-nom"></b><span id="cta-est"></span></div>
+    <button class="cta-out" onclick="syncSalir()">Salir</button>
+   </div>
+  </div>
   <div class="devlist" id="devlist"></div>
   <div class="devadd">
    <input id="devn" class="devin" placeholder="Nombre (Salón, Tablet, PC…)" maxlength="24" autocomplete="off">
@@ -7659,7 +7687,8 @@ code.value=(localStorage.getItem('mw_code')||'').replace(/\D/g,'').slice(0,6);
 (function(){try{var d=loadDevs();if(!d.length&&code.value.length===6)saveDevs([{name:'Mi Kodi',code:code.value}]);}catch(e){}})();
 refreshDevBtn();
 try{favs=JSON.parse(localStorage.getItem('mw_fav')||'[]')||[]}catch(e){favs=[]}
-function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catch(e){}}
+function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catch(e){}
+ try{syncSubirPronto()}catch(e){}}
 // ===== MIS LISTAS =====================================================
 // Varias listas propias. El almacen sigue siendo `favs` (que ya se sincroniza
 // entre dispositivos por el codigo): lo unico nuevo es a que listas pertenece
@@ -7667,7 +7696,8 @@ function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catc
 // lista -> ninguno se pierde al estrenar esto.
 var LST=[];try{LST=JSON.parse(localStorage.getItem('mw_listas')||'[]')||[]}catch(e){LST=[]}
 if(!LST.length)LST=[{id:'def',n:'Mi lista'}];
-function lstSave(){try{localStorage.setItem('mw_listas',JSON.stringify(LST))}catch(e){}}
+function lstSave(){try{localStorage.setItem('mw_listas',JSON.stringify(LST))}catch(e){}
+ try{syncSubirPronto()}catch(e){}}
 var LSTSEL='';try{LSTSEL=localStorage.getItem('mw_lista_sel')||''}catch(e){}
 if(!LST.some(function(l){return l.id===LSTSEL}))LSTSEL=LST[0].id;
 function lstSel(id){LSTSEL=id;try{localStorage.setItem('mw_lista_sel',id)}catch(e){}}
@@ -7750,7 +7780,8 @@ function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTi
 // TODA la logica de siempre (play/lista/mando/mlSync) no cambia. Aqui solo gestionamos
 // la lista 'mw_devices' y cual esta activo. Cero peticiones a fuentes -> cero baneo.
 function loadDevs(){try{return JSON.parse(localStorage.getItem('mw_devices')||'[]')||[]}catch(e){return []}}
-function saveDevs(d){try{localStorage.setItem('mw_devices',JSON.stringify(d))}catch(e){}}
+function saveDevs(d){try{localStorage.setItem('mw_devices',JSON.stringify(d))}catch(e){}
+ try{syncSubirPronto()}catch(e){}}
 function devName(c){var d=loadDevs();for(var i=0;i<d.length;i++){if(d[i].code===c)return d[i].name||''}return ''}
 function refreshDevBtn(){var el=$('devname');if(!el)return;var c=(code.value||'').replace(/\D/g,'');
  el.textContent=devName(c)||(c.length===6?c:'código')}
@@ -7758,6 +7789,7 @@ function setActiveCode(c){c=(c||'').replace(/\D/g,'').slice(0,6);code.value=c;
  try{localStorage.setItem('mw_code',c)}catch(e){}
  refreshDevBtn();if(c.length===6){try{mlSync()}catch(e){}}}
 function openDevs(){var cur=(code.value||'').replace(/\D/g,'');
+ try{syncPinta();if(!syncOn())gsiCarga()}catch(e){}
  var dc=$('devc');if(dc)dc.value=(cur.length===6&&!devName(cur))?cur:'';
  var dn=$('devn');if(dn)dn.value='';
  renderDevs();$('devsheet').classList.add('on');mwOpen('devs',$('devsheet').querySelector('.box'),_closeDevs)}
@@ -8212,7 +8244,8 @@ function favLearnEps(x,eps){
 // (guardamos la propia referencia de reproducción: no hay que buscar de nuevo
 // ni abrir la ficha). Vive en este móvil (localStorage), como los vistos.
 var hist=[];try{hist=JSON.parse(localStorage.getItem('mw_hist')||'[]')||[]}catch(e){hist=[]}
-function histSave(){try{localStorage.setItem('mw_hist',JSON.stringify(hist.slice(0,60)))}catch(e){}}
+function histSave(){try{localStorage.setItem('mw_hist',JSON.stringify(hist.slice(0,60)))}catch(e){}
+ try{syncSubirPronto()}catch(e){}}
 function histKey(h){return (h.ref&&(h.ref.u||((h.ref.c||'')+':'+(h.ref.tb||''))))||h.t||''}
 // Foto de lo que se esta mandando. Hay que tomarla EN EL MOMENTO del envio:
 // para cuando contesta la tele, `sel` ya puede ser otra cosa.
@@ -8258,6 +8291,123 @@ function renderHist(){
    (h.q?('<span>'+esc(h.q)+'</span>'):'')+'<span>'+esc(histHace(h.ts))+'</span></div></div>'+
    '<div class="hb"><button class="play" onclick="histPlay('+i+')" title="Volver a poner">▶</button>'+
    '<button onclick="histDel('+i+')" title="Quitar del historial">✕</button></div></div>'}).join('');}
+// ===== COPIA DE SEGURIDAD (entrar con Google) ==========================
+// Worker propio (Cloudflare + D1). Sin sesion no se llama a nada de esto y la
+// web funciona igual que siempre.
+var SYNC='https://mw-sync.israeldm93.workers.dev';
+var GTOK='',GUSER=null;
+try{GTOK=localStorage.getItem('mw_gtok')||''}catch(e){}
+try{GUSER=JSON.parse(localStorage.getItem('mw_guser')||'null')}catch(e){}
+function syncOn(){return !!GTOK}
+// --- juntar movil + nube SIN BORRAR NADA -------------------------------
+function syncFusiona(r){
+ if(!r||typeof r!=='object')return false;
+ var cambio=false;
+ // listas: por id (las que falten aqui se anaden)
+ (r.listas||[]).forEach(function(l){
+  if(l&&l.id&&l.n&&!LST.some(function(z){return z.id===l.id})){LST.push({id:l.id,n:l.n});cambio=true}});
+ // guardados: por clave; si ya esta, se UNEN las listas a las que pertenece
+ (r.favs||[]).forEach(function(it){
+  if(!it||!it.content_id)return;
+  var mio=null;for(var i=0;i<favs.length;i++)if(fk(favs[i])===fk(it))mio=favs[i];
+  if(!mio){favs.push(it);cambio=true;return}
+  var a=(mio.ls||[]).slice();
+  (it.ls||[]).forEach(function(id){if(a.indexOf(id)<0){a.push(id);cambio=true}});
+  if(a.length)mio.ls=a;});
+ // historial: por su referencia, lo mas reciente primero, tope 60
+ (r.hist||[]).forEach(function(h){
+  if(!h||!h.t)return;
+  var k=histKey(h),yo=null;
+  for(var i=0;i<hist.length;i++)if(histKey(hist[i])===k)yo=hist[i];
+  if(!yo){hist.push(h);cambio=true}
+  else if((h.ts||0)>(yo.ts||0)){yo.ts=h.ts;cambio=true}});
+ hist.sort(function(a,b){return (b.ts||0)-(a.ts||0)});
+ if(hist.length>60)hist=hist.slice(0,60);
+ // Kodis: por codigo
+ var devs=loadDevs(),dc=false;
+ (r.devs||[]).forEach(function(d){
+  if(d&&d.code&&!devs.some(function(z){return z.code===d.code})){devs.push(d);dc=true}});
+ if(dc){saveDevs(devs);renderDevs();refreshDevBtn();cambio=true}
+ if(cambio){saveFavs();lstSave();histSave()}
+ return cambio;}
+function syncPaquete(){
+ return {listas:LST,favs:favs.map(function(f){
+   var c={};for(var k in f)if(k!=='eps'&&k!=='epsAlt'&&k!=='alts')c[k]=f[k];return c}),
+  hist:hist,devs:loadDevs(),v:1};}
+var _syT=null,_syPend=false;
+function syncSubirPronto(){if(!syncOn())return;clearTimeout(_syT);_syT=setTimeout(syncSubir,2000)}
+function syncSubir(){
+ if(!syncOn())return;
+ fetch(SYNC+'/data',{method:'POST',headers:{'Content-Type':'application/json',
+   'Authorization':'Bearer '+GTOK},body:JSON.stringify({data:syncPaquete()})})
+  .then(function(r){return r.json()}).then(function(d){
+   if(d&&d.ok){syncEstado('Guardado')}
+   else if(d&&(d.error||'').indexOf('sesion')>=0){syncSalir(1)}})
+  .catch(function(){});}
+function syncBajar(cb){
+ if(!syncOn()){if(cb)cb(false);return}
+ syncEstado('Sincronizando\u2026');
+ fetch(SYNC+'/data',{headers:{'Authorization':'Bearer '+GTOK}})
+  .then(function(r){return r.json()}).then(function(d){
+   if(d&&d.ok){
+    var hubo=syncFusiona(d.data);
+    if(CURVIEW==='lista')renderFavs();
+    if(CURVIEW==='hist')renderHist();
+    syncSubir();                 // devolvemos lo unido: las dos partes iguales
+    if(cb)cb(hubo);return;}
+   if(d&&(d.error||'').indexOf('sesion')>=0)syncSalir(1);
+   if(cb)cb(false);})
+  .catch(function(){syncEstado('Sin conexi\u00f3n');if(cb)cb(false)});}
+function syncEstado(t){var e=$('cta-est');if(e)e.textContent=t||''}
+function syncPinta(){
+ var w=$('cta-who'),b=$('gbtn'),sub=$('cta-s');
+ if(!w)return;
+ if(syncOn()&&GUSER){
+  w.style.display='';if(b)b.style.display='none';
+  if(sub)sub.textContent='Tus listas, tu historial y tus Kodis se guardan solos.';
+  $('cta-nom').textContent=GUSER.name||GUSER.email||'Tu cuenta';
+  var im=$('cta-img');if(im){if(GUSER.picture){im.src=GUSER.picture;im.style.display=''}else im.style.display='none'}
+ }else{
+  w.style.display='none';if(b)b.style.display='';
+  if(sub)sub.textContent='Entra con Google y tus listas, tu historial y tus Kodis quedan guardados: los recuperas en cualquier m\u00f3vil.';}}
+function syncSalir(callado){
+ GTOK='';GUSER=null;
+ try{localStorage.removeItem('mw_gtok');localStorage.removeItem('mw_guser')}catch(e){}
+ syncPinta();gsiPinta();
+ if(!callado)toast('Sesi\u00f3n cerrada (lo guardado en este m\u00f3vil se queda)');}
+// --- Google Identity Services (se carga solo al abrir Mis Kodis) --------
+var _gsiCargando=false,_gsiListo=false,_gsiCID='';
+function gsiPinta(){
+ var b=$('gbtn');if(!b||syncOn())return;
+ if(!_gsiListo||!window.google||!google.accounts||!google.accounts.id)return;
+ b.innerHTML='';
+ try{google.accounts.id.renderButton(b,{theme:'filled_black',size:'large',
+   shape:'pill',text:'continue_with',locale:'es',width:280});}catch(e){}}
+function gsiCarga(){
+ if(_gsiCargando||syncOn())return;_gsiCargando=true;
+ fetch(SYNC+'/config').then(function(r){return r.json()}).then(function(d){
+  _gsiCID=(d&&d.client_id)||'';
+  if(!_gsiCID){var e=$('cta-s');if(e)e.textContent='La copia de seguridad a\u00fan no est\u00e1 configurada.';return}
+  var sc=document.createElement('script');
+  sc.src='https://accounts.google.com/gsi/client';sc.async=true;sc.defer=true;
+  sc.onload=function(){
+   try{google.accounts.id.initialize({client_id:_gsiCID,callback:gsiEntra,
+     auto_select:false,cancel_on_tap_outside:true});_gsiListo=true;gsiPinta();}catch(e){}};
+  sc.onerror=function(){var e=$('cta-s');if(e)e.textContent='No se pudo cargar el acceso de Google.'};
+  document.head.appendChild(sc);
+ }).catch(function(){_gsiCargando=false});}
+function gsiEntra(resp){
+ var cred=resp&&resp.credential;if(!cred)return;
+ toast('Entrando\u2026');
+ fetch(SYNC+'/session',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({credential:cred})})
+  .then(function(r){return r.json()}).then(function(d){
+   if(!d||!d.ok||!d.token){toast('No se pudo entrar');return}
+   GTOK=d.token;GUSER=d.user||null;
+   try{localStorage.setItem('mw_gtok',GTOK);localStorage.setItem('mw_guser',JSON.stringify(GUSER))}catch(e){}
+   syncPinta();
+   syncBajar(function(){toast('Copia de seguridad activada')});})
+  .catch(function(){toast('No se pudo entrar')});}
 // ---- Hoja "Guardar en...": elegir a que lista va el titulo -------------
 var LSX=null,LSCB=null;
 function guardarEn(x,cb){
@@ -8304,26 +8454,27 @@ function renderLstBar(){var b=$('lstbar');if(!b)return;
   var n=lstItems(l.id).length;
   return '<button class="lstc'+(l.id===LSTSEL?' on':'')+'" onclick="lstIr(\''+l.id+'\')">'+
    esc(l.n)+(n?('<b>'+n+'</b>'):'')+'</button>'}).join('')+
+  // el lapiz le pone nombre a la lista que estas viendo; la papelera solo
+  // aparece si hay mas de una (la ultima no se puede quedar sin listas)
+  '<button class="lstb" onclick="lstRenombrar()" title="Poner nombre">✏️</button>'+
+  (LST.length>1?'<button class="lstb" onclick="lstBorrar(LSTSEL)" title="Quitar lista">🗑️</button>':'')+
   '<button class="lstc add" onclick="lstCrear()">+ Nueva lista</button>';}
 function lstIr(id){lstSel(id);renderFavs()}
+// "Nueva lista": la crea y abre el lapiz para ponerle nombre. Si no escribe
+// nada, se queda con el nombre automatico (nunca se pierde el paso).
 function lstCrear(){
- var n=prompt('Nombre de la lista nueva:','');
- if(n===null)return;
- n=(n||'').trim();if(!n){toast('Ponle un nombre');return}
- var id=lstNueva(n);if(!id)return;
- lstSel(id);renderFavs();toast('Lista \u00ab'+n+'\u00bb creada');}
-function lstMenu(){
+ var id=lstNueva('Lista '+(LST.length+1));if(!id)return;
+ lstSel(id);renderFavs();
+ lstRenombrar(1);}
+function lstRenombrar(nueva){
  var l=null;for(var i=0;i<LST.length;i++)if(LST[i].id===LSTSEL)l=LST[i];
  if(!l)return;
- var n=lstItems(l.id).length;
- var q=prompt('Escribe el nuevo nombre de \u00ab'+l.n+'\u00bb.\n\n'+
-   '(Deja el nombre igual y pulsa Aceptar para no cambiar nada; escribe BORRAR '+
-   'para eliminar la lista \u2014 sus '+n+' t\u00edtulo(s) NO se pierden, pasan a otra lista.)', l.n);
- if(q===null)return;
+ var q=prompt(nueva?'Nombre de la lista:':'Nuevo nombre de la lista:',l.n);
+ if(q===null){if(nueva)renderFavs();return}
  q=(q||'').trim();
- if(q.toUpperCase()==='BORRAR'){lstBorrar(l.id);return}
- if(!q||q===l.n)return;
- l.n=q.slice(0,40);lstSave();renderFavs();toast('Lista renombrada');}
+ if(!q||q===l.n){renderFavs();return}
+ l.n=q.slice(0,40);lstSave();renderFavs();mlPushSoon();
+ toast(nueva?('Lista \u00ab'+l.n+'\u00bb creada'):'Lista renombrada');}
 function lstBorrar(id){
  if(LST.length<2){toast('Es tu \u00fanica lista');return}
  var l=null;for(var i=0;i<LST.length;i++)if(LST[i].id===id)l=LST[i];
@@ -8338,9 +8489,8 @@ function lstBorrar(id){
  saveFavs();lstSave();lstSel(destino);renderFavs();toast('Lista borrada');}
 function renderFavs(){
  renderLstBar();
- var g=$('lista-grid'),b=$('vtog'),m=$('lst-mas');
+ var g=$('lista-grid'),b=$('vtog');
  LISTS.lista=lstItems(LSTSEL);
- if(m)m.style.display=LST.length?'':'none';
  if(!LISTS.lista.length){g.className='msg';
   g.innerHTML=favs.length?('\u00ab'+esc(lstNombre(LSTSEL))+'\u00bb est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo y elige esta lista.')
     :'Tu lista est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo.';

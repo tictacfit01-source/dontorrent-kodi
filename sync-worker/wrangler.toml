@@ -1,0 +1,19 @@
+name = "mw-sync"
+main = "worker.js"
+compatibility_date = "2026-09-13"
+account_id = "987c72d4823ef1e12ceae82a879807ee"
+
+# Copia de seguridad de cada usuario (listas, historial, Kodis) en D1 (SQL).
+# KV NO vale: 1000 escrituras/dia y lecturas con hasta 60 s de retraso. Es la
+# misma leccion que en la app de Audiolibro, donde hubo que migrar de KV a D1.
+[[d1_databases]]
+binding = "DB"
+database_name = "mw-sync-db"
+database_id = "8543520f-9ac9-49c8-9f27-55e83522f63b"
+
+[vars]
+# Client ID de Google (es PUBLICO por diseno: va en la propia pagina).
+# El origen de la web tiene que estar autorizado en la consola de Google Cloud.
+GOOGLE_CLIENT_ID = ""
+# APP_JWT_SECRET va como SECRETO (wrangler secret put APP_JWT_SECRET), nunca aqui:
+# este repositorio es PUBLICO.
