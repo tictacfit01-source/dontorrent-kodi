@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk78",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk79",
                     mimetype="text/plain")
 
 
@@ -5577,6 +5577,13 @@ def catetbox():
         # (para ver como vienen las series de EliteTorrent/WolfMax y decidir si
         # se pueden agrupar en una tarjeta). No cachea: es una sonda manual.
         return jsonify({"items": items, "raw": True})
+    # AL INDICE, EL DATO CRUDO. Debajo se agrupan los capitulos y se LIMPIA el
+    # titulo ("Silo [4k 2160p][Cap.301]" -> "Silo"), y aprender eso envenenaba
+    # el indice: las siguientes busquedas salian de ahi sin ningun "Cap." que
+    # agrupar -> once fichas identicas "Silo" que la web funde en una (la barra
+    # decia "WolfMax 11" y el dueno veia UNA tarjeta). El crudo es lo unico con
+    # lo que se pueden agrupar los capitulos.
+    _wf_crudo = [dict(it) for it in items if (it or {}).get("source") == "wf"]
     # ET/WF dan 1 tarjeta por CAPITULO -> se agrupan en una tarjeta de serie con
     # sus episodios dentro (antes se tiraban y esas fuentes no daban series).
     items = _cat_group_episodes(items)
@@ -5605,7 +5612,7 @@ def catetbox():
     # (TTL corto): "WolfMax no tiene esta peli" es un dato estable y ahorra 24s
     # de espera la proxima vez que alguien la busque.
     _catbox_put(ckey, items)
-    _wfidx_learn(items)     # lo de WolfMax, al indice: la proxima vez va en 10ms
+    _wfidx_learn(_wf_crudo)   # el CRUDO (ver arriba): la proxima vez va en 10ms
     return jsonify({"items": items})
 
 
@@ -6795,7 +6802,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk78", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk79", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
