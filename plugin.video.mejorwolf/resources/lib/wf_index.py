@@ -175,6 +175,25 @@ _PLAYABLE_RE = re.compile(
 )
 
 
+# Una entrada de SERIE cuya URL es de capitulo pero cuyo titulo no lleva marca
+# de capitulo no sirve para nada: con ella no se pueden agrupar los capitulos y
+# la web acaba enseñando fichas sueltas y vacias. Son restos de cuando el relay
+# devolvia titulos ya limpiados; se ignoran para que la busqueda siga al
+# catalogo y se traiga el titulo bueno.
+_CAP_RE = re.compile(r"(cap[ií]tulo|\bcap\.?\s*\d|\d+\s*x\s*\d{2}|temporada)",
+                     re.I)
+_EP_URL_RE = re.compile(r"/(?:serie-online[\w-]*|online|capitulo|episodio)/\d+",
+                        re.I)
+
+
+def _inservible(url, title, kind=""):
+    if not _EP_URL_RE.search(url or ""):
+        return False                      # peli o ficha de serie: normal
+    if (kind or "").startswith("movie"):
+        return False
+    return not _CAP_RE.search(title or "")
+
+
 def _norm(s):
     if not s:
         return ""
@@ -195,6 +214,8 @@ def search(query, kind_filter=None, limit=500):
         for url, e in cache.items():
             if kind_filter and _match_kind(e.get("kind"), kind_filter) is False:
                 continue
+            if _inservible(url, e.get("title"), e.get("kind")):
+                continue                  # ver _inservible
             t = _norm(e.get("title"))
             if all(tok in t for tok in tokens):
                 out.append({
