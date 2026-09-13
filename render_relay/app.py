@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk79",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk80",
                     mimetype="text/plain")
 
 
@@ -6383,7 +6383,11 @@ def mylist_get():
     if len(code) != 6:
         return jsonify({"list": [], "ts": 0})
     ent = _mylist_load().get(code) or {}
-    return jsonify({"list": ent.get("list", []), "ts": ent.get("ts", 0)})
+    # `listas` = los nombres de las listas propias del usuario (Mis listas). Va
+    # por el mismo canal que la lista de siempre para que el movil y la tablet
+    # vean los mismos nombres; si un cliente viejo no lo manda, se conserva.
+    return jsonify({"list": ent.get("list", []), "ts": ent.get("ts", 0),
+                    "listas": ent.get("listas", [])})
 
 
 @app.post("/mylist")
@@ -6396,9 +6400,15 @@ def mylist_post():
     if not isinstance(lst, list):
         return jsonify({"ok": False}), 400
     lst = lst[:_MYLIST_MAX_ITEMS]
+    listas = body.get("listas")
+    if not isinstance(listas, list):
+        listas = None                      # cliente viejo: no tocar lo guardado
     with _MYLIST_LOCK:
         d = _mylist_load()
-        d[code] = {"list": lst, "ts": _t.time()}
+        _ant = d.get(code) or {}
+        d[code] = {"list": lst, "ts": _t.time(),
+                   "listas": (listas[:40] if listas is not None
+                              else _ant.get("listas", []))}
         if len(d) > _MYLIST_MAX_CODES:   # no crecer sin limite
             for k in list(d.keys())[:-_MYLIST_MAX_CODES]:
                 d.pop(k, None)
@@ -6802,7 +6812,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk79", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk80", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7250,7 +7260,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px}
 @keyframes r{to{transform:rotate(360deg)}}
 /* botones mas grandes (movil) */
-.tab{padding:11px;font-size:15px}
+.tab{padding:11px 4px;font-size:15px;white-space:nowrap}
+/* Con cuatro pestanas ("Mis listas" es la larga) el texto se partia en dos
+   lineas y descolocaba la barra entera: en pantallas estrechas encoge la letra
+   en vez de romper la palabra. */
+@media (max-width:430px){.tab{font-size:13.5px;padding:11px 2px;letter-spacing:-.2px}}
+@media (max-width:360px){.tab{font-size:12.5px}}
 .chip{padding:10px 18px;font-size:14px}
 .search input{padding:15px 16px}
 .search button{padding:0 20px;font-size:15px}
@@ -7355,6 +7370,43 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* El corazón */
+.hsvg{width:20px;height:20px;display:block;fill:none;stroke:#fff;stroke-width:1.9;
+ stroke-linejoin:round;transition:fill .18s ease,stroke .18s ease}
+.hsvg.on{fill:#ff375f;stroke:#ff375f}
+.hsvg.pop{animation:hbeat .42s cubic-bezier(.2,1.6,.4,1)}
+@keyframes hbeat{0%{transform:scale(.75)}45%{transform:scale(1.32)}70%{transform:scale(.94)}100%{transform:scale(1)}}
+/* Hoja "Guardar en...": elegir lista de un toque */
+.ls-head{display:flex;align-items:center;justify-content:space-between;
+ padding:15px 16px 11px;border-bottom:1px solid var(--stroke)}
+.ls-t{font-size:16px;font-weight:800}
+.ls-x{background:none;border:0;color:var(--sub);font-size:26px;line-height:1;cursor:pointer;padding:0 4px}
+.ls-body{padding:9px 12px 4px;max-height:52vh;overflow-y:auto}
+.ls-row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+ background:var(--card);border:1px solid var(--stroke);border-radius:14px;
+ padding:13px 14px;margin-bottom:8px;color:var(--txt);font-size:15px;font-weight:600;cursor:pointer}
+.ls-row.on{border-color:#ff375f;background:rgba(255,55,95,.10)}
+.ls-row .lsk{flex:0 0 auto;width:22px;height:22px;border-radius:50%;border:2px solid var(--stroke);
+ display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff}
+.ls-row.on .lsk{background:#ff375f;border-color:#ff375f}
+.ls-row .lsn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ls-row .lsc{flex:0 0 auto;font-size:12px;color:var(--sub);font-weight:600}
+.ls-foot{display:flex;gap:9px;padding:6px 12px 16px}
+.ls-new{flex:1;background:rgba(255,255,255,.07);border:1px solid var(--stroke);color:var(--txt);
+ border-radius:14px;padding:13px;font-size:14.5px;font-weight:700;cursor:pointer}
+.ls-done{flex:0 0 auto;background:var(--blue);border:0;color:#fff;border-radius:14px;
+ padding:13px 24px;font-size:14.5px;font-weight:800;cursor:pointer}
+/* Mis listas: la barra de listas propias (se desliza si no caben) */
+.lstbar{display:flex;gap:7px;overflow-x:auto;-webkit-overflow-scrolling:touch;
+ padding:2px 0 8px;scrollbar-width:none}
+.lstbar::-webkit-scrollbar{display:none}
+.lstc{flex:0 0 auto;border:1px solid var(--stroke);background:var(--card);color:var(--sub);
+ border-radius:999px;padding:8px 14px;font-size:13.5px;font-weight:600;cursor:pointer;
+ white-space:nowrap;transition:background .15s,color .15s,border-color .15s}
+.lstc.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.lstc b{font-weight:700;opacity:.65;margin-left:5px;font-size:12px}
+.lstc.on b{opacity:.85}
+.lstc.add{color:var(--blue);font-weight:700}
 /* Historial: lo último mandado a la tele, para repetirlo de un toque */
 .histbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;
  font-size:12.5px;color:var(--sub);min-height:30px}
@@ -7441,7 +7493,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <div class="tabs">
   <button id="tab-inicio" class="tab on" onclick="goView('inicio')">Inicio</button>
   <button id="tab-buscar" class="tab" onclick="goView('buscar')">Buscar</button>
-  <button id="tab-lista" class="tab" onclick="goView('lista')">Mi lista</button>
+  <button id="tab-lista" class="tab" onclick="goView('lista')">Mis listas</button>
   <button id="tab-hist" class="tab" onclick="goView('hist')">Historial</button>
  </div>
  <div class="srclegend">
@@ -7478,7 +7530,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div id="hist-list" class="msg"></div>
  </section>
  <section id="pane-lista" class="pane hidden">
-  <div class="listbar"><button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
+  <div class="lstbar" id="lstbar"></div>
+  <div class="listbar">
+   <button class="vtog" id="lst-mas" onclick="lstMenu()">⋯ Lista</button>
+   <button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
   <div id="lista-grid" class="msg"></div>
  </section>
  <div class="appfoot">MejorWolf · <a href="/kb/clasico">Mando clásico</a></div>
@@ -7487,6 +7542,17 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <div class="np-prog-wrap"><div class="np-prog" id="np-prog"></div></div>
  <div class="np-row"><div class="np-t" id="np-t"></div>
   <button class="np-pp" id="np-pp" onclick="event.stopPropagation();pp()"><svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg></button></div>
+</div>
+<div class="sheet" id="lsheet" onclick="if(event.target===this)closeLS()">
+ <div class="box">
+  <div class="ls-head"><div class="ls-t" id="ls-t">Guardar en…</div>
+   <button class="ls-x" onclick="closeLS()">&times;</button></div>
+  <div class="ls-body" id="ls-body"></div>
+  <div class="ls-foot">
+   <button class="ls-new" onclick="lsNueva()">+ Crear lista nueva</button>
+   <button class="ls-done" onclick="closeLS()">Hecho</button>
+  </div>
+ </div>
 </div>
 <div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
  <div class="box">
@@ -7504,7 +7570,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <div class="rar" id="sh-rar"></div>
    <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
    <div class="btnrow">
-    <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Añadir a mi lista</button>
+    <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Guardar en una lista</button>
     <button class="btn trailer" id="sh-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button>
    </div>
    <button class="btn share" onclick="shareSheet()">📤 Compartir enlace</button>
@@ -7594,6 +7660,32 @@ code.value=(localStorage.getItem('mw_code')||'').replace(/\D/g,'').slice(0,6);
 refreshDevBtn();
 try{favs=JSON.parse(localStorage.getItem('mw_fav')||'[]')||[]}catch(e){favs=[]}
 function saveFavs(){try{localStorage.setItem('mw_fav',JSON.stringify(favs))}catch(e){}}
+// ===== MIS LISTAS =====================================================
+// Varias listas propias. El almacen sigue siendo `favs` (que ya se sincroniza
+// entre dispositivos por el codigo): lo unico nuevo es a que listas pertenece
+// cada titulo, en `f.ls`. Un favorito de antes, sin `ls`, es de la primera
+// lista -> ninguno se pierde al estrenar esto.
+var LST=[];try{LST=JSON.parse(localStorage.getItem('mw_listas')||'[]')||[]}catch(e){LST=[]}
+if(!LST.length)LST=[{id:'def',n:'Mi lista'}];
+function lstSave(){try{localStorage.setItem('mw_listas',JSON.stringify(LST))}catch(e){}}
+var LSTSEL='';try{LSTSEL=localStorage.getItem('mw_lista_sel')||''}catch(e){}
+if(!LST.some(function(l){return l.id===LSTSEL}))LSTSEL=LST[0].id;
+function lstSel(id){LSTSEL=id;try{localStorage.setItem('mw_lista_sel',id)}catch(e){}}
+function lstNombre(id){for(var i=0;i<LST.length;i++)if(LST[i].id===id)return LST[i].n;return ''}
+// A que listas pertenece un titulo. Solo cuentan las listas que EXISTEN aqui:
+// si llega de otro movil con una lista que este no conoce (o se borro), cae en
+// la primera en vez de quedarse invisible. Sin `ls` (favorito de antes) = la
+// primera tambien. Asi es imposible que un guardado desaparezca de la vista.
+function lstDe(f){
+ var a=((f&&f.ls)||[]).filter(function(id){
+  return LST.some(function(l){return l.id===id})});
+ return a.length?a:[LST[0].id]}
+function lstItems(id){return favs.filter(function(f){return lstDe(f).indexOf(id)>=0})}
+function lstNueva(nombre){
+ var n=(nombre||'').trim();if(!n)return null;
+ var id='l'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+ LST.push({id:id,n:n.slice(0,40)});lstSave();return id;}
+lstSave();
 var seen=[];try{seen=JSON.parse(localStorage.getItem('mw_seen')||'[]')||[]}catch(e){seen=[]}
 function saveSeen(){try{localStorage.setItem('mw_seen',JSON.stringify(seen))}catch(e){}}
 function isSeen(id){return seen.indexOf(String(id))>=0}
@@ -7611,6 +7703,23 @@ function slimAlts(a){return (a||[]).slice(0,4).map(function(z){
  return {source:z.source,quality:z.quality,url:z.url,content_id:z.content_id,
          tabla:z.tabla,path:z.path,kind:z.kind,title:z.title,year:z.year,
          poster:z.poster,rating:z.rating,eps:slimEps(z.eps)}})}
+// Copia guardable de un item (lo mismo que guardaba toggleFav).
+function favCopia(x,ls){return {kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),ls:ls}}
+function favBuscar(x){for(var i=0;i<favs.length;i++)if(fk(favs[i])===fk(x))return favs[i];return null}
+function favEnLista(x,id){var f=favBuscar(x);return !!f&&lstDe(f).indexOf(id)>=0}
+// Guardar en UNA lista (creando el favorito si aun no estaba).
+function favAdd(x,id){
+ var f=favBuscar(x);
+ if(!f){favs.unshift(favCopia(x,[id]))}
+ else{var a=lstDe(f);if(a.indexOf(id)<0)a.push(id);f.ls=a;}
+ saveFavs();mlPushSoon();}
+// Quitar de UNA lista; si no queda en ninguna, deja de estar guardado.
+function favQuitar(x,id){
+ var f=favBuscar(x);if(!f)return;
+ var a=lstDe(f).filter(function(z){return z!==id});
+ if(a.length){f.ls=a}else{favs=favs.filter(function(z){return fk(z)!==fk(x)})}
+ saveFavs();mlPushSoon();}
+function favQuitarTodo(x){favs=favs.filter(function(z){return fk(z)!==fk(x)});saveFavs();mlPushSoon();}
 function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts)})}saveFavs();mlPushSoon()}
 // --- Sincronizacion de la lista de deseados (espejo en el relay, ligado al
 // codigo). El movil es la COPIA MAESTRA: al cargar hacemos UNION (nunca borra ->
@@ -7620,13 +7729,18 @@ function mlPush(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)ret
  // Sin los capítulos: la lista compartida entre dispositivos se queda ligera
  // (y el que la reciba los pide por red, que funciona igual).
  var slim=favs.map(function(f){var c={};for(var k in f)if(k!=='eps'&&k!=='epsAlt'&&k!=='alts')c[k]=f[k];return c});
- try{fetch('/mylist?code='+cd,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({list:slim})}).catch(function(){})}catch(e){}}
+ try{fetch('/mylist?code='+cd,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({list:slim,listas:LST})}).catch(function(){})}catch(e){}}
 function mlPushSoon(){clearTimeout(_mlPushT);_mlPushT=setTimeout(mlPush,1500)}
 function mlSync(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
  fetch('/mylist?code='+cd).then(function(r){return r.json()}).then(function(d){
   var rl=(d&&d.list)||[];var changed=false;
   rl.forEach(function(it){if(it&&it.content_id&&!favs.some(function(f){return fk(f)===fk(it)})){favs.push(it);changed=true}});
-  if(changed){saveFavs();if(SHOW==='lista')renderFavs()}
+  // Los nombres de las listas tambien: si esta tablet no conoce una lista que
+  // el movil creo, se anade (nunca se borra ninguna -> imposible perder).
+  var rls=(d&&d.listas)||[];
+  rls.forEach(function(l){if(l&&l.id&&l.n&&!LST.some(function(z){return z.id===l.id})){
+    LST.push({id:l.id,n:l.n});changed=true}});
+  if(changed){saveFavs();lstSave();if(CURVIEW==='lista')renderFavs()}
   mlPush();
  }).catch(function(){})}
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
@@ -8144,7 +8258,94 @@ function renderHist(){
    (h.q?('<span>'+esc(h.q)+'</span>'):'')+'<span>'+esc(histHace(h.ts))+'</span></div></div>'+
    '<div class="hb"><button class="play" onclick="histPlay('+i+')" title="Volver a poner">▶</button>'+
    '<button onclick="histDel('+i+')" title="Quitar del historial">✕</button></div></div>'}).join('');}
-function renderFavs(){var g=$('lista-grid');LISTS.lista=favs.slice();var b=$('vtog');if(!favs.length){g.className='msg';g.textContent='Tu lista está vacía. Toca el ♡ en cualquier título.';if(b)b.style.display='none';return}if(b)b.style.display='';renderGrid(g,'lista');applyView()}
+// ---- Hoja "Guardar en...": elegir a que lista va el titulo -------------
+var LSX=null,LSCB=null;
+function guardarEn(x,cb){
+ if(!x)return;
+ // Con UNA sola lista no hay nada que elegir: un toque y ya (lo de siempre).
+ if(LST.length<2){
+  var id=LST[0].id;
+  if(favEnLista(x,id)){favQuitar(x,id);toast('Quitado de \u00ab'+LST[0].n+'\u00bb')}
+  else{favAdd(x,id);toast('Guardado en \u00ab'+LST[0].n+'\u00bb')}
+  if(cb)cb();if(CURVIEW==='lista')renderFavs();return;}
+ LSX=x;LSCB=cb||null;
+ $('ls-t').textContent=isFav(x)?'En tus listas':'Guardar en\u2026';
+ renderLS();
+ $('lsheet').classList.add('on');
+ mwOpen('lsheet',$('lsheet').querySelector('.box'),_closeLS);}
+function renderLS(){
+ var b=$('ls-body');if(!b||!LSX)return;
+ b.innerHTML=LST.map(function(l){
+  var on=favEnLista(LSX,l.id),n=lstItems(l.id).length;
+  return '<button class="ls-row'+(on?' on':'')+'" onclick="lsTog(\''+l.id+'\')">'+
+   '<span class="lsk">'+(on?'\u2713':'')+'</span>'+
+   '<span class="lsn">'+esc(l.n)+'</span>'+
+   '<span class="lsc">'+n+'</span></button>'}).join('');
+ $('ls-t').textContent=isFav(LSX)?'En tus listas':'Guardar en\u2026';}
+function lsTog(id){
+ if(!LSX)return;
+ if(favEnLista(LSX,id)){favQuitar(LSX,id)}else{favAdd(LSX,id);toast('Guardado en \u00ab'+lstNombre(id)+'\u00bb')}
+ renderLS();
+ if(LSCB)LSCB();
+ if(CURVIEW==='lista')renderFavs();}
+function lsNueva(){
+ var n=prompt('Nombre de la lista nueva:','');
+ if(n===null)return;
+ n=(n||'').trim();if(!n){toast('Ponle un nombre');return}
+ var id=lstNueva(n);if(!id)return;
+ if(LSX)favAdd(LSX,id);
+ renderLS();if(LSCB)LSCB();
+ if(CURVIEW==='lista'){lstSel(id);renderFavs()}
+ toast('Guardado en \u00ab'+n+'\u00bb');}
+function _closeLS(){$('lsheet').classList.remove('on');LSX=null;LSCB=null}
+function closeLS(){mwBack('lsheet')}
+function renderLstBar(){var b=$('lstbar');if(!b)return;
+ b.innerHTML=LST.map(function(l){
+  var n=lstItems(l.id).length;
+  return '<button class="lstc'+(l.id===LSTSEL?' on':'')+'" onclick="lstIr(\''+l.id+'\')">'+
+   esc(l.n)+(n?('<b>'+n+'</b>'):'')+'</button>'}).join('')+
+  '<button class="lstc add" onclick="lstCrear()">+ Nueva lista</button>';}
+function lstIr(id){lstSel(id);renderFavs()}
+function lstCrear(){
+ var n=prompt('Nombre de la lista nueva:','');
+ if(n===null)return;
+ n=(n||'').trim();if(!n){toast('Ponle un nombre');return}
+ var id=lstNueva(n);if(!id)return;
+ lstSel(id);renderFavs();toast('Lista \u00ab'+n+'\u00bb creada');}
+function lstMenu(){
+ var l=null;for(var i=0;i<LST.length;i++)if(LST[i].id===LSTSEL)l=LST[i];
+ if(!l)return;
+ var n=lstItems(l.id).length;
+ var q=prompt('Escribe el nuevo nombre de \u00ab'+l.n+'\u00bb.\n\n'+
+   '(Deja el nombre igual y pulsa Aceptar para no cambiar nada; escribe BORRAR '+
+   'para eliminar la lista \u2014 sus '+n+' t\u00edtulo(s) NO se pierden, pasan a otra lista.)', l.n);
+ if(q===null)return;
+ q=(q||'').trim();
+ if(q.toUpperCase()==='BORRAR'){lstBorrar(l.id);return}
+ if(!q||q===l.n)return;
+ l.n=q.slice(0,40);lstSave();renderFavs();toast('Lista renombrada');}
+function lstBorrar(id){
+ if(LST.length<2){toast('Es tu \u00fanica lista');return}
+ var l=null;for(var i=0;i<LST.length;i++)if(LST[i].id===id)l=LST[i];
+ if(!l)return;
+ if(!confirm('\u00bfBorrar la lista \u00ab'+l.n+'\u00bb?\n\nLos t\u00edtulos NO se borran: los que solo '+
+   'estuvieran aqu\u00ed pasan a la primera lista.'))return;
+ LST=LST.filter(function(z){return z.id!==id});
+ var destino=LST[0].id;
+ favs.forEach(function(f){
+  var a=lstDe(f).filter(function(z){return z!==id});
+  f.ls=a.length?a:[destino];});
+ saveFavs();lstSave();lstSel(destino);renderFavs();toast('Lista borrada');}
+function renderFavs(){
+ renderLstBar();
+ var g=$('lista-grid'),b=$('vtog'),m=$('lst-mas');
+ LISTS.lista=lstItems(LSTSEL);
+ if(m)m.style.display=LST.length?'':'none';
+ if(!LISTS.lista.length){g.className='msg';
+  g.innerHTML=favs.length?('\u00ab'+esc(lstNombre(LSTSEL))+'\u00bb est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo y elige esta lista.')
+    :'Tu lista est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo.';
+  if(b)b.style.display='none';return}
+ if(b)b.style.display='';renderGrid(g,'lista');applyView()}
 function applyView(){var lv=localStorage.getItem('mw_lv')==='1';var g=$('lista-grid');if(g){var grid=g.querySelector('.grid');if(grid)grid.classList.toggle('lv',lv)}var b=$('vtog');if(b)b.innerHTML=lv?'▦ Vista cuadrícula':'☰ Vista lista'}
 function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')==='1'?'0':'1');applyView()}
 function cardHTML(x,list,i){
@@ -8158,7 +8359,7 @@ function cardHTML(x,list,i){
  var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
  return '<div class="card"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
-    '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+(isFav(x)?'♥':'♡')+'</div></div>'+
+    '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+heartSVG(isFav(x))+'</div></div>'+
     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
 function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';for(var i=0;i<items.length;i++)h+=cardHTML(items[i],list,i);h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0)}
 function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';for(var i=from;i<items.length;i++)h+=cardHTML(items[i],list,i);g.insertAdjacentHTML('beforeend',h);lazyRar(el,list,from)}
@@ -8184,7 +8385,17 @@ function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
    if(rar)rarBadge(job);if(q)qualBadge(job,q);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job)}}
 function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
 function qualBadge(job,q){if(!q)return;var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.q'))return;var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
-function favTap(list,i,ev){ev.stopPropagation();var x=LISTS[list][i];toggleFav(x);ev.target.textContent=isFav(x)?'♥':'♡';if(list==='lista')renderFavs()}
+// El corazón: un SVG (el ♡ de texto se ve distinto en cada móvil y no se puede
+// animar). `on` = guardado; al marcarlo late una vez.
+function heartSVG(on){return '<svg class="hsvg'+(on?' on':'')+'" viewBox="0 0 24 24" aria-hidden="true">'+
+ '<path d="M12 20.6l-1.1-1C5.6 14.8 2.6 12.1 2.6 8.8 2.6 6.2 4.6 4.2 7.2 4.2c1.5 0 2.9.7 3.8 1.8L12 7.2l1-1.2c.9-1.1 2.3-1.8 3.8-1.8 2.6 0 4.6 2 4.6 4.6 0 3.3-3 6-8.3 10.8l-1.1 1z"/></svg>'}
+function heartPaint(el,on){if(!el)return;el.innerHTML=heartSVG(on);
+ if(on){var v=el.querySelector('.hsvg');if(v){v.classList.add('pop');
+  setTimeout(function(){v.classList.remove('pop')},420)}}}
+function favTap(list,i,ev){ev.stopPropagation();
+ var x=LISTS[list][i];
+ var el=ev.currentTarget||ev.target;
+ guardarEn(x,function(){heartPaint(el,isFav(x));if(list==='lista')renderFavs()});}
 function openItem(list,i){openCard(LISTS[list][i])}
 // Versiones de la MISMA peli en otras fuentes. El 4K de WolfMax (capítulos de
 // 9 GB) es lo mejor que da el sistema y antes se perdía en cuanto otra fuente
@@ -8235,7 +8446,7 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  ZPOSTER=x.poster||'';
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;
- renderAlts(x);$('sh-fav').textContent=isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista';$('sh-rar').textContent='';
+ renderAlts(x);$('sh-fav').textContent=favLabel(x);$('sh-rar').textContent='';
  // backdrop + géneros + sinopsis + tráiler. shEnrich pinta lo que el item TENGA;
  // enrichItem rellena los favoritos GUARDADOS sin enriquecer (1 vez, se persiste).
  shEnrich(x);
@@ -8264,8 +8475,12 @@ function seedGate(ci,tb,proceed){proceed();
   if(s===0)toast('⚠ Esta versión no tiene semillas; si no arranca, prueba otra');
   else if(typeof s==='number'&&s>0&&s<3)toast('Pocas semillas ('+s+') — puede tardar en arrancar');
  }).catch(function(){})}
-function sheetFav(){toggleFav(sel);$('sh-fav').textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
-function ovFav(){toggleFav(sel);var b=$('ov-fav');if(b)b.textContent=isFav(sel)?'♥ En mi lista':'♡ Añadir a mi lista'}
+function favLabel(x){
+ if(!isFav(x))return '♡ Guardar en una lista';
+ var f=favBuscar(x),ls=lstDe(f).map(lstNombre).filter(Boolean);
+ return '♥ '+(ls.length===1?('En \u00ab'+ls[0]+'\u00bb'):('En '+ls.length+' listas'));}
+function sheetFav(){guardarEn(sel,function(){var b=$('sh-fav');if(b)b.textContent=favLabel(sel)})}
+function ovFav(){guardarEn(sel,function(){var b=$('ov-fav');if(b)b.textContent=favLabel(sel)})}
 function _closeSheet(){$('sheet').classList.remove('on')}
 function closeSheet(){mwBack('sheet')}
 // Pinta la parte enriquecida de la ficha de PELI con lo que el item tenga
@@ -8406,7 +8621,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
    (genh?('<div class="ovgen">'+genh+'</div>'):'')+'</div></div></div>'+
    (ovw?('<div class="ovsyn"><div class="sh-ov clamp" id="ov-syn">'+esc(ovw)+'</div><span class="sh-more" onclick="toggleOvSyn()">Leer más</span></div>'):'')+
    altsHTML(x)+
-   '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+(isFav(x)?'♥ En mi lista':'♡ Añadir a mi lista')+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
+   '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+favLabel(x)+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
  keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
