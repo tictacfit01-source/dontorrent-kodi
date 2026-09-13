@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk84",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk85",
                     mimetype="text/plain")
 
 
@@ -5423,6 +5423,30 @@ _WF_CAP_RE = re.compile(r"(cap[ií]tulo|\bcap\.?\s*\d|\d+\s*x\s*\d{2}|temporada)
 _WF_EP_URL_RE = re.compile(r"/(?:serie-online[\w-]*|online|capitulo|episodio)/\d+", re.I)
 
 
+def _wf_colapsa(items):
+    """Una sola tarjeta de WolfMax por titulo+calidad, la que trae CAPITULOS.
+
+    El indice arrastra entradas degradadas (ver _wf_pobre) y la misma serie
+    salia dos veces: la buena con sus capitulos y una vacia. La web las funde,
+    pero entonces el contador de la barra deja de cuadrar con lo que se ve.
+    """
+    fuera, otros = {}, []
+    orden = []
+    for it in (items or []):
+        if (it or {}).get("source") != "wf":
+            otros.append(it)
+            continue
+        k = ((it.get("title") or "").strip().lower(), it.get("quality") or "")
+        vieja = fuera.get(k)
+        if vieja is None:
+            fuera[k] = it
+            orden.append(k)
+            continue
+        if len(it.get("eps") or []) > len(vieja.get("eps") or []):
+            fuera[k] = it
+    return otros + [fuera[k] for k in orden]
+
+
 def _wf_pobre(url, titulo, kind=""):
     """True si esta entrada del indice perdio su "[Cap.301]" y por tanto no
     sirve para agrupar (ver cabecera del arreglo de los indices envenenados)."""
@@ -5668,6 +5692,7 @@ def catetbox():
     # La caja CONTESTO (con o sin resultados) -> a la cache. El vacio tambien
     # (TTL corto): "WolfMax no tiene esta peli" es un dato estable y ahorra 24s
     # de espera la proxima vez que alguien la busque.
+    items = _wf_colapsa(items)
     _catbox_put(ckey, items)
     _wfidx_learn(_wf_crudo)   # el CRUDO (ver arriba): la proxima vez va en 10ms
     return jsonify({"items": items})
@@ -6869,7 +6894,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk84", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk85", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
