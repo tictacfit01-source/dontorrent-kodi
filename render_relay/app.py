@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk77",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk78",
                     mimetype="text/plain")
 
 
@@ -6266,6 +6266,10 @@ def _cat_apply_meta(it, sm):
 _CATBOX_CACHE = {}
 _CATBOX_TTL = 600          # 10 min con resultados
 _CATBOX_TTL_EMPTY = 300    # 5 min si la caja contesto "no lo tengo" (es estable)
+# ...salvo en WolfMax, donde el vacio NO es estable: la caja contesta [] cuando
+# su crawl del catalogo no llega a tiempo (~88s en un titulo no indexado) y la
+# serie SI esta en la web. Con 300s la joya de la casa quedaba tapada 5 minutos.
+_CATBOX_TTL_EMPTY_WF = 60
 _CATBOX_MAX = 120
 _CATBOX_FILE = "/tmp/mw_catbox.json"
 
@@ -6300,8 +6304,12 @@ def _catbox_get(key):
 
 
 def _catbox_put(key, items):
+    # la clave es "op|fuentes|consulta" (ver ckey en /catetbox)
+    _srcs = (key.split("|") + ["", ""])[1].split(",")
+    _empty_ttl = (_CATBOX_TTL_EMPTY_WF if "wf" in _srcs
+                  else _CATBOX_TTL_EMPTY)
     rec = {"items": items, "ts": _t.time(),
-           "ttl": _CATBOX_TTL if items else _CATBOX_TTL_EMPTY}
+           "ttl": _CATBOX_TTL if items else _empty_ttl}
     _CATBOX_CACHE[key] = rec
     try:
         disk = _catbox_load()
@@ -6787,7 +6795,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk77", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk78", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -8007,7 +8015,7 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  function wfPide(){
   boxMerge('buscar',g,'search',q,'wf',function(r){
     if(seq!==_searchSeq)return;
-    if(r&&r.timeout&&!wfRe){wfRe=1;
+    if(!(r&&r.got)&&!wfRe){wfRe=1;   // expiro O vino vacio (ver _CATBOX_TTL_EMPTY_WF)
      progSet('wf',0);                       // sigue buscando, no es un cero
      if(more)paint();
      setTimeout(function(){if(seq===_searchSeq)wfPide()},35000);
