@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk76",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk77",
                     mimetype="text/plain")
 
 
@@ -5840,6 +5840,15 @@ def catjob_done():
                   "eps": body.get("eps"), "ih": body.get("ih"),
                   "html": body.get("html"), "ts": now}
         _catjob_save(d)
+    # AUNQUE YA NO LO ESPERE NADIE: al indice de WolfMax. Un titulo que la caja
+    # no tenia indexado le cuesta ~88s de crawl (medido con "the last of us");
+    # el relay se rinde a los 24s y esto se quedaba aqui muerto hasta caducar,
+    # asi que la siguiente busqueda volvia a pagar los 88s. Aprendiendolo, la
+    # web lo pide otra vez a los 35s (ver el reintento de WolfMax) y sale.
+    try:
+        _wfidx_learn(body.get("items"))
+    except Exception:
+        pass
     return jsonify({"ok": True})
 
 
@@ -6778,7 +6787,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk76", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk77", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7989,8 +7998,27 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // El resto arranca en cuanto WolfMax contesta, o a los 1,2s como mucho.
  var _resto=0;
  function lanzarResto(){if(_resto||seq!==_searchSeq)return;_resto=1;arrancaResto();}
- boxMerge('buscar',g,'search',q,'wf',function(r){
-   progSet('wf',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);doneWf(r);lanzarResto();},seq,1);
+ // Si WolfMax EXPIRA es casi siempre un titulo que la caja no tenia indexado:
+ // le cuesta ~88s de crawl y el relay corta a los 24s. La caja termina igual y
+ // el relay ya aprende ese resultado (ver /catjob/done), asi que se vuelve a
+ // preguntar UNA vez a los 35s: para entonces esta en el indice y contesta en
+ // milisegundos. Sin esto, WolfMax "unas veces salia y otras no".
+ var wfRe=0;
+ function wfPide(){
+  boxMerge('buscar',g,'search',q,'wf',function(r){
+    if(seq!==_searchSeq)return;
+    if(r&&r.timeout&&!wfRe){wfRe=1;
+     progSet('wf',0);                       // sigue buscando, no es un cero
+     if(more)paint();
+     setTimeout(function(){if(seq===_searchSeq)wfPide()},35000);
+     lanzarResto();return;}
+    progSet('wf',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);
+    // llega DESPUES de que la barra se cerrara: se vuelve a asomar un momento
+    // con la cifra buena, para que se vea de donde han salido esas tarjetas.
+    if(wfRe&&r&&r.got){var _b=$('buscar-prog');if(_b){_b.classList.add('on');
+      setTimeout(function(){if(!PROG.tick)_b.classList.remove('on')},4000)}}
+    doneWf(r);lanzarResto();},seq,1);}
+ wfPide();
  setTimeout(lanzarResto,1200);
  function arrancaResto(){
  csTry(1);
@@ -8153,6 +8181,11 @@ function altsInner(x){
  [x].concat(x.alts||[]).forEach(function(a){if(!a||!a.source)return;
   var k=altKey(a);if(by[k])return;by[k]=1;all.push(a)});
  if(all.length<2)return '';
+ // ORDEN FIJO (mejor calidad primero, y a igualdad la fuente preferida). La
+ // activa iba siempre delante, asi que los botones SALTABAN de sitio a cada
+ // toque: en el movil acabas pulsando el que no era.
+ all.sort(function(a,b){var d=srcScore(b)-srcScore(a);if(d)return d;
+  return (altKey(a)<altKey(b))?-1:1});
  var kx=altKey(x);
  return '<span class="altq" style="align-self:center">También en:</span>'+
   all.map(function(a){var k=altKey(a);
