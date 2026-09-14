@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk94",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk95",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk94", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk95", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7680,6 +7680,16 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Ultimas busquedas: repetir una sin volver a escribirla en el movil */
+.rec{display:none;flex-wrap:wrap;gap:7px;margin:0 0 14px}
+.rec.on{display:flex}
+.rec-t{width:100%;font-size:12px;color:var(--sub);font-weight:600;margin-bottom:2px}
+.recb{border:1px solid var(--stroke);background:var(--card);color:var(--txt);
+ border-radius:999px;padding:8px 14px;font-size:13.5px;font-weight:600;cursor:pointer;
+ display:inline-flex;align-items:center;gap:8px;max-width:100%}
+.recb span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recb i{font-style:normal;color:var(--sub);font-size:15px;line-height:1;opacity:.7}
+.recb:active{background:rgba(255,255,255,.12)}
 /* Pestanas de temporada (la ficha trae la serie entera: hasta 35 capitulos) */
 .tmp{display:flex;gap:7px;overflow-x:auto;-webkit-overflow-scrolling:touch;
  padding:2px 0 10px;scrollbar-width:none}
@@ -7908,6 +7918,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <input id="q" type="search" placeholder="Buscar película o serie..." autocomplete="off">
    <button onclick="go()">Buscar</button>
   </div>
+  <div id="buscar-rec" class="rec"></div>
   <div id="buscar-prog" class="srcp"></div>
   <div id="buscar-grid" class="msg">Busca pelis y series y envíalas a tu tele 📺</div>
   <div id="buscar-more" class="morebar"></div>
@@ -8292,11 +8303,14 @@ function setView(v){CURVIEW=v;
   if(pa)pa.classList.toggle('hidden',k!==v);
   if(tb)tb.classList.toggle('on',k===v)});
  if(v==='lista')renderFavs();
- if(v==='hist')renderHist()}
+ if(v==='hist')renderHist();
+ if(v==='buscar')try{recPinta()}catch(e){}}
 function goView(v){
  if(v==='inicio'){if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
  mwOpen('tab',null,function(){setView('inicio')});setView(v);}
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
+ // el Inicio vuelve donde lo dejaste (antes siempre a Estrenos)
+ try{localStorage.setItem('mw_chip',kind)}catch(e){}
  INI={kind:kind,page:1,loading:false,more:true};
  var g=$('inicio-grid');g.className='';g.innerHTML=skelGrid();
  var slow=setTimeout(function(){if(g.querySelector('.skph')){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor… (solo la primera vez)';}},7000);
@@ -8470,6 +8484,24 @@ function progStop(suave){if(PROG.tick){clearInterval(PROG.tick);PROG.tick=null}
  var el=$('buscar-prog');if(!el)return;
  if(suave){setTimeout(function(){if(!PROG.tick)el.classList.remove('on')},2200)}
  else el.classList.remove('on');}
+// ---- Ultimas busquedas (en este movil) ---------------------------------
+var REC=[];try{REC=JSON.parse(localStorage.getItem('mw_rec')||'[]')||[]}catch(e){REC=[]}
+function recSave(){try{localStorage.setItem('mw_rec',JSON.stringify(REC.slice(0,8)))}catch(e){}}
+function recAdd(q){
+ q=(q||'').trim();if(!q)return;
+ REC=REC.filter(function(z){return z.toLowerCase()!==q.toLowerCase()});
+ REC.unshift(q);REC=REC.slice(0,8);recSave();recPinta();}
+function recQuita(i){REC.splice(i,1);recSave();recPinta()}
+function recIr(i){var q=REC[i];if(!q)return;$('q').value=q;go()}
+function recPinta(){
+ var el=$('buscar-rec');if(!el)return;
+ var hayResultados=((LISTS&&LISTS.buscar)||[]).length>0;
+ if(!REC.length||hayResultados){el.className='rec';el.innerHTML='';return}
+ el.className='rec on';
+ el.innerHTML='<div class="rec-t">\u00daltimas b\u00fasquedas</div>'+
+  REC.map(function(q,i){
+   return '<button class="recb" onclick="recIr('+i+')"><span>'+esc(q)+'</span>'+
+    '<i onclick="event.stopPropagation();recQuita('+i+')">\u00d7</i></button>'}).join('');}
 var _searchSeq=0;
 // Peticiones de la busqueda EN CURSO. Cambiar de busqueda no basta con ignorar
 // las respuestas: mientras siguen en vuelo ocupan un hilo del relay (5 por
@@ -8485,6 +8517,8 @@ function tfetch(url,ms){var c=('AbortController'in window)?new AbortController()
  return fetch(url,c?{signal:c.signal}:{}).then(function(r){if(to)clearTimeout(to);if(!r.ok)throw new Error('http'+r.status);return r;},function(e){if(to)clearTimeout(to);throw e;});}
 function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.className='';g.innerHTML=skelGrid();
  var cd=(code.value||'').replace(/\D/g,'');LISTS.buscar=[];
+ // se guarda la busqueda, y los chips se quitan de en medio mientras se busca
+ try{recAdd(q);var _r=$('buscar-rec');if(_r)_r.className='rec'}catch(e){}
  sreqAbort();            // devuelve al relay los hilos de la busqueda anterior
  _searchSeq++;var seq=_searchSeq;
  progStart(seq);
@@ -9471,7 +9505,9 @@ $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
  else if(pl==='pl'&&p.get('u')){sharedPlay={a:'pl',u:p.get('u'),t:t};showShared(t);}
  else if(p.get('find')){goView('buscar');$('q').value=p.get('find');go();}
 }catch(e){}})();
-chip('estrenos');pollNow();
+(function(){var _k='estrenos';
+ try{var g=localStorage.getItem('mw_chip');if(g==='peliculas'||g==='series')_k=g}catch(e){}
+ chip(_k)})();pollNow();
 try{mlSync()}catch(e){}   // trae/respalda la lista de deseados si ya hay codigo
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){})}
 </script></body></html>"""
