@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl02",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl03",
                     mimetype="text/plain")
 
 
@@ -7117,7 +7117,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl02", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl03", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -8720,7 +8720,7 @@ function histKey(h){return (h.ref&&(h.ref.u||((h.ref.c||'')+':'+(h.ref.tb||'')))
 function histSnap(ref){
  if(!ref||!ref.t)return null;
  var x=sel||{};
- return {t:ref.t,ref:ref,ts:Date.now(),src:x.source||'dt',q:x.quality||'',
+ return {t:ref.t,ref:ref,ts:Date.now(),src:x.source||'dt',q:ref.q||x.quality||'',
          poster:x.poster||'',kind:x.kind||'movie'};}
 function histPush(e){
  if(!e)return;
@@ -9542,7 +9542,10 @@ function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(
  var allseen=eps.every(function(e){return isSeen(e.content_id)});
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
 function playEp(id){var e=EPS[id];if(!e)return;
- if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim()}))closeOv();return}
+ // `q`: la calidad de ESTE capitulo. Una serie mezcla calidades (el 1x01 de
+ // Silo es 1080p aunque la tarjeta sea 4K), y el historial ensenaba la de la
+ // tarjeta, que podia no ser la que se esta viendo.
+ if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim(),q:e.quality}))closeOv();return}
  // Capítulo de EliteTorrent/WolfMax: su enlace vive en la ficha del capítulo y
  // lo resuelve una caja (IP residencial). Se avisa porque tarda 1-3s, y NO se
  // cierra la ficha hasta que sale de verdad -> nada de "he pulsado y no pasa nada".
@@ -9552,11 +9555,11 @@ function playEp(id){var e=EPS[id];if(!e)return;
   toast('Preparando '+e.label+'…');
   fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id))
    .then(function(r){return r.json()}).then(function(d){
-    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2}))closeOv();}
+    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2,q:e.quality}))closeOv();}
     else toast('No se pudo obtener el enlace de ese capítulo');
    }).catch(function(){toast('No se pudo obtener el enlace de ese capítulo')});
   return}
- var ttl=(SHOW+' '+e.label).trim();seedGate(e.content_id,e.tabla||'series',function(){if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:ttl}))closeOv()})}
+ var ttl=(SHOW+' '+e.label).trim();seedGate(e.content_id,e.tabla||'series',function(){if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:ttl,q:e.quality}))closeOv()})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}
