@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl03",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl04",
                     mimetype="text/plain")
 
 
@@ -2773,6 +2773,12 @@ _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 :root{--bg0:#06070c;--bg1:#0e1320;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);
 --txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158;--red:#ff453a;--glass:rgba(255,255,255,.07)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* RED DE SEGURIDAD: pase lo que pase, la pagina no se va de ancho ni se puede
+   arrastrar de lado. Las barras que SI se deslizan a proposito (listas,
+   temporadas, ultimas busquedas) llevan su propio scroll y no se ven afectadas.
+   Ademas, nada puede ser mas ancho que su sitio. */
+html,body{max-width:100%;overflow-x:hidden}
+img,video,svg,iframe{max-width:100%}
 html,body{margin:0;background:#06070c;-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-touch-callout:none}
 input,textarea{-webkit-user-select:text;-moz-user-select:text;user-select:text}
 body{font-family:-apple-system,"SF Pro Display","SF Pro Text",system-ui,Segoe UI,Roboto,sans-serif;
@@ -7117,7 +7123,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl03", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl04", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7408,6 +7414,12 @@ _CAT_PAGE = r"""<!doctype html><html lang="es"><head>
 <style>
 :root{--bg:#06070c;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#8a93a6;--blue:#0a84ff;--blue2:#409cff;--green:#30d158}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* RED DE SEGURIDAD: pase lo que pase, la pagina no se va de ancho ni se puede
+   arrastrar de lado. Las barras que SI se deslizan a proposito (listas,
+   temporadas, ultimas busquedas) llevan su propio scroll y no se ven afectadas.
+   Ademas, nada puede ser mas ancho que su sitio. */
+html,body{max-width:100%;overflow-x:hidden}
+img,video,svg,iframe{max-width:100%}
 html,body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-touch-callout:none}
 input,textarea{-webkit-user-select:text;-moz-user-select:text;user-select:text}
 body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b2740 0,transparent 60%),var(--bg)}
@@ -7452,8 +7464,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .chip{border:1px solid var(--stroke);background:var(--card);color:var(--txt);font-weight:600;font-size:13px;padding:8px 14px;border-radius:999px;cursor:pointer}
 .chip.on{background:linear-gradient(145deg,var(--blue2),var(--blue));border-color:transparent;color:#fff}
 .search{display:flex;gap:8px;margin-bottom:16px}
-.search input{flex:1;background:var(--card);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);font-size:16px;padding:13px 14px;outline:0}
-.search button{border:0;border-radius:14px;padding:0 16px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue))}
+/* min-width:0 -> sin esto el campo NO baja de lo que mide su texto y el boton
+   "Buscar" se sale de la pantalla en moviles estrechos (320-360 px), que era lo
+   que obligaba a arrastrar la pagina de lado. */
+.search input{flex:1 1 0;min-width:0;background:var(--card);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);font-size:16px;padding:13px 14px;outline:0}
+.search button{flex:0 0 auto;border:0;border-radius:14px;padding:0 16px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue));white-space:nowrap}
+@media(max-width:360px){.search button{padding:0 13px;font-size:14px}
+ .search input{font-size:15px;padding:12px}}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
 /* Entrada suave: la cuadricula aparecia de golpe. Solo las 12 primeras llevan
    retardo (las de abajo ya entran con el scroll). */
@@ -7604,9 +7621,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .rb.play{width:82px;height:82px;background:linear-gradient(145deg,#3dd46a,#27c257);border-color:transparent;box-shadow:0 8px 22px rgba(48,209,88,.4);color:#06140a;font-size:30px}
 .rb.stop{color:#ff453a;font-size:22px}
 .rb.sk{font-size:15px;font-weight:700;line-height:1}.rb.sk small{font-size:10px;opacity:.75}
-.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:4px}
-.pill{border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:14px;padding:16px;font-size:18px;text-align:center;cursor:pointer;font-weight:600}
+.row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:4px}
+@media(max-width:360px){.row3{gap:8px}}
+.pill{min-width:0;overflow:hidden;border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:14px;padding:16px;font-size:18px;text-align:center;cursor:pointer;font-weight:600}
 .pill:active{transform:scale(.97);background:rgba(255,255,255,.14)}
+@media(max-width:360px){.pill{padding:14px 6px;font-size:16px}
+ .rsub .pill span{font-size:10.5px}}
 .padwrap{display:flex;justify-content:center;margin:22px 0 8px}
 .pad{position:relative;width:240px;height:240px;border-radius:50%;border:1px solid var(--stroke);background:radial-gradient(circle at 50% 32%,rgba(255,255,255,.10),transparent 55%),conic-gradient(from 0deg,rgba(255,255,255,.05),rgba(255,255,255,.02),rgba(255,255,255,.05));box-shadow:inset 0 -20px 40px rgba(0,0,0,.5),0 18px 40px rgba(0,0,0,.45)}
 .arrow{position:absolute;color:var(--sub);font-size:22px;width:58px;height:58px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%}
@@ -7630,9 +7650,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srclegend i{width:11px;height:11px;border-radius:3px;display:inline-block;flex:none}
 /* salto a minuto en el mando */
 .jump{display:flex;gap:10px;margin:2px 0 6px}
-.jump input{flex:1;background:rgba(255,255,255,.07);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);padding:15px;font-size:16px;outline:0;text-align:center}
+/* mismo caso que el buscador: sin min-width:0 el "Saltar a" se salia 54 px */
+.jump input{flex:1 1 0;min-width:0;background:rgba(255,255,255,.07);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);padding:15px;font-size:16px;outline:0;text-align:center}
 .jump input::placeholder{color:var(--sub);font-size:13px}
-.jump .jbtn{width:120px;flex:none;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--blue2),var(--blue));color:#fff;border-radius:14px;font-weight:700;font-size:15px;cursor:pointer}
+.jump .jbtn{width:auto;min-width:88px;padding:0 18px;flex:0 0 auto;white-space:nowrap;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,var(--blue2),var(--blue));color:#fff;border-radius:14px;font-weight:700;font-size:15px;cursor:pointer}
 .jump .jbtn:active{transform:scale(.97)}
 .rb svg{display:block}
 /* episodios: marcar visto (elegante) */
