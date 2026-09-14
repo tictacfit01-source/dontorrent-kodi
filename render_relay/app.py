@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk91",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk92",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk91", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk92", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7446,6 +7446,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .search input{flex:1;background:var(--card);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);font-size:16px;padding:13px 14px;outline:0}
 .search button{border:0;border-radius:14px;padding:0 16px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue))}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+/* Entrada suave: la cuadricula aparecia de golpe. Solo las 12 primeras llevan
+   retardo (las de abajo ya entran con el scroll). */
+@keyframes cardIn{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+.grid>.card{animation:cardIn .26s ease-out both}
+.grid>.card:nth-child(-n+12){animation-delay:calc((var(--i,0)) * .022s)}
+@media (prefers-reduced-motion:reduce){.grid>.card{animation:none}}
 @media(max-width:430px){.grid{grid-template-columns:repeat(2,1fr)}}
 /* Mi lista: barra con el boton de cambiar vista (cuadricula <-> lista) */
 .listbar{display:flex;justify-content:flex-end;margin:0 0 12px}
@@ -7461,7 +7467,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .grid.lv .m .t{-webkit-line-clamp:1;font-size:14px}
 .card{background:var(--card);border:1px solid var(--stroke);border-radius:14px;overflow:hidden;transition:.15s}
 .card:active{transform:scale(.97)}
-.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320;cursor:pointer}
+.card .ph{position:relative;aspect-ratio:2/3;background:#0e1320;cursor:pointer;
+ transition:transform .12s ease-out}
+.card .ph:active{transform:scale(.975)}
 /* carga PEREZOSA real: el navegador solo baja los posters visibles (loading=lazy);
    antes iban como background-image inline -> el Inicio (scroll infinito) descargaba
    TODAS las caratulas aunque estuvieran fuera de pantalla. */
@@ -7527,7 +7535,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ep{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:14px;margin-bottom:8px;cursor:pointer;transition:.12s}
 .ep:active{transform:scale(.98);background:rgba(255,255,255,.12)}
 .epl{font-size:15px;font-weight:600}
-.epq{font-size:11px;color:var(--sub);font-weight:600;margin-left:6px}
+.epq{font-size:10.5px;font-weight:800;margin-left:7px;padding:2px 7px;border-radius:6px;
+ background:rgba(255,255,255,.08);color:var(--sub);letter-spacing:.2px;vertical-align:1px}
+/* Ahora una misma serie puede traer capitulos de varias calidades (WolfMax no
+   tiene todas en 4K), asi que la calidad DEBE verse de un vistazo. */
+.epq[data-q="4K"]{background:rgba(191,90,242,.20);color:#d9a6ff;
+ box-shadow:inset 0 0 0 1px rgba(191,90,242,.45)}
+.epq[data-q="1080p"]{background:rgba(10,132,255,.16);color:#7db8ff}
 .epb{display:inline-flex;gap:5px;margin-left:7px;vertical-align:middle}
 .ep-rar{font-size:10px;background:rgba(255,159,110,.95);color:#1a0d06;border-radius:5px;padding:1px 6px;font-weight:800}
 .ep-seed{font-size:10px;border-radius:5px;padding:1px 6px;font-weight:700;border:1px solid var(--stroke)}
@@ -9022,7 +9036,7 @@ function cardHTML(x,list,i){
  var kt='<div class="kindtag">'+kindLabel(x.kind)+(_nc?(' · '+_nc+' cap.'):'')+'</div>';
  var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
- return '<div class="card"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
+ return '<div class="card" style="--i:'+(i%12)+'"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+heartSVG(isFav(x))+'</div></div>'+
     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
 function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';for(var i=0;i<items.length;i++)h+=cardHTML(items[i],list,i);h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0)}
@@ -9297,7 +9311,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
  keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
-   h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
+   h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq" data-q="'+esc(e.quality)+'">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
  });$('ov-body').innerHTML=h;lazyEps();
  // Tráiler de la serie: si ya lo tenemos (de enrichItem) lo mostramos; si no,
