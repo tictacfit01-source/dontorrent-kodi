@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk93",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk94",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk93", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk94", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7862,6 +7862,14 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ovgen{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
 .ovsyn{margin:0 0 14px}
 .ovactions{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px}
+/* "Seguir por 2x04": lo que uno quiere hacer casi siempre al abrir una serie */
+.ovseguir{display:flex;align-items:center;gap:9px;background:var(--green);color:#08210f;
+ border:0;border-radius:14px;padding:13px 18px;font-size:15px;font-weight:800;
+ cursor:pointer;margin:0 0 12px;box-shadow:0 6px 18px rgba(48,209,88,.22);
+ transition:transform .12s ease-out}
+.ovseguir:active{transform:scale(.98)}
+.ovseguir b{font-weight:800}
+.ovseguir span{font-weight:600;opacity:.75;font-size:13px}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -9301,6 +9309,39 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov
   OVRETRY=x;$('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron cargar los episodios. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a>'+
     (((x.alts||[]).length)?'<br><br>O prueba otra fuente aquí arriba ↑':'')+'</div>'})}
 var OVRETRY=null;
+// El PRIMER capitulo sin ver de TODA la serie, en orden. Es "por donde ibas".
+// Mira la serie ENTERA (OVDATA), no solo la temporada abierta: con las pestanas
+// EPS solo tiene la que se esta viendo, y asi el boton se equivocaba (decia
+// "Empezar por 2x01" con la T1 entera vista, y desaparecia estando en una
+// temporada vista aunque quedaran capitulos en otra).
+function _todosLosEps(){
+ var eps=((OVDATA&&OVDATA.d&&OVDATA.d.episodes)||[]).slice();
+ eps.sort(function(a,b){return ((a.season||0)-(b.season||0))||((a.episode||0)-(b.episode||0))});
+ return eps;}
+function _primerSinVer(){
+ var eps=_todosLosEps();
+ for(var i=0;i<eps.length;i++)if(!isSeen(eps[i].content_id))return eps[i];
+ return null;}
+function _seguirHTML(){
+ // OJO: EPS se llena mas abajo, al pintar los capitulos; por eso este boton se
+ // rellena DESPUES (ver el final de renderEpisodes).
+ return '<button class="ovseguir" id="ov-seguir" style="display:none" onclick="seguirViendo()"></button>';}
+function _seguirPinta(){
+ var b=$('ov-seguir');if(!b)return;
+ var e=_primerSinVer();
+ if(!e){b.style.display='none';return}
+ var vistos=_todosLosEps().filter(function(z){return isSeen(z.content_id)}).length;
+ b.style.display='';
+ b.innerHTML='\u25b6 <b>'+(vistos?'Seguir por ':'Empezar por ')+esc(e.label)+'</b>'+
+  (e.quality?(' <span>'+esc(e.quality)+'</span>'):'');}
+function seguirViendo(){
+ var e=_primerSinVer();if(!e)return;
+ // puede estar en otra temporada (no pintada): se le da un hueco en EPS para
+ // que playEp lo resuelva igual que a cualquier otro capitulo
+ var id=null;
+ for(var k in EPS)if(EPS[k]===e){id=k;break}
+ if(!id){id='eseguir';EPS[id]=e}
+ playEp(id);}
 var OVSEASON=null;      // temporada abierta en la ficha (ver las pestanas)
 function ovTemp(s){OVSEASON=s;renderEpisodes();
  try{var b=$('ov-body');if(b)b.scrollTop=0}catch(e){}}
@@ -9322,6 +9363,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
    (genh?('<div class="ovgen">'+genh+'</div>'):'')+'</div></div></div>'+
    (ovw?('<div class="ovsyn"><div class="sh-ov clamp" id="ov-syn">'+esc(ovw)+'</div><span class="sh-more" onclick="toggleOvSyn()">Leer más</span></div>'):'')+
    altsHTML(x)+
+   _seguirHTML()+
    '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+favLabel(x)+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
  // PESTANAS DE TEMPORADA: la ficha trae la serie entera, y verlas todas
  // seguidas era un scroll eterno. Se abre por la primera con algo sin ver.
@@ -9343,7 +9385,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq" data-q="'+esc(e.quality)+'">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
- });$('ov-body').innerHTML=h;lazyEps();
+ });$('ov-body').innerHTML=h;_seguirPinta();lazyEps();
  // Tráiler de la serie: si ya lo tenemos (de enrichItem) lo mostramos; si no,
  // perezoso via /catmeta (kind=tv) y se persiste en la lista.
  if(x.trailer){TRK=x.trailer;var _ovb=$('ov-trailer');if(_ovb)_ovb.style.display='';}
@@ -9368,7 +9410,9 @@ function epBadge(job,info){var el=document.getElementById('epb-'+job.id);if(!el)
 function _closeOv(){$('ov').classList.remove('on')}
 function closeOv(){mwBack('ov')}
 function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var row=$('row-'+id);
- if(row){var sn=isSeen(e.content_id);row.classList.toggle('seen',sn);var ey=row.querySelector('.eye');if(ey)ey.innerHTML=sn?EYE_ON:EYE_OFF;}}
+ if(row){var sn=isSeen(e.content_id);row.classList.toggle('seen',sn);var ey=row.querySelector('.eye');if(ey)ey.innerHTML=sn?EYE_ON:EYE_OFF;}
+ // el boton "Seguir por..." apunta al primero sin ver: hay que recalcularlo
+ try{_seguirPinta()}catch(e2){}}
 function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(function(e){return (e.season||0)===s});
  var allseen=eps.every(function(e){return isSeen(e.content_id)});
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
