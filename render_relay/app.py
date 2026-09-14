@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl01",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl02",
                     mimetype="text/plain")
 
 
@@ -6063,9 +6063,15 @@ def catboxeps():
                         "year": _meta.get("year"),
                         "rating": _meta.get("rating"),
                         "episodes": _eps, "via": ">".join(_via)})
-    _ya = _por_titulo(cache_only=True)
-    if _ya is not None:
-        return _ya
+    # full=1: NO sirvas lo que dejo la busqueda (el indice suele tener menos
+    # capitulos); ve a la caja, que desde el addon 2.9.65 lee las paginas de la
+    # serie y trae todas las temporadas. Lo usa la web para completar la ficha
+    # por detras, cuando ya ha pintado lo rapido.
+    _full = request.args.get("full") == "1"
+    if not _full:
+        _ya = _por_titulo(cache_only=True)
+        if _ya is not None:
+            return _ya
     if not box:
         return _por_titulo() or (jsonify({"episodes": []}), 400)
     # Mismo tope que en /catetbox cuando la caja es prestada (ver _lend_acquire).
@@ -7111,7 +7117,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl01", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl02", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -9446,7 +9452,7 @@ function completaFicha(x){
  var u=x.url||x.content_id;if(!u)return;
  var k=src+':'+u;if(_COMPLETANDO===k)return;_COMPLETANDO=k;
  var cd=(code.value||'').replace(/\D/g,'');
- fetch('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(u)+
+ fetch('/catboxeps?full=1&code='+cd+'&src='+src+'&url='+encodeURIComponent(u)+
        '&t='+encodeURIComponent(x.title||''))
   .then(function(r){return r.json()}).then(function(d){
    var eps=(d&&d.episodes)||[];
