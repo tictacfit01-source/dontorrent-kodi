@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk99",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl01",
                     mimetype="text/plain")
 
 
@@ -7111,7 +7111,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk99", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl01", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -9370,7 +9370,14 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov
  // los capítulos salen al instante (0 red, 0 trabajo para ninguna caja).
  if(x.eps&&x.eps.length){OVDATA={d:{title:x.title,episodes:x.eps,poster:x.poster,
    year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,genres:x.genres},x:x};
-  renderEpisodes();return;}
+  renderEpisodes();
+  // ...y ademas se pide la lista COMPLETA a la caja, por detras. Lo que trae la
+  // tarjeta es lo que el indice tiene indexado (en Ted Lasso, 15 capitulos);
+  // la caja lee las paginas de la serie y da las cuatro temporadas (35). Si
+  // llega mas, se funde y la ficha se repinta sola; si no llega nada, se queda
+  // lo que ya habia.
+  completaFicha(x);
+  return;}
  // DT lleva el code -> si Render esta baneado por DonTorrent, el relay trae los
  // episodios por TU box (IP de casa). Sin code igualmente intenta directo.
  var u=(src==='dt')?('/catdetail?path='+encodeURIComponent(x.path||'')+(cd.length===6?('&code='+cd):'')):('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(x.url||x.content_id)+'&t='+encodeURIComponent(x.title||''));
@@ -9429,6 +9436,31 @@ function seguirViendo(){
  for(var k in EPS)if(EPS[k]===e){id=k;break}
  if(!id){id='eseguir';EPS[id]=e}
  playEp(id);}
+// Completa la ficha por detras con lo que tenga la caja (ver openSeries).
+// Solo para fuentes-box (WolfMax/EliteTorrent), que son las que publican una
+// ficha por capitulo y donde el indice se queda corto.
+var _COMPLETANDO='';
+function completaFicha(x){
+ var src=x.source||'dt';
+ if(src!=='wf'&&src!=='et')return;
+ var u=x.url||x.content_id;if(!u)return;
+ var k=src+':'+u;if(_COMPLETANDO===k)return;_COMPLETANDO=k;
+ var cd=(code.value||'').replace(/\D/g,'');
+ fetch('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(u)+
+       '&t='+encodeURIComponent(x.title||''))
+  .then(function(r){return r.json()}).then(function(d){
+   var eps=(d&&d.episodes)||[];
+   if(!eps.length)return;
+   if(!OVDATA||OVDATA.x!==x)return;            // ya no esta abierta esa ficha
+   var antes=(OVDATA.d.episodes||[]).length;
+   var union=mergeEps(OVDATA.d.episodes||[],eps);
+   if(union.length<=antes)return;              // no aporta nada nuevo
+   OVDATA.d.episodes=union;
+   x.eps=slimEps(union);                       // y la tarjeta se lo queda
+   try{favLearnEps(x,union)}catch(e){}
+   renderEpisodes();
+   toast('Serie completa: '+union.length+' cap\u00edtulos');
+  }).catch(function(){});}
 var OVSEASON=null;      // temporada abierta en la ficha (ver las pestanas)
 function ovTemp(s){OVSEASON=s;renderEpisodes();
  try{var b=$('ov-body');if(b)b.scrollTop=0}catch(e){}}
