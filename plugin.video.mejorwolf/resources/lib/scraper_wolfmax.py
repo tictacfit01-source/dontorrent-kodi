@@ -2482,10 +2482,116 @@ _EPISODE_HREF_RE = re.compile(
 )
 
 
+# ===== La serie COMPLETA, juntando calidades ===============================
+# WolfMax publica cada capitulo en varias calidades y ninguna las tiene todas
+# (medido en "La maldicion de Widows Bay": el 1x06 SOLO esta en 4K, y el 1x02 y
+# el 1x07 no estan en 4K pero si en 1080p/720p/480p). La pagina de la serie
+# (/series/<calidad>/<slug>) renderiza TODOS sus capitulos server-side, asi que
+# leyendo las cuatro y quedandose con la mejor calidad de cada uno sale la serie
+# entera. Antes la lista salia del indice y quedaban huecos.
+_WF_CALIDADES = (("4k-2160p", "4K"), ("1080p", "1080p"),
+                 ("720p", "720p"), ("480p", "480p"))
+# /series/<calidad>/<slug> dentro del propio HTML del capitulo
+_WF_SERIE_HREF_RE = re.compile(
+    r"/series/(?:4k-2160p|1080p|720p|480p)/([a-z0-9][a-z0-9-]{2,})", re.I)
+# Las landings NO etiquetan como las fichas ("Cap.207"), sino asi:
+#   "Separacion Temporada Temporada [ 2 ] Capitulo [ 7 ]"
+# y _parse_season_episode lee eso como temporada 1 (y "Capitulo [ 101 ]" como
+# 1x01), asi que aqui se parsea con su propio patron.
+_WF_LANDING_SE_RE = re.compile(
+    r"temporada\D{0,12}(\d{1,2})\D{0,24}?cap[ií]?tulos?\D{0,12}(\d{1,4})",
+    re.I | re.S)
+
+
+def _wf_url_clave(u):
+    """URL normalizada (sin esquema ni www ni barra final) para comparar."""
+    u = (u or "").strip().lower()
+    u = u.split("://", 1)[-1]
+    if u.startswith("www."):
+        u = u[4:]
+    return u.rstrip("/")
+
+
+def _wf_landing_se(texto):
+    """(temporada, capitulo) del texto de un anchor de landing."""
+    m = _WF_LANDING_SE_RE.search(texto or "")
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return _parse_season_episode(texto or "")
+
+
+def serie_slug(cap_url):
+    """Slug de la serie a partir de la URL de UNO de sus capitulos.
+
+    Las fichas /online/<id> (series diarias) NO llevan ese anchor: ahi se
+    devuelve "" sin gastar la peticion.
+    """
+    try:
+        if not cap_url:
+            return ""
+        ruta = "/" + _wf_url_clave(cap_url).split("/", 1)[-1]
+        if ruta.startswith("/online/"):
+            return ""
+        r = hs.get(_session(), cap_url, timeout=15)
+        m = _WF_SERIE_HREF_RE.search(r.content.decode("utf-8", "ignore"))
+        return (m.group(1).lower() if m else "")
+    except Exception as e:
+        _LOG(f"serie_slug({cap_url}) fail: {e.__class__.__name__}: {e}")
+        return ""
+
+
+def episodios_completos(cap_url, slug=""):
+    """TODOS los capitulos de la serie, cada uno en la mejor calidad que exista.
+
+    Devuelve [{season, episode, url, quality}] ordenado. Lista vacia si no se
+    puede (el llamante debe tener su propio camino de siempre).
+    """
+    import concurrent.futures as _cf
+    slug = slug or serie_slug(cap_url)
+    if not slug:
+        return []
+    base = _base().rstrip("/")
+
+    def _una(par):
+        ruta, q = par
+        try:
+            return q, _series_landing_caps(f"{base}/series/{ruta}/{slug}")
+        except Exception:
+            return q, []
+
+    # LAS CUATRO A LA VEZ: en serie eran ~4s y el relay solo da 5s a la caja
+    # antes de repartir el mismo trabajo a otras dos casas.
+    porq = {}
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=4) as ex:
+            for q, caps in ex.map(_una, _WF_CALIDADES):
+                porq[q] = caps
+    except Exception as e:
+        _LOG(f"episodios_completos({slug}) landings fail: {e}")
+        return []
+
+    mejor = {}
+    for _ruta, q in _WF_CALIDADES:          # en orden de preferencia
+        for it in porq.get(q) or []:
+            se = _wf_landing_se(it.get("title") or "")
+            if not se or not se[0] or not se[1]:
+                continue
+            if se in mejor:
+                continue                     # ya lo tenemos en una calidad MEJOR
+            mejor[se] = {"season": se[0], "episode": se[1],
+                         "url": it.get("url"), "quality": q}
+    out = [mejor[k] for k in sorted(mejor)]
+    _LOG(f"episodios_completos({slug}) -> {len(out)} capitulos, "
+         f"temporadas {sorted(set(e['season'] for e in out))}")
+    return out
+
+
 def detail(url):
     _LOG(f"detail: {url}")
     sess = _session()
-    r = hs.get(sess, url)
+    # CON TIMEOUT: sin el, una pagina que no cierra deja el hilo colgado ~60 s
+    # y la ficha de la serie se queda sin capitulos por esperar a uno.
+    r = hs.get(sess, url, timeout=20)
     soup = BeautifulSoup(r.content, "html.parser")
 
     # Titulo

@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk90",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk91",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk90", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk91", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7666,6 +7666,22 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Cuadros PROPIOS: los del navegador ensenan "...onrender.com dice" */
+.mwd{align-items:center;justify-content:center;padding:22px}
+.mwd .box{max-width:420px;border-radius:22px;border:1px solid var(--stroke);
+ padding:20px 20px 16px;animation:mwdIn .18s ease-out;overflow:visible}
+@keyframes mwdIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}
+.mwd-t{font-size:17px;font-weight:800;line-height:1.3}
+.mwd-s{font-size:13.5px;color:var(--sub);line-height:1.5;margin-top:7px}
+.mwd-in{width:100%;margin-top:14px;background:rgba(255,255,255,.06);color:var(--txt);
+ border:1px solid var(--stroke);border-radius:13px;padding:13px 14px;font-size:16px;
+ font-family:inherit;outline:none;transition:border-color .15s}
+.mwd-in:focus{border-color:var(--blue)}
+.mwd-b{display:flex;gap:9px;justify-content:flex-end;margin-top:16px}
+.mwd-b button{border:0;border-radius:13px;padding:12px 20px;font-size:14.5px;font-weight:700;cursor:pointer}
+.mwd-x{background:rgba(255,255,255,.08);color:var(--txt)}
+.mwd-ok{background:var(--blue);color:#fff;min-width:104px}
+.mwd-ok.peligro{background:#ff453a}
 /* Seleccion multiple en Mis listas (dejar pulsado) */
 .selbar{display:none;align-items:center;justify-content:space-between;gap:10px;
  margin-bottom:10px;padding:9px 11px;border-radius:14px;background:rgba(10,132,255,.14);
@@ -7887,6 +7903,17 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <div class="np-prog-wrap"><div class="np-prog" id="np-prog"></div></div>
  <div class="np-row"><div class="np-t" id="np-t"></div>
   <button class="np-pp" id="np-pp" onclick="event.stopPropagation();pp()"><svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg></button></div>
+</div>
+<div class="sheet mwd" id="mwdlg" onclick="if(event.target===this)mwdNo()">
+ <div class="box">
+  <div class="mwd-t" id="mwd-t"></div>
+  <div class="mwd-s" id="mwd-s"></div>
+  <input id="mwd-in" class="mwd-in" autocomplete="off" spellcheck="false">
+  <div class="mwd-b">
+   <button class="mwd-x" onclick="mwdNo()">Cancelar</button>
+   <button class="mwd-ok" id="mwd-ok" onclick="mwdSi()">Aceptar</button>
+  </div>
+ </div>
 </div>
 <div class="sheet" id="lsheet" onclick="if(event.target===this)closeLS()">
  <div class="box">
@@ -8152,9 +8179,10 @@ function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var
   wrap.appendChild(row);liveDot(dot,dev.code)})}
 function editDev(c){var d=loadDevs(),dev=null;
  for(var i=0;i<d.length;i++){if(d[i].code===c){dev=d[i];break}}
- if(!dev)return;var nn=prompt('Nombre para este Kodi:',dev.name||'');
- if(nn===null)return;nn=nn.trim();if(!nn){toast('El nombre no puede estar vacío');return}
- dev.name=nn;saveDevs(d);refreshDevBtn();renderDevs();toast('Nombre actualizado ✓')}
+ if(!dev)return;
+ mwPrompt('Nombre de este Kodi',dev.name||'','Salón, Comedor, Tablet…',
+  function(nn){dev.name=nn.slice(0,24);saveDevs(d);refreshDevBtn();renderDevs();
+   toast('Nombre actualizado ✓')});}
 function pickDev(c){setActiveCode(c);renderDevs();toast('Kodi activo: '+(devName(c)||c));setTimeout(closeDevs,220)}
 function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'').replace(/\D/g,'').slice(0,6);
  if(c.length!==6){toast('El código debe tener 6 cifras');return}
@@ -8164,8 +8192,11 @@ function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'')
  if(!found)d.push({name:n,code:c});
  saveDevs(d);$('devn').value='';$('devc').value='';
  setActiveCode(c);renderDevs();toast(found?'Kodi actualizado ✓':'Kodi guardado ✓')}
-function delDev(c){if(!confirm('¿Borrar este Kodi de la lista?'))return;
- saveDevs(loadDevs().filter(function(dev){return dev.code!==c}));renderDevs();refreshDevBtn()}
+function delDev(c){
+ mwConfirm('¿Quitar este Kodi?','Solo se quita de la lista de este móvil; el Kodi sigue funcionando.',
+  'Quitar',function(){
+   saveDevs(loadDevs().filter(function(dev){return dev.code!==c}));
+   renderDevs();refreshDevBtn();toast('Kodi quitado')},1);}
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
 // ====== GESTO / BOTON DE RETROCESO (movil) ======
 // Cada panel que se abre EMPUJA un estado en el historial, asi el gesto de
@@ -8602,8 +8633,9 @@ function histPush(e){
 function histAdd(ref){histPush(histSnap(ref))}
 function histDel(i){hist.splice(i,1);histSave();renderHist()}
 function histClear(){if(!hist.length)return;
- if(!confirm('¿Vaciar todo el historial?'))return;
- hist=[];histSave();renderHist()}
+ mwConfirm('\u00bfVaciar el historial?',
+  'Se borran los '+hist.length+' t\u00edtulos de esta lista. Lo guardado en Mis listas no se toca.',
+  'Vaciar',function(){hist=[];histSave();renderHist();toast('Historial vac\u00edo')},1)}
 function histHace(ts){var s=Math.max(0,(Date.now()-ts)/1000);
  if(s<90)return 'hace un momento';
  var m=Math.round(s/60);if(m<60)return 'hace '+m+' min';
@@ -8812,9 +8844,9 @@ function lsTog(id){
  if(CURVIEW==='lista')renderFavs();
  closeLS();}
 function lsNueva(){
- var n=prompt('Nombre de la lista nueva:','');
- if(n===null)return;
- n=(n||'').trim();if(!n){toast('Ponle un nombre');return}
+ mwPrompt('\u00bfC\u00f3mo se llama la lista?','','Pendiente, Vistas, Para el finde\u2026',
+  function(n){_lsNueva(n)});}
+function _lsNueva(n){
  var id=lstNueva(n);if(!id)return;
  if(LSVAR){var k=LSVAR.length;LSVAR.forEach(function(x){favAdd(x,id)});
   if(CURVIEW==='lista')renderFavs();toast(k+' en \u00ab'+n+'\u00bb');closeLS();return}
@@ -8825,6 +8857,32 @@ function lsNueva(){
 function _closeLS(){$('lsheet').classList.remove('on');LSX=null;LSCB=null;
  if(LSVAR){LSVAR=null;selSalir()}}
 function closeLS(){mwBack('lsheet')}
+// ===== CUADROS PROPIOS =================================================
+// `prompt`/`confirm` del navegador ensenan "...onrender.com dice", rompen la
+// estetica y no se cierran con el gesto de volver. Estos si.
+var MWDOK=null;
+function _mwdCierra(){$('mwdlg').classList.remove('on');MWDOK=null}
+function mwdNo(){mwBack('mwdlg')}
+function mwdSi(){var f=MWDOK,v=$('mwd-in').value;mwBack('mwdlg');if(f)f(v)}
+function _mwdAbre(t,sub,ok,conInput,valor,peligro){
+ $('mwd-t').textContent=t||'';
+ var e=$('mwd-s');e.textContent=sub||'';e.style.display=sub?'':'none';
+ var i=$('mwd-in');
+ if(conInput){i.style.display='';i.value=valor||''}else{i.style.display='none';i.value=''}
+ var b=$('mwd-ok');b.textContent=ok||'Aceptar';b.classList.toggle('peligro',!!peligro);
+ $('mwdlg').classList.add('on');
+ mwOpen('mwdlg',$('mwdlg').querySelector('.box'),_mwdCierra);
+ if(conInput)setTimeout(function(){try{i.focus();i.select()}catch(e2){}},60);}
+function mwPrompt(titulo,valor,ayuda,alAceptar){
+ MWDOK=function(v){v=(v||'').trim();if(v)alAceptar(v)};
+ _mwdAbre(titulo,ayuda,'Guardar',1,valor,0);}
+function mwConfirm(titulo,texto,etiqueta,alAceptar,peligro){
+ MWDOK=function(){alAceptar()};
+ _mwdAbre(titulo,texto,etiqueta||'S\u00ed',0,'',peligro);}
+document.addEventListener('keydown',function(e){
+ var d=$('mwdlg');if(!d||!d.classList.contains('on'))return;
+ if(e.key==='Enter'){e.preventDefault();mwdSi()}
+ else if(e.key==='Escape'){e.preventDefault();mwdNo()}});
 // ===== SELECCION MULTIPLE (Mis listas) =================================
 // Dejar pulsado medio segundo marca el primero; luego cada toque marca o
 // desmarca. Sirve para mandar varios titulos a una lista de una vez.
@@ -8865,9 +8923,11 @@ function selMover(){
 function selQuitar(){
  var its=selItems();if(!its.length)return;
  var l=lstNombre(LSTSEL);
- if(!confirm('\u00bfQuitar '+its.length+' t\u00edtulo(s) de \u00ab'+l+'\u00bb?'))return;
- its.forEach(function(x){favQuitar(x,LSTSEL)});
- selSalir();renderFavs();toast('Quitados de \u00ab'+l+'\u00bb');}
+ mwConfirm('\u00bfQuitar '+its.length+' t\u00edtulo'+(its.length===1?'':'s')+'?',
+  'Salen de \u00ab'+l+'\u00bb. Puedes volver a guardarlos cuando quieras.',
+  'Quitar',function(){
+   its.forEach(function(x){favQuitar(x,LSTSEL)});
+   selSalir();renderFavs();toast('Quitados de \u00ab'+l+'\u00bb')},1);}
 // Los toques de la cuadricula de Mis listas (delegado: sobrevive a repintados)
 function pickEngancha(){
  var g=$('lista-grid');if(!g||g._pick)return;g._pick=1;
@@ -8916,18 +8976,21 @@ function lstCrear(){
 function lstRenombrar(nueva){
  var l=null;for(var i=0;i<LST.length;i++)if(LST[i].id===LSTSEL)l=LST[i];
  if(!l)return;
- var q=prompt(nueva?'Nombre de la lista:':'Nuevo nombre de la lista:',l.n);
- if(q===null){if(nueva)renderFavs();return}
- q=(q||'').trim();
- if(!q||q===l.n){renderFavs();return}
- l.n=q.slice(0,40);lstSave();renderFavs();mlPushSoon();
- toast(nueva?('Lista \u00ab'+l.n+'\u00bb creada'):'Lista renombrada');}
+ mwPrompt(nueva?'\u00bfC\u00f3mo se llama la lista?':'Cambiar el nombre',
+  nueva?'':l.n, nueva?'Pendiente, Vistas, Para el finde\u2026':'',
+  function(q){l.n=q.slice(0,40);lstSave();renderFavs();mlPushSoon();
+   toast(nueva?('Lista \u00ab'+l.n+'\u00bb creada'):'Lista renombrada')});}
 function lstBorrar(id){
  if(LST.length<2){toast('Es tu \u00fanica lista');return}
  var l=null;for(var i=0;i<LST.length;i++)if(LST[i].id===id)l=LST[i];
  if(!l)return;
- if(!confirm('\u00bfBorrar la lista \u00ab'+l.n+'\u00bb?\n\nLos t\u00edtulos NO se borran: los que solo '+
-   'estuvieran aqu\u00ed pasan a la primera lista.'))return;
+ var _n=lstItems(id).length;
+ mwConfirm('\u00bfQuitar la lista \u00ab'+l.n+'\u00bb?',
+  _n?(_n===1?'Su t\u00edtulo NO se borra: pasa a la primera lista.'
+          :('Sus '+_n+' t\u00edtulos NO se borran: pasan a la primera lista.'))
+    :'Est\u00e1 vac\u00eda, no se pierde nada.',
+  'Quitar lista',function(){_lstBorra(id)},1);}
+function _lstBorra(id){
  LST=LST.filter(function(z){return z.id!==id});
  var destino=LST[0].id;
  favs.forEach(function(f){
@@ -9134,8 +9197,11 @@ function closeTrailer(){mwBack('trm')}
 function doShare(t,yr,qs){var link=location.origin+'/cat?'+qs+'&t='+encodeURIComponent(t)+(yr?('&yr='+encodeURIComponent(yr)):'');
  var nice=t+(yr?(' ('+yr+')'):'');
  if(navigator.share){navigator.share({title:'MejorWolf',text:'Te recomiendo «'+nice+'» en MejorWolf',url:link}).then(function(){},function(){})}
- else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){toast('Enlace copiado')},function(){prompt('Copia el enlace:',link)})}
- else{prompt('Copia el enlace:',link)}}
+ else if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(link).then(function(){toast('Enlace copiado')},function(){_linkAMano(link)})}
+ else{_linkAMano(link)}}
+// Si el navegador no deja copiar solo, se enseña el enlace en NUESTRO cuadro
+// (seleccionable), en vez del prompt del navegador.
+function _linkAMano(link){mwPrompt('Copia el enlace',link,'Mantén pulsado para copiarlo',function(){});}
 // Compartir PELÍCULA: el enlace abre la FICHA de esa peli en la web del amigo
 // (póster, calidad, semillas, reproducir con SU código) -> NO una búsqueda.
 function shareSheet(){if(!sel)return;var x=sel,t=x.title||'',yr=x.year||'',src=x.source||'dt';
