@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk95",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk96",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk95", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk96", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7680,6 +7680,15 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Buscar dentro de una lista (con 57 titulos, bajar scrolleando era un rollo) */
+.lfiltro{position:relative;margin:0 0 10px}
+.lfiltro input{width:100%;background:var(--card);border:1px solid var(--stroke);
+ color:var(--txt);border-radius:13px;padding:11px 38px 11px 14px;font-size:15px;
+ font-family:inherit;outline:none;transition:border-color .15s}
+.lfiltro input:focus{border-color:var(--blue)}
+.lfiltro input::-webkit-search-cancel-button{display:none}
+.lfx{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;
+ border:0;color:var(--sub);font-size:22px;line-height:1;padding:4px 8px;cursor:pointer}
 /* Ultimas busquedas: repetir una sin volver a escribirla en el movil */
 .rec{display:none;flex-wrap:wrap;gap:7px;margin:0 0 14px}
 .rec.on{display:flex}
@@ -7937,6 +7946,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
     <button class="selq" onclick="selQuitar()">Quitar</button>
     <button class="selx" onclick="selSalir()">✕</button>
    </div>
+  </div>
+  <div class="lfiltro" id="lfiltro" style="display:none">
+   <input id="lfin" type="search" placeholder="Buscar en esta lista…" autocomplete="off"
+    oninput="lstFiltra()" onsearch="lstFiltra()">
+   <button class="lfx" id="lfx" onclick="lstFiltraLimpia()" style="display:none">×</button>
   </div>
   <div class="listbar">
    <button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
@@ -9065,13 +9079,27 @@ function _lstBorra(id){
   var a=lstDe(f).filter(function(z){return z!==id});
   f.ls=a.length?a:[destino];});
  saveFavs();lstSave();lstSel(destino);renderFavs();toast('Lista borrada');}
-function renderFavs(){
+var LFILTRO='';
+function lstFiltra(){
+ var i=$('lfin');LFILTRO=(i&&i.value||'').trim().toLowerCase();
+ var x=$('lfx');if(x)x.style.display=LFILTRO?'':'none';
+ renderFavs(1);}
+function lstFiltraLimpia(){var i=$('lfin');if(i)i.value='';LFILTRO='';renderFavs(1);
+ var x=$('lfx');if(x)x.style.display='none';}
+function renderFavs(_mantenFiltro){
  renderLstBar();
+ if(!_mantenFiltro){LFILTRO='';var _i=$('lfin');if(_i)_i.value='';var _x=$('lfx');if(_x)_x.style.display='none';}
  var g=$('lista-grid'),b=$('vtog');
- LISTS.lista=lstItems(LSTSEL);
+ var _todos=lstItems(LSTSEL);
+ // el campo solo estorba en listas cortas
+ var _f=$('lfiltro');if(_f)_f.style.display=(_todos.length>8||LFILTRO)?'':'none';
+ LISTS.lista=LFILTRO
+  ? _todos.filter(function(x){return (x.title||'').toLowerCase().indexOf(LFILTRO)>=0})
+  : _todos;
  if(!LISTS.lista.length){g.className='msg';
-  g.innerHTML=favs.length?('\u00ab'+esc(lstNombre(LSTSEL))+'\u00bb est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo y elige esta lista.')
-    :'Tu lista est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo.';
+  g.innerHTML=LFILTRO?('Nada con \u00ab'+esc(LFILTRO)+'\u00bb en esta lista.')
+   :(favs.length?('\u00ab'+esc(lstNombre(LSTSEL))+'\u00bb est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo y elige esta lista.')
+    :'Tu lista est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo.');
   if(b)b.style.display='none';return}
  if(b)b.style.display='';renderGrid(g,'lista');applyView();
  pickEngancha();
