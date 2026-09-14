@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk92",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk93",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk92", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk93", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7680,6 +7680,18 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .zoom.on{display:flex}
 /* Vuelta suave al sitio cuando se suelta el arrastre sin llegar al umbral */
 .mwback{transition:transform .18s ease-out,opacity .18s ease-out}
+/* Pestanas de temporada (la ficha trae la serie entera: hasta 35 capitulos) */
+.tmp{display:flex;gap:7px;overflow-x:auto;-webkit-overflow-scrolling:touch;
+ padding:2px 0 10px;scrollbar-width:none}
+.tmp::-webkit-scrollbar{display:none}
+.tmpb{flex:0 0 auto;border:1px solid var(--stroke);background:var(--card);color:var(--sub);
+ border-radius:999px;padding:8px 15px;font-size:13.5px;font-weight:700;cursor:pointer;
+ white-space:nowrap;transition:background .15s,color .15s,border-color .15s}
+.tmpb.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.tmpb i{font-style:normal;opacity:.6;font-weight:600;margin-left:5px;font-size:12px}
+.tmpb.on i{opacity:.85}
+.tmpb.vista{color:var(--green)}
+.tmpb.vista.on{color:#08210f}
 /* Cuadros PROPIOS: los del navegador ensenan "...onrender.com dice" */
 .mwd{align-items:center;justify-content:center;padding:22px}
 .mwd .box{max-width:420px;border-radius:22px;border:1px solid var(--stroke);
@@ -9253,7 +9265,7 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');try{histPush(hsnap)}catch(e){};closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
-function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
+function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
@@ -9289,6 +9301,9 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;sel=x;$('ov').classList.a
   OVRETRY=x;$('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron cargar los episodios. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a>'+
     (((x.alts||[]).length)?'<br><br>O prueba otra fuente aquí arriba ↑':'')+'</div>'})}
 var OVRETRY=null;
+var OVSEASON=null;      // temporada abierta en la ficha (ver las pestanas)
+function ovTemp(s){OVSEASON=s;renderEpisodes();
+ try{var b=$('ov-body');if(b)b.scrollTop=0}catch(e){}}
 function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var _epi=0;
  var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
  var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
@@ -9308,7 +9323,22 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
    (ovw?('<div class="ovsyn"><div class="sh-ov clamp" id="ov-syn">'+esc(ovw)+'</div><span class="sh-more" onclick="toggleOvSyn()">Leer más</span></div>'):'')+
    altsHTML(x)+
    '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+favLabel(x)+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
- keys.forEach(function(s){var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
+ // PESTANAS DE TEMPORADA: la ficha trae la serie entera, y verlas todas
+ // seguidas era un scroll eterno. Se abre por la primera con algo sin ver.
+ if(keys.length>1){
+  if(OVSEASON===null||keys.indexOf(OVSEASON)<0){
+   var _pend=null;
+   for(var _k=0;_k<keys.length;_k++){
+    var _l=seasons[keys[_k]];
+    if(!_l.every(function(e){return isSeen(e.content_id)})){_pend=keys[_k];break}}
+   OVSEASON=(_pend!==null)?_pend:keys[keys.length-1];}
+  h+='<div class="tmp">'+keys.map(function(s){
+   var _l=seasons[s],_v=_l.every(function(e){return isSeen(e.content_id)});
+   return '<button class="tmpb'+(s===OVSEASON?' on':'')+(_v?' vista':'')+'" onclick="ovTemp('+s+')">'+
+    'T'+(s||'?')+'<i>'+_l.length+'</i></button>'}).join('')+'</div>';}
+ keys.forEach(function(s){
+  if(keys.length>1&&s!==OVSEASON)return;
+  var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq" data-q="'+esc(e.quality)+'">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
