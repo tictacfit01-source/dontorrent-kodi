@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk96",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk97",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk96", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk97", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -8939,13 +8939,23 @@ function _lsNueva(n){
 function _closeLS(){$('lsheet').classList.remove('on');LSX=null;LSCB=null;
  if(LSVAR){LSVAR=null;selSalir()}}
 function closeLS(){mwBack('lsheet')}
+// Sin codigo no se puede mandar nada a la tele. Antes era un aviso de paso
+// (un toast) que se iba solo y no decia que hacer; ahora lleva de la mano a
+// "Mis Kodis", que es donde se pone.
+function avisaCodigo(){
+ mwConfirm('Falta tu código',
+  'Para mandar algo a la tele hace falta el código de 6 cifras que sale en tu Kodi (MejorWolf → Mando).',
+  'Ponerlo ahora',function(){openDevs();setTimeout(function(){try{$('devc').focus()}catch(e){}},350)});}
 // ===== CUADROS PROPIOS =================================================
 // `prompt`/`confirm` del navegador ensenan "...onrender.com dice", rompen la
 // estetica y no se cierran con el gesto de volver. Estos si.
 var MWDOK=null;
 function _mwdCierra(){$('mwdlg').classList.remove('on');MWDOK=null}
 function mwdNo(){mwBack('mwdlg')}
-function mwdSi(){var f=MWDOK,v=$('mwd-in').value;mwBack('mwdlg');if(f)f(v)}
+function mwdSi(){var f=MWDOK,v=$('mwd-in').value;mwBack('mwdlg');
+ // la accion va DESPUES de que el cuadro termine de cerrarse: si abre otro
+ // panel (por ejemplo Mis Kodis), se pisaba con el cierre y no se abria nada
+ if(f)setTimeout(function(){f(v)},190);}
 function _mwdAbre(t,sub,ok,conInput,valor,peligro){
  $('mwd-t').textContent=t||'';
  var e=$('mwd-s');e.textContent=sub||'';e.style.display=sub?'':'none';
@@ -9321,13 +9331,13 @@ function showShared(t){$('shared-t').textContent=t||'Compartido';$('shared').cla
 function playShared(){if(sharedPlay&&sendPlay(sharedPlay))$('shared').classList.remove('on')}
 function closeShared(){$('shared').classList.remove('on')}
 function play(){if(!sel)return;
- if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return}
+ if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
   toast('Resolviendo en tu box…');
   fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
  var _x=sel;seedGate(_x.content_id,_x.tabla||'peliculas',function(){if(sendPlay({a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title}))closeSheet()})}
-function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código de 6 cifras arriba');return false}
+function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return false}
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
  if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
  toast('Enviando a la tele...');
@@ -9485,7 +9495,7 @@ function playEp(id){var e=EPS[id];if(!e)return;
  // cierra la ficha hasta que sale de verdad -> nada de "he pulsado y no pasa nada".
  if(e.src==='et'||e.src==='wf'){var _t2=(SHOW+' '+e.label).trim();
   var _cd2=(code.value||'').replace(/\D/g,'');
-  if(_cd2.length!==6){toast('Pon tu código de 6 cifras arriba');return}
+  if(_cd2.length!==6){avisaCodigo();return}
   toast('Preparando '+e.label+'…');
   fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id))
    .then(function(r){return r.json()}).then(function(d){
