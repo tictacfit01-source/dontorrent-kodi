@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl04",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl05",
                     mimetype="text/plain")
 
 
@@ -7123,7 +7123,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl04", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl05", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7608,36 +7608,54 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .card .fav{width:36px;height:36px;font-size:19px;top:5px;right:5px}
 .btn{padding:16px}
 /* modo MANDO (igual disposicion que el mando /kb) */
-.rmwrap{padding:8px 18px 50px;max-width:520px;margin:0 auto}
-.rnp{margin:8px 0 18px}
+/* El mando NO tiene que llenar la pantalla: con 520 px los botones se
+   estiraban en los moviles grandes (124x56 px para un icono de 18). Un ancho
+   de mando de verdad, centrado, y el mismo aire entre todos los bloques. */
+.rmwrap{--aire:14px;padding:10px 18px 46px;max-width:400px;margin:0 auto}
+.rnp{margin:6px 0 var(--aire,14px)}
 .rnp .nplab{font-size:11px;color:var(--sub);font-weight:700;letter-spacing:.5px;margin-bottom:6px}
 .rnp .npttl{font-size:18px;font-weight:700;line-height:1.3;margin-bottom:12px}
 .rmbar{height:6px;border-radius:4px;background:rgba(255,255,255,.1);overflow:hidden}
 .rmbar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue2),var(--blue));transition:width .9s linear}
 .nprow{display:flex;justify-content:space-between;margin-top:8px;font-size:13px;color:var(--sub);font-variant-numeric:tabular-nums}
-.media{display:flex;justify-content:center;align-items:center;gap:16px;margin:8px 0 18px}
+.media{display:flex;justify-content:center;align-items:center;gap:14px;
+ margin:0 0 var(--aire,14px)}
 .rb{width:64px;height:64px;border-radius:50%;border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:17px;transition:.15s}
 .rb:active{transform:scale(.92);background:rgba(255,255,255,.16)}
 .rb.play{width:82px;height:82px;background:linear-gradient(145deg,#3dd46a,#27c257);border-color:transparent;box-shadow:0 8px 22px rgba(48,209,88,.4);color:#06140a;font-size:30px}
 .rb.stop{color:#ff453a;font-size:22px}
 .rb.sk{font-size:15px;font-weight:700;line-height:1}.rb.sk small{font-size:10px;opacity:.75}
-.row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:4px}
+.row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;
+ margin:0 0 var(--aire,14px)}
 @media(max-width:360px){.row3{gap:8px}}
-.pill{min-width:0;overflow:hidden;border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:14px;padding:16px;font-size:18px;text-align:center;cursor:pointer;font-weight:600}
+/* Altura propia en vez de estirarse: asi el boton guarda la proporcion en
+   cualquier movil y el icono no se pierde dentro. */
+.pill{min-width:0;overflow:hidden;height:54px;display:flex;align-items:center;
+ justify-content:center;gap:7px;border:1px solid var(--stroke);
+ background:rgba(255,255,255,.07);color:var(--txt);border-radius:14px;
+ padding:0 8px;font-size:21px;text-align:center;cursor:pointer;font-weight:600}
 .pill:active{transform:scale(.97);background:rgba(255,255,255,.14)}
-@media(max-width:360px){.pill{padding:14px 6px;font-size:16px}
+@media(max-width:360px){.pill{height:50px;font-size:19px;padding:0 5px}
  .rsub .pill span{font-size:10.5px}}
-.padwrap{display:flex;justify-content:center;margin:22px 0 8px}
-.pad{position:relative;width:240px;height:240px;border-radius:50%;border:1px solid var(--stroke);background:radial-gradient(circle at 50% 32%,rgba(255,255,255,.10),transparent 55%),conic-gradient(from 0deg,rgba(255,255,255,.05),rgba(255,255,255,.02),rgba(255,255,255,.05));box-shadow:inset 0 -20px 40px rgba(0,0,0,.5),0 18px 40px rgba(0,0,0,.45)}
-.arrow{position:absolute;color:var(--sub);font-size:22px;width:58px;height:58px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%}
+.padwrap{display:flex;justify-content:center;margin:calc(var(--aire,14px) + 4px) 0 var(--aire,14px)}
+/* Proporcional: apretaba a 320 px y se quedaba pequena a 430. */
+.pad{position:relative;width:min(246px,72vw);height:min(246px,72vw);border-radius:50%;border:1px solid var(--stroke);background:radial-gradient(circle at 50% 32%,rgba(255,255,255,.10),transparent 55%),conic-gradient(from 0deg,rgba(255,255,255,.05),rgba(255,255,255,.02),rgba(255,255,255,.05));box-shadow:inset 0 -20px 40px rgba(0,0,0,.5),0 18px 40px rgba(0,0,0,.45)}
+.arrow{position:absolute;color:var(--sub);font-size:22px;width:clamp(50px,17vw,58px);
+ height:clamp(50px,17vw,58px);display:flex;align-items:center;justify-content:center;
+ cursor:pointer;border-radius:50%}
 .arrow:active{background:rgba(255,255,255,.12);color:#fff}
 .arrow.up{top:8px;left:50%;transform:translateX(-50%)}.arrow.down{bottom:8px;left:50%;transform:translateX(-50%)}
 .arrow.left{left:8px;top:50%;transform:translateY(-50%)}.arrow.right{right:8px;top:50%;transform:translateY(-50%)}
-.ok{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:106px;height:106px;border-radius:50%;border:1px solid var(--stroke);background:radial-gradient(circle at 50% 35%,#2a3346,#161c2a);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;letter-spacing:1px;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,.5)}
+.ok{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+ width:min(106px,31vw);height:min(106px,31vw);border-radius:50%;border:1px solid var(--stroke);background:radial-gradient(circle at 50% 35%,#2a3346,#161c2a);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;letter-spacing:1px;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,.5)}
 .ok:active{transform:translate(-50%,-50%) scale(.95)}
-.navrow2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+.navrow2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;
+ margin:0 0 6px}
+.navrow2 .pill{font-size:15px;font-weight:700}
 .rar{color:#ff9f6e;font-size:13px;font-weight:600;margin:0 0 12px}
-.ovfav{border:1px solid var(--stroke);background:rgba(255,255,255,.07);color:var(--txt);border-radius:12px;padding:9px 13px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
+.ovfav{display:inline-flex;align-items:center;min-height:44px;border:1px solid var(--stroke);
+ background:rgba(255,255,255,.07);color:var(--txt);border-radius:12px;padding:0 15px;
+ font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
 /* etiquetas tipo / fuente en la tarjeta */
 .card .kindtag{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.6);border:1px solid var(--stroke);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700;color:#dfe6f2}
 .card .srctag{position:absolute;bottom:6px;right:6px;border-radius:6px;padding:2px 7px;font-size:9px;font-weight:800;letter-spacing:.4px;box-shadow:0 2px 6px rgba(0,0,0,.45)}
@@ -7649,7 +7667,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srclegend span{display:flex;align-items:center;gap:5px}
 .srclegend i{width:11px;height:11px;border-radius:3px;display:inline-block;flex:none}
 /* salto a minuto en el mando */
-.jump{display:flex;gap:10px;margin:2px 0 6px}
+.jump{display:flex;gap:10px;margin:0 0 var(--aire,14px)}
 /* mismo caso que el buscador: sin min-width:0 el "Saltar a" se salia 54 px */
 .jump input{flex:1 1 0;min-width:0;background:rgba(255,255,255,.07);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);padding:15px;font-size:16px;outline:0;text-align:center}
 .jump input::placeholder{color:var(--sub);font-size:13px}
@@ -7733,8 +7751,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .tmp{display:flex;gap:7px;overflow-x:auto;-webkit-overflow-scrolling:touch;
  padding:2px 0 10px;scrollbar-width:none}
 .tmp::-webkit-scrollbar{display:none}
-.tmpb{flex:0 0 auto;border:1px solid var(--stroke);background:var(--card);color:var(--sub);
- border-radius:999px;padding:8px 15px;font-size:13.5px;font-weight:700;cursor:pointer;
+.tmpb{flex:0 0 auto;min-height:40px;border:1px solid var(--stroke);background:var(--card);
+ color:var(--sub);border-radius:999px;padding:0 16px;font-size:13.5px;font-weight:700;cursor:pointer;
  white-space:nowrap;transition:background .15s,color .15s,border-color .15s}
 .tmpb.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .tmpb i{font-style:normal;opacity:.6;font-weight:600;margin-left:5px;font-size:12px}
@@ -7891,7 +7909,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srcp-f.zero i{opacity:.35}
 /* Versiones de la misma peli en otras fuentes (la 4K de WolfMax, sobre todo) */
 .sh-alts{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
-.sh-alts .altb{background:rgba(255,255,255,.07);border:1px solid var(--stroke);
+.sh-alts .altb{min-height:38px;display:inline-flex;align-items:center;gap:5px;
+ background:rgba(255,255,255,.07);border:1px solid var(--stroke);
  color:var(--txt);border-radius:999px;padding:6px 11px;font-size:12.5px;font-weight:600;
  cursor:pointer;display:flex;align-items:center;gap:5px}
 .sh-alts .altb.on{background:var(--blue);border-color:var(--blue);color:#fff}
