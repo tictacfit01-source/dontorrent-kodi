@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk97",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk98",
                     mimetype="text/plain")
 
 
@@ -7108,7 +7108,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk97", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk98", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -9061,10 +9061,14 @@ function renderLstBar(){var b=$('lstbar');if(!b)return;
 function lstIr(id){lstSel(id);renderFavs()}
 // "Nueva lista": la crea y abre el lapiz para ponerle nombre. Si no escribe
 // nada, se queda con el nombre automatico (nunca se pierde el paso).
+// El nombre PRIMERO: antes se creaba la lista y luego se pedia el nombre, asi
+// que cancelar dejaba una "Lista 2" vacia de recuerdo.
 function lstCrear(){
- var id=lstNueva('Lista '+(LST.length+1));if(!id)return;
- lstSel(id);renderFavs();
- lstRenombrar(1);}
+ mwPrompt('\u00bfC\u00f3mo se llama la lista?','','Pendiente, Vistas, Para el finde\u2026',
+  function(n){
+   var id=lstNueva(n);if(!id)return;
+   lstSel(id);renderFavs();mlPushSoon();
+   toast('Lista \u00ab'+n.slice(0,40)+'\u00bb creada')});}
 function lstRenombrar(nueva){
  var l=null;for(var i=0;i<LST.length;i++)if(LST[i].id===LSTSEL)l=LST[i];
  if(!l)return;
