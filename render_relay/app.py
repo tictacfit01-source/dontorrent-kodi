@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk98",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbk99",
                     mimetype="text/plain")
 
 
@@ -2574,6 +2574,9 @@ _KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
                     "volup", "voldown", "mute",
                     "seek_fwd", "seek_back", "seekto",
                     "up", "down", "left", "right", "ok",
+                    # subtitulos y audio (addon 2.9.66+): lo que mas se echa en
+                    # falta viendo series. Una caja vieja los ignora sin mas.
+                    "subs", "subsnext", "audionext",
                     "list", "open", "play_ref"}
 
 # Lista (espejo de la pantalla de Kodi) que el box empuja y el movil lee.
@@ -7108,7 +7111,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbk98", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbk99", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7712,6 +7715,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .tmpb.vista{color:var(--green)}
 .tmpb.vista.on{color:#08210f}
 /* Cuadros PROPIOS: los del navegador ensenan "...onrender.com dice" */
+/* Fila de subtitulos/audio del mando: texto pequeno para que quepa */
+.rsub .pill{font-size:15px;display:flex;align-items:center;justify-content:center;gap:6px}
+.rsub .pill span{font-size:11.5px;font-weight:700;letter-spacing:-.2px}
 .mwd{align-items:center;justify-content:center;padding:22px}
 .mwd .box{max-width:420px;border-radius:22px;border:1px solid var(--stroke);
  padding:20px 20px 16px;animation:mwdIn .18s ease-out;overflow:visible}
@@ -8037,6 +8043,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <div class="pill" onclick="cmd('voldown')">🔉</div>
    <div class="pill" onclick="cmd('mute')">🔇</div>
    <div class="pill" onclick="cmd('volup')">🔊</div>
+  </div>
+  <div class="row3 rsub">
+   <div class="pill" onclick="cmd('subs')" title="Quitar o poner los subtitulos">💬 <span>Subtítulos</span></div>
+   <div class="pill" onclick="cmd('subsnext')" title="Otra pista de subtitulos">🔄 <span>Otro sub</span></div>
+   <div class="pill" onclick="cmd('audionext')" title="Otra pista de audio">🗣️ <span>Audio</span></div>
   </div>
   <div class="padwrap"><div class="pad">
    <div class="arrow up" onclick="cmd('up')">▲</div>

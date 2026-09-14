@@ -66,6 +66,11 @@ _KB_ACTIONS = {
     "left": "Action(Left)",
     "right": "Action(Right)",
     "ok": "Action(Select)",
+    # Subtitulos y audio: lo que mas se echa en falta viendo series (poner los
+    # subtitulos o pasar el audio a version original sin levantarse del sofa).
+    "subs": "Action(ShowSubtitles)",        # quitar/poner los subtitulos
+    "subsnext": "Action(NextSubtitle)",     # otra pista de subtitulos
+    "audionext": "Action(AudioNextLanguage)",  # otra pista de audio
 }
 _HOME_URL = "plugin://plugin.video.mejorwolf/?action=home"
 
