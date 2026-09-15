@@ -357,7 +357,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl07",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl08",
                     mimetype="text/plain")
 
 
@@ -6749,7 +6749,11 @@ def mylist_post():
 # todos los huecos estan pillados por trabajos colgados, las llamadas nuevas
 # devuelven su default sin crear nada. La app se degrada (esa busqueda sale con
 # menos fuentes) en vez de morirse, que es justo el cambio que se busca.
-_BND_MAX = 24
+# 40 y no 24: son 6 hilos de gunicorn y una busqueda puede pedir ~5 fuentes a
+# la vez, asi que con 24 la sexta persona se quedaba sin huecos y su busqueda
+# salia con menos fuentes -- justo lo que no puede pasar. Sigue siendo un tope,
+# y a diez minutos de distancia de los ~380 hilos/hora que se fugaban.
+_BND_MAX = 40
 _BND_POOL = [None]          # se crea al primer uso (no en el import)
 _BND_LOCK = _thr.Lock()
 _BND_VIVOS = [0]            # trabajos en marcha ahora mismo
@@ -7222,7 +7226,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl07", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl08", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -9830,7 +9834,7 @@ def _self_keepalive():
 # Esto NO es el arreglo de fondo (ese va con datos, ver /catmem): es la red de
 # seguridad. Soltar lastre cuesta medio segundo en la siguiente busqueda; que
 # el sistema mate el proceso son ~30 s de servicio caido para todos.
-_MEM_T0 = _t.time()
+_MEM_T0 = [_t.time()]
 _MEM_AVISO_MB = 190.0      # poda suave: lo que se rehace solo y nadie nota
 _MEM_GRAVE_MB = 240.0      # poda seria: tambien el Inicio (vuelve de /tmp)
 _MEM_WATCH = {"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0, "libero_mb": 0.0}
@@ -9915,6 +9919,10 @@ def _mem_vigila():
         _t.sleep(30)
 
 
+_MEM_WATCH_PID = [0]
+_MEM_WATCH_LOCK = _thr.Lock()
+
+
 def _start_mem_watch():
     try:
         _kth.Thread(target=_mem_vigila, daemon=True).start()
@@ -9922,13 +9930,44 @@ def _start_mem_watch():
         pass
 
 
+def _mem_watch_asegura():
+    """Arranca el vigilante en ESTE proceso si aun no corre.
+
+    Hace falta porque gunicorn importa la app ANTES de partirse en workers
+    (preload): el hilo que se lanza en el import se queda en el padre y los
+    workers nacen sin el, pero heredan _MEM_WATCH con los valores del padre --
+    asi que parece que funciona. Medido el 15-09: el RSS real subia y el
+    apuntado seguia clavado en 53,7.
+
+    Esto corre en la primera peticion, que es despues del fork si o si, con
+    preload o sin el y diga lo que diga el comando de arranque del panel."""
+    mio = os.getpid()
+    if _MEM_WATCH_PID[0] == mio:
+        return
+    with _MEM_WATCH_LOCK:
+        if _MEM_WATCH_PID[0] == mio:
+            return
+        _MEM_WATCH_PID[0] = mio
+        # Los numeros heredados del padre no son de este proceso.
+        _MEM_T0[0] = _t.time()
+        _MEM_WATCH.update({"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0,
+                           "libero_mb": 0.0})
+    _start_mem_watch()
+
+
+@app.before_request
+def _mem_watch_hook():
+    if _MEM_WATCH_PID[0] != os.getpid():
+        _mem_watch_asegura()
+
+
 @app.get("/catmem")
 def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl07", "pid": os.getpid(), "rss_mb": _rss_mb(),
-           "uptime_s": int(_t.time() - _MEM_T0),
+    out = {"build": "dtbl08", "pid": os.getpid(), "rss_mb": _rss_mb(),
+           "uptime_s": int(_t.time() - _MEM_T0[0]),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
     # todas obligaria a serializarlas enteras, que es justo lo que no se quiere
@@ -10005,7 +10044,11 @@ def _start_keepalive():
 
 
 _start_keepalive()
-_start_mem_watch()
+# El vigilante NO se arranca aqui: con preload esto corre en el proceso padre y
+# el hilo no llega a los workers (dtbl08). Lo arranca _mem_watch_hook en la
+# primera peticion de cada worker, que es despues del fork pase lo que pase.
+# Arrancarlo en los dos sitios dejaria DOS vigilantes por worker si algun dia
+# se quita el preload, podando por duplicado.
 
 
 if __name__ == "__main__":
