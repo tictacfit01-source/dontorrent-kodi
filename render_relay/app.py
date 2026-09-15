@@ -358,7 +358,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl11",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl12",
                     mimetype="text/plain")
 
 
@@ -2040,10 +2040,16 @@ def _dx_get(url, proxy=False, tope_s=12.0):
         except Exception:
             pass
         return None
+    # Reloj para TODA la funcion: los dos intentos juntos no pueden pasarse del
+    # presupuesto. Sin esto, el que llama se rendia a los 5 s y aqui dentro se
+    # seguia 40 s mas -- el trabajo quedaba vivo ocupando hueco y memoria.
+    _fin = _t.time() + max(1.0, float(tope_s))
     try:
+        _q1 = max(1.0, _fin - _t.time())
         r = requests.get(url, headers=BROWSER_HEADERS,
-                         timeout=20, allow_redirects=True, stream=True)
-        t = _leer_con_tope(r, tope_s)
+                         timeout=(min(5.0, _q1), _q1), allow_redirects=True,
+                         stream=True)
+        t = _leer_con_tope(r, max(0.5, _fin - _t.time()))
         if t is None:      # tarpit: cortado y conexion cerrada, no colgada
             raise IOError("tope")
         low = t[:4000].lower()
@@ -2052,11 +2058,15 @@ def _dx_get(url, proxy=False, tope_s=12.0):
             return t
     except Exception:
         pass
+    _q2 = _fin - _t.time()
+    if _q2 < 1.5:
+        return None        # sin presupuesto: no empezar algo que nadie espera
     try:
         cs = _make_scraper()
-        r2 = cs.get(url, timeout=35, allow_redirects=True, stream=True)
+        r2 = cs.get(url, timeout=(min(5.0, _q2), _q2), allow_redirects=True,
+                    stream=True)
         if r2.status_code == 200:
-            return _leer_con_tope(r2, tope_s + 6.0)
+            return _leer_con_tope(r2, max(0.5, _fin - _t.time()))
     except Exception:
         pass
     return None
@@ -2305,10 +2315,13 @@ def _dx_search_items_inner(q, max_pages=5, proxy=False):
         # Tope duro CORTO + reintento en conexion NUEVA = redibujar la loteria
         # (misma peticion iba en 1-2s o colgaba 60s segun la conexion que
         # tocara). 2 intentos de 5s caben de sobra en el presupuesto de 14s.
-        html1 = _bounded(lambda: _dx_get(url1), 5.0, None)
+        # El tope de _dx_get = el presupuesto de _bounded (+1 s de margen para
+        # que sea _bounded quien mande): asi el trabajo que se queda atras vive
+        # ~6 s en vez de los ~40 que se midieron el 15-09.
+        html1 = _bounded(lambda: _dx_get(url1, tope_s=6.0), 5.0, None)
         _tr("fetch1", len(html1 or ""))
         if not html1:
-            html1 = _bounded(lambda: _dx_get(url1), 5.0, None)
+            html1 = _bounded(lambda: _dx_get(url1, tope_s=6.0), 5.0, None)
             _tr("fetch2", len(html1 or ""))
     if not html1:
         if not proxy:
@@ -7284,7 +7297,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl11", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl12", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -10067,7 +10080,7 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl11", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": "dtbl12", "pid": os.getpid(), "rss_mb": _rss_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
