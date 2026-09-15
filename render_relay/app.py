@@ -358,7 +358,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl13",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl14",
                     mimetype="text/plain")
 
 
@@ -7339,7 +7339,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl13", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl14", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7736,8 +7736,23 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .card .t{font-size:12.5px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .y{font-size:11px;color:var(--sub);margin-top:2px}
 .msg{color:var(--sub);text-align:center;padding:34px 10px;font-size:14px}
+/* CAPAS. Todas las hojas comparten .sheet, y hasta dtbl13 compartian tambien
+   el z-index -> con dos abiertas ganaba la que iba DESPUES en el DOM, no la que
+   se acababa de abrir. Por eso el dialogo de listas salia DEBAJO de la tarjeta
+   de la peli (reproducido a 375 px: el toque en el centro se lo llevaba la
+   tarjeta). El orden es el de QUIEN ABRE A QUIEN:
+     30  hojas de fondo (la tarjeta)
+     35  ficha completa (.ov)
+     42  Mis Kodis (#devsheet)      -> se abre desde las dos de arriba
+     44  elegir lista (#lsheet)     -> se abre desde las tres de arriba
+     46  cuadros propios (#mwdlg)   -> se abre desde cualquiera, incluido #lsheet
+     47  el aviso (.toast)          -> tiene que verse siempre
+   Al añadir una hoja nueva, situarla aqui: quien se abre encima va con mas. */
 .sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:30}
 .sheet.on{display:flex}
+#devsheet{z-index:42}
+#lsheet{z-index:44}
+#mwdlg{z-index:46}
 .sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:0;animation:up .2s ease;max-height:92vh;overflow-y:auto;overflow-x:hidden}
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
 .sh-poster{width:min(68vw,260px);aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 12px 34px rgba(0,0,0,.6)}
@@ -7818,7 +7833,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .np-t{flex:1;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .np-pp{border:0;background:var(--blue);color:#fff;width:40px;height:40px;border-radius:50%;cursor:pointer;flex:none;display:flex;align-items:center;justify-content:center;padding:0;line-height:0}
 .np-pp svg{display:block}
-.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:45;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%}
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:47;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%}
 .toast.on{opacity:1;transform:translateX(-50%)}
 .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px}
 @keyframes r{to{transform:rotate(360deg)}}
@@ -10122,7 +10137,7 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl13", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": "dtbl14", "pid": os.getpid(), "rss_mb": _rss_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
