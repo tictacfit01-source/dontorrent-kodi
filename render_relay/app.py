@@ -357,7 +357,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl09",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl10",
                     mimetype="text/plain")
 
 
@@ -1982,7 +1982,46 @@ def _dx_save_domain(host):
         pass
 
 
-def _dx_get(url, proxy=False):
+_TARPIT = {"cortes": 0, "ultimo": 0}
+
+
+def _leer_con_tope(r, tope_s, tope_mb=6):
+    """El cuerpo de una respuesta con tope de tiempo TOTAL, cerrando la conexion
+    al pasarse. Devuelve None si no cabe en el presupuesto.
+
+    Por que existe: el `timeout` de requests NO es un tope total, es el maximo
+    ENTRE BYTES. Cloudflare tarpitea al azar las conexiones desde la IP de
+    Render -- gotea un byte cada tanto -- y asi `r.text` se queda leyendo para
+    siempre. El hilo que lo hacia no volvia nunca (medido el 15-09: de 11
+    trabajos, 10 abandonados y los 10 vivos 10 minutos despues) y ahi empezaba
+    la fuga de memoria que acabo matando el servicio."""
+    fin = _t.time() + tope_s
+    tope_b = tope_mb * 1024 * 1024
+    trozos, n = [], 0
+    try:
+        for ch in r.iter_content(16384):
+            if ch:
+                trozos.append(ch)
+                n += len(ch)
+            if _t.time() > fin or n > tope_b:
+                _TARPIT["cortes"] += 1
+                _TARPIT["ultimo"] = int(_t.time())
+                return None
+    except Exception:
+        return None
+    finally:
+        try:
+            r.close()      # sin esto el socket se queda abierto goteando
+        except Exception:
+            pass
+    try:      # mismo encoding que habria usado r.text -> mismo resultado
+        enc = r.encoding or r.apparent_encoding or "utf-8"
+        return b"".join(trozos).decode(enc, "replace")
+    except Exception:
+        return None
+
+
+def _dx_get(url, proxy=False, tope_s=12.0):
     """HTML de una URL de DivxTotal: requests plano y, si hay challenge de
     Cloudflare, reintenta con cloudscraper. None si no se pudo.
     proxy=True -> via ScraperAPI en modo API (el MISMO mecanismo probado que usa
@@ -2002,8 +2041,10 @@ def _dx_get(url, proxy=False):
         return None
     try:
         r = requests.get(url, headers=BROWSER_HEADERS,
-                         timeout=20, allow_redirects=True)
-        t = r.text
+                         timeout=20, allow_redirects=True, stream=True)
+        t = _leer_con_tope(r, tope_s)
+        if t is None:      # tarpit: cortado y conexion cerrada, no colgada
+            raise IOError("tope")
         low = t[:4000].lower()
         if (r.status_code == 200 and "just a moment" not in low
                 and "challenge-platform" not in low and "cf-mitigated" not in low):
@@ -2012,9 +2053,9 @@ def _dx_get(url, proxy=False):
         pass
     try:
         cs = _make_scraper()
-        r2 = cs.get(url, timeout=35, allow_redirects=True)
+        r2 = cs.get(url, timeout=35, allow_redirects=True, stream=True)
         if r2.status_code == 200:
-            return r2.text
+            return _leer_con_tope(r2, tope_s + 6.0)
     except Exception:
         pass
     return None
@@ -7226,7 +7267,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl09", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl10", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -10009,7 +10050,7 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl09", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": "dtbl10", "pid": os.getpid(), "rss_mb": _rss_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
@@ -10077,6 +10118,7 @@ def catmem():
     out["bounded"] = {"vivos": _BND_VIVOS[0], "max": _BND_MAX,
                       "stats": dict(_BND_STATS)}
     out["relevo"] = {"hilos_max": _MEM_HILOS_MAX, "mb_max": _MEM_MATAR_MB}
+    out["tarpit_cortes"] = dict(_TARPIT)
     try:      # relevos de todos los workers desde el ultimo despliegue
         with open(_MEM_RELEVOS_FILE) as f:
             rl = _json.load(f) or {}
