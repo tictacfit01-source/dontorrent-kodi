@@ -26,6 +26,11 @@ from urllib.parse import urlencode, quote as urlquote
 from flask import Flask, request, Response, jsonify, send_file
 
 app = Flask(__name__)
+# No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
+# cualquier tamano y Flask lo carga entero en memoria (512 MB en el plan free,
+# compartidos por los dos workers). Lo mas gordo que manda una caja es el indice
+# de WolfMax entero, 485 KB -> con 24 MB sobra muchisimo.
+app.config["MAX_CONTENT_LENGTH"] = 24 * 1024 * 1024
 
 # === Ahorro de ancho de banda (Render Hobby = 5 GB/mes de egress) ==========
 # 2026-07-19: el workspace se SUSPENDIO por agotar los 5 GB. Todo lo textual
@@ -352,7 +357,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl06",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl07",
                     mimetype="text/plain")
 
 
@@ -6733,11 +6738,55 @@ def mylist_post():
     return jsonify({"ok": True, "n": len(lst)})
 
 
+# El reloj del relay: 29 sitios lo usan para que una fuente lenta no cuelgue
+# la peticion. Hasta dtbl06 lanzaba un HILO NUEVO cada vez y, al agotarse el
+# presupuesto, lo abandonaba vivo. Medido en produccion: 15 hilos al arrancar,
+# 56 a los pocos minutos de uso, y el RSS subiendo sin bajar nunca -- cada
+# abandonado retiene su conexion, su scraper y su HTML a medio parsear. De ahi
+# el aviso de Render del 15-09 ("exceeded its memory limit").
+#
+# Ahora los trabajos van a un POOL que se reutiliza y que NO puede crecer: si
+# todos los huecos estan pillados por trabajos colgados, las llamadas nuevas
+# devuelven su default sin crear nada. La app se degrada (esa busqueda sale con
+# menos fuentes) en vez de morirse, que es justo el cambio que se busca.
+_BND_MAX = 24
+_BND_POOL = [None]          # se crea al primer uso (no en el import)
+_BND_LOCK = _thr.Lock()
+_BND_VIVOS = [0]            # trabajos en marcha ahora mismo
+_BND_GEN = [0]              # generacion del pool (sube en cada recambio)
+_BND_LLENO_DESDE = [0.0]    # desde cuando no queda ni un hueco
+_BND_STATS = {"lanzados": 0, "abandonados": 0, "sin_hueco": 0, "pico": 0,
+              "recambios": 0}
+
+
 def _bounded(fn, secs, default=None):
-    """Ejecuta fn() con TOPE DURO de `secs` (hilo daemon). Si se cuelga (conexion
-    que ignora el timeout de requests por bloqueo de IP de Render), devuelve
-    `default` y abandona el hilo -> la peticion NUNCA se cuelga."""
-    import threading
+    """Ejecuta fn() con TOPE DURO de `secs`. Si tarda mas, devuelve `default` y
+    sigue -> la peticion NUNCA se cuelga. El trabajo que se quedo atras ocupa un
+    hueco del pool hasta que termine solo, pero ya no crea un hilo eterno."""
+    with _BND_LOCK:
+        if _BND_VIVOS[0] >= _BND_MAX:
+            # Saturado: todos los huecos con trabajos que no vuelven. Antes esto
+            # era justo el momento en que se creaban hilos a mansalva. Si sigue
+            # asi, el vigilante estrena pool en ~1 min (_bnd_revisa).
+            _BND_STATS["sin_hueco"] += 1
+            if not _BND_LLENO_DESDE[0]:
+                _BND_LLENO_DESDE[0] = _t.time()
+            return default
+        _BND_LLENO_DESDE[0] = 0.0
+        _BND_VIVOS[0] += 1
+        _BND_STATS["lanzados"] += 1
+        if _BND_VIVOS[0] > _BND_STATS["pico"]:
+            _BND_STATS["pico"] = _BND_VIVOS[0]
+        gen = _BND_GEN[0]
+        # El pool se coge AQUI, con el mismo candado que la generacion: si se
+        # cogiera fuera, un recambio entre medias meteria este trabajo en el
+        # pool nuevo con la generacion vieja y al terminar no descontaria ->
+        # un hueco perdido para siempre, y con los huecos se pierde el servicio.
+        if _BND_POOL[0] is None:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            _BND_POOL[0] = _TPE(max_workers=_BND_MAX, thread_name_prefix="bnd")
+        pool = _BND_POOL[0]
+
     box = {"v": default}
 
     def _w():
@@ -6745,10 +6794,60 @@ def _bounded(fn, secs, default=None):
             box["v"] = fn()
         except Exception:
             box["v"] = default
-    th = threading.Thread(target=_w, daemon=True)
-    th.start()
-    th.join(secs)
+        finally:
+            # Solo descuenta si el pool sigue siendo el suyo: si hubo recambio,
+            # este trabajo ya no cuenta para el tope del pool nuevo.
+            with _BND_LOCK:
+                if gen == _BND_GEN[0]:
+                    _BND_VIVOS[0] -= 1
+
+    try:
+        fut = pool.submit(_w)
+    except Exception:
+        with _BND_LOCK:
+            if gen == _BND_GEN[0]:
+                _BND_VIVOS[0] -= 1
+        return default
+    try:
+        fut.result(timeout=max(0.1, float(secs)))
+    except Exception:
+        # Se acabo el presupuesto (o reviento). Si aun no habia empezado lo
+        # cancelamos: gastar una fuente para un resultado que ya nadie espera es
+        # tirar tiempo de la caja y peticiones a la web de origen.
+        _BND_STATS["abandonados"] += 1
+        try:
+            if fut.cancel():
+                with _BND_LOCK:
+                    if gen == _BND_GEN[0]:
+                        _BND_VIVOS[0] -= 1
+        except Exception:
+            pass
     return box["v"]
+
+
+def _bnd_revisa():
+    """Si el pool lleva ~1 min sin un hueco libre, estrena pool: mejor 24 hilos
+    colgados en el viejo que un relay que responde a todo con su default."""
+    try:
+        with _BND_LOCK:
+            desde = _BND_LLENO_DESDE[0]
+            if not desde or (_t.time() - desde) < 60:
+                return False
+            viejo = _BND_POOL[0]
+            _BND_GEN[0] += 1
+            _BND_VIVOS[0] = 0
+            _BND_LLENO_DESDE[0] = 0.0
+            _BND_POOL[0] = None
+            _BND_STATS["recambios"] += 1
+        try:      # sin esperar a los colgados: no volverian
+            viejo.shutdown(wait=False)
+        except Exception:
+            pass
+        print("[bnd] pool saturado -> recambio #%d" % _BND_STATS["recambios"],
+              flush=True)
+        return True
+    except Exception:
+        return False
 
 
 @app.post("/catfeed")
@@ -7123,7 +7222,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl06", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl07", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7228,6 +7327,7 @@ def catdiag():
 # patron que _CATBROWSE_CACHE: memoria + disco (sobrevive a reinicios de worker).
 _CATDETAIL_CACHE = {}
 _CATDETAIL_TTL = 1800            # 30 min
+_CATDETAIL_MAX = 120             # tope en memoria (en disco ya se podaba a 200)
 _CATDETAIL_FILE = "/tmp/mw_catdetail.json"
 
 
@@ -7390,6 +7490,16 @@ def catdetail():
     if eps:
         rec = {"data": data, "ts": now}
         _CATDETAIL_CACHE[path] = rec
+        # Tope: una ficha con todos los capitulos y todas las calidades no es
+        # pequena, y esto crecia sin limite (en disco si se podaba a 200).
+        if len(_CATDETAIL_CACHE) > _CATDETAIL_MAX:
+            try:
+                for k in sorted(_CATDETAIL_CACHE,
+                                key=lambda k: _CATDETAIL_CACHE[k].get("ts", 0)
+                                )[:len(_CATDETAIL_CACHE) - _CATDETAIL_MAX]:
+                    _CATDETAIL_CACHE.pop(k, None)
+            except Exception:
+                pass
         try:
             disk = _catdetail_load()
             disk[path] = rec
@@ -9741,9 +9851,13 @@ def _rss_mb():
 # Lo que se puede tirar sin que se note: todo se rehace solo y casi todo tiene
 # ademas respaldo en /tmp. El Inicio (_CATBROWSE_CACHE) NO entra aqui: es lo
 # primero que ve la gente al abrir; solo cae en la poda grave.
+# OJO con lo que NO esta aqui: _CAT_DT_YEAR_CACHE y _CAT_DT_YEAR_FAIL ocupan
+# nada (un id -> un anio) y son las que evitan volver a preguntarle a DonTorrent,
+# incluido el negative-cache de los que ya fallaron. Vaciarlas para ahorrar unos
+# KB seria pagar memoria con peticiones a DT, que es al reves de como se hacen
+# las cosas aqui.
 _MEM_PODABLES = ("_CATDETAIL_CACHE", "_DTQ_CACHE", "_CAT_META_CACHE",
-                 "_CAT_TMDB_CACHE", "_CATSEARCH_CACHE", "_CATBOX_CACHE",
-                 "_CAT_DT_YEAR_CACHE", "_CAT_DT_YEAR_FAIL")
+                 "_CAT_TMDB_CACHE", "_CATSEARCH_CACHE", "_CATBOX_CACHE")
 
 
 def _mem_vacia(nombres):
@@ -9795,6 +9909,7 @@ def _mem_vigila():
                 _mem_poda(grave=True)
             elif r >= _MEM_AVISO_MB:
                 _mem_poda(grave=False)
+            _bnd_revisa()
         except Exception:
             pass
         _t.sleep(30)
@@ -9812,7 +9927,7 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl06", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": "dtbl07", "pid": os.getpid(), "rss_mb": _rss_mb(),
            "uptime_s": int(_t.time() - _MEM_T0),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
@@ -9854,6 +9969,31 @@ def catmem():
         pass
     out["tmp_kb"] = tmp
     out["tmp_total_kb"] = round(tot / 1024.0, 1)
+    # QUIEN son los hilos. El 15-09 el relay paso de 15 a 58 hilos en minutos y
+    # sin bajar nunca; saber que funcion ejecuta cada uno es la diferencia entre
+    # arreglar la fuga y adivinar. Agrupado por funcion, y aparte los que llevan
+    # mas de 5 min vivos (esos ya no vuelven).
+    quien = {}
+    try:
+        for th in _thr.enumerate():
+            n = "?"
+            try:
+                nom = th.name or ""
+                if nom.startswith("bnd"):
+                    n = "pool _bounded"       # los del pool, todos juntos
+                else:
+                    tgt = getattr(th, "_target", None)
+                    n = getattr(tgt, "__name__", None) or nom or "?"
+                    if n == "<lambda>":
+                        n = "lambda:" + nom
+            except Exception:
+                pass
+            quien[n] = quien.get(n, 0) + 1
+    except Exception:
+        pass
+    out["hilos_quien"] = dict(sorted(quien.items(), key=lambda kv: -kv[1])[:14])
+    out["bounded"] = {"vivos": _BND_VIVOS[0], "max": _BND_MAX,
+                      "stats": dict(_BND_STATS)}
     return jsonify(out)
 
 
