@@ -352,7 +352,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl05",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl06",
                     mimetype="text/plain")
 
 
@@ -7123,7 +7123,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl05", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl06", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -9709,6 +9709,154 @@ def _self_keepalive():
         _t.sleep(240)
 
 
+# --- VIGILANTE DE MEMORIA -------------------------------------------------
+# 15-09: Render mando un aviso -- "mw-render-relay exceeded its memory limit,
+# which triggered an automatic restart" -- y mientras reiniciaba, el servicio
+# estuvo caido. El plan free son 512 MB para TODO (2 workers + master), o sea
+# ~200 MB por worker. En vacio cada uno ronda los 70-80 MB, asi que lo que mata
+# es el CRECIMIENTO: cachas en memoria sin tope y ficheros de /tmp que se
+# parsean ENTEROS en cada peticion que falla en memoria.
+#
+# Esto NO es el arreglo de fondo (ese va con datos, ver /catmem): es la red de
+# seguridad. Soltar lastre cuesta medio segundo en la siguiente busqueda; que
+# el sistema mate el proceso son ~30 s de servicio caido para todos.
+_MEM_T0 = _t.time()
+_MEM_AVISO_MB = 190.0      # poda suave: lo que se rehace solo y nadie nota
+_MEM_GRAVE_MB = 240.0      # poda seria: tambien el Inicio (vuelve de /tmp)
+_MEM_WATCH = {"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0, "libero_mb": 0.0}
+
+
+def _rss_mb():
+    """Memoria residente de ESTE worker, en MB. 0.0 si no se puede leer."""
+    try:
+        with open("/proc/self/status") as f:
+            for ln in f:
+                if ln.startswith("VmRSS:"):
+                    return round(int(ln.split()[1]) / 1024.0, 1)
+    except Exception:
+        pass
+    return 0.0
+
+
+# Lo que se puede tirar sin que se note: todo se rehace solo y casi todo tiene
+# ademas respaldo en /tmp. El Inicio (_CATBROWSE_CACHE) NO entra aqui: es lo
+# primero que ve la gente al abrir; solo cae en la poda grave.
+_MEM_PODABLES = ("_CATDETAIL_CACHE", "_DTQ_CACHE", "_CAT_META_CACHE",
+                 "_CAT_TMDB_CACHE", "_CATSEARCH_CACHE", "_CATBOX_CACHE",
+                 "_CAT_DT_YEAR_CACHE", "_CAT_DT_YEAR_FAIL")
+
+
+def _mem_vacia(nombres):
+    """Deja esas cachas vacias. Pone un diccionario NUEVO en vez de .clear():
+    hay hilos recorriendolas (p.ej. /catdiag) y vaciarles el diccionario por
+    debajo revienta la iteracion. Los que ya estaban dentro terminan con el
+    viejo, que se libera al salir."""
+    g = globals()
+    for nombre in nombres:
+        try:
+            if isinstance(g.get(nombre), dict):
+                g[nombre] = {}
+        except Exception:
+            pass
+
+
+def _mem_poda(grave=False):
+    """Suelta lastre. Devuelve los MB liberados."""
+    antes = _rss_mb()
+    _mem_vacia(_MEM_PODABLES)
+    if grave:
+        _mem_vacia(("_CATBROWSE_CACHE",))
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    ahora = _rss_mb()
+    libero = round(max(0.0, antes - ahora), 1)
+    _MEM_WATCH["podas"] += 1
+    _MEM_WATCH["ultima"] = int(_t.time())
+    _MEM_WATCH["libero_mb"] = libero
+    try:
+        print("[mem] poda%s: %s -> %s MB (-%s)"
+              % (" GRAVE" if grave else "", antes, ahora, libero), flush=True)
+    except Exception:
+        pass
+    return libero
+
+
+def _mem_vigila():
+    while True:
+        try:
+            r = _rss_mb()
+            _MEM_WATCH["rss"] = r
+            if r > _MEM_WATCH["max"]:
+                _MEM_WATCH["max"] = r
+            if r >= _MEM_GRAVE_MB:
+                _mem_poda(grave=True)
+            elif r >= _MEM_AVISO_MB:
+                _mem_poda(grave=False)
+        except Exception:
+            pass
+        _t.sleep(30)
+
+
+def _start_mem_watch():
+    try:
+        _kth.Thread(target=_mem_vigila, daemon=True).start()
+    except Exception:
+        pass
+
+
+@app.get("/catmem")
+def catmem():
+    """QUE se come la memoria, para arreglarlo con datos y no con teoria.
+    Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
+    enteros (de /tmp solo mira el tamano)."""
+    out = {"build": "dtbl06", "pid": os.getpid(), "rss_mb": _rss_mb(),
+           "uptime_s": int(_t.time() - _MEM_T0),
+           "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
+    # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
+    # todas obligaria a serializarlas enteras, que es justo lo que no se quiere
+    # hacer en un endpoint de diagnostico de memoria.
+    cach = {}
+    for nombre in ("_CATDETAIL_CACHE", "_CATBROWSE_CACHE", "_CATSEARCH_CACHE",
+                   "_CATBOX_CACHE", "_CAT_META_CACHE", "_CAT_TMDB_CACHE",
+                   "_DTQ_CACHE", "_CAT_DT_YEAR_CACHE", "_CAT_DT_YEAR_FAIL",
+                   "_WFIDX", "_RL", "_CATSEARCH_INFLIGHT", "_DXBG"):
+        try:
+            c = globals().get(nombre)
+            if not isinstance(c, dict):
+                continue
+            n = len(c)
+            kb = 0
+            if n:
+                k = next(iter(c))
+                una = len(_json.dumps({str(k): c[k]}, default=str))
+                kb = round(una * n / 1024.0, 1)
+            cach[nombre.strip("_").lower()] = {"n": n, "kb_aprox": kb}
+        except Exception:
+            pass
+    out["caches"] = cach
+    # Los ficheros de /tmp: se parsean ENTEROS cada vez que una peticion falla
+    # en memoria, asi que su tamano pesa tanto como el de las cachas.
+    tmp = {}
+    tot = 0
+    try:
+        for f in sorted(os.listdir("/tmp")):
+            try:
+                b = os.path.getsize(os.path.join("/tmp", f))
+            except Exception:
+                continue
+            tot += b
+            if b > 16384:          # solo los que pesan algo
+                tmp[f] = round(b / 1024.0, 1)
+    except Exception:
+        pass
+    out["tmp_kb"] = tmp
+    out["tmp_total_kb"] = round(tot / 1024.0, 1)
+    return jsonify(out)
+
+
 def _start_keepalive():
     try:
         _kth.Thread(target=_self_keepalive, daemon=True).start()
@@ -9717,6 +9865,7 @@ def _start_keepalive():
 
 
 _start_keepalive()
+_start_mem_watch()
 
 
 if __name__ == "__main__":
