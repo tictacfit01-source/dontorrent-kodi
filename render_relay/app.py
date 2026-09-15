@@ -358,7 +358,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl12",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl13",
                     mimetype="text/plain")
 
 
@@ -2022,6 +2022,56 @@ def _leer_con_tope(r, tope_s, tope_mb=6):
         return None
 
 
+def _get_con_tope(url, tope_s, headers=None, scraper=None):
+    """GET con tope de tiempo TOTAL de VERDAD. Devuelve (texto, status).
+
+    `_leer_con_tope` sola no basta: solo entra cuando requests ya devolvio las
+    cabeceras, y el timeout de lectura tambien es entre bytes en esa fase -- un
+    servidor que gotea cabeceras mantiene la peticion viva para siempre sin
+    llegar nunca al lector. Aqui el tope lo hace cumplir un vigia: al agotarse
+    CIERRA la sesion, con lo que se cierra el socket y la lectura bloqueada
+    revienta. Es la unica forma de interrumpir una lectura bloqueada en Python,
+    y es lo que evita que el hilo se quede ahi para siempre (15-09: de 11
+    trabajos, 10 seguian vivos 10 minutos despues)."""
+    fin = _t.time() + max(1.0, float(tope_s))
+    sess = scraper if scraper is not None else requests.Session()
+    propia = scraper is None
+
+    def _corta():
+        try:
+            sess.close()       # cierra el socket -> la lectura revienta
+        except Exception:
+            pass
+
+    vigia = _thr.Timer(max(1.0, float(tope_s)), _corta)
+    vigia.daemon = True
+    vigia.start()
+    try:
+        r = sess.get(url, headers=headers,
+                     timeout=(min(5.0, tope_s), max(1.0, tope_s)),
+                     allow_redirects=True, stream=True)
+        st = r.status_code
+        if st != 200:
+            try:
+                r.close()
+            except Exception:
+                pass
+            return None, st
+        return _leer_con_tope(r, max(0.5, fin - _t.time())), st
+    except Exception:
+        return None, 0
+    finally:
+        try:
+            vigia.cancel()
+        except Exception:
+            pass
+        if propia:
+            try:
+                sess.close()
+            except Exception:
+                pass
+
+
 def _dx_get(url, proxy=False, tope_s=12.0):
     """HTML de una URL de DivxTotal: requests plano y, si hay challenge de
     Cloudflare, reintenta con cloudscraper. None si no se pudo.
@@ -2045,15 +2095,10 @@ def _dx_get(url, proxy=False, tope_s=12.0):
     # seguia 40 s mas -- el trabajo quedaba vivo ocupando hueco y memoria.
     _fin = _t.time() + max(1.0, float(tope_s))
     try:
-        _q1 = max(1.0, _fin - _t.time())
-        r = requests.get(url, headers=BROWSER_HEADERS,
-                         timeout=(min(5.0, _q1), _q1), allow_redirects=True,
-                         stream=True)
-        t = _leer_con_tope(r, max(0.5, _fin - _t.time()))
-        if t is None:      # tarpit: cortado y conexion cerrada, no colgada
-            raise IOError("tope")
-        low = t[:4000].lower()
-        if (r.status_code == 200 and "just a moment" not in low
+        t, _st = _get_con_tope(url, max(1.0, _fin - _t.time()),
+                               headers=BROWSER_HEADERS)
+        low = (t or "")[:4000].lower()
+        if (t and _st == 200 and "just a moment" not in low
                 and "challenge-platform" not in low and "cf-mitigated" not in low):
             return t
     except Exception:
@@ -2062,11 +2107,8 @@ def _dx_get(url, proxy=False, tope_s=12.0):
     if _q2 < 1.5:
         return None        # sin presupuesto: no empezar algo que nadie espera
     try:
-        cs = _make_scraper()
-        r2 = cs.get(url, timeout=(min(5.0, _q2), _q2), allow_redirects=True,
-                    stream=True)
-        if r2.status_code == 200:
-            return _leer_con_tope(r2, max(0.5, _fin - _t.time()))
+        t2, _st2 = _get_con_tope(url, _q2, scraper=_make_scraper())
+        return t2 if _st2 == 200 else None
     except Exception:
         pass
     return None
@@ -7297,7 +7339,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl12", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl13", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -10080,7 +10122,7 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl12", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": "dtbl13", "pid": os.getpid(), "rss_mb": _rss_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
