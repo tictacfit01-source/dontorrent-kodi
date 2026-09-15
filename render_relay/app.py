@@ -357,7 +357,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl08",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl09",
                     mimetype="text/plain")
 
 
@@ -7226,7 +7226,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl08", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl09", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -9902,6 +9902,41 @@ def _mem_poda(grave=False):
     return libero
 
 
+# Un hilo colgado no se puede matar en Python: lo unico que los recupera es
+# cambiar de proceso. Estos son los topes a partir de los cuales este worker se
+# releva solo. El pellizco aleatorio es para que los dos workers NO se releven a
+# la vez y deje de haber quien atienda.
+import random as _rnd_mem
+_MEM_HILOS_MAX = 140 + _rnd_mem.randint(0, 40)
+_MEM_MATAR_MB = 300.0
+_MEM_RELEVOS_FILE = "/tmp/mw_relevos.json"
+
+
+def _mem_relevo(motivo):
+    """Se despide y deja que gunicorn levante otro worker. Las peticiones en
+    curso terminan (SIGTERM = salida ordenada); el otro worker cubre mientras."""
+    try:
+        try:      # rastro para saber si esto pasa a menudo (y por que)
+            d = {}
+            try:
+                with open(_MEM_RELEVOS_FILE) as f:
+                    d = _json.load(f) or {}
+            except Exception:
+                pass
+            d[str(int(_t.time()))] = motivo
+            if len(d) > 40:
+                d = dict(sorted(d.items())[-40:])
+            with open(_MEM_RELEVOS_FILE, "w") as f:
+                _json.dump(d, f)
+        except Exception:
+            pass
+        print("[mem] relevo del worker: %s" % motivo, flush=True)
+        import signal
+        os.kill(os.getpid(), signal.SIGTERM)
+    except Exception:
+        pass
+
+
 def _mem_vigila():
     while True:
         try:
@@ -9914,6 +9949,14 @@ def _mem_vigila():
             elif r >= _MEM_AVISO_MB:
                 _mem_poda(grave=False)
             _bnd_revisa()
+            # Relevo: hilos colgados que ya no vuelven, o memoria que no baja ni
+            # despues de podar. Mejor un relevo de 3 s con el otro worker
+            # cubriendo que el OOM, que se lleva el servicio entero por delante.
+            h = _thr.active_count()
+            if h >= _MEM_HILOS_MAX:
+                _mem_relevo("hilos=%d (tope %d)" % (h, _MEM_HILOS_MAX))
+            elif _rss_mb() >= _MEM_MATAR_MB:
+                _mem_relevo("memoria=%.0f MB tras podar" % _rss_mb())
         except Exception:
             pass
         _t.sleep(30)
@@ -9966,7 +10009,7 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl08", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": "dtbl09", "pid": os.getpid(), "rss_mb": _rss_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
@@ -10033,6 +10076,14 @@ def catmem():
     out["hilos_quien"] = dict(sorted(quien.items(), key=lambda kv: -kv[1])[:14])
     out["bounded"] = {"vivos": _BND_VIVOS[0], "max": _BND_MAX,
                       "stats": dict(_BND_STATS)}
+    out["relevo"] = {"hilos_max": _MEM_HILOS_MAX, "mb_max": _MEM_MATAR_MB}
+    try:      # relevos de todos los workers desde el ultimo despliegue
+        with open(_MEM_RELEVOS_FILE) as f:
+            rl = _json.load(f) or {}
+        out["relevos"] = {"n": len(rl),
+                          "ultimos": dict(sorted(rl.items())[-4:])}
+    except Exception:
+        out["relevos"] = {"n": 0, "ultimos": {}}
     return jsonify(out)
 
 
