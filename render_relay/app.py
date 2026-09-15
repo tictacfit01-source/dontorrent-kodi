@@ -15,6 +15,7 @@ Endpoints:
 """
 import os
 import re
+import sys
 import gzip as _gzmod
 import hashlib as _hashmod
 import threading as _thr   # usado a nivel de modulo desde ~L1483 (_DT_BOX_SEM);
@@ -357,7 +358,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl10",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl11",
                     mimetype="text/plain")
 
 
@@ -6802,6 +6803,10 @@ _BND_GEN = [0]              # generacion del pool (sube en cada recambio)
 _BND_LLENO_DESDE = [0.0]    # desde cuando no queda ni un hueco
 _BND_STATS = {"lanzados": 0, "abandonados": 0, "sin_hueco": 0, "pico": 0,
               "recambios": 0}
+# id -> (linea que lo lanzo, cuando). Para saber QUE llamada se queda colgada
+# sin repasar los 29 sitios a ojo: los que llevan mucho vivos salen en /catmem.
+_BND_QUIEN = {}
+_BND_SEQ = [0]
 
 
 def _bounded(fn, secs, default=None):
@@ -6823,6 +6828,14 @@ def _bounded(fn, secs, default=None):
         if _BND_VIVOS[0] > _BND_STATS["pico"]:
             _BND_STATS["pico"] = _BND_VIVOS[0]
         gen = _BND_GEN[0]
+        _BND_SEQ[0] += 1
+        tid = _BND_SEQ[0]
+        try:      # de donde sale esta llamada (fichero:linea del que la hace)
+            _f = sys._getframe(1)
+            _BND_QUIEN[tid] = ("%s:%d" % (_f.f_code.co_name, _f.f_lineno),
+                               _t.time())
+        except Exception:
+            _BND_QUIEN[tid] = ("?", _t.time())
         # El pool se coge AQUI, con el mismo candado que la generacion: si se
         # cogiera fuera, un recambio entre medias meteria este trabajo en el
         # pool nuevo con la generacion vieja y al terminar no descontaria ->
@@ -6843,6 +6856,7 @@ def _bounded(fn, secs, default=None):
             # Solo descuenta si el pool sigue siendo el suyo: si hubo recambio,
             # este trabajo ya no cuenta para el tope del pool nuevo.
             with _BND_LOCK:
+                _BND_QUIEN.pop(tid, None)
                 if gen == _BND_GEN[0]:
                     _BND_VIVOS[0] -= 1
 
@@ -6850,6 +6864,7 @@ def _bounded(fn, secs, default=None):
         fut = pool.submit(_w)
     except Exception:
         with _BND_LOCK:
+            _BND_QUIEN.pop(tid, None)
             if gen == _BND_GEN[0]:
                 _BND_VIVOS[0] -= 1
         return default
@@ -6863,6 +6878,7 @@ def _bounded(fn, secs, default=None):
         try:
             if fut.cancel():
                 with _BND_LOCK:
+                    _BND_QUIEN.pop(tid, None)
                     if gen == _BND_GEN[0]:
                         _BND_VIVOS[0] -= 1
         except Exception:
@@ -6884,6 +6900,7 @@ def _bnd_revisa():
             _BND_LLENO_DESDE[0] = 0.0
             _BND_POOL[0] = None
             _BND_STATS["recambios"] += 1
+            _BND_QUIEN.clear()
         try:      # sin esperar a los colgados: no volverian
             viejo.shutdown(wait=False)
         except Exception:
@@ -7267,7 +7284,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl10", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": "dtbl11", "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -10050,7 +10067,7 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl10", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": "dtbl11", "pid": os.getpid(), "rss_mb": _rss_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
@@ -10117,6 +10134,19 @@ def catmem():
     out["hilos_quien"] = dict(sorted(quien.items(), key=lambda kv: -kv[1])[:14])
     out["bounded"] = {"vivos": _BND_VIVOS[0], "max": _BND_MAX,
                       "stats": dict(_BND_STATS)}
+    # Los trabajos que llevan MAS DE UN MINUTO vivos: esos ya no vuelven, y
+    # aqui sale de que llamada salieron.
+    try:
+        ahora = _t.time()
+        colgados = {}
+        for _k, (_org, _ts) in list(_BND_QUIEN.items()):
+            if ahora - _ts > 60:
+                colgados[_org] = colgados.get(_org, 0) + 1
+        out["colgados"] = dict(sorted(colgados.items(), key=lambda kv: -kv[1])[:8])
+        out["bnd_vivos_detalle"] = {v[0]: int(ahora - v[1])
+                                    for v in list(_BND_QUIEN.values())[:8]}
+    except Exception:
+        out["colgados"] = {}
     out["relevo"] = {"hilos_max": _MEM_HILOS_MAX, "mb_max": _MEM_MATAR_MB}
     out["tarpit_cortes"] = dict(_TARPIT)
     try:      # relevos de todos los workers desde el ultimo despliegue
