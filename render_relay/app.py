@@ -8452,7 +8452,7 @@ function slimAlts(a){return (a||[]).slice(0,4).map(function(z){
          tabla:z.tabla,path:z.path,kind:z.kind,title:z.title,year:z.year,
          poster:z.poster,rating:z.rating,eps:slimEps(z.eps)}})}
 // Copia guardable de un item (lo mismo que guardaba toggleFav).
-function favCopia(x,ls){return {kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),ls:ls}}
+function favCopia(x,ls){return {lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),ls:ls}}
 function favBuscar(x){for(var i=0;i<favs.length;i++)if(fk(favs[i])===fk(x))return favs[i];return null}
 function favEnLista(x,id){var f=favBuscar(x);return !!f&&lstDe(f).indexOf(id)>=0}
 // Guardar en una lista = MOVER a esa lista. Un titulo esta en UNA lista y solo
@@ -8461,16 +8461,17 @@ function favEnLista(x,id){var f=favBuscar(x);return !!f&&lstDe(f).indexOf(id)>=0
 function favAdd(x,id){
  var f=favBuscar(x);
  if(!f){favs.unshift(favCopia(x,[id]))}
- else{f.ls=[id];}
+ else{f.ls=[id];f.lts=Date.now();}
+ delOlvida('f',fk(x));          // guardarlo otra vez anula su borrado
  saveFavs();mlPushSoon();}
 // Quitar de UNA lista; si no queda en ninguna, deja de estar guardado.
 function favQuitar(x,id){
  var f=favBuscar(x);if(!f)return;
  var a=lstDe(f).filter(function(z){return z!==id});
- if(a.length){f.ls=a}else{favs=favs.filter(function(z){return fk(z)!==fk(x)})}
+ if(a.length){f.ls=a;f.lts=Date.now()}else{favs=favs.filter(function(z){return fk(z)!==fk(x)});delMarca('f',fk(x))}
  saveFavs();mlPushSoon();}
-function favQuitarTodo(x){favs=favs.filter(function(z){return fk(z)!==fk(x)});saveFavs();mlPushSoon();}
-function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)})}else{favs.unshift({kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts)})}saveFavs();mlPushSoon()}
+function favQuitarTodo(x){favs=favs.filter(function(z){return fk(z)!==fk(x)});delMarca('f',fk(x));saveFavs();mlPushSoon();}
+function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)});delMarca('f',fk(x))}else{delOlvida('f',fk(x));favs.unshift({lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts)})}saveFavs();mlPushSoon()}
 // --- Sincronizacion de la lista de deseados (espejo en el relay, ligado al
 // codigo). El movil es la COPIA MAESTRA: al cargar hacemos UNION (nunca borra ->
 // imposible perder la lista). Cero peticiones a fuentes -> cero baneo. ---
@@ -8484,11 +8485,11 @@ function mlPushSoon(){clearTimeout(_mlPushT);_mlPushT=setTimeout(mlPush,1500)}
 function mlSync(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)return;
  fetch('/mylist?code='+cd).then(function(r){return r.json()}).then(function(d){
   var rl=(d&&d.list)||[];var changed=false;
-  rl.forEach(function(it){if(it&&it.content_id&&!favs.some(function(f){return fk(f)===fk(it)})){favs.push(it);changed=true}});
+  rl.forEach(function(it){if(it&&it.content_id&&!delTapa('f',fk(it),it.lts||0)&&!favs.some(function(f){return fk(f)===fk(it)})){favs.push(it);changed=true}});
   // Los nombres de las listas tambien: si esta tablet no conoce una lista que
   // el movil creo, se anade (nunca se borra ninguna -> imposible perder).
   var rls=(d&&d.listas)||[];
-  rls.forEach(function(l){if(l&&l.id&&l.n&&!LST.some(function(z){return z.id===l.id})){
+  rls.forEach(function(l){if(l&&l.id&&l.n&&!delTapa('l',l.id,0)&&!LST.some(function(z){return z.id===l.id})){
     LST.push({id:l.id,n:l.n});changed=true}});
   if(changed){saveFavs();lstSave();if(CURVIEW==='lista')renderFavs()}
   mlPush();
@@ -8548,11 +8549,15 @@ function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'')
  var d=loadDevs(),found=false;
  d.forEach(function(dev){if(dev.code===c){dev.name=n;found=true}});
  if(!found)d.push({name:n,code:c});
+ delOlvida('d',c);
  saveDevs(d);$('devn').value='';$('devc').value='';
  setActiveCode(c);renderDevs();toast(found?'Kodi actualizado ✓':'Kodi guardado ✓')}
 function delDev(c){
- mwConfirm('¿Quitar este Kodi?','Solo se quita de la lista de este móvil; el Kodi sigue funcionando.',
+ mwConfirm('¿Quitar este Kodi?',syncOn()
+   ?'Se quita de todos tus dispositivos; el Kodi sigue funcionando.'
+   :'Solo se quita de la lista de este móvil; el Kodi sigue funcionando.',
   'Quitar',function(){
+   delMarca('d',c);
    saveDevs(loadDevs().filter(function(dev){return dev.code!==c}));
    renderDevs();refreshDevBtn();toast('Kodi quitado')},1);}
 function star(x){return (x.year||'')+(x.rating?(' · ★'+(Math.round(x.rating*10)/10)):'')}
@@ -9009,14 +9014,17 @@ function histPush(e){
  e.ts=Date.now();
  var k=histKey(e);
  hist=hist.filter(function(h){return histKey(h)!==k});   // sin repetir: sube arriba
+ delOlvida('h',k);              // volver a ponerlo anula su borrado
  hist.unshift(e);hist=hist.slice(0,60);histSave();
  if(CURVIEW==='hist')renderHist();}
 function histAdd(ref){histPush(histSnap(ref))}
-function histDel(i){hist.splice(i,1);histSave();renderHist()}
+function histDel(i){var e=hist[i];if(e)delMarca('h',histKey(e));
+ hist.splice(i,1);histSave();renderHist()}
 function histClear(){if(!hist.length)return;
  mwConfirm('\u00bfVaciar el historial?',
   'Se borran los '+hist.length+' t\u00edtulos de esta lista. Lo guardado en Mis listas no se toca.',
-  'Vaciar',function(){hist=[];histSave();renderHist();toast('Historial vac\u00edo')},1)}
+  'Vaciar',function(){hist.forEach(function(h){delMarca('h',histKey(h))});
+   hist=[];histSave();renderHist();toast('Historial vac\u00edo')},1)}
 function histHace(ts){var s=Math.max(0,(Date.now()-ts)/1000);
  if(s<90)return 'hace un momento';
  var m=Math.round(s/60);if(m<60)return 'hace '+m+' min';
@@ -9042,6 +9050,42 @@ function renderHist(){
    (h.q?('<span>'+esc(h.q)+'</span>'):'')+'<span>'+esc(histHace(h.ts))+'</span></div></div>'+
    '<div class="hb"><button class="play" onclick="histPlay('+i+')" title="Volver a poner">▶</button>'+
    '<button onclick="histDel('+i+')" title="Quitar del historial">✕</button></div></div>'}).join('');}
+// ===== LO BORRADO, BORRADO SE QUEDA (lapidas) =========================
+// Juntar dos dispositivos era una UNION pura: lo que borrabas aqui volvia del
+// otro en la siguiente sincronizacion (y "Vaciar historial" no servia de nada
+// en cuanto otro movil tuviera esos titulos). Ahora el borrado deja marca -QUE
+// y CUANDO- y esa marca tambien viaja.
+// La marca solo tapa a lo que sea MAS VIEJO que ella: volver a guardar un
+// titulo (o volver a ponerlo en la tele) siempre gana a su propia lapida.
+var DEL={h:{},f:{},l:{},d:{}};
+try{var _dl=JSON.parse(localStorage.getItem('mw_del')||'null');
+ if(_dl&&typeof _dl==='object')['h','f','l','d'].forEach(function(t){
+  if(_dl[t]&&typeof _dl[t]==='object')DEL[t]=_dl[t]});}catch(e){}
+function delGuarda(){
+ var lim=Date.now()-90*24*3600*1000;      // poda: 90 dias y fuera
+ ['h','f','l','d'].forEach(function(t){
+  for(var k in DEL[t])if(!(DEL[t][k]>lim))delete DEL[t][k]});
+ try{localStorage.setItem('mw_del',JSON.stringify(DEL))}catch(e){}}
+function delMarca(t,k){if(!k)return;DEL[t][k]=Date.now();delGuarda()}
+function delOlvida(t,k){if(!k||!DEL[t][k])return;delete DEL[t][k];delGuarda()}
+function delTapa(t,k,ts){return !!k&&(DEL[t][k]||0)>(ts||0)}
+// Aplicar a lo de AQUI lo que se borro en otro sitio.
+function delAplica(){
+ var c=false;
+ var h2=hist.filter(function(h){return !delTapa('h',histKey(h),h.ts||0)});
+ if(h2.length!==hist.length){hist=h2;c=true}
+ var f2=favs.filter(function(f){return !delTapa('f',fk(f),f.lts||0)});
+ if(f2.length!==favs.length){favs=f2;c=true}
+ var l2=LST.filter(function(l){return !delTapa('l',l.id,0)});
+ if(l2.length!==LST.length){
+  LST=l2.length?l2:[{id:'def',n:'Mi lista'}];
+  favs.forEach(function(f){f.ls=lstDe(f)});      // los titulos, a la primera
+  if(!LST.some(function(l){return l.id===LSTSEL}))lstSel(LST[0].id);
+  c=true}
+ var dv=loadDevs(),dv2=dv.filter(function(v){return !delTapa('d',v.code,0)});
+ if(dv2.length!==dv.length){saveDevs(dv2);renderDevs();refreshDevBtn();c=true}
+ if(c){saveFavs();lstSave();histSave()}
+ return c;}
 // ===== COPIA DE SEGURIDAD (entrar con Google) ==========================
 // Worker propio (Cloudflare + D1). Sin sesion no se llama a nada de esto y la
 // web funciona igual que siempre.
@@ -9054,21 +9098,33 @@ function syncOn(){return !!GTOK}
 function syncFusiona(r){
  if(!r||typeof r!=='object')return false;
  var cambio=false;
- // listas: por id (las que falten aqui se anaden)
+ // 0) lo primero, las lapidas: lo que cualquiera de los dos borro se va de los
+ //    dos. Si no, lo de abajo lo resucitaria en el acto.
+ var rd=(r.del&&typeof r.del==='object')?r.del:null;
+ if(rd){var hd=false;
+  ['h','f','l','d'].forEach(function(t){
+   var o=rd[t];if(!o||typeof o!=='object')return;
+   for(var k in o){var ts=+o[k]||0;if(ts>(DEL[t][k]||0)){DEL[t][k]=ts;hd=true}}});
+  if(hd)delGuarda();}
+ if(delAplica())cambio=true;
+ // listas: por id (las que falten aqui se anaden; las borradas no vuelven)
  (r.listas||[]).forEach(function(l){
-  if(l&&l.id&&l.n&&!LST.some(function(z){return z.id===l.id})){LST.push({id:l.id,n:l.n});cambio=true}});
- // guardados: por clave; si ya esta, se UNEN las listas a las que pertenece
+  if(l&&l.id&&l.n&&!delTapa('l',l.id,0)&&!LST.some(function(z){return z.id===l.id})){LST.push({id:l.id,n:l.n});cambio=true}});
+ // guardados: por clave. En QUE lista esta manda el cambio mas reciente (`lts`):
+ // mover un titulo de carpeta en el movil lo mueve tambien aqui, no lo duplica.
  (r.favs||[]).forEach(function(it){
   if(!it||!it.content_id)return;
+  if(delTapa('f',fk(it),it.lts||0))return;
   var mio=null;for(var i=0;i<favs.length;i++)if(fk(favs[i])===fk(it))mio=favs[i];
   if(!mio){favs.push(it);cambio=true;return}
-  var a=(mio.ls||[]).slice();
-  (it.ls||[]).forEach(function(id){if(a.indexOf(id)<0){a.push(id);cambio=true}});
-  if(a.length)mio.ls=a;});
+  if((it.lts||0)>(mio.lts||0)&&(it.ls||[]).length){
+   mio.ls=it.ls.slice();mio.lts=it.lts;cambio=true}});
  // historial: por su referencia, lo mas reciente primero, tope 60
  (r.hist||[]).forEach(function(h){
   if(!h||!h.t)return;
-  var k=histKey(h),yo=null;
+  var k=histKey(h);
+  if(delTapa('h',k,h.ts||0))return;
+  var yo=null;
   for(var i=0;i<hist.length;i++)if(histKey(hist[i])===k)yo=hist[i];
   if(!yo){hist.push(h);cambio=true}
   else if((h.ts||0)>(yo.ts||0)){yo.ts=h.ts;cambio=true}});
@@ -9077,18 +9133,23 @@ function syncFusiona(r){
  // Kodis: por codigo
  var devs=loadDevs(),dc=false;
  (r.devs||[]).forEach(function(d){
-  if(d&&d.code&&!devs.some(function(z){return z.code===d.code})){devs.push(d);dc=true}});
+  if(d&&d.code&&!delTapa('d',d.code,0)&&!devs.some(function(z){return z.code===d.code})){devs.push(d);dc=true}});
  if(dc){saveDevs(devs);renderDevs();refreshDevBtn();cambio=true}
  if(cambio){saveFavs();lstSave();histSave()}
  return cambio;}
 function syncPaquete(){
  return {listas:LST,favs:favs.map(function(f){
    var c={};for(var k in f)if(k!=='eps'&&k!=='epsAlt'&&k!=='alts')c[k]=f[k];return c}),
-  hist:hist,devs:loadDevs(),v:1};}
-var _syT=null,_syPend=false;
+  hist:hist,devs:loadDevs(),del:DEL,v:2};}
+var _syT=null,_syPend=false,_syListo=false,_syBajando=false,_syUlt=0,_syRe=null,_syEsp=20000;
 function syncSubirPronto(){if(!syncOn())return;clearTimeout(_syT);_syT=setTimeout(syncSubir,2000)}
 function syncSubir(){
  if(!syncOn())return;
+ // NUNCA subir antes de haber bajado. La subida REEMPLAZA lo guardado: si este
+ // dispositivo lleva una copia vieja (llevaba semanas sin abrirse), subir de
+ // primero borraria en la nube lo que hiciste en el movil. Primero bajamos y
+ // unimos; la subida va detras.
+ if(!_syListo){_syPend=true;syncBajar();return}
  fetch(SYNC+'/data',{method:'POST',headers:{'Content-Type':'application/json',
    'Authorization':'Bearer '+GTOK},body:JSON.stringify({data:syncPaquete()})})
   .then(function(r){return r.json()}).then(function(d){
@@ -9097,10 +9158,15 @@ function syncSubir(){
   .catch(function(){});}
 function syncBajar(cb){
  if(!syncOn()){if(cb)cb(false);return}
+ if(_syBajando){if(cb)cb(false);return}
+ _syBajando=true;
  syncEstado('Sincronizando\u2026');
  fetch(SYNC+'/data',{headers:{'Authorization':'Bearer '+GTOK}})
   .then(function(r){return r.json()}).then(function(d){
+   _syBajando=false;
    if(d&&d.ok){
+    _syListo=true;_syUlt=Date.now();_syPend=false;_syEsp=20000;
+    clearTimeout(_syRe);
     var hubo=syncFusiona(d.data);
     if(CURVIEW==='lista')renderFavs();
     if(CURVIEW==='hist')renderHist();
@@ -9108,7 +9174,16 @@ function syncBajar(cb){
     if(cb)cb(hubo);return;}
    if(d&&(d.error||'').indexOf('sesion')>=0)syncSalir(1);
    if(cb)cb(false);})
-  .catch(function(){syncEstado('Sin conexi\u00f3n');if(cb)cb(false)});}
+  .catch(function(){_syBajando=false;syncEstado('Sin conexi\u00f3n');
+   syncReintenta();if(cb)cb(false)});}
+// Sin red no nos rendimos, pero tampoco machacamos: se reintenta cada vez mas
+// espaciado (20s, 40s... hasta 5 min) hasta que la bajada salga. Mientras,
+// nada se pierde: lo de este dispositivo sigue en su sitio y sube despues.
+function syncReintenta(){
+ if(_syListo||!syncOn())return;
+ clearTimeout(_syRe);
+ _syRe=setTimeout(function(){syncBajar()},_syEsp);
+ _syEsp=Math.min(_syEsp*2,300000);}
 function syncEstado(t){var e=$('cta-est');if(e)e.textContent=t||''}
 function syncPinta(){
  var w=$('cta-who'),b=$('gbtn'),sub=$('cta-s');
@@ -9122,7 +9197,7 @@ function syncPinta(){
   w.style.display='none';if(b)b.style.display='';
   if(sub)sub.textContent='Entra con Google y tus listas, tu historial y tus Kodis quedan guardados: los recuperas en cualquier m\u00f3vil.';}}
 function syncSalir(callado){
- GTOK='';GUSER=null;
+ GTOK='';GUSER=null;_syListo=false;_syPend=false;
  try{localStorage.removeItem('mw_gtok');localStorage.removeItem('mw_guser')}catch(e){}
  syncPinta();gsiPinta();
  if(!callado)toast('Sesi\u00f3n cerrada (lo guardado en este m\u00f3vil se queda)');}
@@ -9387,10 +9462,11 @@ function lstBorrar(id){
   'Quitar lista',function(){_lstBorra(id)},1);}
 function _lstBorra(id){
  LST=LST.filter(function(z){return z.id!==id});
+ delMarca('l',id);
  var destino=LST[0].id;
  favs.forEach(function(f){
   var a=lstDe(f).filter(function(z){return z!==id});
-  f.ls=a.length?a:[destino];});
+  if(!a.length){f.ls=[destino];f.lts=Date.now()}else{f.ls=a}});
  saveFavs();lstSave();lstSel(destino);renderFavs();toast('Lista borrada');}
 var LFILTRO='';
 function lstFiltra(){
@@ -9885,6 +9961,17 @@ $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
  try{var g=localStorage.getItem('mw_chip');if(g==='peliculas'||g==='series')_k=g}catch(e){}
  chip(_k)})();pollNow();
 try{mlSync()}catch(e){}   // trae/respalda la lista de deseados si ya hay codigo
+// Con la sesion puesta, traerse lo guardado: el historial y las listas son los
+// MISMOS en el movil y aqui. Antes solo se bajaba en el instante de entrar con
+// Google, asi que un dispositivo ya dentro no se enteraba nunca de nada.
+// Va detras del primer pintado para no robarle ni un ms a la busqueda.
+try{if(syncOn())setTimeout(function(){syncBajar()},400)}catch(e){}
+// Y al volver a la app (cambiar de pestana, desbloquear el movil): lo que
+// acabas de hacer en el movil aparece aqui sin tener que recargar.
+document.addEventListener('visibilitychange',function(){
+ if(document.hidden||!syncOn())return;
+ if(Date.now()-_syUlt>20000)syncBajar();});
+window.addEventListener('online',function(){if(syncOn()&&!_syListo)syncBajar()});
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){})}
 </script></body></html>"""
 
