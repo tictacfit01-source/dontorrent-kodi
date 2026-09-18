@@ -1023,7 +1023,13 @@ def _push_wf_index(force=False):
     WolfMax en la web pasa de ~10s (ida y vuelta a una caja) a milisegundos, y
     deja de depender de que haya alguna caja despierta.
 
-    Se manda SIN imagenes (la caratula la pone TMDB): ~320 KB en vez de 620 KB.
+    Va CON las imagenes (320 KB -> 537 KB, 30 KB -> 52 KB comprimido). Se mandaban
+    sin ellas porque "la caratula la pone TMDB", y para el 90% es verdad; pero hay
+    titulos que TMDB no tiene ("La maldicion de Widows Bay" no esta, ni con tilde
+    ni sin ella) y esos se quedaban en gris para siempre. La caratula propia de
+    WolfMax ya la tenemos aqui (89% de las entradas): mandarla cuesta 22 KB
+    comprimidos y es el unico modo de que esos titulos tengan cara.
+    El relay la usa SOLO de respaldo, cuando TMDB no da poster.
     """
     import requests
     try:
@@ -1039,8 +1045,12 @@ def _push_wf_index(force=False):
             t = (e or {}).get("title")
             if not u or not t:
                 continue
-            slim[u] = {"t": t[:160], "k": (e.get("kind") or "")[:16],
-                       "q": (e.get("quality") or "")[:12]}
+            rec = {"t": t[:160], "k": (e.get("kind") or "")[:16],
+                   "q": (e.get("quality") or "")[:12]}
+            img = e.get("image") or ""
+            if isinstance(img, str) and img.startswith("http"):
+                rec["i"] = img[:220]
+            slim[u] = rec
         if not slim:
             return 0
         r = requests.post(base + "/wffeed", json={"entries": slim}, timeout=45,
