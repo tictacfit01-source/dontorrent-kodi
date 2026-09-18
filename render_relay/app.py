@@ -462,6 +462,12 @@ def relay():
             continue
         out_headers[k] = v
     out_headers["Access-Control-Allow-Origin"] = "*"
+    # Una caratula de WolfMax pesa ~250 KB y su URL no cambia nunca. Sin esto
+    # el navegador la volvia a pedir cada 5 minutos: egress del relay (5 GB/mes)
+    # y espera en el movil para ver la MISMA imagen.
+    if r.status_code == 200 and \
+            (out_headers.get("Content-Type") or "").lower().startswith("image/"):
+        out_headers["Cache-Control"] = "public, max-age=604800, immutable"
     out_headers["X-MW-Render-Status"] = str(r.status_code)
     out_headers["X-MW-Render-Final"] = r.url
     out_headers["X-MW-Via-Scraperapi"] = "1" if (is_wolf and SCRAPERAPI_KEY) else "0"
@@ -3669,7 +3675,15 @@ def _cat_clean_title(title):
     # no encontraba la serie (la mayoria de series del Inicio se quedaban sin
     # poster/nota). Quita el numero (y ordinal opcional) que precede a "temporada".
     t = _re_dt.sub(r"\b\d{1,2}\s*[ªºoa]?\s*(?=temporada\b)", " ", t, flags=_re_dt.I)
-    t = _re_dt.sub(r"\b(temporada|parte|cap\w*|capitulo|\d{1,2}\s*x\s*\d{1,3})\b.*",
+    # OJO con "cap": era `cap\w*`, que se comia CUALQUIER palabra que empezara
+    # por cap -> "Cape Fear" y "Capone" se quedaban en NADA (query vacia a TMDB
+    # -> sin caratula), y lo peor: "The Capture" pedia "The" y "Altas
+    # capacidades" pedia "Altas" -> TMDB devolvia la pelicula mas popular que
+    # se llamara asi y les pegaba una CARATULA AJENA. Ahora "cap" solo corta si
+    # de verdad marca un capitulo: "Cap. 5", "Cap 12", "Capitulo [ 10 ]".
+    # Medido sobre los 5043 titulos reales del indice: 17 rescatados, 0 rotos.
+    t = _re_dt.sub(r"\b(temporada|cap[ií]tulos?\s*[\[\d]|caps?\.?\s*\d+|"
+                   r"\d{1,2}\s*x\s*\d{1,3}).*",
                    "", t, flags=_re_dt.I)
     t = _re_dt.sub(r"\b(1080p|720p|480p|2160p|4k|bluray|blu-?ray|brrip|bdrip|"
                    r"web-?dl|webrip|hdtv|microhd|dvdrip|hdrip|x264|x265|hevc|"
@@ -5585,8 +5599,13 @@ def _wf_idx_search(q, limit=40):
             continue
         if all(t in tn for t in toks):
             kind = "serie" if (e.get("k") or "").startswith("tvshow") else "movie"
+            # El navegador NO alcanza wolfmax4k (el ISP lo bloquea), asi que la
+            # caratula va por el proxy del relay, igual que ya se hace con las
+            # de DivxTotal. Es RESPALDO: _cat_enrich prefiere siempre TMDB.
+            _im = e.get("i") or ""
             out.append({"title": e.get("t") or "", "kind": kind, "source": "wf",
-                        "url": url, "content_id": url, "thumb": None,
+                        "url": url, "content_id": url,
+                        "thumb": ("/relay?u=" + urlquote(_im, safe="")) if _im else None,
                         "quality": e.get("q") or _wf_quality_from_url(url),
                         "tabla": "wf"})
             if len(out) >= limit * 4:
@@ -5833,12 +5852,23 @@ def wffeed():
                "q": (e.get("q") or e.get("quality") or "")[:12]}
         if not rec["t"]:
             continue
+        # Caratula PROPIA de WolfMax. Solo se usa cuando TMDB no tiene el
+        # titulo (hay series que no estan, p.ej. "La maldicion de Widows Bay"):
+        # sin esto se quedaban en gris para siempre.
+        _img = (e.get("i") or e.get("image") or "")
+        if isinstance(_img, str) and _img.startswith("http"):
+            rec["i"] = _img[:220]
         # lo que empuja una caja tampoco puede DEGRADAR lo que ya hay: sus
         # indices locales arrastran el dano viejo (ver cabecera del arreglo).
         _ant = idx.get(u)
         if _ant and _wf_pobre(u, rec["t"], rec["k"]) and \
                 not _wf_pobre(u, _ant.get("t"), _ant.get("k")):
             continue
+        # Una caja con el addon VIEJO manda entradas sin imagen. Si dejamos que
+        # sobrescriba, borraria la caratula que trajo la caja nueva y la cosa
+        # iria y vendria segun quien empujara el ultimo -> se conserva.
+        if not rec.get("i") and _ant and _ant.get("i"):
+            rec["i"] = _ant["i"]
         if _ant != rec:
             idx[u] = rec
             n += 1
