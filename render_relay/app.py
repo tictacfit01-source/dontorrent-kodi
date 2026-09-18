@@ -7347,6 +7347,110 @@ def catbrowse():
     return jsonify({"items": []})
 
 
+# ===========================================================================
+# EL INICIO, CON LAS CUATRO FUENTES
+# ===========================================================================
+# El Inicio se llenaba SOLO de DonTorrent. Las otras tres se pedian a una caja
+# (/catetbox op=latest), asi que con los Kodi apagados -que es lo normal cuando
+# uno abre la web en el movil- no llegaba ninguna: EliteTorrent, DivxTotal y
+# WolfMax no existian en la portada.
+# Aqui se sirven SIN caja y sin tocar el camino de DonTorrent (que sigue dando
+# la primera pantalla igual de rapido):
+#   - WolfMax: del indice que ya vive en el relay. Sin red: los ids de sus URLs
+#     crecen con el tiempo, asi que "lo ultimo" es ordenar por id.
+#   - DivxTotal: directo, que a este si lo alcanza el relay (_dx_browse_items).
+#   - EliteTorrent: necesita caja de verdad -> lo sigue trayendo boxMerge cuando
+#     hay un Kodi despierto.
+_CATMIX_CACHE = {}
+_CATMIX_TTL = 1800          # 30 min: una portada no cambia cada minuto
+
+
+def _wf_home_items(kind, limit=12):
+    """Lo ultimo de WolfMax segun el indice local. Cero red, milisegundos."""
+    idx = _wfidx_load()
+    if not idx:
+        return []
+    orden = []
+    for url, e in idx.items():
+        if not isinstance(e, dict):
+            continue
+        t = e.get("t") or ""
+        k = e.get("k") or ""
+        if not t or _wf_pobre(url, t, k):
+            continue
+        es_serie = k.startswith("tvshow")
+        if kind == "series" and not es_serie:
+            continue
+        if kind == "peliculas" and es_serie:
+            continue
+        m = _re_dt.search(r"/(\d+)(?:/|$)", url)
+        orden.append((int(m.group(1)) if m else 0, url, e))
+    orden.sort(key=lambda x: -x[0])
+    items = []
+    for _id, url, e in orden[:limit * 6]:   # margen: muchos son la misma peli
+        _im = e.get("i") or ""
+        items.append({
+            "title": e.get("t") or "",
+            "kind": "serie" if (e.get("k") or "").startswith("tvshow") else "movie",
+            "source": "wf", "url": url, "content_id": url,
+            "thumb": ("/relay?u=" + urlquote(_im, safe="")) if _im else None,
+            "quality": e.get("q") or _wf_quality_from_url(url), "tabla": "wf"})
+    # el mismo aseo que en la busqueda: quitar la calidad del titulo y juntar
+    # los capitulos de una misma serie en UNA tarjeta.
+    for it in items:
+        disp, ql = _cat_clean_quality(it.get("title", ""))
+        it["title"] = disp
+        if not it.get("quality"):
+            it["quality"] = ql or _wf_quality_from_url(it.get("url"))
+    items = _wf_colapsa(_cat_group_episodes(items))
+    vistos, unicos = set(), []
+    for it in items:
+        # "Ted Lasso Temporada Temporada [ 4 ] Capitulo [ 6 ]" no es nombre para
+        # una tarjeta: en una portada va la SERIE, no el capitulo suelto.
+        if _WF_CAP_RE.search(it.get("title") or ""):
+            _n = _cat_clean_title(it.get("title") or "").strip(" -.:")
+            if _n:
+                it["title"] = _n
+        # WolfMax publica una entrada por calidad -> el mismo titulo salia tres
+        # veces seguidas. Se queda la primera, que es la mas reciente.
+        k = _wf_norm(it.get("title") or "")
+        if not k or k in vistos:
+            continue
+        vistos.add(k)
+        unicos.append(it)
+    return unicos[:limit]
+
+
+@app.get("/cathomemix")
+def cathomemix():
+    """Lo que el Inicio a\u00f1ade a DonTorrent. Va APARTE a proposito: la portada
+    se pinta con DonTorrent al instante, como siempre, y esto llega despues."""
+    kind = (request.args.get("kind") or "estrenos").strip().lower()
+    now = _t.time()
+    ent = _CATMIX_CACHE.get(kind)
+    if ent and (now - ent.get("ts", 0)) < _CATMIX_TTL:
+        return jsonify({"items": ent["items"], "cached": True})
+    items = []
+    try:
+        items += _wf_home_items(kind, 12)
+    except Exception:
+        pass
+    # DivxTotal con presupuesto corto: si tarda, el Inicio se queda como estaba
+    # (con DonTorrent y WolfMax) en vez de hacer esperar a nadie.
+    try:
+        items += (_bounded(lambda: _dx_browse_items(kind, 1), 6.0, []) or [])[:12]
+    except Exception:
+        pass
+    if not items:
+        return jsonify({"items": []})
+    # Mismo tope que el resto del Inicio: TMDB banea la IP de Render y no puede
+    # quedarse colgado ocupando uno de los 12 hilos.
+    items = _bounded(lambda: _cat_enrich(items, limit=24), 10.0,
+                     default=items) or items
+    _CATMIX_CACHE[kind] = {"items": items, "ts": now}
+    return jsonify({"items": items})
+
+
 @app.get("/catdump")
 def catdump():
     """Vuelca la cache ACTUAL de DonTorrent (claves kind:1) en formato semilla.
@@ -8666,7 +8770,11 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  var ctrl=(window.AbortController?new AbortController():null);var done=false;
  var to=setTimeout(function(){if(!done&&ctrl)ctrl.abort();},12000);
  function ensureGrid(){if(!g.querySelector('.grid')){g.className='';g.innerHTML='<div class="grid"></div>';}}
- function box(){if(kind==='estrenos'){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');}}
+ // El Inicio con las CUATRO fuentes. mixHome trae WolfMax y DivxTotal sin
+ // depender de ninguna caja (antes, con los Kodi apagados, la portada era solo
+ // DonTorrent); boxMerge sigue aportando EliteTorrent cuando hay Kodi despierto.
+ // Van DETRAS del pintado de DonTorrent: la primera pantalla no se retrasa.
+ function box(){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');mixHome(kind,g);}
  function retry(){g.className='msg';g.innerHTML='No se pudo cargar ahora. <a href="javascript:void(0)" onclick="chip(\''+kind+'\')">Reintentar</a>';}
  function fallback(){ // DonTorrent vacio/lento/caido: que el box (Estrenos) llene; si no, reintento
   LISTS.inicio=[];ensureGrid();box();
@@ -9010,6 +9118,15 @@ function dxMerge(list,g,q,seq,cb){
 // always=1 -> no exige código: el relay presta una caja viva del sistema. El
 // Inicio NO lo usa (lo carga todo el mundo al abrir: serían 2 trabajos de caja
 // por visita); la BÚSQUEDA sí, que es donde importa tener todas las fuentes.
+function mixHome(kind,g){
+ fetch('/cathomemix?kind='+encodeURIComponent(kind)).then(function(r){return r.json()})
+  .then(function(d){
+   if(INI.kind!==kind)return;                 // ya se cambio de pestana
+   var it=(d&&d.items)||[];
+   if(!it.length)return;
+   if(!g.querySelector('.grid')){g.className='';g.innerHTML='<div class="grid"></div>';}
+   mergeResults('inicio',g,it);               // dedup por titulo+año, como siempre
+  }).catch(function(){});}
 function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6&&!always){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  var _c=('AbortController'in window)?new AbortController():null;
