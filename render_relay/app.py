@@ -5247,6 +5247,7 @@ def catsearch():
         # cachea largo (TTL corto) para que el siguiente intento la resuelva.
         enr, _disok = _cat_disambiguate_years(enr, min(_dl, now + 10.5), box)
         items = _cat_rank_dedup(enr, q)   # dedup (titulo+año) + orden por relevancia
+        items = _agrupa_temporadas(items)  # 4 tarjetas de "X - Na Temporada" = 1 serie
         # ¿Falta el buscador de DonTorrent? Entonces esto es PARCIAL: el front
         # volvera a preguntar en unos segundos y para entonces el hilo de la caja
         # habra dejado su resultado en _DTQ.
@@ -5690,6 +5691,59 @@ def _wf_completa_partidas(items):
     unido = _une_series_partidas(list(items) + [x for x in extra
                                                 if x.get("kind") == "serie"])
     return [it for it in unido if it in items]
+
+
+# "Ted Lasso - 1a Temporada", "- 2a", "- 3a", "- 4a": cuatro tarjetas para UNA
+# serie. WolfMax sale de otra forma -una tarjeta con sus temporadas dentro, que
+# es como uno espera verlo- porque publica ficha por capitulo y el relay ya los
+# agrupa. DonTorrent, DivxTotal y EliteTorrent publican por temporada, asi que
+# la agrupacion hay que hacerla aqui.
+_TEMPORADA_RE = _re_dt.compile(
+    r"^(.+?)\s*[-\u2013:]?\s*(\d{1,2})\s*[\u00aa\u00ba\u00b0aeo]?\s*temporada\b.*$",
+    _re_dt.I)
+
+
+def _agrupa_temporadas(items):
+    """Junta las tarjetas por temporada de una misma serie en una sola.
+
+    La tarjeta resultante apunta a la PRIMERA temporada (por donde se empieza) y
+    lleva en `temps` de donde sacar los capitulos de cada una; el front las va
+    pidiendo por detras y las funde, asi salen las pestanas T1..T4.
+    Solo agrupa si hay DOS o mas: con una sola no hay nada que juntar y cambiar
+    el titulo seria alejarse de lo que publica la web original.
+    """
+    grupos, out = {}, []
+    for it in (items or []):
+        if (it or {}).get("kind") != "serie":
+            out.append(it)
+            continue
+        m = _TEMPORADA_RE.match((it.get("title") or "").strip())
+        base = (m.group(1).strip(" -\u2013:.") if m else "")
+        if not m or len(base) < 2:
+            out.append(it)
+            continue
+        k = ((it.get("source") or ""), _wf_norm(base))
+        g = grupos.get(k)
+        if g is None:
+            g = {"card": dict(it), "base": base, "temps": []}
+            grupos[k] = g
+            out.append(g["card"])          # el hueco se queda donde estaba
+        g["temps"].append({
+            "n": int(m.group(2)), "path": it.get("path") or "",
+            "url": it.get("url") or "", "content_id": it.get("content_id") or "",
+            "tabla": it.get("tabla") or "", "quality": it.get("quality") or ""})
+    for g in grupos.values():
+        card, temps = g["card"], g["temps"]
+        if len(temps) < 2:
+            continue                        # una sola temporada: se deja igual
+        temps.sort(key=lambda t: t["n"])
+        card["title"] = g["base"]
+        card["temps"] = temps
+        t0 = temps[0]                       # la tarjeta abre por la 1a temporada
+        for campo in ("path", "url", "content_id", "tabla"):
+            if t0.get(campo):
+                card[campo] = t0[campo]
+    return out
 
 
 def _une_series_partidas(items):
@@ -7365,6 +7419,12 @@ _CATMIX_CACHE = {}
 _CATMIX_TTL = 1800          # 30 min: una portada no cambia cada minuto
 
 
+def _zip_largo(a, b):
+    """Como zip pero sin tirar la cola de la lista mas larga."""
+    for i in range(max(len(a), len(b))):
+        yield (a[i] if i < len(a) else None, b[i] if i < len(b) else None)
+
+
 def _wf_home_items(kind, limit=12):
     """Lo ultimo de WolfMax segun el indice local. Cero red, milisegundos."""
     idx = _wfidx_load()
@@ -7430,17 +7490,25 @@ def cathomemix():
     ent = _CATMIX_CACHE.get(kind)
     if ent and (now - ent.get("ts", 0)) < _CATMIX_TTL:
         return jsonify({"items": ent["items"], "cached": True})
-    items = []
+    wf, dx = [], []
     try:
-        items += _wf_home_items(kind, 12)
+        wf = _wf_home_items(kind, 12)
     except Exception:
         pass
     # DivxTotal con presupuesto corto: si tarda, el Inicio se queda como estaba
     # (con DonTorrent y WolfMax) en vez de hacer esperar a nadie.
     try:
-        items += (_bounded(lambda: _dx_browse_items(kind, 1), 6.0, []) or [])[:12]
+        dx = (_bounded(lambda: _dx_browse_items(kind, 1), 6.0, []) or [])[:12]
     except Exception:
         pass
+    # Uno de cada, no doce de una y luego doce de la otra: asi las dos asoman
+    # arriba en vez de quedar una sepultada bajo la otra.
+    items = []
+    for a, b in _zip_largo(wf, dx):
+        if a is not None:
+            items.append(a)
+        if b is not None:
+            items.append(b)
     if not items:
         return jsonify({"items": []})
     # Mismo tope que el resto del Inicio: TMDB banea la IP de Render y no puede
@@ -9125,7 +9193,26 @@ function mixHome(kind,g){
    var it=(d&&d.items)||[];
    if(!it.length)return;
    if(!g.querySelector('.grid')){g.className='';g.innerHTML='<div class="grid"></div>';}
+   var antes=LISTS.inicio.length;
    mergeResults('inicio',g,it);               // dedup por titulo+año, como siempre
+   if(LISTS.inicio.length<=antes)return;      // no entro nada nuevo
+   // DonTorrent gana por goleada en cantidad, asi que si solo se anaden al
+   // final las otras tres no se ven jamas sin bajar del todo. Se reparten DOS
+   // de DonTorrent por cada una de las demas -> WolfMax y DivxTotal asoman ya
+   // en la primera pantalla sin dejar de mandar DonTorrent.
+   // Solo si sigues arriba: si ya estabas bajando, se quedan al final y no te
+   // movemos el suelo bajo el dedo.
+   if((window.scrollY||0)>200)return;
+   var base=[],extra=[];
+   LISTS.inicio.forEach(function(x){(x.source==='dt'?base:extra).push(x)});
+   if(!extra.length)return;
+   var out=[],i=0,j=0;
+   while(i<base.length||j<extra.length){
+    for(var n=0;n<2&&i<base.length;n++)out.push(base[i++]);
+    if(j<extra.length)out.push(extra[j++]);
+   }
+   LISTS.inicio=out;
+   renderGrid(g,'inicio');
   }).catch(function(){});}
 function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6&&!always){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
@@ -9888,6 +9975,7 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov
   // llega mas, se funde y la ficha se repinta sola; si no llega nada, se queda
   // lo que ya habia.
   completaFicha(x);
+  completaTemporadas(x);
   return;}
  // DT lleva el code -> si Render esta baneado por DonTorrent, el relay trae los
  // episodios por TU box (IP de casa). Sin code igualmente intenta directo.
@@ -9906,7 +9994,7 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov
    // tenia los capitulos y hay que cerrar la ficha entera.
    $('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a>'+
     (((x.alts||[]).length)?'<br><br>O prueba otra fuente aquí arriba ↑':'')+'</div>';return}
-  OVDATA={d:d,x:x};favLearnEps(x,eps);renderEpisodes();
+  OVDATA={d:d,x:x};favLearnEps(x,eps);renderEpisodes();completaTemporadas(x);
  }).catch(function(){clearTimeout(kill);
   if(x.epsAlt&&x.epsAlt.length){OVDATA={d:{title:x.title,episodes:x.epsAlt,poster:x.poster,
     year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,genres:x.genres},x:x};
@@ -9950,6 +10038,44 @@ function seguirViendo(){
 // Completa la ficha por detras con lo que tenga la caja (ver openSeries).
 // Solo para fuentes-box (WolfMax/EliteTorrent), que son las que publican una
 // ficha por capitulo y donde el indice se queda corto.
+// Una serie que la fuente publica POR TEMPORADAS llega en UNA tarjeta con su
+// lista `temps` (ver _agrupa_temporadas). La ficha abre con la primera, que es
+// la que ya se ha pedido, y aqui se van trayendo las demas POR DETRAS, de una
+// en una para no cargar al relay ni a la caja. Cada vez que llega una, la ficha
+// se repinta y aparece su pestana -> T1 T2 T3 T4, igual que en WolfMax.
+function completaTemporadas(x){
+ var t=(x&&x.temps)||[];if(t.length<2)return;
+ var src=x.source||'dt',cd=(code.value||'').replace(/\D/g,'');
+ // Lo ya cargado es la 1a temporada: si sus capitulos no dicen a que temporada
+ // pertenecen, se lo decimos nosotros (lo sabemos por la tarjeta) -> si no,
+ // caerian todos en el mismo saco y no habria pestanas.
+ try{((OVDATA&&OVDATA.d&&OVDATA.d.episodes)||[]).forEach(function(e){
+   if(!e.season)e.season=t[0].n})}catch(e){}
+ var i=1;
+ (function siguiente(){
+  if(i>=t.length)return;
+  var tp=t[i++];
+  var u=(src==='dt'&&tp.path)
+   ?('/catdetail?path='+encodeURIComponent(tp.path)+(cd.length===6?('&code='+cd):''))
+   :('/catboxeps?code='+cd+'&src='+src+'&url='+encodeURIComponent(tp.url||tp.content_id||'')+
+     '&t='+encodeURIComponent(x.title||''));
+  fetch(u).then(function(r){return r.json()}).then(function(d){
+   if(!OVDATA||OVDATA.x!==x)return;          // la ficha ya no esta abierta
+   var eps=(d&&d.episodes)||[];
+   if(eps.length){
+    eps.forEach(function(e){if(!e.season)e.season=tp.n});
+    var antes=(OVDATA.d.episodes||[]).length;
+    var union=mergeEps(OVDATA.d.episodes||[],eps);
+    if(union.length>antes){
+     OVDATA.d.episodes=union;
+     x.eps=slimEps(union);                   // y la tarjeta se lo queda
+     try{favLearnEps(x,union)}catch(e2){}
+     renderEpisodes();                       // repinta: sale la pestana nueva
+    }
+   }
+   siguiente();
+  }).catch(function(){siguiente()});
+ })();}
 var _COMPLETANDO='';
 function completaFicha(x){
  var src=x.source||'dt';
