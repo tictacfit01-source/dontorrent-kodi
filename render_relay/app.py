@@ -4987,7 +4987,7 @@ def catsearch():
         if cent:
             _CATSEARCH_CACHE[qkey] = cent
     if cent and (now - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
-        return jsonify({"items": cent["items"], "cached": True})
+        return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True})
     # --- Single-flight: si una busqueda IDENTICA ya se esta calculando en este
     # worker, NO lanzamos otro fan-out; esperamos su resultado y servimos la cache.
     # Mata la amplificacion de los reintentos del front (csTry hasta 6x) que era
@@ -5007,10 +5007,10 @@ def catsearch():
         _ev.wait(8.0)
         cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
         if cent and (_t.time() - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
-            return jsonify({"items": cent["items"], "cached": True})
+            return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True})
         if cent and cent.get("items"):
             # caducada pero utilizable: mejor lo de hace un rato que nada
-            return jsonify({"items": cent["items"], "cached": True,
+            return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True,
                             "stale": True, "partial": True})
         # El dueño aun no ha terminado. OJO: aqui se devolvia un 503 con el
         # cuerpo VACIO y eso REVIENTA el r.json() del navegador -> el front lo
@@ -5312,7 +5312,7 @@ def catdxsearch():
     cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
     if cent and (now - cent.get("ts", 0)) < cent.get("ttl", _CATSEARCH_TTL):
         _CATSEARCH_CACHE[qkey] = cent
-        return jsonify({"items": cent["items"], "cached": True})
+        return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True})
     items = _bounded(lambda: _dx_search_items(q), 8.0, []) or []
     if not items and _sapi_credits_ok() and qkey not in _DXBG:
         # FAILOVER anti-tarpit via ScraperAPI (IP residencial): Cloudflare
@@ -7343,7 +7343,7 @@ def catbrowse():
     dt_ent = _load(key, seed=True)
     # 1) DonTorrent FRESCO en cache -> al instante, sin tocar ninguna fuente.
     if dt_ent and (now - dt_ent.get("ts", 0)) < _CATBROWSE_TTL:
-        return jsonify({"items": dt_ent["items"], "cached": True, "src": "dt"})
+        return jsonify({"items": _agrupa_temporadas(dt_ent["items"]), "cached": True, "src": "dt"})
 
     # 2) Intentar REFRESCAR DonTorrent (directo; el box solo si no hay stale).
     #    Tope CORTO (4s) si ya hay DT-stale: no hacemos esperar al usuario -> si
@@ -7377,13 +7377,13 @@ def catbrowse():
         items = _bounded(lambda: _cat_enrich(items), 10.0, default=items)
         rec = {"items": items, "ts": now}
         _store(key, rec)
-        return jsonify({"items": items, "src": "dt"})
+        return jsonify({"items": _agrupa_temporadas(items), "src": "dt"})
 
     # 3) DonTorrent no disponible AHORA -> servir DonTorrent STALE (de hace un
     #    rato) ANTES que DivxTotal. La web original es DonTorrent y los listados
     #    cambian despacio -> DT viejo >> DX fresco. (Pedido explicito del usuario.)
     if dt_ent:
-        return jsonify({"items": dt_ent["items"], "stale": True, "src": "dt"})
+        return jsonify({"items": _agrupa_temporadas(dt_ent["items"]), "stale": True, "src": "dt"})
 
     # 4) Nunca hubo DonTorrent (ni cache, ni disco, ni semilla) -> DivxTotal como
     #    ULTIMO recurso, en su PROPIA clave para no pisar nunca una entrada DT.
@@ -7397,7 +7397,7 @@ def catbrowse():
                       "ts": now, "dx": True}
             _store(dxkey, dx_ent)
     if dx_ent:
-        return jsonify({"items": dx_ent["items"], "dx": True, "src": "dx"})
+        return jsonify({"items": _agrupa_temporadas(dx_ent["items"]), "dx": True, "src": "dx"})
     return jsonify({"items": []})
 
 
