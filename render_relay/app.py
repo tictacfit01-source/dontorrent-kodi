@@ -7513,14 +7513,28 @@ def cathomemix():
         return jsonify({"items": []})
     # Mismo tope que el resto del Inicio: TMDB banea la IP de Render y no puede
     # quedarse colgado ocupando uno de los 12 hilos.
+    # La caratula PROPIA, ya puesta: si TMDB casa el titulo la mejorara, pero si
+    # el enrich no llega a tiempo (tope de 10 s) el item salia con `thumb` y sin
+    # `poster`... y la tarjeta pinta `poster`. Resultado: WolfMax en gris en la
+    # portada aunque tuvieramos su imagen. Nunca dejar un item sin poster
+    # teniendo con que.
+    for _it in items:
+        if not _it.get("poster") and _it.get("thumb"):
+            _it["poster"] = _it["thumb"]
     items = _bounded(lambda: _cat_enrich(items, limit=24), 10.0,
                      default=items) or items
+    for _it in items:
+        if not _it.get("poster") and _it.get("thumb"):
+            _it["poster"] = _it["thumb"]
     # Si una fuente no contesto, NO guardamos media hora una portada coja: se
     # reintenta en 3 min. Media hora sin DivxTotal por un tropiezo de 6 s es
     # justo el fallo que no se ve -- la portada parece normal, solo que le
     # falta una fuente entera.
+    # Media portada en gris tampoco se guarda media hora (ver arriba).
+    _grises = sum(1 for _it in items if not _it.get("poster"))
+    _ok = bool(wf and dx) and _grises <= max(2, len(items) // 6)
     _CATMIX_CACHE[kind] = {"items": items, "ts": now,
-                           "ttl": _CATMIX_TTL if (wf and dx) else 180}
+                           "ttl": _CATMIX_TTL if _ok else 180}
     return jsonify({"items": items})
 
 
