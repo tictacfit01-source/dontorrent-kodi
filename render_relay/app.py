@@ -7488,7 +7488,7 @@ def cathomemix():
     kind = (request.args.get("kind") or "estrenos").strip().lower()
     now = _t.time()
     ent = _CATMIX_CACHE.get(kind)
-    if ent and (now - ent.get("ts", 0)) < _CATMIX_TTL:
+    if ent and (now - ent.get("ts", 0)) < ent.get("ttl", _CATMIX_TTL):
         return jsonify({"items": ent["items"], "cached": True})
     wf, dx = [], []
     try:
@@ -7515,7 +7515,12 @@ def cathomemix():
     # quedarse colgado ocupando uno de los 12 hilos.
     items = _bounded(lambda: _cat_enrich(items, limit=24), 10.0,
                      default=items) or items
-    _CATMIX_CACHE[kind] = {"items": items, "ts": now}
+    # Si una fuente no contesto, NO guardamos media hora una portada coja: se
+    # reintenta en 3 min. Media hora sin DivxTotal por un tropiezo de 6 s es
+    # justo el fallo que no se ve -- la portada parece normal, solo que le
+    # falta una fuente entera.
+    _CATMIX_CACHE[kind] = {"items": items, "ts": now,
+                           "ttl": _CATMIX_TTL if (wf and dx) else 180}
     return jsonify({"items": items})
 
 
