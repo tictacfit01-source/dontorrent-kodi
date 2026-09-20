@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl26"
+BUILD = "dtbl27"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7862,8 +7862,16 @@ def catbrowse():
                 for _it in mas:
                     if not _it.get("poster") and _it.get("thumb"):
                         _it["poster"] = _it["thumb"]
-                mas = _bounded(lambda: _cat_enrich(mas, limit=24), 6.0,
-                               default=mas) or mas
+                # El enriquecimiento con TMDB es un EXTRA aqui: estas tarjetas
+                # ya traen su caratula propia (el indice de WolfMax viaja con
+                # ellas desde el addon 2.9.67). Asi que se le da un momento y
+                # nada mas -- y si TMDB esta marcado caido, ni se intenta.
+                # Con 6 s de tope, bajar al final del Inicio costaba 6,6 s
+                # medidos en produccion, casi todo esperando a TMDB para no
+                # mejorar ninguna imagen.
+                if not _tmdb_is_down():
+                    mas = _bounded(lambda: _cat_enrich(mas, limit=24), 1.5,
+                                   default=mas) or mas
                 return _resp(mas, src="wf", mas=True)
         except Exception:
             pass
