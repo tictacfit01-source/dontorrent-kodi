@@ -23,7 +23,7 @@ import threading as _thr   # usado a nivel de modulo desde ~L1483 (_DT_BOX_SEM);
                            # cargar (NameError) y gunicorn no levanta -> relay 000.
 import requests
 import cloudscraper
-from urllib.parse import urlencode, quote as urlquote
+from urllib.parse import urlencode, quote as urlquote, unquote as _unquote
 from flask import Flask, request, Response, jsonify, send_file
 
 # La version que corre, EN UN SOLO SITIO. Estaba escrita a mano en tres
@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl28"
+BUILD = "dtbl29"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3676,6 +3676,48 @@ _POSTER_CDN = "https://image.tmdb.org/t/p/w500"
 _POSTER_RE = _re_dt.compile(r"(image\.tmdb\.org/t/p/)(w\d+|original)(/)")
 
 
+# QUE caratulas pueden ir por el CDN, y por que esto es una lista blanca y no
+# "todas las que no sean de TMDB". Comprobado el 20-09 cargando imagenes reales
+# desde el navegador del dueno:
+#   - WolfMax: directa 6,0-7,4 s (¡y una de cada ocho fallaba!), por el CDN
+#     648 ms. Va por CDN.
+#   - EliteTorrent: directa CARGA bien (160 px) y por el CDN **falla siempre**
+#     -- weserv no consigue descargar de elitetorrent.com. Se deja directa.
+#   - DonTorrent: ya venia por el CDN desde el parseo.
+# O sea que mandar todo al CDN habria ARREGLADO WolfMax y ROTO EliteTorrent.
+# Antes de anadir un dominio aqui: cargar una imagen suya de las dos maneras.
+_CDN_OK = _re_dt.compile(
+    r"^(?:https?://(?:[^/]*\.)?wolfmax4k\.com/|/relay\?u=)", _re_dt.I)
+
+
+def _img_cdn(u, w=500):
+    """Una imagen de una fuente, servida por un CDN que la encoge.
+
+    Las caratulas propias de WolfMax iban por `/relay?u=`, o sea que **el relay
+    descargaba cada imagen y la reenviaba**. Medido en produccion: 6,0-7,4 s
+    por caratula, con una de cada ocho fallando, mientras las de TMDB tardaban
+    milisegundos. Encima llegaban a 800-840 px para pintarlas a 167.
+    Por el mismo CDN que ya usa DonTorrent: **648 ms** y a 500 px. Y de paso el
+    relay se quita de encima el trabajo de proxear imagenes, que con una
+    cuadricula entera son decenas de peticiones que le comen hilos.
+    Si el CDN fallara, la web cae sola a la imagen original (ver imgFallo)."""
+    try:
+        if not u:
+            return None
+        if "weserv.nl" in u:
+            return u
+        u = u.strip()
+        if u.startswith("/relay?u="):          # las que iban por el proxy propio
+            u = _unquote(u[len("/relay?u="):])
+        if not u.startswith("http"):
+            return None                        # relativa: no sabemos de donde es
+        limpia = _re_dt.sub(r"^https?://", "", u)
+        return ("https://images.weserv.nl/?output=webp&w=%d&url=%s"
+                % (w, urlquote(limpia, safe="")))
+    except Exception:
+        return u
+
+
 def _poster_norm(u, tam="w500"):
     """Lleva cualquier caratula de TMDB al tamano que queremos servir.
 
@@ -3692,13 +3734,26 @@ def _poster_norm(u, tam="w500"):
 
 
 def _posters_norm(items, tam="w500"):
+    """Deja TODAS las caratulas listas para un movil, vengan de donde vengan.
+
+    Las de TMDB, al mismo tamano. Las PROPIAS de cada fuente, por el CDN -- y
+    esto no es solo por velocidad: las imagenes de EliteTorrent apuntan a
+    elitetorrent.com y las de WolfMax a wolfmax4k.com, **dominios que el ISP
+    bloquea en casa del dueno**, asi que su navegador no podia cargarlas y esas
+    tarjetas salian grises con el titulo en medio. Por el CDN se ven."""
     for it in (items or []):
         try:
             p = it.get("poster")
-            if p:
+            if not p:
+                continue
+            if "image.tmdb.org" in p:
                 n = _poster_norm(p, tam)
-                if n != p:
-                    it["poster"] = n
+            elif _CDN_OK.search(p):
+                n = _img_cdn(p)
+            else:
+                n = None        # se deja como esta: ver _CDN_OK
+            if n and n != p:
+                it["poster"] = n
         except Exception:
             pass
     return items
@@ -5947,7 +6002,7 @@ def _wf_idx_search(q, limit=40):
             _im = e.get("i") or ""
             out.append({"title": e.get("t") or "", "kind": kind, "source": "wf",
                         "url": url, "content_id": url,
-                        "thumb": ("/relay?u=" + urlquote(_im, safe="")) if _im else None,
+                        "thumb": _img_cdn(_im),
                         "quality": e.get("q") or _wf_quality_from_url(url),
                         "tabla": "wf"})
             if len(out) >= limit * 4:
@@ -6310,7 +6365,7 @@ def catetbox():
         s for s in srcs.split(",") if s)), q.lower())
     _hit = _catbox_get(ckey)
     if _hit is not None:
-        return jsonify({"items": _hit, "cached": True})
+        return jsonify({"items": _posters_norm(_hit), "cached": True})
     # WOLFMAX AL INSTANTE: si el indice local del relay tiene el titulo, se
     # responde sin cola, sin caja y sin red (ver _wf_idx_search). Si el indice
     # esta vacio (deploy reciente) se le pide a una caja y se sigue por el
@@ -6354,7 +6409,7 @@ def catetbox():
                 _idx = _bounded(lambda: _cat_enrich(_idx, limit=40), 6.0,
                                 default=_idx) or _idx
                 _catbox_put(ckey, _idx)
-                return jsonify({"items": _idx, "idx": True})
+                return jsonify({"items": _posters_norm(_idx), "idx": True})
         else:
             _wfidx_ask_box()
     box = _box_for(code)     # la suya si esta viva; si no, cualquier caja viva
@@ -6417,14 +6472,14 @@ def catetbox():
                 if not it.get("quality"):
                     it["quality"] = ql or _wf_quality_from_url(
                         it.get("url") or it.get("content_id"))
-            return jsonify({"items": _idx_respaldo, "idx": True})
+            return jsonify({"items": _posters_norm(_idx_respaldo), "idx": True})
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
     if request.args.get("raw") == "1":
         # DIAGNOSTICO: el dato TAL CUAL lo manda la caja, sin filtros ni enrich
         # (para ver como vienen las series de EliteTorrent/WolfMax y decidir si
         # se pueden agrupar en una tarjeta). No cachea: es una sonda manual.
-        return jsonify({"items": items, "raw": True})
+        return jsonify({"items": _posters_norm(items), "raw": True})
     # AL INDICE, EL DATO CRUDO. Debajo se agrupan los capitulos y se LIMPIA el
     # titulo ("Silo [4k 2160p][Cap.301]" -> "Silo"), y aprender eso envenenaba
     # el indice: las siguientes busquedas salian de ahi sin ningun "Cap." que
@@ -6462,7 +6517,7 @@ def catetbox():
     items = _wf_completa_partidas(_une_series_partidas(_wf_colapsa(items)))
     _catbox_put(ckey, items)
     _wfidx_learn(_wf_crudo)   # el CRUDO (ver arriba): la proxima vez va en 10ms
-    return jsonify({"items": items})
+    return jsonify({"items": _posters_norm(items)})
 
 
 @app.get("/catetboxresolve")
@@ -8068,7 +8123,7 @@ def _wf_home_items(kind, limit=12, salto=0):
             "title": e.get("t") or "",
             "kind": "serie" if (e.get("k") or "").startswith("tvshow") else "movie",
             "source": "wf", "url": url, "content_id": url,
-            "thumb": ("/relay?u=" + urlquote(_im, safe="")) if _im else None,
+            "thumb": _img_cdn(_im),
             "quality": e.get("q") or _wf_quality_from_url(url), "tabla": "wf"})
     # el mismo aseo que en la busqueda: quitar la calidad del titulo y juntar
     # los capitulos de una misma serie en UNA tarjeta.
@@ -10518,11 +10573,24 @@ function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')
 // tarjeta se quedaba en un rectangulo gris MUDO, sin decir siquiera que peli
 // era. Ahora cae al nombre, como ya hacia el mando clasico.
 function imgFallo(im){try{
+ // PLAN B antes de rendirse: las caratulas propias de las fuentes van por un
+ // CDN que las encoge (rapido), pero si ese CDN falla todavia tenemos la
+ // imagen original. Una sola vez, y luego ya si el titulo.
+ var alt=im.getAttribute('data-alt');
+ if(alt&&!im.getAttribute('data-alt-usado')){
+  im.setAttribute('data-alt-usado','1');im.src=alt;return;}
  im.style.display='none';var p=im.parentNode;if(!p||p.querySelector('.noimg'))return;
  var d=document.createElement('div');d.className='noimg';d.textContent=im.getAttribute('data-t')||'';
  p.appendChild(d);}catch(e){}}
+// De la URL del CDN se saca la original, que es lo que va en data-alt.
+function imgOrig(u){try{
+ if(!u||u.indexOf('weserv.nl')<0)return '';
+ var i=u.indexOf('url=');if(i<0)return '';
+ var o=decodeURIComponent(u.slice(i+4));
+ return (o.indexOf('http')===0?o:('https://'+o));}catch(e){return ''}}
 function cardHTML(x,list,i){
- var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" data-t="'+esc(x.title)+'" onerror="imgFallo(this)" src="'+esc(x.poster)+'">'):'';
+ var _alt=imgOrig(x.poster);
+ var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" data-t="'+esc(x.title)+'"'+(_alt?(' data-alt="'+esc(_alt)+'"'):'')+' onerror="imgFallo(this)" src="'+esc(x.poster)+'">'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
  var q='<div class="tl">'+(x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'')+'</div>';
  // Las series de EliteTorrent/WolfMax llegan agrupadas con sus capítulos
