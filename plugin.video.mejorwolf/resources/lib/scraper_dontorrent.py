@@ -1135,7 +1135,80 @@ def _render_search(query):
     return []
 
 
+# Se pone a True cuando una estrategia recibe una pagina de resultados de
+# verdad (HTTP 200, sin reto de Anubis). Si la web contesto y aun asi no habia
+# nada, el problema NO es el transporte sino COMO esta escrito el termino: no
+# tiene sentido seguir probando caminos de red, hay que cambiar la consulta.
+# Va POR HILO: el addon resuelve cada fuente en el suyo y dos busquedas a la
+# vez se pisarian la senal (una acabaria saltandose un camino de red que si
+# necesitaba, y eso no da error: solo devuelve menos resultados).
+import threading as _thr_dt
+
+_WEB_LOCAL = _thr_dt.local()
+
+
+class _WebContesto(object):
+    def __getitem__(self, i):
+        return getattr(_WEB_LOCAL, "ok", False)
+
+    def __setitem__(self, i, v):
+        _WEB_LOCAL.ok = bool(v)
+
+
+_WEB_CONTESTO = _WebContesto()
+
+
+def _variantes_query(q):
+    """Como hay que escribirle a DonTorrent para que encuentre lo mismo.
+
+    Su buscador es LITERAL: los guiones cuentan. Medido contra la web real el
+    20-09-2026 con el dominio vigente:
+        "x men"  ->  0 fichas
+        "x-men"  -> 10 fichas (entre ellas X-Men-4K, la original)
+        "xmen"   ->  0 fichas
+    Asi que quien escribe "x men" en el movil no encuentra NINGUNA pelicula de
+    X-Men, aunque DonTorrent las tenga todas. Lo mismo con Spider-Man, Wall-E o
+    cualquier titulo con guion. Estas son las otras formas de escribir lo mismo,
+    en orden, y solo se prueban si la primera vuelve vacia."""
+    q = (q or "").strip()
+    out = []
+    if " " in q:
+        out.append(q.replace(" ", "-"))         # "x men"  -> "x-men"
+    if "-" in q:
+        out.append(q.replace("-", " "))         # "x-men"  -> "x men"
+        out.append(q.replace("-", ""))          # "x-men"  -> "xmen"
+    vistas, limpias = {q.lower()}, []
+    for v in out:
+        if v and v.lower() not in vistas:
+            vistas.add(v.lower())
+            limpias.append(v)
+    return limpias[:2]                          # dos intentos como mucho
+
+
 def search(query):
+    """Busca en DonTorrent probando tambien como lo escribe SU buscador.
+
+    `_search_una` hace el trabajo de siempre; esto solo se encarga de que un
+    guion de mas o de menos no deje al usuario sin resultados."""
+    _WEB_CONTESTO[0] = False
+    items = _search_una(query)
+    if items:
+        return items
+    # Si la web contesto, los reintentos van RAPIDOS (sin el Worker, que para
+    # el POST de busqueda no sirve -- el reto de Anubis va atado a la IP y
+    # siempre responde el challenge; son ~20 s tirados en cada intento).
+    rapido = _WEB_CONTESTO[0]
+    for alt in _variantes_query(query):
+        _LOG("search: sin resultados con %r, probando %r (rapido=%s)"
+             % (query, alt, rapido))
+        items = _search_una(alt, rapido=rapido)
+        if items:
+            _LOG("search: %r -> %d items" % (alt, len(items)))
+            return items
+    return []
+
+
+def _search_una(query, rapido=False):
     """Busca en DonTorrent con multiples estrategias.
 
     Orden de prioridad:
@@ -1147,8 +1220,11 @@ def search(query):
     _LOG(f"search: {query}")
 
     # ── Estrategia 0: Render relay (Anubis solver server-side) ───────
+    # En modo rapido se salta: si la web ya nos ha contestado desde aqui, pedir
+    # lo mismo al relay -cuya IP lleva baneada por DonTorrent desde siempre- es
+    # esperar 20 s para nada. Era casi todo lo que tardaba reintentar.
     try:
-        items = _render_search(query)
+        items = [] if rapido else _render_search(query)
         if items:
             _LOG(f"search Render relay -> {len(items)} items")
             return items
@@ -1163,6 +1239,7 @@ def search(query):
         r = _doh_fetch("POST", search_url, data=form_data)
         _LOG(f"search DoH POST: HTTP {r.status_code} len={len(r.text)}")
         if not anubis.is_anubis(r.text):
+            _WEB_CONTESTO[0] = True
             soup = BeautifulSoup(r.text, "html.parser")
             items = _parse_items(soup, r.url)
             _LOG(f"search DoH POST -> {len(items)} items")
@@ -1187,6 +1264,7 @@ def search(query):
                 if not anubis.is_anubis(r.text):
                     r = _direct_post(search_url, data=form_data)
             if not anubis.is_anubis(r.text):
+                _WEB_CONTESTO[0] = True
                 soup = BeautifulSoup(r.text, "html.parser")
                 items = _parse_items(soup, r.url)
                 _LOG(f"search direct POST -> {len(items)} items")
@@ -1200,6 +1278,13 @@ def search(query):
     # ── Estrategia 3: Worker /dtsearch ─────────────────────────────
     # El Worker resuelve Anubis + hace POST /buscar en UNA invocación
     # (misma IP de salida). Funciona incluso con ISP que bloquea.
+    # Tambien se salta cuando la web YA HA CONTESTADO en este mismo intento:
+    # si /buscar devolvio su pagina de resultados y no habia nada, el Worker va
+    # a preguntar exactamente lo mismo y va a recibir lo mismo (cuando no el
+    # reto de Anubis). Eran ~20 s de espera por cada busqueda sin resultados.
+    if rapido or _WEB_CONTESTO[0]:
+        _LOG("search: salto el Worker (la web ya contesto; era cosa del termino)")
+        return []
     try:
         items = _worker_search(query)
         _LOG(f"search Worker /dtsearch -> {len(items)} items")
