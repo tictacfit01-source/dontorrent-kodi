@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl29"
+BUILD = "dtbl30"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3733,6 +3733,82 @@ def _poster_norm(u, tam="w500"):
     return u
 
 
+# === La caratula que ya tenemos en otro sitio ==============================
+# Una serie puede llegar SIN imagen de su fuente (el indice de WolfMax no
+# siempre la trae) y con TMDB baneando a Render la mitad del tiempo. Pero esa
+# misma serie SI tiene caratula en otra tarjeta: la version de DonTorrent, una
+# busqueda de ayer, el Inicio de esta manana. Esto la recuerda por titulo y se
+# la presta al que no tiene. Es lo que hace que "Silo" o "Chad Powers" dejen de
+# salir en gris con el nombre en medio.
+_PTIT = {}
+_PTIT_FILE = "/tmp/mw_ptit.json"
+_PTIT_MAX = 5000
+_PTIT_SUCIO = [0]
+
+
+def _ptit_key(it):
+    t = _et_norm(it.get("title") or "")
+    if not t or len(t) < 2:
+        return None
+    return t + "|" + ("serie" if (it.get("kind") == "serie") else "movie")
+
+
+def _ptit_load():
+    if _PTIT:
+        return _PTIT
+    try:
+        with open(_PTIT_FILE, "r", encoding="utf-8") as f:
+            _PTIT.update(_json.load(f) or {})
+    except Exception:
+        pass
+    return _PTIT
+
+
+def _ptit_save():
+    try:
+        d = _PTIT
+        if len(d) > _PTIT_MAX:            # poda: deja los mas recientes
+            for k in list(d)[:len(d) - _PTIT_MAX]:
+                d.pop(k, None)
+        tmp = _PTIT_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _PTIT_FILE)
+        _PTIT_SUCIO[0] = 0
+    except Exception:
+        pass
+
+
+def _ptit_mezcla(items):
+    """Aprende las caratulas buenas y se las presta a las que no tienen.
+
+    Se queda con la de TMDB por encima de la propia de la fuente: es la que
+    mejor se ve y la que menos cambia. Y nunca pisa lo que un item ya trae."""
+    try:
+        d = _ptit_load()
+        for it in (items or []):
+            k = _ptit_key(it)
+            if not k:
+                continue
+            p = it.get("poster")
+            if p:
+                viejo = d.get(k)
+                mejor = ("image.tmdb.org" in p) or not viejo or (
+                    "image.tmdb.org" not in viejo)
+                if mejor and viejo != p:
+                    d[k] = p
+                    _PTIT_SUCIO[0] += 1
+            else:
+                prestada = d.get(k)
+                if prestada:
+                    it["poster"] = prestada
+        if _PTIT_SUCIO[0] >= 25:
+            _ptit_save()
+    except Exception:
+        pass
+    return items
+
+
 def _posters_norm(items, tam="w500"):
     """Deja TODAS las caratulas listas para un movil, vengan de donde vengan.
 
@@ -3756,7 +3832,7 @@ def _posters_norm(items, tam="w500"):
                 it["poster"] = n
         except Exception:
             pass
-    return items
+    return _ptit_mezcla(items)
 
 
 _CAT_TMDB_CACHE = {}       # (kind, titulo, año) -> {"m": meta, "ts": ...}

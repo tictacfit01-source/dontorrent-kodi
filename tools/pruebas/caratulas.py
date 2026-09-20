@@ -88,6 +88,42 @@ for prohibido in ("temps", "eps", "path", "url", "content_id", "source", "qualit
 if "poster" not in campos:
     fallos.append("upgrade() no hereda el poster en la rama del perdedor")
 
+print("\n=== LA CARATULA QUE YA TENEMOS EN OTRO SITIO ===")
+A._PTIT.clear()
+A._posters_norm([{"title": "Silo", "kind": "serie", "source": "dt", "poster": POS}])
+b = [{"title": "Silo", "kind": "serie", "source": "wf", "poster": None}]
+A._posters_norm(b)
+print("   una serie sin imagen se queda la de otra fuente:",
+      (b[0]["poster"] or "NO")[-12:])
+if not b[0]["poster"]:
+    fallos.append("no se presto la caratula entre fuentes")
+
+c = [{"title": "Silo", "kind": "movie", "source": "dx", "poster": None}]
+A._posters_norm(c)
+print("   pero una PELICULA no se queda la de una SERIE:",
+      c[0]["poster"] or "correcto, sin caratula")
+if c[0]["poster"]:
+    fallos.append("se presto entre pelicula y serie del mismo nombre")
+
+d = [{"title": "Silo", "kind": "serie", "source": "et", "poster": "https://suya.jpg"}]
+A._posters_norm(d)
+print("   y nunca pisa la que ya trae:", d[0]["poster"])
+if d[0]["poster"] != "https://suya.jpg":
+    fallos.append("piso una caratula que el item ya traia")
+
+print("\n=== AL CDN SOLO LO QUE FUNCIONA POR CDN ===")
+for u, debe, quien in [
+        ("https://wolfmax4k.com/a.jpg", True, "WolfMax (directo tarda 6 s)"),
+        ("https://www.elitetorrent.com/b.jpg", False, "EliteTorrent (el CDN no puede)"),
+        ("https://images.weserv.nl/?url=x", False, "DonTorrent (ya iba por CDN)")]:
+    it = [{"title": "zz" + quien, "kind": "movie", "poster": u}]
+    A._posters_norm(it)
+    fue = ("weserv" in (it[0]["poster"] or "")) and (u != it[0]["poster"])
+    ok = (fue == debe)
+    print(("   ok  " if ok else "   MAL ") + quien)
+    if not ok:
+        fallos.append("CDN mal aplicado a " + quien)
+
 print("\n---- VEREDICTO ----")
 if fallos:
     for f in fallos:
