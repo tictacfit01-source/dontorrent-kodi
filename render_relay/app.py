@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl30"
+BUILD = "dtbl31"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3898,6 +3898,31 @@ def _tmdb_mark(ok):
     _TMDB_DOWN_UNTIL[0] = 0.0 if ok else (_t.time() + _TMDB_DOWN_COOLDOWN)
 
 
+# Sin "i", sin "x" y SIN "v": "X-Men" no puede volverse "10-Men", y la uve
+# suele ser "versus" ("Alien v Depredador") o parte del titulo ("V de
+# Vendetta"), no un cinco. Se pierde "Rocky V", que es raro; se evita convertir
+# media filmoteca en numeros, que no lo es.
+_ROMANOS = {"ii": "2", "iii": "3", "iv": "4", "vi": "6",
+            "vii": "7", "viii": "8", "ix": "9"}
+
+
+def _romanos_a_numeros(n):
+    """'x men ii' -> 'x men 2'. Solo palabras sueltas y solo II..IX."""
+    try:
+        partes = (n or "").split()
+        if not partes:
+            return n
+        hay = False
+        for i, p in enumerate(partes):
+            r = _ROMANOS.get(p)
+            if r:
+                partes[i] = r
+                hay = True
+        return " ".join(partes) if hay else n
+    except Exception:
+        return n
+
+
 def _tmdb_pick(results, clean, year, ep):
     """Elige el MEJOR resultado de la MISMA respuesta de TMDB (sin llamadas extra
     -> cero riesgo de baneo). Antes se cogia res[0] a ciegas: TMDB prioriza el
@@ -3911,7 +3936,22 @@ def _tmdb_pick(results, clean, year, ep):
     def _names(it):
         vals = (it.get("title"), it.get("name"),
                 it.get("original_title"), it.get("original_name"))
-        return [_et_norm(v) for v in vals if v]
+        fuera = []
+        for v in vals:
+            if not v:
+                continue
+            n = _et_norm(v)
+            if n and n not in fuera:
+                fuera.append(n)
+            # Las secuelas: TMDB las titula en ROMANO ("X-Men II") y las fuentes
+            # en arabigo ("X-Men 2"), asi que no casaban y la pelicula se
+            # quedaba sin ficha (o peor, se enganchaba a otra). Se anade la
+            # variante para COMPARAR, no para mostrar. Ni "I" ni "X" entran:
+            # "X-Men" no puede convertirse en "10-Men".
+            r = _romanos_a_numeros(n)
+            if r and r != n and r not in fuera:
+                fuera.append(r)
+        return fuera
 
     def _year_of(it):
         d = it.get("release_date") or it.get("first_air_date") or ""
@@ -3959,8 +3999,25 @@ def _tmdb_pick(results, clean, year, ep):
         s *= f
         return s
 
+    # EL TITULO EXACTO, CUANDO LA PELICULA ESTA ASENTADA, MANDA.
+    # `popularity` de TMDB es la tendencia de ESTA semana, no "cual buscan": la
+    # X-Men de 2000 tiene popularity 1,3 y la de 2014 (Dias del futuro pasado)
+    # 36,9. Multiplicar por 2,5 el titulo exacto no compensaba eso ni de lejos,
+    # asi que buscar "X-Men" daba la caratula, el año y la nota de la secuela.
+    # Los VOTOS si dicen si una pelicula esta asentada (X-Men 2000: 12.533), y
+    # son los que separan este caso del de 'Profanacion': ahi la del titulo
+    # exacto es de 1934 y casi no tiene votos, y debe seguir ganando la del
+    # Departamento Q. Un estreno con titulo exacto tampoco entra aqui (pocos
+    # votos es lo normal recien salido): para ese ya esta la excepcion de
+    # arriba, que lo favorece dentro del criterio de siempre.
     try:
-        return max(results, key=_score)
+        exactos = [it for it in results
+                   if nq and nq in _names(it)
+                   and float(it.get("vote_count") or 0) >= 300]
+    except Exception:
+        exactos = []
+    try:
+        return max(exactos or results, key=_score)
     except Exception:
         return results[0]
 
