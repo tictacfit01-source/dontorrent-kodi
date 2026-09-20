@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl23"
+BUILD = "dtbl24"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4265,18 +4265,50 @@ def _dt_mutila(s):
 # no puede tener mas de _ENR_MAX hilos, y la cola no puede crecer sin freno.
 _ENR_MAX = 8                 # hilos de enriquecimiento en TODO el worker
 _ENR_COLA_MAX = 32           # tareas en vuelo; pasado esto no se encola mas
+_ENR_ATASCO_S = 120.0        # sin que termine ni una y con todo ocupado
 _ENR_POOL = [None]
 _ENR_LOCK = _thr.Lock()
 _ENR_VUELO = [0]
-_ENR_STATS = {"encoladas": 0, "sin_hueco": 0, "a_tiempo": 0, "tarde": 0}
+_ENR_GEN = [0]               # sube al estrenar pool (ver _enr_pool)
+_ENR_ULT_OK = [0.0]          # cuando termino la ultima tarea
+_ENR_STATS = {"encoladas": 0, "sin_hueco": 0, "a_tiempo": 0, "tarde": 0,
+              "pools": 0}
 
 
 def _enr_pool():
+    """El pool del enriquecimiento, y la valvula para cuando se atasca.
+
+    Hace falta porque en Python un hilo no se puede matar: si las ocho plazas
+    se llenan de peticiones a TMDB que gotean (que es lo que hace cuando nos
+    banea), el pool se queda inservible PARA SIEMPRE y este worker deja de
+    enriquecer hasta que alguien lo releve -- las tarjetas saldrian con la
+    caratula de la fuente y sin nota ni año el resto del dia.
+    Si lleva `_ENR_ATASCO_S` sin que termine ni una tarea y no queda plaza, se
+    estrena pool: los hilos viejos quedan huerfanos goteando (ya no hay nada
+    que hacer con ellos) pero el servicio recupera su capacidad, y si se
+    acumulan demasiados el vigilante releva el worker, que es la salida buena.
+    Cada tarea recuerda SU generacion y solo descuenta si sigue siendo la suya:
+    sin eso, las del pool viejo descontarian del nuevo y el tope dejaria de
+    existir justo cuando hace falta (misma leccion que _bounded, dtbl07)."""
+    from concurrent.futures import ThreadPoolExecutor as _TPE2
     with _ENR_LOCK:
+        ahora = _t.time()
         if _ENR_POOL[0] is None:
-            from concurrent.futures import ThreadPoolExecutor as _TPE2
             _ENR_POOL[0] = _TPE2(max_workers=_ENR_MAX, thread_name_prefix="enr")
-        return _ENR_POOL[0]
+            _ENR_ULT_OK[0] = ahora
+        elif (_ENR_VUELO[0] >= _ENR_MAX
+              and (ahora - _ENR_ULT_OK[0]) > _ENR_ATASCO_S):
+            _ENR_GEN[0] += 1
+            _ENR_STATS["pools"] += 1
+            _ENR_VUELO[0] = 0
+            _ENR_ULT_OK[0] = ahora
+            try:
+                _ENR_POOL[0].shutdown(wait=False)
+            except Exception:
+                pass
+            _ENR_POOL[0] = _TPE2(max_workers=_ENR_MAX, thread_name_prefix="enr")
+            print("[enr] pool atascado: estreno uno nuevo", flush=True)
+        return _ENR_POOL[0], _ENR_GEN[0]
 
 
 def _enr_map(fn, items, tope_s):
@@ -4290,7 +4322,7 @@ def _enr_map(fn, items, tope_s):
     if not items:
         return 0
     from concurrent.futures import wait as _cfwait
-    ex = _enr_pool()
+    ex, gen = _enr_pool()
     futs = []
     for it in items:
         with _ENR_LOCK:
@@ -4300,17 +4332,20 @@ def _enr_map(fn, items, tope_s):
             _ENR_VUELO[0] += 1
             _ENR_STATS["encoladas"] += 1
 
-        def _uno(_it=it):
+        def _uno(_it=it, _gen=gen):
             try:
                 return fn(_it)
             finally:
                 with _ENR_LOCK:
-                    _ENR_VUELO[0] -= 1
+                    _ENR_ULT_OK[0] = _t.time()
+                    if _gen == _ENR_GEN[0]:
+                        _ENR_VUELO[0] -= 1
         try:
             futs.append(ex.submit(_uno))
         except Exception:
             with _ENR_LOCK:
-                _ENR_VUELO[0] -= 1
+                if gen == _ENR_GEN[0]:
+                    _ENR_VUELO[0] -= 1
             break
     if not futs:
         return 0
@@ -4320,7 +4355,17 @@ def _enr_map(fn, items, tope_s):
         return 0
     for f in pendientes:
         try:
-            f.cancel()
+            # OJO: una tarea cancelada NO ejecuta su funcion, asi que su
+            # `finally` -el que descuenta de _ENR_VUELO- no corre nunca. Sin
+            # esta linea el contador solo sube: medido en produccion a los 9
+            # minutos de desplegar, `vuelo: 32` con ocho hilos y todo
+            # enriquecimiento nuevo rechazado por "cola llena". O sea, el
+            # enriquecimiento del worker se apagaba solo y las tarjetas se
+            # quedaban con la caratula de la fuente y sin nota ni año.
+            if f.cancel():
+                with _ENR_LOCK:
+                    if gen == _ENR_GEN[0]:
+                        _ENR_VUELO[0] -= 1
         except Exception:
             pass
     _ENR_STATS["a_tiempo"] += len(hechos)
