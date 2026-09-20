@@ -26,6 +26,13 @@ import cloudscraper
 from urllib.parse import urlencode, quote as urlquote
 from flask import Flask, request, Response, jsonify, send_file
 
+# La version que corre, EN UN SOLO SITIO. Estaba escrita a mano en tres
+# (/ping, /catdiag, /catmem) y llevaba desde dtbl14 sin actualizarse mientras el
+# codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
+# lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
+# aqui en cada despliegue.
+BUILD = "dtbl22"
+
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
 # cualquier tamano y Flask lo carga entero en memoria (512 MB en el plan free,
@@ -358,7 +365,7 @@ def root():
 @app.get("/ping")
 def ping():
     return Response("MejorWolf relay OK. ScraperAPI=" +
-                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=dtbl14",
+                    ("ON" if SCRAPERAPI_KEY else "OFF") + " build=" + BUILD,
                     mimetype="text/plain")
 
 
@@ -2255,7 +2262,20 @@ def _dx_norm(s):
 
 
 def _dx_relevance(items, q):
-    """Quita ruido: titulos con TODAS las palabras > con ALGUNA (como el box)."""
+    """Quita ruido: titulos con TODAS las palabras > con ALGUNA (como el box).
+
+    El corte fino lo hace `_q_relevant`, el MISMO que usan las fuentes-box, para
+    que una busqueda no se comporte distinto segun de donde venga cada tarjeta
+    (con su propio criterio, DivxTotal era la unica que no encontraba "X-Men"
+    escribiendo "xmen")."""
+    if not (q or "").strip():
+        return items
+    full = [it for it in items if _q_relevant(it.get("title", ""), q)]
+    if full:
+        return full
+    # Red de seguridad: si el corte estricto deja la busqueda VACIA, mejor
+    # ensenar lo que comparta alguna palabra que decirle al usuario que su
+    # pelicula no existe (norma del proyecto: reflejo de lo que da la web).
     toks = [t for t in _dx_norm(q).split() if len(t) > 1 and t not in _DX_STOP]
     if not toks:
         return items
@@ -2263,8 +2283,7 @@ def _dx_relevance(items, q):
     def score(it):
         words = set(_dx_norm(it.get("title", "")).split())
         return sum(1 for t in toks if t in words)
-    full = [it for it in items if score(it) == len(toks)]
-    return full or [it for it in items if score(it) >= 1]
+    return [it for it in items if score(it) >= 1]
 
 
 def _dx_parse_items(html, dom):
@@ -3644,6 +3663,47 @@ try:
                                               pool_maxsize=16))
 except Exception:
     pass
+# EL TAMAnO DE LAS CARATULAS, EN UN SOLO SITIO.
+# Estaban en w342, que a dos columnas en un movil moderno (167-200 px de CSS
+# con pantalla de 2x o 3x = 340-600 px reales) se ve BLANDA. Y encima no era
+# coherente: las tarjetas de DonTorrent las enriquece el addon, que pide w780,
+# asi que en la MISMA cuadricula convivian unas nitidas y otras no -- que es
+# exactamente lo que se nota como "las caratulas fallan".
+# w500 es el punto justo: cubre el 3x de los moviles grandes y pesa la mitad
+# que w780 (importa: el plan de Render trae 5 GB de trafico al mes y ya se
+# agotaron una vez). Para la ficha y el zoom se sube a w780 (_POSTER_GRANDE).
+_POSTER_CDN = "https://image.tmdb.org/t/p/w500"
+_POSTER_RE = _re_dt.compile(r"(image\.tmdb\.org/t/p/)(w\d+|original)(/)")
+
+
+def _poster_norm(u, tam="w500"):
+    """Lleva cualquier caratula de TMDB al tamano que queremos servir.
+
+    Hace falta al SERVIR y no solo al crear: las caches (memoria, /tmp, la
+    semilla del repo, los favoritos del movil) estan llenas de w342 y w780 de
+    antes, y esas copias no se curan solas. Es la leccion de siempre aqui: el
+    dato degradado se propaga y sobrevive a arreglar el sitio donde nacio."""
+    try:
+        if u and "image.tmdb.org" in u:
+            return _POSTER_RE.sub(r"\g<1>" + tam + r"\g<3>", u)
+    except Exception:
+        pass
+    return u
+
+
+def _posters_norm(items, tam="w500"):
+    for it in (items or []):
+        try:
+            p = it.get("poster")
+            if p:
+                n = _poster_norm(p, tam)
+                if n != p:
+                    it["poster"] = n
+        except Exception:
+            pass
+    return items
+
+
 _CAT_TMDB_CACHE = {}       # (kind, titulo, año) -> {"m": meta, "ts": ...}
 _CAT_TMDB_MAX = 3000       # tope de titulos en memoria (Render 512MB)
 _CAT_TMDB_NULL_TTL = 600   # los SIN poster caducan a los 10 min: antes un titulo
@@ -3873,7 +3933,7 @@ def _cat_tmdb(title, kind="movie"):
                     gids = top.get("genre_ids") or []
                     # overview/backdrop/generos/id vienen GRATIS en esta MISMA
                     # respuesta de busqueda -> 0 llamadas extra, 0 riesgo de baneo.
-                    out = {"poster": (f"https://image.tmdb.org/t/p/w342{pp}" if pp else None),
+                    out = {"poster": (_POSTER_CDN + pp if pp else None),
                            "year": d[:4] or year, "rating": top.get("vote_average"),
                            # El titulo viene GRATIS aqui y sirve para restaurar
                            # las tildes que DonTorrent no publica (ver _dt_mutila).
@@ -4125,7 +4185,7 @@ def _cat_parse_items(html):
             thumb = im.group(1)
             if thumb.startswith("//"):
                 thumb = "https:" + thumb
-            thumb = _re_dt.sub(r"w=\d+&h=\d+", "w=342&h=513", thumb)
+            thumb = _re_dt.sub(r"w=\d+&h=\d+", "w=500&h=750", thumb)
         key = (kind, cid)
         path = (f"/serie/{cid}{rest}" if (kind == "serie" and rest) else None)
         # Ruta de la FICHA (con slug) para TODOS los tipos -> hace falta para leer el
@@ -4195,6 +4255,79 @@ def _dt_mutila(s):
     return "".join(out)
 
 
+# === El pool del ENRIQUECIMIENTO (tope duro de hilos) ======================
+# El enriquecimiento (pedir a TMDB el poster, la nota y el año de cada titulo)
+# es lo que mas hilos deja colgados en este proyecto: TMDB banea la IP de
+# Render y el timeout de requests es ENTRE BYTES, asi que una respuesta que
+# gotea retiene su hilo para siempre. Antes cada llamada creaba su propio pool
+# de 8 -> N llamadas a la vez = 8N hilos que nadie contaba ni acotaba.
+# Ahora hay UN pool para todo el proceso: pase lo que pase, el enriquecimiento
+# no puede tener mas de _ENR_MAX hilos, y la cola no puede crecer sin freno.
+_ENR_MAX = 8                 # hilos de enriquecimiento en TODO el worker
+_ENR_COLA_MAX = 32           # tareas en vuelo; pasado esto no se encola mas
+_ENR_POOL = [None]
+_ENR_LOCK = _thr.Lock()
+_ENR_VUELO = [0]
+_ENR_STATS = {"encoladas": 0, "sin_hueco": 0, "a_tiempo": 0, "tarde": 0}
+
+
+def _enr_pool():
+    with _ENR_LOCK:
+        if _ENR_POOL[0] is None:
+            from concurrent.futures import ThreadPoolExecutor as _TPE2
+            _ENR_POOL[0] = _TPE2(max_workers=_ENR_MAX, thread_name_prefix="enr")
+        return _ENR_POOL[0]
+
+
+def _enr_map(fn, items, tope_s):
+    """Aplica fn a cada item en paralelo SIN esperar a los que se cuelguen.
+
+    Devuelve cuantos terminaron a tiempo. Los que no, siguen por su cuenta (en
+    Python un hilo no se puede matar) pero ni retienen la peticion ni pueden
+    multiplicarse: el pool es unico y acotado. Los que ni siquiera habian
+    empezado se CANCELAN -- gastar una llamada a TMDB para un resultado que ya
+    nadie espera es pedir el baneo para nada."""
+    if not items:
+        return 0
+    from concurrent.futures import wait as _cfwait
+    ex = _enr_pool()
+    futs = []
+    for it in items:
+        with _ENR_LOCK:
+            if _ENR_VUELO[0] >= _ENR_COLA_MAX:
+                _ENR_STATS["sin_hueco"] += 1
+                break              # saturado: el resto va sin enriquecer
+            _ENR_VUELO[0] += 1
+            _ENR_STATS["encoladas"] += 1
+
+        def _uno(_it=it):
+            try:
+                return fn(_it)
+            finally:
+                with _ENR_LOCK:
+                    _ENR_VUELO[0] -= 1
+        try:
+            futs.append(ex.submit(_uno))
+        except Exception:
+            with _ENR_LOCK:
+                _ENR_VUELO[0] -= 1
+            break
+    if not futs:
+        return 0
+    try:
+        hechos, pendientes = _cfwait(futs, timeout=max(0.5, float(tope_s)))
+    except Exception:
+        return 0
+    for f in pendientes:
+        try:
+            f.cancel()
+        except Exception:
+            pass
+    _ENR_STATS["a_tiempo"] += len(hechos)
+    _ENR_STATS["tarde"] += len(pendientes)
+    return len(hechos)
+
+
 def _cat_enrich(items, limit=120):
     # NO descartamos resultados: la busqueda debe volcar TODO lo que da la web
     # original (DonTorrent puede traer 49+ en "batman"). Enriquecemos con TMDB
@@ -4240,7 +4373,11 @@ def _cat_enrich(items, limit=120):
         _cur = (it.get("title") or "").strip()
         if _tt and _cur and _tt != _cur and _dt_mutila(_tt).lower() == _cur.lower():
             it["title"] = _tt
-        it["poster"] = poster or it.get("thumb")   # TMDB/semilla > DT propia
+        # TMDB/semilla > el que ya trajera > la caratula propia de la fuente.
+        # El `it.get("poster")` del medio es la red de seguridad: un enrich que
+        # llega con las manos vacias (TMDB baneando a Render, que es la mitad
+        # de las veces) NUNCA puede dejar peor la tarjeta de lo que estaba.
+        it["poster"] = poster or it.get("poster") or it.get("thumb")
         it["year"] = year or it.get("year")
         it["rating"] = rating
         # Ficha enriquecida (todo GRATIS de la misma respuesta TMDB). Si TMDB
@@ -4254,11 +4391,21 @@ def _cat_enrich(items, limit=120):
         if meta.get("tmdb_id"):
             it["tmdb_id"] = meta["tmdb_id"]
         return it
-    try:
-        with _TPE(max_workers=8) as ex:
-            head = list(ex.map(_go, head))
-    except Exception:
-        pass
+    # OJO con lo que habia aqui: `with _TPE(max_workers=8) as ex` creaba OCHO
+    # HILOS NUEVOS EN CADA LLAMADA y el `with` espera a que TODOS terminen. Como
+    # TMDB banea la IP de Render y su timeout es entre bytes, un enrich que se
+    # queda colgado se lleva por delante su hilo de `_bounded` MAS sus ocho
+    # hijos, y ninguno vuelve jamas: el pool acotado de _bounded no los cuenta
+    # porque no salen de el. Asi se llego a 179 y 204 hilos el 19-09 (dos
+    # relevos del worker) y a los 300 MB que acaban en OOM.
+    # Ahora: pool UNICO del proceso (tope duro de hilos de enriquecimiento pase
+    # lo que pase) y NO se espera a los rezagados -- se devuelve lo que haya.
+    # `_go` escribe dentro del propio item, asi que el que llegue tarde mejora
+    # su item si todavia vive en una cache, y si no, se pierde sin dano.
+    _enr_map(_go, head, _bnd_resto(10.0))
+    for _it in head:              # sin TMDB -> la caratula propia de la fuente
+        if not _it.get("poster") and _it.get("thumb"):
+            _it["poster"] = _it["thumb"]
     return head + tail
 
 
@@ -4333,19 +4480,81 @@ def _et_relevant(title, q):
     return hit >= max(1, len(toks) - 1)
 
 
+def _casa_pegado(pegado, palabras):
+    """El texto buscado, sin espacios, cubre palabras ENTERAS del titulo?
+
+    "xmen" contra ["x","men"] -> si (x+men). "amor" contra ["el","amortiguador"]
+    -> no, porque se quedaria a medias de una palabra. Es lo que permite juntar
+    "X-Men", "X Men" y "XMen" sin abrir la puerta a los trozos de palabra."""
+    if not pegado:
+        return False
+    for i in range(len(palabras)):
+        acum = ""
+        for j in range(i, len(palabras)):
+            acum += palabras[j]
+            if acum == pegado:
+                return True
+            if len(acum) >= len(pegado):
+                break
+    return False
+
+
 def _q_relevant(title, q):
-    """Relevancia ESTRICTA para la busqueda combinada: el titulo debe contener
-    TODAS las palabras significativas (>2 letras) de la consulta. Asi 'desde mi
-    cielo' no trae 'El mismo cielo' (solo comparte 'cielo')."""
+    """Relevancia ESTRICTA: el titulo debe traer TODAS las palabras de la
+    consulta, cada una como PALABRA (o como principio de una palabra).
+
+    Aqui habia dos fallos que se notaban mucho al buscar, y los dos por la misma
+    linea (`all(w in nt ...)`, que compara TROZOS de texto):
+      1. "x men" sacaba "The Gentlemen": la palabra suelta que quedaba de la
+         consulta era "men"... y "gentle-MEN" la contiene. Igual de mal con
+         "amor" dentro de "amortiguador" o "casa" dentro de "casada". Era el
+         ruido de "salen muchas pelis que no tienen nada que ver".
+      2. La "x" de "x men" se tiraba por corta (solo contaban las de 3+ letras),
+         asi que la busqueda se hacia REALMENTE por "men" a secas y cualquier
+         titulo con esa palabra entraba.
+    Comparar por PRINCIPIO de palabra arregla los dos sin volverse tiquismiquis:
+    "men" no empieza "gentlemen" (fuera), pero "x" si empieza "xmen" (dentro), y
+    escribir a medias sigue valiendo ("interes" encuentra "Interestelar")."""
     nt, nq = _et_norm(title), _et_norm(q)
     if not nq:
         return True
-    if nq in nt:
+    # La consulta entera, tal cual, dentro del titulo: vale para FRASES. Con una
+    # sola palabra no, porque entonces esto volveria a ser una comparacion de
+    # trozos de texto y reaparecia el ruido ("amor" dentro de "El amortiguador").
+    if " " in nq and nq in nt:
         return True
-    toks = [w for w in nq.split() if len(w) > 2]
+    palabras = [w for w in nt.split() if w]
+    # La consulta PEGADA contra palabras enteras del titulo, en cualquiera de
+    # los dos sentidos: "xmen" encuentra "X-Men" y "x men" encuentra "XMen".
+    # Cada web escribe estos titulos como quiere y el usuario tambien -- pero
+    # tiene que cuadrar con palabras COMPLETAS, asi que "amor" sigue sin traer
+    # "El amortiguador".
+    if _casa_pegado(nq.replace(" ", ""), palabras):
+        return True
+    # Se quitan las palabras vacias ("el", "de", "the"...) pero NO las cortas:
+    # tirar las de 1-2 letras convertia "x men" en una busqueda de "men" a secas.
+    toks = [w for w in nq.split() if w and w not in _DX_STOP]
     if not toks:
-        return nq in nt
-    return all(w in nt for w in toks)
+        toks = [w for w in nq.split() if w]
+    if not toks:
+        return True
+
+    def hay(w):
+        for p in palabras:
+            if p == w:
+                return True
+            if w.endswith("s") and p == w[:-1]:    # plural/singular
+                return True
+            if p.endswith("s") and p[:-1] == w:
+                return True
+            # Escribir a medias solo cuenta con palabras largas: con las cortas
+            # se colaba media web ("mar" trayendo "Marte", "amor" trayendo "El
+            # amortiguador", "casa" trayendo "Recien casada").
+            if len(w) >= 5 and p.startswith(w):
+                return True
+        return _casa_pegado(w, palabras)     # "spiderman" vs "Spider Man"
+
+    return all(hay(w) for w in toks)
 
 
 def _et_search(q):
@@ -4463,8 +4672,17 @@ def _cat_merge(dt_items, et_items):
 #      de cada nivel respeta el orden de la web (temporadas 1,2,3...).
 # NO inventa ni descarta titulos DISTINTOS -> sigue siendo reflejo de la web,
 # solo mas limpio y con lo relevante arriba.
-_CAT_QUAL_RANK = {"4k": 5, "2160p": 5, "uhd": 5, "1080p": 4, "1080": 4,
-                  "720p": 2, "720": 2, "480p": 1}
+# Las etiquetas REALES que publican las cuatro fuentes (contadas en produccion
+# el 20-09), no solo las resoluciones: WolfMax marca sus peliculas como
+# "Bluray" y DonTorrent usa "HDTV" y "DVDRIP". Todas ellas valian CERO, o sea
+# que un BluRay perdia el desempate contra cualquier cosa y un DVDRip empataba
+# con el. Como la calidad es lo que decide que version se queda con la tarjeta,
+# eso escondia precisamente lo bueno.
+_CAT_QUAL_RANK = {"4k": 5, "2160p": 5, "uhd": 5,
+                  "1080p": 4, "1080": 4, "bdremux": 4, "bluray": 4,
+                  "bdrip": 4, "blu-ray": 4,
+                  "hdtv": 3, "720p": 2, "720": 2, "hdrip": 2,
+                  "480p": 1, "dvdrip": 1, "dvdscr": 1, "sd": 1}
 
 
 # --- Capitulos sueltos -> UNA tarjeta de serie ------------------------------
@@ -4987,7 +5205,7 @@ def catsearch():
         if cent:
             _CATSEARCH_CACHE[qkey] = cent
     if cent and (now - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
-        return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True})
+        return jsonify({"items": _al_servir(cent["items"]), "cached": True})
     # --- Single-flight: si una busqueda IDENTICA ya se esta calculando en este
     # worker, NO lanzamos otro fan-out; esperamos su resultado y servimos la cache.
     # Mata la amplificacion de los reintentos del front (csTry hasta 6x) que era
@@ -5007,10 +5225,10 @@ def catsearch():
         _ev.wait(8.0)
         cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
         if cent and (_t.time() - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
-            return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True})
+            return jsonify({"items": _al_servir(cent["items"]), "cached": True})
         if cent and cent.get("items"):
             # caducada pero utilizable: mejor lo de hace un rato que nada
-            return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True,
+            return jsonify({"items": _al_servir(cent["items"]), "cached": True,
                             "stale": True, "partial": True})
         # El dueño aun no ha terminado. OJO: aqui se devolvia un 503 con el
         # cuerpo VACIO y eso REVIENTA el r.json() del navegador -> el front lo
@@ -5247,11 +5465,19 @@ def catsearch():
         # cachea largo (TTL corto) para que el siguiente intento la resuelva.
         enr, _disok = _cat_disambiguate_years(enr, min(_dl, now + 10.5), box)
         items = _cat_rank_dedup(enr, q)   # dedup (titulo+año) + orden por relevancia
-        items = _agrupa_temporadas(items)  # 4 tarjetas de "X - Na Temporada" = 1 serie
+        items = _al_servir(items)   # 4 tarjetas de "X - Na Temporada" = 1 serie
         # ¿Falta el buscador de DonTorrent? Entonces esto es PARCIAL: el front
         # volvera a preguntar en unos segundos y para entonces el hilo de la caja
         # habra dejado su resultado en _DTQ.
         _parcial = not (_r["dt"] or _r["box"])
+        # Y tampoco es definitiva si DonTorrent -la fuente principal, la que mas
+        # catalogo tiene- no ha aportado NI UN titulo. Pasaba de verdad: el
+        # dueno busco "x men" con su Kodi encendido, DonTorrent no trajo nada
+        # (su buscador va por POST y el ISP lo tumba a ratos) y esa respuesta
+        # coja -sin la X-Men original- se quedo cacheada DIEZ MINUTOS para todo
+        # el mundo. Marcandola parcial caduca en 150 s y se completa sola.
+        if not any((it or {}).get("source") == "dt" for it in (items or [])):
+            _parcial = True
         # sin poster = el enrich no cupo -> tampoco es una respuesta "definitiva"
         if enr and not all(it.get("poster") for it in enr):
             _parcial = True
@@ -5312,7 +5538,7 @@ def catdxsearch():
     cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
     if cent and (now - cent.get("ts", 0)) < cent.get("ttl", _CATSEARCH_TTL):
         _CATSEARCH_CACHE[qkey] = cent
-        return jsonify({"items": _agrupa_temporadas(cent["items"]), "cached": True})
+        return jsonify({"items": _al_servir(cent["items"]), "cached": True})
     items = _bounded(lambda: _dx_search_items(q), 8.0, []) or []
     if not items and _sapi_credits_ok() and qkey not in _DXBG:
         # FAILOVER anti-tarpit via ScraperAPI (IP residencial): Cloudflare
@@ -5703,14 +5929,33 @@ _TEMPORADA_RE = _re_dt.compile(
     _re_dt.I)
 
 
+def _al_servir(items):
+    """Los ultimos retoques ANTES de que la lista salga por la puerta.
+
+    Van juntos a proposito: los dos arreglan cosas que ya estan guardadas en
+    alguna cache y que, si solo se corrigieran al crearlas, seguirian saliendo
+    mal durante horas (o para siempre, en los favoritos del movil).
+      - las temporadas sueltas de una misma serie se juntan en UNA tarjeta;
+      - las caratulas salen todas al mismo tamano, que es lo que hace que la
+        cuadricula se vea pareja.
+    Es idempotente: pasar dos veces por aqui no cambia nada."""
+    return _posters_norm(_agrupa_temporadas(items))
+
+
 def _agrupa_temporadas(items):
     """Junta las tarjetas por temporada de una misma serie en una sola.
 
     La tarjeta resultante apunta a la PRIMERA temporada (por donde se empieza) y
     lleva en `temps` de donde sacar los capitulos de cada una; el front las va
     pidiendo por detras y las funde, asi salen las pestanas T1..T4.
-    Solo agrupa si hay DOS o mas: con una sola no hay nada que juntar y cambiar
-    el titulo seria alejarse de lo que publica la web original.
+
+    El titulo se limpia SIEMPRE, tambien con una sola temporada. Antes no, por
+    no alejarse de lo que publica la web original, y salia caro: DonTorrent
+    titula TODAS sus series "Crookhaven 1 Temporada" (comprobado: las 14 del
+    Inicio, sin una sola excepcion), asi que esa serie no se parecia en nada a
+    la "Crookhaven" de WolfMax o DivxTotal y acababan en DOS tarjetas en vez de
+    una con sus dos fuentes dentro. La temporada no se pierde: va en `temps`, y
+    la tarjeta la ensena cuando no empieza por la 1.
     """
     grupos, out = {}, []
     for it in (items or []):
@@ -5734,8 +5979,6 @@ def _agrupa_temporadas(items):
             "tabla": it.get("tabla") or "", "quality": it.get("quality") or ""})
     for g in grupos.values():
         card, temps = g["card"], g["temps"]
-        if len(temps) < 2:
-            continue                        # una sola temporada: se deja igual
         temps.sort(key=lambda t: t["n"])
         card["title"] = g["base"]
         card["temps"] = temps
@@ -6946,6 +7189,28 @@ _BND_STATS = {"lanzados": 0, "abandonados": 0, "sin_hueco": 0, "pico": 0,
 # sin repasar los 29 sitios a ojo: los que llevan mucho vivos salen en /catmem.
 _BND_QUIEN = {}
 _BND_SEQ = [0]
+# El PRESUPUESTO VIAJA. Leccion repetida del proyecto: si el que llama se rinde
+# a los 6 s pero la peticion de dentro no se entera, el trabajo sigue ocupando
+# hueco, hilo y memoria un minuto mas. Hasta ahora habia que pasarlo a mano
+# (`tope_s` de _dx_get); esto lo deja apuntado en el PROPIO HILO, asi que
+# cualquier funcion de dentro puede preguntar cuanto le queda de verdad sin
+# cambiar quince firmas.
+_BND_LOCAL = _thr.local()
+
+
+def _bnd_resto(defecto):
+    """Segundos que le quedan al presupuesto del `_bounded` de este hilo.
+
+    `defecto` si nadie lo acoto (llamada directa, hilo suelto). Nunca menos de
+    medio segundo: cero significaria 'no lo intentes', y preferimos un intento
+    corto a devolver la portada sin caratulas."""
+    try:
+        fin = getattr(_BND_LOCAL, "fin", 0.0)
+        if fin:
+            return max(0.5, min(float(defecto), fin - _t.time()))
+    except Exception:
+        pass
+    return float(defecto)
 
 
 def _bounded(fn, secs, default=None):
@@ -6988,10 +7253,18 @@ def _bounded(fn, secs, default=None):
 
     def _w():
         try:
+            _BND_LOCAL.fin = _t.time() + max(0.1, float(secs))
+        except Exception:
+            pass
+        try:
             box["v"] = fn()
         except Exception:
             box["v"] = default
         finally:
+            try:
+                _BND_LOCAL.fin = 0.0
+            except Exception:
+                pass
             # Solo descuenta si el pool sigue siendo el suyo: si hubo recambio,
             # este trabajo ya no cuenta para el tope del pool nuevo.
             with _BND_LOCK:
@@ -7049,6 +7322,27 @@ def _bnd_revisa():
         return True
     except Exception:
         return False
+
+
+# Un enriquecimiento de fondo por LISTADO, no uno por CAJA. Las cajas empujan
+# los mismos tres listados cada ~8 minutos; el trabajo es identico y el
+# resultado va a la misma clave de cache, asi que el segundo y siguientes solo
+# servian para gastar hilos, memoria y llamadas a TMDB (que es quien nos banea).
+# 6 min: por debajo del ciclo de las cajas, asi que cada ronda enriquece una vez.
+_BGENR_VUELO = {}
+_BGENR_TTL = 360.0
+
+
+def _bgenr_pide(key):
+    ahora = _t.time()
+    with _ENR_LOCK:
+        for k, ts in list(_BGENR_VUELO.items()):     # limpieza de los caducados
+            if ahora - ts > _BGENR_TTL:
+                _BGENR_VUELO.pop(k, None)
+        if (ahora - _BGENR_VUELO.get(key, 0.0)) < _BGENR_TTL:
+            return False
+        _BGENR_VUELO[key] = ahora
+        return True
 
 
 @app.post("/catfeed")
@@ -7122,7 +7416,8 @@ def catfeed():
     except Exception:
         pass
 
-    def _bg_enrich(_html=html, _key=key, _wait=(45.0 if box_ficha else 0.0)):
+    def _bg_enrich(_its=[dict(_x) for _x in raw], _key=key,
+                   _wait=(45.0 if box_ficha else 0.0)):
         try:
             # Si el box sabe leer la FICHA, se le DEJA LLEGAR PRIMERO: tarda unos
             # 25 s (ficha + TMDB desde su IP) y trae el match bueno. Sin esta
@@ -7137,7 +7432,10 @@ def catfeed():
             # Va en 2o plano (no bloquea el POST del box), pero igualmente
             # acotado: con TMDB baneando a Render este hilo se eternizaba
             # consumiendo CPU/red del proceso. 40s y a otra cosa.
-            _its = _cat_parse_items(_html)
+            # Los items llegan YA PARSEADOS (copiados antes de lanzar el hilo).
+            # Antes se traia el HTML entero en el closure y se re-parseaba aqui:
+            # con varias cajas empujando a la vez eso eran varios HTML de cientos
+            # de KB retenidos 45 s -- y el parseo repetido, gratis para nadie.
             en = _bounded(lambda: _cat_enrich(_its), 40.0, default=None)
             if en:
                 # No DEGRADAR: mientras este hilo corria (~40s con TMDB baneado),
@@ -7161,8 +7459,14 @@ def catfeed():
                 _catbrowse_save(d)
         except Exception:
             pass
-    if pending:   # sin pendientes = todo ya en HD por semilla/cache del box ->
-        # el re-enrich de fondo (que ademas toca TMDB desde Render) no aporta nada
+    if pending and _bgenr_pide(key):
+        # sin pendientes = todo ya en HD por semilla/cache del box -> el
+        # re-enrich de fondo (que ademas toca TMDB desde Render) no aporta nada.
+        # Y `_bgenr_pide` es lo que impide la avalancha: HAY OCHO CAJAS y todas
+        # empujan los MISMOS tres listados cada ~8 min. Antes cada POST lanzaba
+        # su hilo -> hasta 24 hilos durmiendo 45 s y despues 8 sub-hilos cada uno
+        # para enriquecer EXACTAMENTE LO MISMO. Ahi estaban los 179 y 204 hilos
+        # que obligaron a relevar el worker el 19-09, y buena parte de los OOM.
         _thr.Thread(target=_bg_enrich, daemon=True).start()
     # `pending`: titulos sin poster TMDB para que el BOX (IP residencial) los
     # enriquezca y los empuje a /catenrich. El box ANTIGUO ignora este campo
@@ -7340,10 +7644,33 @@ def catbrowse():
         except Exception:
             pass
 
+    def _resp(items, **extra):
+        """La respuesta del Inicio, con las otras fuentes DENTRO si ya estan.
+
+        Antes iban en una peticion aparte que llegaba ~1 s despues, y el movil
+        tenia que REORDENAR la cuadricula entera delante del usuario ("entro y
+        un segundo despues parece que lo ordena"). Ahora, si la mezcla esta
+        calculada -que es lo normal: dura 30 min y la refresca quien pasa por
+        aqui- viaja en la MISMA respuesta y la portada se pinta una sola vez,
+        ya en su orden definitivo. Si no lo esta, no se hace esperar a nadie:
+        se calcula por detras y el front la pide aparte esta vez.
+        Solo en la pagina 1: el scroll infinito de DonTorrent sigue igual."""
+        out = {"items": _al_servir(items)}
+        out.update(extra)
+        if page == 1 and request.args.get("mix") == "1":
+            ent = _home_mix_cache(kind)
+            if ent and ent.get("items"):
+                out["mix"] = _al_servir(ent["items"])
+            else:
+                out["mix"] = []
+                out["mixpend"] = True
+                _home_mix_pronto(kind)
+        return jsonify(out)
+
     dt_ent = _load(key, seed=True)
     # 1) DonTorrent FRESCO en cache -> al instante, sin tocar ninguna fuente.
     if dt_ent and (now - dt_ent.get("ts", 0)) < _CATBROWSE_TTL:
-        return jsonify({"items": _agrupa_temporadas(dt_ent["items"]), "cached": True, "src": "dt"})
+        return _resp(dt_ent["items"], cached=True, src="dt")
 
     # 2) Intentar REFRESCAR DonTorrent (directo; el box solo si no hay stale).
     #    Tope CORTO (4s) si ya hay DT-stale: no hacemos esperar al usuario -> si
@@ -7377,13 +7704,13 @@ def catbrowse():
         items = _bounded(lambda: _cat_enrich(items), 10.0, default=items)
         rec = {"items": items, "ts": now}
         _store(key, rec)
-        return jsonify({"items": _agrupa_temporadas(items), "src": "dt"})
+        return _resp(items, src="dt")
 
     # 3) DonTorrent no disponible AHORA -> servir DonTorrent STALE (de hace un
     #    rato) ANTES que DivxTotal. La web original es DonTorrent y los listados
     #    cambian despacio -> DT viejo >> DX fresco. (Pedido explicito del usuario.)
     if dt_ent:
-        return jsonify({"items": _agrupa_temporadas(dt_ent["items"]), "stale": True, "src": "dt"})
+        return _resp(dt_ent["items"], stale=True, src="dt")
 
     # 4) Nunca hubo DonTorrent (ni cache, ni disco, ni semilla) -> DivxTotal como
     #    ULTIMO recurso, en su PROPIA clave para no pisar nunca una entrada DT.
@@ -7397,7 +7724,7 @@ def catbrowse():
                       "ts": now, "dx": True}
             _store(dxkey, dx_ent)
     if dx_ent:
-        return jsonify({"items": _agrupa_temporadas(dx_ent["items"]), "dx": True, "src": "dx"})
+        return _resp(dx_ent["items"], dx=True, src="dx")
     return jsonify({"items": []})
 
 
@@ -7417,6 +7744,82 @@ def catbrowse():
 #     hay un Kodi despierto.
 _CATMIX_CACHE = {}
 _CATMIX_TTL = 1800          # 30 min: una portada no cambia cada minuto
+# En DISCO ademas de en memoria, por dos razones que se ven en cuanto falla:
+# los dos workers de gunicorn tienen cada uno su memoria (o sea que la portada
+# se calculaba DOS veces y una persona veia una mezcla y otra otra), y ahora el
+# vigilante releva workers mas a menudo -- sin esto, cada relevo dejaba el
+# Inicio cojo hasta que alguien pagara el recalculo.
+_CATMIX_FILE = "/tmp/mw_cathomemix.json"
+_CATMIX_BG = {}             # kind -> cuando se lanzo su calculo de fondo
+
+
+def _catmix_save():
+    try:
+        tmp = _CATMIX_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(_CATMIX_CACHE, f)
+        os.replace(tmp, _CATMIX_FILE)
+    except Exception:
+        pass
+
+
+def _home_mix_cache(kind):
+    """La mezcla ya calculada y FRESCA, de memoria o de disco. None si no hay."""
+    now = _t.time()
+    ent = _CATMIX_CACHE.get(kind)
+    if not ent:
+        try:
+            with open(_CATMIX_FILE, "r", encoding="utf-8") as f:
+                d = _json.load(f) or {}
+            ent = d.get(kind)
+            if ent:
+                _CATMIX_CACHE[kind] = ent
+        except Exception:
+            ent = None
+    if ent and (now - ent.get("ts", 0)) < ent.get("ttl", _CATMIX_TTL):
+        return ent
+    return None
+
+
+def _home_mix_pronto(kind):
+    """Calcula la mezcla POR DETRAS para que la proxima visita la tenga ya.
+
+    Sin esperar a nadie y una sola vez: si dos personas abren la app a la vez
+    con la cache fria, no se lanzan dos calculos iguales (que ademas tocan
+    DivxTotal y TMDB, o sea a quien nos banea)."""
+    now = _t.time()
+    with _ENR_LOCK:
+        if (now - _CATMIX_BG.get(kind, 0.0)) < 60.0:
+            return
+        _CATMIX_BG[kind] = now
+
+    def _ir():
+        try:
+            _home_mix(kind)
+        except Exception:
+            pass
+    try:
+        _thr.Thread(target=_ir, daemon=True).start()
+    except Exception:
+        pass
+
+
+def _intercala(base, extra, cada=2):
+    """Reparte `extra` dentro de `base`: dos de la principal por cada una de
+    las demas. DonTorrent trae 25-33 y las otras 12 entre las dos, asi que
+    ponerlas al final es condenarlas a no verse nunca; y alternarlas aqui -en
+    el servidor, con todo delante- es lo que evita que el movil tenga que
+    reordenar la pantalla a mitad de carga."""
+    out, i, j = [], 0, 0
+    while i < len(base) or j < len(extra):
+        for _n in range(cada):
+            if i < len(base):
+                out.append(base[i])
+                i += 1
+        if j < len(extra):
+            out.append(extra[j])
+            j += 1
+    return out
 
 
 def _zip_largo(a, b):
@@ -7483,13 +7886,21 @@ def _wf_home_items(kind, limit=12):
 
 @app.get("/cathomemix")
 def cathomemix():
-    """Lo que el Inicio a\u00f1ade a DonTorrent. Va APARTE a proposito: la portada
-    se pinta con DonTorrent al instante, como siempre, y esto llega despues."""
+    """Lo que el Inicio anade a DonTorrent, cuando hay que pedirlo aparte.
+
+    En el caso normal ya no se usa: /catbrowse lo sirve TODO junto y en su
+    orden definitivo (ver _home_mix_cache). Esto queda para cuando la mezcla
+    todavia no estaba calculada -- entonces el front la pide aqui y las
+    tarjetas se anaden AL FINAL, sin mover ni una de las que ya se ven."""
     kind = (request.args.get("kind") or "estrenos").strip().lower()
+    return jsonify(_home_mix(kind))
+
+
+def _home_mix(kind):
     now = _t.time()
-    ent = _CATMIX_CACHE.get(kind)
-    if ent and (now - ent.get("ts", 0)) < ent.get("ttl", _CATMIX_TTL):
-        return jsonify({"items": ent["items"], "cached": True})
+    ent = _home_mix_cache(kind)
+    if ent:
+        return {"items": ent["items"], "cached": True}
     wf, dx = [], []
     try:
         wf = _wf_home_items(kind, 12)
@@ -7510,7 +7921,7 @@ def cathomemix():
         if b is not None:
             items.append(b)
     if not items:
-        return jsonify({"items": []})
+        return {"items": []}
     # Mismo tope que el resto del Inicio: TMDB banea la IP de Render y no puede
     # quedarse colgado ocupando uno de los 12 hilos.
     # La caratula PROPIA, ya puesta: si TMDB casa el titulo la mejorara, pero si
@@ -7535,7 +7946,8 @@ def cathomemix():
     _ok = bool(wf and dx) and _grises <= max(2, len(items) // 6)
     _CATMIX_CACHE[kind] = {"items": items, "ts": now,
                            "ttl": _CATMIX_TTL if _ok else 180}
-    return jsonify({"items": items})
+    _catmix_save()
+    return {"items": items}
 
 
 @app.get("/catdump")
@@ -7560,7 +7972,7 @@ def catdiag():
     sale solo-DX. NO toca DonTorrent/DivxTotal/TMDB (cero riesgo de baneo): solo lee
     cache en memoria/disco, el breaker y contadores ya conocidos. Una sola peticion."""
     now = _t.time()
-    out = {"build": "dtbl14", "now": int(now)}   # MISMO valor que /ping (app.py:355)
+    out = {"build": BUILD, "now": int(now)}   # MISMO valor que /ping (app.py:355)
     # 0) Cajas VIVAS: sin esto no habia forma de saber si el sistema tiene alguna
     #    Kodi encendida (el 2026-08-06 se perdio tiempo creyendo que no habia
     #    ninguna porque /kb/list devolvia vacio — pero /kb/list es el espejo de
@@ -7909,6 +8321,17 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .tab.on{color:#0b1020;background:#f4f6fb}
 .pane.hidden{display:none}
 .chips{display:flex;gap:8px;margin-bottom:14px}
+/* Filtro por FUENTE del Inicio. Se desliza de lado (las cuatro no caben en un
+   movil de 320 px) pero la pagina no se mueve: overflow-x propio, como la barra
+   de listas y la de temporadas. */
+.fnt{display:flex;gap:7px;margin:-4px 0 13px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.fnt::-webkit-scrollbar{display:none}
+.fnt:empty{display:none}
+.fnb{flex:0 0 auto;display:flex;align-items:center;gap:6px;border:1px solid var(--stroke);background:var(--card);color:var(--sub);font-weight:700;font-size:12px;padding:0 11px;height:34px;border-radius:999px;cursor:pointer;white-space:nowrap}
+.fnb i{font-style:normal;font-size:10.5px;opacity:.75;font-weight:800}
+.fnb b{width:8px;height:8px;border-radius:50%;display:inline-block}
+.fnb.on{color:#0b1020;background:#f4f6fb;border-color:transparent}
+.fnb.on i{opacity:.65}
 .chip{border:1px solid var(--stroke);background:var(--card);color:var(--txt);font-weight:600;font-size:13px;padding:8px 14px;border-radius:999px;cursor:pointer}
 .chip.on{background:linear-gradient(145deg,var(--blue2),var(--blue));border-color:transparent;color:#fff}
 .search{display:flex;gap:8px;margin-bottom:16px}
@@ -8435,6 +8858,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <button class="chip" data-k="peliculas" onclick="chip('peliculas')">Cine</button>
    <button class="chip" data-k="series" onclick="chip('series')">Series</button>
   </div>
+  <div id="fuentes" class="fnt"></div>
   <div id="inicio-grid" class="msg"></div>
  </section>
  <section id="pane-buscar" class="pane hidden">
@@ -8612,7 +9036,7 @@ var EYE_ON='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
 function clk(d){return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
 var code=$('code'), favs=[], LISTS={inicio:[],buscar:[],lista:[]}, sel=null, npTimer=null, EPS={}, SHOW='', lastPlayTs=0, npPaused=false;
 var ZPOSTER='', TRK='';   // portada para el zoom + clave del trailer (peli/serie)
-var INI={kind:'estrenos',page:1,loading:false,more:true}, OVDATA=null;
+var INI={kind:'estrenos',page:1,loading:false,more:true,src:''}, OVDATA=null;
 try{var u=new URLSearchParams(location.search).get('c');if(u)localStorage.setItem('mw_code',u.replace(/\D/g,'').slice(0,6));}catch(e){}
 code.value=(localStorage.getItem('mw_code')||'').replace(/\D/g,'').slice(0,6);
 // Migracion suave: si ya habia un codigo de siempre pero aun no hay lista de
@@ -8673,7 +9097,7 @@ function slimAlts(a){return (a||[]).slice(0,4).map(function(z){
          tabla:z.tabla,path:z.path,kind:z.kind,title:z.title,year:z.year,
          poster:z.poster,rating:z.rating,eps:slimEps(z.eps)}})}
 // Copia guardable de un item (lo mismo que guardaba toggleFav).
-function favCopia(x,ls){return {lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),ls:ls}}
+function favCopia(x,ls){return {lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),temps:x.temps,ls:ls}}
 function favBuscar(x){for(var i=0;i<favs.length;i++)if(fk(favs[i])===fk(x))return favs[i];return null}
 function favEnLista(x,id){var f=favBuscar(x);return !!f&&lstDe(f).indexOf(id)>=0}
 // Guardar en una lista = MOVER a esa lista. Un titulo esta en UNA lista y solo
@@ -8692,7 +9116,7 @@ function favQuitar(x,id){
  if(a.length){f.ls=a;f.lts=Date.now()}else{favs=favs.filter(function(z){return fk(z)!==fk(x)});delMarca('f',fk(x))}
  saveFavs();mlPushSoon();}
 function favQuitarTodo(x){favs=favs.filter(function(z){return fk(z)!==fk(x)});delMarca('f',fk(x));saveFavs();mlPushSoon();}
-function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)});delMarca('f',fk(x))}else{delOlvida('f',fk(x));favs.unshift({lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts)})}saveFavs();mlPushSoon()}
+function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)});delMarca('f',fk(x))}else{delOlvida('f',fk(x));favs.unshift({lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),temps:x.temps})}saveFavs();mlPushSoon()}
 // --- Sincronizacion de la lista de deseados (espejo en el relay, ligado al
 // codigo). El movil es la COPIA MAESTRA: al cargar hacemos UNION (nunca borra ->
 // imposible perder la lista). Cero peticiones a fuentes -> cero baneo. ---
@@ -8850,7 +9274,7 @@ function goView(v){
 function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
  // el Inicio vuelve donde lo dejaste (antes siempre a Estrenos)
  try{localStorage.setItem('mw_chip',kind)}catch(e){}
- INI={kind:kind,page:1,loading:false,more:true};
+ INI={kind:kind,page:1,loading:false,more:true,src:''};
  var g=$('inicio-grid');g.className='';g.innerHTML=skelGrid();
  var slow=setTimeout(function(){if(g.querySelector('.skph')){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor… (solo la primera vez)';}},7000);
  // Timeout duro: si DonTorrent va lento/caido NUNCA dejamos la app colgada.
@@ -8861,16 +9285,26 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  // depender de ninguna caja (antes, con los Kodi apagados, la portada era solo
  // DonTorrent); boxMerge sigue aportando EliteTorrent cuando hay Kodi despierto.
  // Van DETRAS del pintado de DonTorrent: la primera pantalla no se retrasa.
- function box(){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');mixHome(kind,g);}
+ // EliteTorrent necesita una caja encendida de verdad -> sigue llegando cuando
+ // llega, y se anade al final sin mover nada. WolfMax y DivxTotal ya vienen
+ // dentro de /catbrowse (ver _resp en el relay): aqui solo se piden si el relay
+ // avisa de que todavia no las tenia calculadas.
+ function box(pend){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');
+  if(pend)mixHome(kind,g);}
  function retry(){g.className='msg';g.innerHTML='No se pudo cargar ahora. <a href="javascript:void(0)" onclick="chip(\''+kind+'\')">Reintentar</a>';}
  function fallback(){ // DonTorrent vacio/lento/caido: que el box (Estrenos) llene; si no, reintento
-  LISTS.inicio=[];ensureGrid();box();
+  LISTS.inicio=[];ensureGrid();box(1);
   if(kind==='estrenos'){setTimeout(function(){if(!g.querySelector('.card'))retry();},14000);}else{retry();}}
- fetch('/catbrowse?kind='+kind+'&page=1&code='+(code.value||'').replace(/\D/g,''),ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
+ fetch('/catbrowse?kind='+kind+'&page=1&mix=1&code='+(code.value||'').replace(/\D/g,''),ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
   done=true;clearTimeout(slow);clearTimeout(to);
   LISTS.inicio=(d&&d.items)||[];
   if(!LISTS.inicio.length){fallback();return}
-  renderGrid(g,'inicio');box();
+  // Las otras fuentes vienen en la MISMA respuesta: se funden (misma peli en
+  // dos sitios = una tarjeta con la mejor calidad y la otra en "Tambien en") y
+  // se reparten ANTES de pintar. Una sola pintada, orden definitivo.
+  var mix=(d&&d.mix)||[];
+  if(mix.length){mergeResults('inicio',g,mix,1);repartoInicio();}
+  renderGrid(g,'inicio');pintaFuentes();box(d&&d.mixpend);
  }).catch(function(){done=true;clearTimeout(slow);clearTimeout(to);fallback()})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
  fetch('/catbrowse?kind='+INI.kind+'&page='+next+'&code='+(code.value||'').replace(/\D/g,'')).then(function(r){return r.json()}).then(function(d){
@@ -8884,7 +9318,10 @@ window.addEventListener('scroll',function(){
  if($('pane-inicio').classList.contains('hidden'))return;
  if($('ov').classList.contains('on')||$('remote').classList.contains('on')||$('sheet').classList.contains('on'))return;
  if(window.innerHeight+window.scrollY>=document.body.offsetHeight-700)loadMoreInicio();});
-function mergeResults(list,g,items){
+// `mudo`=1 funde en memoria y NO toca la pantalla. Lo usa el Inicio para
+// mezclar las cuatro fuentes ANTES del primer pintado: asi la portada sale una
+// sola vez y ya ordenada, en vez de pintarse y recolocarse un segundo despues.
+function mergeResults(list,g,items,mudo){
  if(!items||!items.length)return;
  var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
  // Dedup por TÍTULO+AÑO (no solo título): los remakes del MISMO título salen LAS DOS
@@ -8909,11 +9346,17 @@ function mergeResults(list,g,items){
  if(fresh.length){var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
   for(var j=0;j<fresh.length;j++){var tt=norm(fresh[j].title);if(!tt)continue;
    var kk=tt+'|'+(fresh[j].year||'');if(at[kk]===undefined)at[kk]=from+j;if(at[tt+'|*']===undefined)at[tt+'|*']=from+j;}
-  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
+  if(!mudo){if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}}
  // Repintar SOLO las tarjetas sustituidas (no toda la cuadricula: el usuario
  // puede estar haciendo scroll y no se le mueve nada de sitio).
- for(var s2=0;s2<swapped.length;s2++)repaintCard(g,list,swapped[s2]);}
-var QRANK={'4k':5,'2160p':5,'uhd':5,'1080p':4,'1080':4,'bdremux':4,'720p':2,'720':2,'480p':1};
+ if(!mudo)for(var s2=0;s2<swapped.length;s2++)repaintCard(g,list,swapped[s2]);
+ // La barra de fuentes cuenta lo que hay: si acaba de entrar EliteTorrent por
+ // una caja, su boton aparece solo.
+ if(!mudo&&list==='inicio')try{pintaFuentes()}catch(e){}}
+// El MISMO baremo que el relay (_CAT_QUAL_RANK): si los dos no coinciden, el
+// servidor elige una version y el movil otra, y el usuario ve cosas distintas
+// segun por donde llegue cada fuente.
+var QRANK={'4k':5,'2160p':5,'uhd':5,'1080p':4,'1080':4,'bdremux':4,'bluray':4,'bdrip':4,'blu-ray':4,'hdtv':3,'720p':2,'720':2,'hdrip':2,'480p':1,'dvdrip':1,'dvdscr':1,'sd':1};
 // A igualdad de etiqueta de calidad: DonTorrent (fuente principal, con aviso
 // de RAR, semillas y reproducción propia) > WolfMax (su 4K es el de mayor
 // bitrate que hay: capítulos de 9 GB) > DivxTotal > EliteTorrent.
@@ -8983,7 +9426,7 @@ function addAlt(alts,otra,activa){
   if(by[kk]){by[kk]=altMejor(by[kk],c)}else{by[kk]=c;orden.push(kk)}});
  return orden.slice(0,6).map(function(k){return by[k]});}
 function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return;
- var c=grid.children[i];if(!c)return;
+ var c=grid.querySelector('.card[data-i="'+i+'"]');if(!c)return;
  var tmp=document.createElement('div');tmp.innerHTML=cardHTML(LISTS[list][i],list,i);
  if(tmp.firstChild)grid.replaceChild(tmp.firstChild,c);}
 // ---- Progreso de la búsqueda -------------------------------------------
@@ -9205,6 +9648,58 @@ function dxMerge(list,g,q,seq,cb){
 // always=1 -> no exige código: el relay presta una caja viva del sistema. El
 // Inicio NO lo usa (lo carga todo el mundo al abrir: serían 2 trabajos de caja
 // por visita); la BÚSQUEDA sí, que es donde importa tener todas las fuentes.
+// Reparte las otras fuentes entre DonTorrent: dos de DT por cada una de las
+// demas. DonTorrent trae 25-33 tarjetas y las otras 12 entre todas, asi que
+// ponerlas detras es condenarlas a no verse nunca sin bajar del todo.
+// Esto se llama SIEMPRE ANTES de pintar, nunca despues: ese era justamente el
+// fallo que se veia ("entro y un segundo despues parece que lo ordena").
+// ---- El Inicio, dividido por fuentes -------------------------------------
+// "No se si seria buena idea dividir los estrenos entre las 4 fuentes". Esta es
+// la forma que no rompe nada ni cuesta una peticion: la portada sigue siendo
+// UNA cuadricula mezclada (que es lo que ya se entiende y donde la misma peli
+// en dos sitios es UNA tarjeta), y encima una barra para quedarse solo con una
+// fuente cuando se quiere -- por ejemplo el 4K de WolfMax. Filtra lo que YA
+// esta en el movil: cero red, instantaneo.
+// No se recuerda entre visitas a proposito: dejarlo puesto sin querer daria una
+// portada coja al dia siguiente sin saber por que.
+var FSRC={dt:['DonTorrent','#4a9eff'],wf:['WolfMax','#c77dff'],dx:['DivxTotal','#34d36a'],et:['EliteTorrent','#ff9f6e']};
+function pintaFuentes(){
+ var b=$('fuentes');if(!b)return;
+ var n={},tot=0;
+ (LISTS.inicio||[]).forEach(function(x){var s=x.source||'dt';n[s]=(n[s]||0)+1;tot++});
+ var ks=Object.keys(FSRC).filter(function(s){return n[s]});
+ if(tot<4||ks.length<2){b.innerHTML='';return}          // una sola fuente: sobra
+ if(INI.src&&!n[INI.src])INI.src='';                    // se fue esa fuente
+ var h='<button class="fnb'+(INI.src?'':' on')+'" onclick="filtraFuente(\'\')">Todas<i>'+tot+'</i></button>';
+ ks.forEach(function(s){
+  h+='<button class="fnb'+(INI.src===s?' on':'')+'" onclick="filtraFuente(\''+s+'\')">'+
+     '<b style="background:'+FSRC[s][1]+'"></b>'+FSRC[s][0]+'<i>'+n[s]+'</i></button>'});
+ b.innerHTML=h;}
+function filtraFuente(s){
+ if(INI.src===s)return;
+ // OJO: `haptic()` NO existe en esta pagina (es del mando clasico). Aqui la
+ // vibracion se pide a pelo, como en el resto de _CAT_PAGE.
+ try{if(navigator.vibrate)navigator.vibrate(9)}catch(e){}
+ INI.src=s;
+ var g=$('inicio-grid');renderGrid(g,'inicio');pintaFuentes();
+ try{window.scrollTo({top:0,behavior:'smooth'})}catch(e){window.scrollTo(0,0)}}
+// Con una fuente filtrada, seguir cargando paginas de DonTorrent solo para
+// descartarlas no tiene sentido; y si la fuente filtrada es DonTorrent, si.
+function iniVisible(x){return !INI.src||((x.source||'dt')===INI.src)}
+function repartoInicio(){
+ var base=[],extra=[];
+ LISTS.inicio.forEach(function(x){((x.source||'dt')==='dt'?base:extra).push(x)});
+ if(!extra.length||!base.length)return;
+ var out=[],i=0,j=0;
+ while(i<base.length||j<extra.length){
+  for(var n=0;n<2&&i<base.length;n++)out.push(base[i++]);
+  if(j<extra.length)out.push(extra[j++]);
+ }
+ LISTS.inicio=out;}
+// Plan B: la mezcla no estaba calculada cuando se pidio la portada. Entonces
+// se pide aparte y las tarjetas se anaden AL FINAL -- sin tocar el orden de lo
+// que ya se ve, porque a estas alturas el usuario ya esta mirando (o tocando)
+// la pantalla. La proxima visita ya vendra toda junta y en su sitio.
 function mixHome(kind,g){
  fetch('/cathomemix?kind='+encodeURIComponent(kind)).then(function(r){return r.json()})
   .then(function(d){
@@ -9212,26 +9707,8 @@ function mixHome(kind,g){
    var it=(d&&d.items)||[];
    if(!it.length)return;
    if(!g.querySelector('.grid')){g.className='';g.innerHTML='<div class="grid"></div>';}
-   var antes=LISTS.inicio.length;
    mergeResults('inicio',g,it);               // dedup por titulo+año, como siempre
-   if(LISTS.inicio.length<=antes)return;      // no entro nada nuevo
-   // DonTorrent gana por goleada en cantidad, asi que si solo se anaden al
-   // final las otras tres no se ven jamas sin bajar del todo. Se reparten DOS
-   // de DonTorrent por cada una de las demas -> WolfMax y DivxTotal asoman ya
-   // en la primera pantalla sin dejar de mandar DonTorrent.
-   // Solo si sigues arriba: si ya estabas bajando, se quedan al final y no te
-   // movemos el suelo bajo el dedo.
-   if((window.scrollY||0)>200)return;
-   var base=[],extra=[];
-   LISTS.inicio.forEach(function(x){(x.source==='dt'?base:extra).push(x)});
-   if(!extra.length)return;
-   var out=[],i=0,j=0;
-   while(i<base.length||j<extra.length){
-    for(var n=0;n<2&&i<base.length;n++)out.push(base[i++]);
-    if(j<extra.length)out.push(extra[j++]);
-   }
-   LISTS.inicio=out;
-   renderGrid(g,'inicio');
+   pintaFuentes();
   }).catch(function(){});}
 function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6&&!always){if(cb)cb({});return;}
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
@@ -9750,21 +10227,45 @@ function renderFavs(_mantenFiltro){
   if(!vivos){selSalir();return}pickPinta();}}
 function applyView(){var lv=localStorage.getItem('mw_lv')==='1';var g=$('lista-grid');if(g){var grid=g.querySelector('.grid');if(grid)grid.classList.toggle('lv',lv)}var b=$('vtog');if(b)b.innerHTML=lv?'▦ Vista cuadrícula':'☰ Vista lista'}
 function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')==='1'?'0':'1');applyView()}
+// Si la caratula no carga (404, la fuente cambio de CDN, red a medias) la
+// tarjeta se quedaba en un rectangulo gris MUDO, sin decir siquiera que peli
+// era. Ahora cae al nombre, como ya hacia el mando clasico.
+function imgFallo(im){try{
+ im.style.display='none';var p=im.parentNode;if(!p||p.querySelector('.noimg'))return;
+ var d=document.createElement('div');d.className='noimg';d.textContent=im.getAttribute('data-t')||'';
+ p.appendChild(d);}catch(e){}}
 function cardHTML(x,list,i){
- var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" src="'+esc(x.poster)+'">'):'';
+ var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" data-t="'+esc(x.title)+'" onerror="imgFallo(this)" src="'+esc(x.poster)+'">'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
  var q='<div class="tl">'+(x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'')+'</div>';
  // Las series de EliteTorrent/WolfMax llegan agrupadas con sus capítulos
  // dentro: decir cuántos trae evita la duda de "¿esto es la serie entera?".
  var _nc=(x.eps&&x.eps.length)||0;
- var kt='<div class="kindtag">'+kindLabel(x.kind)+(_nc?(' · '+_nc+' cap.'):'')+'</div>';
+ // La temporada ya no va en el titulo (una serie es UNA tarjeta), asi que se
+ // dice aqui: "T2" cuando lo unico que hay es una temporada que no es la
+ // primera, o "4 temporadas" cuando estan varias dentro.
+ var _tp=(x.temps&&x.temps.length)||0,_ts='';
+ if(_tp>1)_ts=' · '+_tp+' temporadas';
+ else if(_tp===1&&x.temps[0].n>1)_ts=' · T'+x.temps[0].n;
+ var kt='<div class="kindtag">'+kindLabel(x.kind)+(_nc?(' · '+_nc+' cap.'):_ts)+'</div>';
  var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
- return '<div class="card" style="--i:'+(i%12)+'"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
+ // data-i = su sitio en la LISTA (no en la pantalla). Lo que llega tarde -el
+ // poster, el badge de RAR, la calidad- se estampa buscando por este atributo:
+ // por posicion se equivocaba de tarjeta en cuanto algo cambiaba de orden o se
+ // filtraba, y eso no da error, solo pone el dato en la peli de al lado.
+ return '<div class="card" data-i="'+i+'" style="--i:'+(i%12)+'"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+heartSVG(isFav(x))+'</div></div>'+
     '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
-function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';for(var i=0;i<items.length;i++)h+=cardHTML(items[i],list,i);h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0)}
-function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';for(var i=from;i<items.length;i++)h+=cardHTML(items[i],list,i);g.insertAdjacentHTML('beforeend',h);lazyRar(el,list,from)}
+// El filtro por fuente del Inicio se aplica AQUI y no tocando LISTS.inicio: asi
+// los indices de las tarjetas siguen siendo los de la lista completa y no hay
+// que rehacer nada al quitar el filtro (ni se pierden las versiones alternativas).
+function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';
+ for(var i=0;i<items.length;i++){if(list==='inicio'&&!iniVisible(items[i]))continue;h+=cardHTML(items[i],list,i)}
+ h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0)}
+function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';
+ for(var i=from;i<items.length;i++){if(list==='inicio'&&!iniVisible(items[i]))continue;h+=cardHTML(items[i],list,i)}
+ g.insertAdjacentHTML('beforeend',h);lazyRar(el,list,from)}
 // ---- Badge RAR (📦) perezoso para items de DonTorrent (vía /dtpacked) ----
 var _rarCache={},_rarQ=[],_rarActive=0;
 function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').replace(/\D/g,'');
@@ -9785,8 +10286,8 @@ function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
    var rar=!!(p&&p[job.f]===true);var q=(p&&p.quality)||'';
    _rarCache[job.key]={rar:rar,q:q};
    if(rar)rarBadge(job);if(q)qualBadge(job,q);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job)}}
-function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
-function qualBadge(job,q){if(!q)return;var g=job.el.querySelector('.grid');if(!g)return;var cards=g.children;if(!cards||!cards[job.i])return;var tl=cards[job.i].querySelector('.tl');if(!tl||tl.querySelector('.q'))return;var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
+function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var c=g.querySelector('.card[data-i="'+job.i+'"]');if(!c)return;var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
+function qualBadge(job,q){if(!q)return;var g=job.el.querySelector('.grid');if(!g)return;var c=g.querySelector('.card[data-i="'+job.i+'"]');if(!c)return;var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.q'))return;var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
 // El corazón: un SVG (el ♡ de texto se ve distinto en cada móvil y no se puede
 // animar). `on` = guardado; al marcarlo late una vez.
 function heartSVG(on){return '<svg class="hsvg'+(on?' on':'')+'" viewBox="0 0 24 24" aria-hidden="true">'+
@@ -9923,7 +10424,7 @@ function skelGrid(n){n=n||9;var c='<div class="skcard"><div class="skph shim"></
 // Sinopsis: alternar recortada/completa.
 function toggleOv(){var o=$('sh-ov');if(!o)return;var cl=o.classList.toggle('clamp');var m=o.nextElementSibling;if(m)m.textContent=cl?'Leer más':'Leer menos'}
 // Zoom de portada: tocar el póster de la ficha lo agranda a pantalla completa.
-function zoomPoster(){var p=ZPOSTER||(sel&&sel.poster);if(!p)return;event&&event.stopPropagation&&event.stopPropagation();$('zoom-img').src=p.replace('/w342','/w500');$('zoom').classList.add('on');mwOpen('zoom',$('zoom'),_closeZoom)}
+function zoomPoster(){var p=ZPOSTER||(sel&&sel.poster);if(!p)return;event&&event.stopPropagation&&event.stopPropagation();$('zoom-img').src=p.replace(/\/(w\d+|original)\//,'/w780/');$('zoom').classList.add('on');mwOpen('zoom',$('zoom'),_closeZoom)}
 function _closeZoom(){$('zoom').classList.remove('on');$('zoom-img').src=''}
 function closeZoom(){mwBack('zoom')}
 // Tráiler: reproduce el vídeo de YouTube en un modal (clave de /catmeta).
@@ -10170,9 +10671,15 @@ var _epQ=[],_epActive=0,_epCache={};
 function lazyEps(){_epQ=[];var cd=(code.value||'').replace(/\D/g,'');var src=(OVDATA&&OVDATA.x&&(OVDATA.x.source||'dt'))||'dt';
  Object.keys(EPS).forEach(function(id){var e=EPS[id];if(!e)return;
   if(e.link){var u='/seeds?link='+encodeURIComponent(e.link)+(cd.length===6?('&code='+cd+'&src='+encodeURIComponent(src)):'');_epQ.push({id:id,key:'lk:'+e.link,url:u});}
-  else if(e.src==='et'||e.src==='wf'){var _u2=e.url||e.content_id;
-   if(_u2)_epQ.push({id:id,key:e.src+':'+_u2,url:'/seeds?code='+cd+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(_u2)});}
-  else if(e.content_id&&e.tabla){_epQ.push({id:id,key:'dt:'+e.tabla+':'+e.content_id,url:'/dtpacked?c='+encodeURIComponent(e.content_id)+'&tb='+encodeURIComponent(e.tabla)});}
+  else if(e.content_id&&e.tabla&&(e.src||src)==='dt'){_epQ.push({id:id,key:'dt:'+e.tabla+':'+e.content_id,url:'/dtpacked?c='+encodeURIComponent(e.content_id)+'&tb='+encodeURIComponent(e.tabla)});}
+  else{
+   // CUALQUIER otra fuente con ficha propia. Antes esta rama solo miraba
+   // et/wf, asi que un capitulo de DivxTotal que llegara sin enlace directo
+   // se quedaba mudo -- y las semillas son innegociables en todas las fuentes.
+   // El relay resuelve dx el solo y et/wf por cualquier caja viva, con o sin
+   // codigo puesto, y cachea el hash siete dias.
+   var _s=e.src||src,_u2=e.url||e.content_id;
+   if(_u2&&_s&&_s!=='dt')_epQ.push({id:id,key:_s+':'+_u2,url:'/seeds?code='+cd+'&src='+encodeURIComponent(_s)+'&url='+encodeURIComponent(_u2)});}
  });pumpEp();}
 function pumpEp(){while(_epActive<2&&_epQ.length){var job=_epQ.shift();var c=_epCache[job.key];
   if(c!==undefined){epBadge(job,c);continue;}
@@ -10342,9 +10849,14 @@ def _self_keepalive():
 # seguridad. Soltar lastre cuesta medio segundo en la siguiente busqueda; que
 # el sistema mate el proceso son ~30 s de servicio caido para todos.
 _MEM_T0 = [_t.time()]
-_MEM_AVISO_MB = 190.0      # poda suave: lo que se rehace solo y nadie nota
-_MEM_GRAVE_MB = 240.0      # poda seria: tambien el Inicio (vuelve de /tmp)
-_MEM_WATCH = {"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0, "libero_mb": 0.0}
+# Los numeros, contra el plan REAL: 512 MB para el servicio entero = 2 workers
+# + el master. Sanos son ~210 MB por worker; a 240 ya hay que podar y a 260 este
+# worker sobra. Antes se podaba a 190 y se relevaba a 300: 2x300 = 600 MB, o sea
+# que los topes por si solos PERMITIAN el OOM que nos mata cada dos dias.
+_MEM_AVISO_MB = 150.0      # poda suave: lo que se rehace solo y nadie nota
+_MEM_GRAVE_MB = 200.0      # poda seria: tambien el Inicio (vuelve de /tmp)
+_MEM_WATCH = {"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0, "libero_mb": 0.0,
+              "total": 0.0, "total_max": 0.0}
 
 
 def _rss_mb():
@@ -10354,6 +10866,51 @@ def _rss_mb():
             for ln in f:
                 if ln.startswith("VmRSS:"):
                     return round(int(ln.split()[1]) / 1024.0, 1)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _mem_cgroup_mb():
+    """Memoria del SERVICIO ENTERO (los dos workers + el master), que es
+    EXACTAMENTE lo que mira Render para matarlo. 0.0 si no se puede leer.
+
+    Esto es lo que faltaba. Cada worker vigilaba SU propio RSS con un tope de
+    300 MB... en un plan de 512 MB COMPARTIDO: dos workers a 250 MB no disparan
+    nada y el servicio muere igual. Es lo que paso el 19-09 a las 23:49, dos
+    horas despues de un relevo por 305 MB.
+
+    Se descuenta `inactive_file` (paginas de fichero que el nucleo puede soltar
+    sin coste) igual que hace Kubernetes con el working set: si no, leer
+    /tmp/mw_wfidx.json hincharia el numero y nos relevariamos sin motivo."""
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:      # cgroup v2
+            uso = int(f.read().strip())
+        inact = 0
+        try:
+            with open("/sys/fs/cgroup/memory.stat") as f:
+                for ln in f:
+                    if ln.startswith("inactive_file "):
+                        inact = int(ln.split()[1])
+                        break
+        except Exception:
+            pass
+        return round(max(0, uso - inact) / 1048576.0, 1)
+    except Exception:
+        pass
+    try:
+        with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:  # v1
+            uso = int(f.read().strip())
+        inact = 0
+        try:
+            with open("/sys/fs/cgroup/memory/memory.stat") as f:
+                for ln in f:
+                    if ln.startswith("total_inactive_file "):
+                        inact = int(ln.split()[1])
+                        break
+        except Exception:
+            pass
+        return round(max(0, uso - inact) / 1048576.0, 1)
     except Exception:
         pass
     return 0.0
@@ -10414,8 +10971,22 @@ def _mem_poda(grave=False):
 # releva solo. El pellizco aleatorio es para que los dos workers NO se releven a
 # la vez y deje de haber quien atienda.
 import random as _rnd_mem
-_MEM_HILOS_MAX = 140 + _rnd_mem.randint(0, 40)
-_MEM_MATAR_MB = 300.0
+_MEM_HILOS_MAX = 90 + _rnd_mem.randint(0, 30)
+# El pellizco aleatorio tambien en la memoria: sin el, los dos workers cruzan el
+# mismo numero casi a la vez y se relevan los dos juntos -> la app se queda muda
+# unos segundos, que es justo lo que se intenta evitar.
+# 225-245 por worker: DOS workers en el peor caso son 490 MB y el master ronda
+# los 20 -> cabe en los 512 del plan. Con 300 (lo de antes) dos workers sumaban
+# 600 y el tope por si solo ya permitia el OOM. Si ademas se puede leer el
+# cgroup, manda _MEM_TOTAL_MB, que es la medida buena.
+_MEM_MATAR_MB = 225.0 + _rnd_mem.randint(0, 20)
+# Y el techo del SERVICIO (cgroup): si el conjunto se acerca al limite del plan,
+# se releva este worker aunque el suyo propio vaya holgado. Render mata a los
+# 512; a 400 aun hay margen de sobra para una salida ordenada.
+_MEM_TOTAL_MB = 400.0 + _rnd_mem.randint(0, 25)
+# Un worker recien nacido NO se releva: si algo deja la memoria alta desde el
+# arranque, relevarse en bucle deja el servicio muerto -- peor que el problema.
+_MEM_EDAD_MIN = 150.0
 _MEM_RELEVOS_FILE = "/tmp/mw_relevos.json"
 
 
@@ -10448,25 +11019,46 @@ def _mem_vigila():
     while True:
         try:
             r = _rss_mb()
+            tot = _mem_cgroup_mb()        # el servicio ENTERO (lo que mira Render)
             _MEM_WATCH["rss"] = r
+            _MEM_WATCH["total"] = tot
             if r > _MEM_WATCH["max"]:
                 _MEM_WATCH["max"] = r
-            if r >= _MEM_GRAVE_MB:
+            if tot > _MEM_WATCH.get("total_max", 0):
+                _MEM_WATCH["total_max"] = tot
+            # Podar antes si el CONJUNTO va apurado, aunque este worker vaya
+            # holgado: la memoria que mata el servicio es la suma, no la mia.
+            if r >= _MEM_GRAVE_MB or (tot and tot >= _MEM_TOTAL_MB - 60):
                 _mem_poda(grave=True)
-            elif r >= _MEM_AVISO_MB:
+            elif r >= _MEM_AVISO_MB or (tot and tot >= _MEM_TOTAL_MB - 120):
                 _mem_poda(grave=False)
             _bnd_revisa()
             # Relevo: hilos colgados que ya no vuelven, o memoria que no baja ni
             # despues de podar. Mejor un relevo de 3 s con el otro worker
             # cubriendo que el OOM, que se lleva el servicio entero por delante.
-            h = _thr.active_count()
-            if h >= _MEM_HILOS_MAX:
-                _mem_relevo("hilos=%d (tope %d)" % (h, _MEM_HILOS_MAX))
-            elif _rss_mb() >= _MEM_MATAR_MB:
-                _mem_relevo("memoria=%.0f MB tras podar" % _rss_mb())
+            # Nunca a un worker recien nacido: si naciera ya por encima del tope
+            # se relevaria en bucle y el servicio no llegaria a contestar nunca.
+            if (_t.time() - _MEM_T0[0]) >= _MEM_EDAD_MIN:
+                h = _thr.active_count()
+                r2 = _rss_mb()
+                t2 = _mem_cgroup_mb()
+                if h >= _MEM_HILOS_MAX:
+                    _mem_relevo("hilos=%d (tope %d)" % (h, _MEM_HILOS_MAX))
+                elif r2 >= _MEM_MATAR_MB:
+                    _mem_relevo("memoria=%.0f MB tras podar" % r2)
+                elif t2 and t2 >= _MEM_TOTAL_MB and r2 >= 120:
+                    # El tope del servicio lo aplica el worker GORDO. Sin la
+                    # condicion del RSS propio, un worker recien nacido y
+                    # limpio podria relevarse una y otra vez por culpa del
+                    # otro, y ahi si nos quedariamos sin servicio.
+                    _mem_relevo("servicio=%.0f MB (mio %.0f) tras podar"
+                                % (t2, r2))
         except Exception:
             pass
-        _t.sleep(30)
+        # Cada 8 s, no cada 30: una busqueda puede sumar decenas de MB en
+        # segundos y entre dos muestras daba tiempo a morir sin enterarse.
+        # Leer /proc y el cgroup son dos ficheros: no cuesta nada.
+        _t.sleep(8)
 
 
 _MEM_WATCH_PID = [0]
@@ -10501,7 +11093,7 @@ def _mem_watch_asegura():
         # Los numeros heredados del padre no son de este proceso.
         _MEM_T0[0] = _t.time()
         _MEM_WATCH.update({"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0,
-                           "libero_mb": 0.0})
+                           "libero_mb": 0.0, "total": 0.0, "total_max": 0.0})
     _start_mem_watch()
 
 
@@ -10516,9 +11108,15 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
-    out = {"build": "dtbl14", "pid": os.getpid(), "rss_mb": _rss_mb(),
+    out = {"build": BUILD, "pid": os.getpid(), "rss_mb": _rss_mb(),
+           # El numero que de verdad decide si Render nos mata: el del servicio
+           # entero. Si sale 0.0 es que el cgroup no se pudo leer y el vigilante
+           # esta funcionando solo con el RSS de cada worker (como antes).
+           "servicio_mb": _mem_cgroup_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
-           "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH)}
+           "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH),
+           "enrich": dict(_ENR_STATS, vuelo=_ENR_VUELO[0], max=_ENR_MAX,
+                          bg_en_vuelo=len(_BGENR_VUELO))}
     # Peso de cada cacha EN MEMORIA. Se mide UNA entrada y se multiplica: medir
     # todas obligaria a serializarlas enteras, que es justo lo que no se quiere
     # hacer en un endpoint de diagnostico de memoria.
@@ -10596,7 +11194,8 @@ def catmem():
                                     for v in list(_BND_QUIEN.values())[:8]}
     except Exception:
         out["colgados"] = {}
-    out["relevo"] = {"hilos_max": _MEM_HILOS_MAX, "mb_max": _MEM_MATAR_MB}
+    out["relevo"] = {"hilos_max": _MEM_HILOS_MAX, "mb_max": _MEM_MATAR_MB,
+                     "servicio_max": _MEM_TOTAL_MB}
     out["tarpit_cortes"] = dict(_TARPIT)
     try:      # relevos de todos los workers desde el ultimo despliegue
         with open(_MEM_RELEVOS_FILE) as f:
