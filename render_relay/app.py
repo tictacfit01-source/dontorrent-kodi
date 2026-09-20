@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl27"
+BUILD = "dtbl28"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -9499,12 +9499,17 @@ function setView(v){CURVIEW=v;
 function goView(v){
  if(v==='inicio'){if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
  mwOpen('tab',null,function(){setView('inicio')});setView(v);}
-function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
+function chip(kind,intento){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
  // el Inicio vuelve donde lo dejaste (antes siempre a Estrenos)
  try{localStorage.setItem('mw_chip',kind)}catch(e){}
+ intento=intento||0;
  INI={kind:kind,page:1,loading:false,more:true,src:''};
  var g=$('inicio-grid');g.className='';g.innerHTML=skelGrid();
- var slow=setTimeout(function(){if(g.querySelector('.skph')){g.className='msg';g.innerHTML='<span class="spin"></span> Despertando el servidor… (solo la primera vez)';}},7000);
+ // El aviso de que el servidor esta despertando. En un reintento sale YA: el
+ // usuario lleva rato mirando y merece saber que seguimos en ello.
+ var avisa=function(){if(g.querySelector('.skph')||g.className==='msg'){g.className='msg';
+  g.innerHTML='<span class="spin"></span> Despertando el servidor… puede tardar un minuto';}};
+ var slow=setTimeout(avisa,intento?0:7000);
  // Timeout duro: si DonTorrent va lento/caido NUNCA dejamos la app colgada.
  var ctrl=(window.AbortController?new AbortController():null);var done=false;
  var to=setTimeout(function(){if(!done&&ctrl)ctrl.abort();},12000);
@@ -9526,7 +9531,14 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  function box(pend){boxMerge('inicio',g,'latest','','et');
   if(pend)mixHome(kind,g);}
  function retry(){g.className='msg';g.innerHTML='No se pudo cargar ahora. <a href="javascript:void(0)" onclick="chip(\''+kind+'\')">Reintentar</a>';}
- function fallback(){ // DonTorrent vacio/lento/caido: que el box (Estrenos) llene; si no, reintento
+ function fallback(){
+  // El servidor gratuito de Render se DUERME, y arrancar en frio le cuesta
+  // cerca de un minuto: mas que el tope de esta peticion. Antes se acababa
+  // siempre en "No se pudo cargar" con un enlace para pulsar -- justo cuando
+  // lo unico que habia que hacer era esperar. Ahora se reintenta SOLO, hasta
+  // cuatro veces (cubre ~60 s), y el aviso se queda a la vista mientras tanto.
+  if(intento<4){avisa();setTimeout(function(){chip(kind,intento+1)},3500);return}
+  // DonTorrent vacio/lento/caido: que el box (Estrenos) llene; si no, reintento
   LISTS.inicio=[];ensureGrid();box(1);
   if(kind==='estrenos'){setTimeout(function(){if(!g.querySelector('.card'))retry();},14000);}else{retry();}}
  fetch('/catbrowse?kind='+kind+'&page=1&mix=1&code='+(code.value||'').replace(/\D/g,''),ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
