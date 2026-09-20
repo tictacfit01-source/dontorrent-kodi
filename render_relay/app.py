@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl24"
+BUILD = "dtbl25"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4919,6 +4919,30 @@ def _cat_group_episodes(items):
     return out
 
 
+# Lo que una version puede REGALARLE a otra de la misma peli. Nunca la ruta ni
+# el identificador (esos son de SU fuente): solo los datos de presentacion.
+_HEREDA_CAMPOS = ("poster", "thumb", "rating", "year", "overview", "backdrop",
+                  "genres", "tmdb_id", "trailer", "runtime")
+
+
+def _hereda_meta(dst, src):
+    """Rellena los HUECOS de dst con lo que traiga src. Nunca pisa nada.
+
+    Hace falta porque al deduplicar se descartaba la version perdedora ENTERA,
+    y con ella su caratula. Pasa de verdad: TMDB banea la IP de Render la mitad
+    del tiempo, asi que es normal que una version tenga poster y otra no --
+    tirar la que lo tiene es dejar la tarjeta en gris teniendo la imagen."""
+    if not isinstance(dst, dict) or not isinstance(src, dict):
+        return dst
+    for f in _HEREDA_CAMPOS:
+        v = dst.get(f)
+        if v is None or v == "" or v == []:
+            n = src.get(f)
+            if n is not None and n != "" and n != []:
+                dst[f] = n
+    return dst
+
+
 def _cat_rank_dedup(items, q):
     qn = _et_norm(q)
     qtoks = [t for t in qn.split() if len(t) > 1 and t not in _DX_STOP]
@@ -4943,12 +4967,20 @@ def _cat_rank_dedup(items, q):
                 withy[k] = it
                 order.append(k)
             elif qr(it) > qr(withy[k]):
+                _hereda_meta(it, withy[k])      # lo bueno del viejo, al nuevo
                 withy[k] = it
+            else:
+                _hereda_meta(withy[k], it)      # y al reves cuando pierde
             titleset.setdefault((tn, kind), set()).add(yr)
         else:
             nk = (tn, kind)   # mejor calidad entre los SIN año del mismo titulo
-            if nk not in noyear or qr(it) > qr(noyear[nk]):
+            if nk not in noyear:
                 noyear[nk] = it
+            elif qr(it) > qr(noyear[nk]):
+                _hereda_meta(it, noyear[nk])
+                noyear[nk] = it
+            else:
+                _hereda_meta(noyear[nk], it)
     # FASE 2: un item SIN año suele ser el MISMO homonimo que uno CON año (TMDB solo
     # le fallo el año) -> NO crear tarjeta nueva "pelada"; se descarta y, si el
     # titulo tiene UNA sola peli, le sube la calidad. Si NINGUN homonimo trae año
@@ -6770,6 +6802,69 @@ def _ih_from_link(link):
     return ""
 
 
+@app.post("/seedsknown")
+def seedsknown():
+    """Las semillas QUE YA SABEMOS, de una cuadricula entera y de una tacada.
+
+    El dueno pide que las semillas se vean; hasta ahora solo salian al abrir
+    la ficha. Pedirlas por tarjeta esta descartado desde hace tiempo y con
+    razon: eran ~30 descargas de .torrent por pantalla y es lo que mas baneaba
+    la IP (ver Memory, seccion del badge RAR).
+    Esto es lo contrario: NO toca ni una fuente, ni encola trabajo a ninguna
+    caja, ni resuelve ningun infohash. Solo mira lo que ya esta guardado:
+      - DonTorrent: la cache de /dtpacked (el .torrent dura 30 dias y el conteo
+        de seeders 45 min dentro de ella);
+      - las demas: url -> infohash (7 dias) y de ahi el conteo (45 min).
+    Lo que no este, no sale -- y en cuanto alguien abre esa ficha, aparece.
+    Una peticion por cuadricula, y barata: dos ficheros que ya viven en memoria.
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    claves = body.get("k") or []
+    if not isinstance(claves, list) or not claves:
+        return jsonify({"s": {}})
+    claves = [str(k)[:300] for k in claves[:80]]
+    now = _t.time()
+    out = {}
+    dtp = _dtpacked_load()
+    sd = _seeds_load()
+    dih = None
+
+    def _por_ih(ih):
+        if not ih or len(ih) != 40:
+            return None
+        e = sd.get(ih)
+        if e and (now - e.get("ts", 0) < _SEEDS_TTL2):
+            return e.get("s")
+        return None
+
+    for k in claves:
+        try:
+            if k.startswith("dt:"):
+                ent = dtp.get(k[3:])
+                if not ent or (now - ent.get("ts", 0)) >= _DTPACKED_TTL:
+                    continue
+                s = ent.get("s")
+                if s is None or (now - ent.get("sts", 0)) >= _SEEDS_TTL:
+                    s = _por_ih(ent.get("ih"))     # quiza este por infohash
+                if s is not None:
+                    out[k] = s
+            elif k.startswith("u:"):
+                if dih is None:
+                    dih = _dxih_load()
+                c = dih.get(k[2:])
+                if not c or (now - c.get("ts", 0)) >= _DXIH_TTL:
+                    continue
+                s = _por_ih(c.get("ih"))
+                if s is not None:
+                    out[k] = s
+        except Exception:
+            continue
+    return jsonify({"s": out})
+
+
 @app.get("/seeds")
 def seeds_ep():
     ih = re.sub(r"[^a-f0-9]", "", request.args.get("ih", "").lower())[:40]
@@ -7808,6 +7903,25 @@ def catbrowse():
             _store(dxkey, dx_ent)
     if dx_ent:
         return _resp(dx_ent["items"], dx=True, src="dx")
+    # 5) Y si tampoco hay DivxTotal: para la PAGINA 1 no hay nada que hacer,
+    #    pero de la 2 en adelante si -- es el scroll infinito, y hasta ahora
+    #    devolvia SIEMPRE vacio: la pre-carga de las cajas solo trae la pagina 1
+    #    de DonTorrent y Render no alcanza a pedirle la 2. O sea que al llegar
+    #    al final del Inicio no aparecia nada mas, con 5.000 entradas de WolfMax
+    #    guardadas aqui al lado. Se sirven desde el indice local: cero red.
+    if page > 1:
+        try:
+            salto = 12 + (page - 2) * 24        # lo que ya se vio en la pagina 1
+            mas = _wf_home_items(kind, 24, salto)
+            if mas:
+                for _it in mas:
+                    if not _it.get("poster") and _it.get("thumb"):
+                        _it["poster"] = _it["thumb"]
+                mas = _bounded(lambda: _cat_enrich(mas, limit=24), 8.0,
+                               default=mas) or mas
+                return _resp(mas, src="wf", mas=True)
+        except Exception:
+            pass
     return jsonify({"items": []})
 
 
@@ -7911,8 +8025,12 @@ def _zip_largo(a, b):
         yield (a[i] if i < len(a) else None, b[i] if i < len(b) else None)
 
 
-def _wf_home_items(kind, limit=12):
-    """Lo ultimo de WolfMax segun el indice local. Cero red, milisegundos."""
+def _wf_home_items(kind, limit=12, salto=0):
+    """Lo ultimo de WolfMax segun el indice local. Cero red, milisegundos.
+
+    `salto` deja pasar las primeras N tarjetas ya vistas: es lo que permite que
+    el scroll infinito del Inicio siga dando contenido cuando DonTorrent no
+    tiene mas paginas que ofrecer."""
     idx = _wfidx_load()
     if not idx:
         return []
@@ -7933,7 +8051,7 @@ def _wf_home_items(kind, limit=12):
         orden.append((int(m.group(1)) if m else 0, url, e))
     orden.sort(key=lambda x: -x[0])
     items = []
-    for _id, url, e in orden[:limit * 6]:   # margen: muchos son la misma peli
+    for _id, url, e in orden[salto:salto + limit * 6]:  # margen: muchos repiten
         _im = e.get("i") or ""
         items.append({
             "title": e.get("t") or "",
@@ -8458,6 +8576,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .card .tl{position:absolute;top:6px;left:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-start;z-index:1}
 .card .q{background:rgba(10,132,255,.85);border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700}
 .card .rartag{background:rgba(255,159,110,.95);color:#1a0d06;border-radius:6px;padding:2px 7px;font-size:10px;font-weight:800;letter-spacing:.2px}
+/* Semillas en la tarjeta, cuando ya se saben (ver semillasGrid). Fondo oscuro
+   y no de color liso: va encima de la caratula y no debe competir con ella. */
+.card .gseed{border-radius:6px;padding:2px 7px;font-size:10px;font-weight:800;background:rgba(6,10,20,.72);border:1px solid var(--stroke);backdrop-filter:blur(2px)}
+.card .gseed.s-ok{color:#62e08c;border-color:rgba(48,209,88,.45)}
+.card .gseed.s-low{color:#ffce4d;border-color:rgba(255,196,0,.45)}
+.card .gseed.s-zero{color:#ff8a8a;border-color:rgba(255,77,77,.5)}
 .card .fav{position:absolute;top:4px;right:4px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;background:rgba(0,0,0,.4);border-radius:50%;cursor:pointer}
 .card .m{padding:8px 9px;cursor:pointer}
 .card .t{font-size:12.5px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -8924,7 +9048,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <button id="tab-lista" class="tab" onclick="goView('lista')">Mis listas</button>
   <button id="tab-hist" class="tab" onclick="goView('hist')">Historial</button>
  </div>
- <div class="srclegend">
+ <!-- Nace oculta: la app siempre arranca en el Inicio, que tiene su propia
+      barra de fuentes. setView la ensena en Mis listas y en el Historial. -->
+ <div class="srclegend" style="display:none">
   <span><i style="background:#4a9eff"></i>DonTorrent</span>
   <span><i style="background:#ff9f6e"></i>EliteTorrent</span>
   <span><i style="background:#34d36a"></i>DivxTotal</span>
@@ -9350,7 +9476,15 @@ function setView(v){CURVIEW=v;
   if(tb)tb.classList.toggle('on',k===v)});
  if(v==='lista')renderFavs();
  if(v==='hist')renderHist();
- if(v==='buscar')try{recPinta()}catch(e){}}
+ if(v==='buscar')try{recPinta()}catch(e){}
+ // La leyenda de colores de las fuentes solo donde hace falta. En el Inicio ya
+ // esta la barra de filtro (mismo color, mismo nombre y ademas se puede pulsar)
+ // y en Buscar la barra de progreso, que dice lo que trae cada una: tener las
+ // dos cosas a la vez es decir dos veces lo mismo y robar una linea de pantalla
+ // en un movil. En Mis listas y en el Historial no hay nada que explique que es
+ // "DT" o "WF", asi que ahi se queda.
+ try{var _lg=document.querySelector('.srclegend');
+  if(_lg)_lg.style.display=(v==='lista'||v==='hist')?'':'none';}catch(e){}}
 function goView(v){
  if(v==='inicio'){if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
  mwOpen('tab',null,function(){setView('inicio')});setView(v);}
@@ -9372,7 +9506,13 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  // llega, y se anade al final sin mover nada. WolfMax y DivxTotal ya vienen
  // dentro de /catbrowse (ver _resp en el relay): aqui solo se piden si el relay
  // avisa de que todavia no las tenia calculadas.
- function box(pend){boxMerge('inicio',g,'latest','','et,dx');boxMerge('inicio',g,'latest','','wf');
+ // A la caja se le pide SOLO EliteTorrent, que es la unica que no sabemos
+ // traer de otra forma. WolfMax y DivxTotal ya vienen dentro de /catbrowse
+ // (ver _resp), asi que pedirselas ademas a un Kodi de otra casa era pedir dos
+ // veces lo mismo: dos peticiones y dos trabajos de caja por cada visita al
+ // Inicio, para tirar el resultado en el dedup. Si la mezcla no estaba lista,
+ // mixHome la trae por su cuenta -- tambien sin molestar a ninguna caja.
+ function box(pend){boxMerge('inicio',g,'latest','','et');
   if(pend)mixHome(kind,g);}
  function retry(){g.className='msg';g.innerHTML='No se pudo cargar ahora. <a href="javascript:void(0)" onclick="chip(\''+kind+'\')">Reintentar</a>';}
  function fallback(){ // DonTorrent vacio/lento/caido: que el box (Estrenos) llene; si no, reintento
@@ -9380,8 +9520,16 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
   if(kind==='estrenos'){setTimeout(function(){if(!g.querySelector('.card'))retry();},14000);}else{retry();}}
  fetch('/catbrowse?kind='+kind+'&page=1&mix=1&code='+(code.value||'').replace(/\D/g,''),ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
   done=true;clearTimeout(slow);clearTimeout(to);
-  LISTS.inicio=(d&&d.items)||[];
-  if(!LISTS.inicio.length){fallback();return}
+  var base=(d&&d.items)||[];
+  if(!base.length){fallback();return}
+  // La portada de DonTorrent TAMBIEN se funde. Era el unico sitio de la app que
+  // se pintaba tal cual, y DonTorrent publica la misma pelicula una vez por
+  // calidad ("Carrera de bestias" esta en 4K y en DVDRip, dos fichas suyas):
+  // salian dos tarjetas iguales, una al lado de la otra. Ahora es UNA, con la
+  // mejor calidad y la otra dentro en "Tambien en", igual que en la busqueda.
+  // No se pierde nada: las dos versiones siguen siendo elegibles.
+  LISTS.inicio=[];
+  mergeResults('inicio',g,base,1);
   // Las otras fuentes vienen en la MISMA respuesta: se funden (misma peli en
   // dos sitios = una tarjeta con la mejor calidad y la otra en "Tambien en") y
   // se reparten ANTES de pintar. Una sola pintada, orden definitivo.
@@ -9391,11 +9539,17 @@ function chip(kind){document.querySelectorAll('.chip').forEach(function(c){c.cla
  }).catch(function(){done=true;clearTimeout(slow);clearTimeout(to);fallback()})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
  fetch('/catbrowse?kind='+INI.kind+'&page='+next+'&code='+(code.value||'').replace(/\D/g,'')).then(function(r){return r.json()}).then(function(d){
-  var items=(d&&d.items)||[];var have={};LISTS.inicio.forEach(function(x){have[x.kind+':'+x.content_id]=1});
-  var fresh=items.filter(function(x){var k=x.kind+':'+x.content_id;if(have[k])return false;have[k]=1;return true});
-  if(!fresh.length){INI.more=false;INI.loading=false;return}
-  var from=LISTS.inicio.length;LISTS.inicio=LISTS.inicio.concat(fresh);INI.page=next;
-  appendGrid($('inicio-grid'),'inicio',from);INI.loading=false;
+  var items=(d&&d.items)||[];
+  INI.page=next;                       // avanza SIEMPRE: si no, se repetiria la misma pagina
+  if(!items.length||next>=14){INI.more=false;INI.loading=false;return}
+  // Se funde con mergeResults, igual que todo lo demas: deduplica por TITULO y
+  // año, no solo por identificador. Hacia falta porque las paginas siguientes
+  // salen del indice de WolfMax, que publica la misma pelicula una vez por
+  // calidad (identificadores distintos, mismo titulo) -> salian repetidas.
+  // Ademas asi se conserva la mejor version, sus "Tambien en", y se actualiza
+  // el contador de la barra de fuentes.
+  mergeResults('inicio',$('inicio-grid'),items);
+  INI.loading=false;
  }).catch(function(){INI.loading=false})}
 window.addEventListener('scroll',function(){
  if($('pane-inicio').classList.contains('hidden'))return;
@@ -9421,15 +9575,27 @@ function mergeResults(list,g,items,mudo){
  var byKey={},titles={},at={};
  LISTS[list].forEach(function(x,i){var t=norm(x.title);if(!t)return;titles[t]=1;
   var k=t+'|'+(x.year||'');byKey[k]=1;if(at[k]===undefined)at[k]=i;if(at[t+'|*']===undefined)at[t+'|*']=i;});
- var swapped=[];
- var fresh=items.filter(function(x){var t=norm(x.title);if(!t)return true;var y=String(x.year||'');
-  var k=t+'|'+y;
-  if(y){if(byKey[k]){upgrade(list,k,x,at,swapped);return false}byKey[k]=1;titles[t]=1;return true;}
-  if(titles[t]){upgrade(list,t+'|*',x,at,swapped);return false}titles[t]=1;byKey[t+'|']=1;return true;});
- if(fresh.length){var from=LISTS[list].length;LISTS[list]=LISTS[list].concat(fresh);
-  for(var j=0;j<fresh.length;j++){var tt=norm(fresh[j].title);if(!tt)continue;
-   var kk=tt+'|'+(fresh[j].year||'');if(at[kk]===undefined)at[kk]=from+j;if(at[tt+'|*']===undefined)at[tt+'|*']=from+j;}
-  if(!mudo){if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}}
+ // Se recorre item a item y se va AnADIENDO A LA LISTA sobre la marcha, en vez
+ // de filtrar primero y concatenar despues. Parece un detalle y no lo es: con
+ // el filtro, los items del lote que todavia no estaban en la lista no tenian
+ // indice (`at`), asi que al fundir DOS VERSIONES DEL MISMO LOTE -- que es lo
+ // normal, DonTorrent manda la misma peli en 4K y en DVDRip en la misma
+ // respuesta -- `upgrade` recibia un indice vacio, se rendia, y la version
+ // perdedora se perdia ENTERA: ni se fundia ni quedaba en "Tambien en".
+ var swapped=[],from=LISTS[list].length;
+ var marca=function(t,y,i){var k=t+'|'+y;if(at[k]===undefined)at[k]=i;
+  if(at[t+'|*']===undefined)at[t+'|*']=i;};
+ for(var q=0;q<items.length;q++){
+  var x=items[q],t=norm(x.title);
+  if(!t){LISTS[list].push(x);continue}
+  var y=String(x.year||''),k=t+'|'+y;
+  if(y&&byKey[k]){upgrade(list,k,x,at,swapped);continue}
+  if(!y&&titles[t]){upgrade(list,t+'|*',x,at,swapped);continue}
+  var idx=LISTS[list].length;LISTS[list].push(x);
+  byKey[k]=1;titles[t]=1;marca(t,y,idx);
+ }
+ if(LISTS[list].length>from&&!mudo){
+  if(g.querySelector('.grid'))appendGrid(g,list,from);else renderGrid(g,list);}
  // Repintar SOLO las tarjetas sustituidas (no toda la cuadricula: el usuario
  // puede estar haciendo scroll y no se le mueve nada de sitio).
  if(!mudo)for(var s2=0;s2<swapped.length;s2++)repaintCard(g,list,swapped[s2]);
@@ -9480,9 +9646,24 @@ function upgrade(list,k,x,at,swapped){var i=at[k];if(i===undefined)return;
   x.alts=addAlt(cur.alts,x,x);
   LISTS[list][i]=x;if(swapped.indexOf(i)<0)swapped.push(i);}
  else{
-  if(union){cur.eps=union;if(swapped.indexOf(i)<0)swapped.push(i);}
+  // La que llega PIERDE la tarjeta, pero puede traer algo que a la ganadora le
+  // FALTA. Sobre todo la caratula: DonTorrent gana casi siempre por fuente y,
+  // si su enriquecimiento con TMDB se quedo sin respuesta (que pasa la mitad
+  // de las veces porque TMDB banea la IP de Render), la tarjeta salia en gris
+  // teniendo al lado la imagen de WolfMax. Solo se rellenan los HUECOS: nunca
+  // se pisa un dato bueno de la que manda.
+  // `temps` NO se hereda a proposito: son las rutas de las temporadas de ESA
+  // fuente y no sirven para otra.
+  var cambio=false;
+  ['poster','rating','year','overview','backdrop','tmdb_id','genres'].forEach(function(f){
+   var v=cur[f],n=x[f];
+   var vacio=(v===undefined||v===null||v===''||(f==='genres'&&!(v&&v.length)));
+   var hay=(n!==undefined&&n!==null&&n!==''&&(f!=='genres'||(n&&n.length)));
+   if(vacio&&hay){cur[f]=n;cambio=true;}});
+  if(union){cur.eps=union;cambio=true;}
   else if(!ce&&xe)cur.epsAlt=xe;
-  cur.alts=addAlt(cur.alts,x,cur);}}
+  cur.alts=addAlt(cur.alts,x,cur);
+  if(cambio&&swapped.indexOf(i)<0)swapped.push(i);}}
 // Guarda la version que PIERDE la tarjeta (otra fuente, quizá mejor calidad)
 // para poder elegirla luego en la ficha. Sin anidar: las alternativas de la
 // perdedora se suben al mismo nivel, y nunca se repite una fuente.
@@ -10361,7 +10542,42 @@ function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').rep
  // banea a Render) y solo con codigo -> se mantiene.
  for(var i=from;i<items.length;i++){var x=items[i];if(x.kind!=='movie')continue;var s=x.source||'dt';
   if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
- pumpRar()}
+ pumpRar();semillasGrid(el,list,from)}
+// ---- Semillas en la CUADRICULA, gratis ------------------------------------
+// Las que el relay YA SABE (porque alguien abrio esa ficha antes): una sola
+// peticion por cuadricula, cero consultas a las fuentes y cero trabajo para las
+// cajas. Lo que no se sepa, no se pinta -- y aparece solo en cuanto se abre la
+// ficha una vez. En Mi lista y en el Historial es donde mas se nota, que es
+// justo donde uno mira antes de poner algo.
+var _sgCache={};
+function sgKey(x){
+ if(x.kind!=='movie')return null;                  // en una serie, cada capitulo tiene las suyas
+ var s=x.source||'dt';
+ if(s==='dt')return (x.content_id&&x.tabla)?('dt:'+x.tabla+':'+x.content_id):null;
+ var u=x.url||x.content_id;return u?('u:'+u):null;}
+function semillasGrid(el,list,from){
+ var items=LISTS[list],claves=[],mapa={};
+ for(var i=from;i<items.length;i++){
+  var k=sgKey(items[i]);if(!k)continue;
+  mapa[k]=(mapa[k]||[]).concat([i]);
+  if(_sgCache[k]!==undefined){sgBadge(el,i,_sgCache[k]);continue}
+  if(claves.indexOf(k)<0)claves.push(k);}
+ if(!claves.length)return;
+ fetch('/seedsknown',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({k:claves.slice(0,80)})})
+  .then(function(r){return r.json()}).then(function(d){
+   var s=(d&&d.s)||{};
+   for(var k in s){_sgCache[k]=s[k];
+    (mapa[k]||[]).forEach(function(i){sgBadge(el,i,s[k])})}
+  }).catch(function(){});}
+function sgBadge(el,i,n){
+ if(typeof n!=='number')return;
+ var g=el.querySelector('.grid');if(!g)return;
+ var c=g.querySelector('.card[data-i="'+i+'"]');if(!c)return;
+ var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.gseed'))return;
+ var b=document.createElement('span');
+ b.className='gseed '+(n<=0?'s-zero':(n<3?'s-low':'s-ok'));
+ b.textContent='🌱 '+n;tl.appendChild(b)}
 function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
  var c=_rarCache[job.key];
  if(c!==undefined){if(c.rar)rarBadge(job);if(c.q)qualBadge(job,c.q);continue}
@@ -10764,7 +10980,12 @@ function lazyEps(){_epQ=[];var cd=(code.value||'').replace(/\D/g,'');var src=(OV
    var _s=e.src||src,_u2=e.url||e.content_id;
    if(_u2&&_s&&_s!=='dt')_epQ.push({id:id,key:_s+':'+_u2,url:'/seeds?code='+cd+'&src='+encodeURIComponent(_s)+'&url='+encodeURIComponent(_u2)});}
  });pumpEp();}
-function pumpEp(){while(_epActive<2&&_epQ.length){var job=_epQ.shift();var c=_epCache[job.key];
+// De DOS en dos se hacia eterno en una serie larga: con 35 capitulos y ~1 s por
+// consulta, la ultima semilla tardaba mas de medio minuto en aparecer. Con
+// CUATRO, la mitad. No se dispara mas alto porque cada consulta de EliteTorrent
+// o WolfMax puede acabar encolando trabajo a un Kodi de otra casa, y ahi el
+// numero total importa tanto como el ritmo.
+function pumpEp(){while(_epActive<4&&_epQ.length){var job=_epQ.shift();var c=_epCache[job.key];
   if(c!==undefined){epBadge(job,c);continue;}
   _epActive++;(function(job){fetch(job.url).then(function(r){return r.json()}).then(function(p){_epActive--;
    var info={seeds:(p&&typeof p.seeds==='number')?p.seeds:null,rar:!!(p&&p.packed===true)};_epCache[job.key]=info;epBadge(job,info);pumpEp();}).catch(function(){_epActive--;pumpEp();});})(job);}}
