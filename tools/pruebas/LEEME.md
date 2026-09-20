@@ -15,6 +15,14 @@ PYTHONDONTWRITEBYTECODE=1 python -u tools/pruebas/hilos_enrich.py
 una cadena por otra del mismo tamaño puede dejar el `.pyc` viejo por bueno y
 acabas probando el código de antes.)
 
+**`fusion.js`** (Node) — el corazón del motor: qué tarjeta se queda con el sitio
+cuando la misma película viene de varias fuentes, qué se guarda en "También en"
+y qué pasa con los capítulos. Ejecuta el **código real** de la web, extraído de
+`_CAT_PAGE`. Admite una ruta para comparar con otra versión:
+`node tools/pruebas/fusion.js /ruta/a/otro/app.py`.
+
+**`caratulas.py`** — que no se tire una carátula que ya teníamos al deduplicar.
+
 ## Qué vigila cada una
 
 **`busqueda.py`** — el filtro de relevancia (`_q_relevant`). 35 casos reales,
