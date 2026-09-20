@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl25"
+BUILD = "dtbl26"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7846,6 +7846,28 @@ def catbrowse():
         return jsonify(out)
 
     dt_ent = _load(key, seed=True)
+    # 0) SCROLL INFINITO (pagina 2 en adelante). Va lo PRIMERO a proposito: de
+    #    la segunda pagina DonTorrent no tiene nada que dar (la pre-carga de las
+    #    cajas solo trae la primera y Render no lo alcanza) y DivxTotal tarda
+    #    -- medido en produccion: 14,3 s para acabar sirviendo WolfMax igual, y
+    #    14 s mirando una pantalla quieta no es scroll infinito, es una espera.
+    #    El indice local de WolfMax responde en milisegundos y tiene 5.000
+    #    entradas. Si algun dia la caja precarga la pagina 2 de DonTorrent,
+    #    `dt_ent` existira y mandara ella.
+    if page > 1 and not dt_ent:
+        try:
+            salto = 12 + (page - 2) * 24        # lo que ya se vio antes
+            mas = _wf_home_items(kind, 24, salto)
+            if mas:
+                for _it in mas:
+                    if not _it.get("poster") and _it.get("thumb"):
+                        _it["poster"] = _it["thumb"]
+                mas = _bounded(lambda: _cat_enrich(mas, limit=24), 6.0,
+                               default=mas) or mas
+                return _resp(mas, src="wf", mas=True)
+        except Exception:
+            pass
+
     # 1) DonTorrent FRESCO en cache -> al instante, sin tocar ninguna fuente.
     if dt_ent and (now - dt_ent.get("ts", 0)) < _CATBROWSE_TTL:
         return _resp(dt_ent["items"], cached=True, src="dt")
@@ -7903,25 +7925,6 @@ def catbrowse():
             _store(dxkey, dx_ent)
     if dx_ent:
         return _resp(dx_ent["items"], dx=True, src="dx")
-    # 5) Y si tampoco hay DivxTotal: para la PAGINA 1 no hay nada que hacer,
-    #    pero de la 2 en adelante si -- es el scroll infinito, y hasta ahora
-    #    devolvia SIEMPRE vacio: la pre-carga de las cajas solo trae la pagina 1
-    #    de DonTorrent y Render no alcanza a pedirle la 2. O sea que al llegar
-    #    al final del Inicio no aparecia nada mas, con 5.000 entradas de WolfMax
-    #    guardadas aqui al lado. Se sirven desde el indice local: cero red.
-    if page > 1:
-        try:
-            salto = 12 + (page - 2) * 24        # lo que ya se vio en la pagina 1
-            mas = _wf_home_items(kind, 24, salto)
-            if mas:
-                for _it in mas:
-                    if not _it.get("poster") and _it.get("thumb"):
-                        _it["poster"] = _it["thumb"]
-                mas = _bounded(lambda: _cat_enrich(mas, limit=24), 8.0,
-                               default=mas) or mas
-                return _resp(mas, src="wf", mas=True)
-        except Exception:
-            pass
     return jsonify({"items": []})
 
 
