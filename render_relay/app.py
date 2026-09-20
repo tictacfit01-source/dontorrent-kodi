@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl31"
+BUILD = "dtbl32"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -10765,7 +10765,7 @@ function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').rep
  // no se autobanea. El badge RAR de DivxTotal va por el BOX (IP residencial, no
  // banea a Render) y solo con codigo -> se mantiene.
  for(var i=from;i<items.length;i++){var x=items[i];if(x.kind!=='movie')continue;var s=x.source||'dt';
-  if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
+  if(s==='dx'&&cd.length===6)_rarQ.push({el:el,list:list,i:i,ik:itemKey(x),key:'dx:'+(x.url||x.content_id),f:'rar',url:'/catboxrar?code='+cd+'&src=dx&url='+encodeURIComponent(x.url||x.content_id)});}
  pumpRar();semillasGrid(el,list,from)}
 // ---- Semillas en la CUADRICULA, gratis ------------------------------------
 // Las que el relay YA SABE (porque alguien abrio esa ficha antes): una sola
@@ -10780,11 +10780,13 @@ function sgKey(x){
  if(s==='dt')return (x.content_id&&x.tabla)?('dt:'+x.tabla+':'+x.content_id):null;
  var u=x.url||x.content_id;return u?('u:'+u):null;}
 function semillasGrid(el,list,from){
- var items=LISTS[list],claves=[],mapa={};
+ var items=LISTS[list],claves=[],quien={};
  for(var i=from;i<items.length;i++){
   var k=sgKey(items[i]);if(!k)continue;
-  mapa[k]=(mapa[k]||[]).concat([i]);
-  if(_sgCache[k]!==undefined){sgBadge(el,i,_sgCache[k]);continue}
+  // se apunta QUIEN lo pidio, no solo donde estaba: cuando llegue la
+  // respuesta esa posicion puede tener ya otra pelicula (ver idxDe).
+  quien[k]=(quien[k]||[]).concat([{ik:itemKey(items[i]),i:i}]);
+  if(_sgCache[k]!==undefined){sgBadge(el,list,quien[k][quien[k].length-1],_sgCache[k]);continue}
   if(claves.indexOf(k)<0)claves.push(k);}
  if(!claves.length)return;
  fetch('/seedsknown',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -10792,12 +10794,11 @@ function semillasGrid(el,list,from){
   .then(function(r){return r.json()}).then(function(d){
    var s=(d&&d.s)||{};
    for(var k in s){_sgCache[k]=s[k];
-    (mapa[k]||[]).forEach(function(i){sgBadge(el,i,s[k])})}
+    (quien[k]||[]).forEach(function(q){sgBadge(el,list,q,s[k])})}
   }).catch(function(){});}
-function sgBadge(el,i,n){
- if(typeof n!=='number')return;
- var g=el.querySelector('.grid');if(!g)return;
- var c=g.querySelector('.card[data-i="'+i+'"]');if(!c)return;
+function sgBadge(el,list,q,n){
+ if(typeof n!=='number'||!q)return;
+ var c=badgeCard(el,list,q.ik,q.i);if(!c)return;
  var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.gseed'))return;
  var b=document.createElement('span');
  b.className='gseed '+(n<=0?'s-zero':(n<3?'s-low':'s-ok'));
@@ -10809,8 +10810,29 @@ function pumpRar(){while(_rarActive<2&&_rarQ.length){var job=_rarQ.shift();
    var rar=!!(p&&p[job.f]===true);var q=(p&&p.quality)||'';
    _rarCache[job.key]={rar:rar,q:q};
    if(rar)rarBadge(job);if(q)qualBadge(job,q);pumpRar()}).catch(function(){_rarActive--;pumpRar()})})(job)}}
-function rarBadge(job){var g=job.el.querySelector('.grid');if(!g)return;var c=g.querySelector('.card[data-i="'+job.i+'"]');if(!c)return;var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
-function qualBadge(job,q){if(!q)return;var g=job.el.querySelector('.grid');if(!g)return;var c=g.querySelector('.card[data-i="'+job.i+'"]');if(!c)return;var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.q'))return;var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
+// QUIEN es un item, para no confundirlo con el de al lado.
+function itemKey(x){return x?((x.source||'dt')+'|'+(x.content_id||x.url||x.path||x.title||'')):''}
+// Donde esta AHORA ese item. Los badges (RAR, calidad, semillas) se piden por
+// una tarjeta y llegan segundos despues, y para entonces esa posicion puede
+// tener OTRA pelicula: la busqueda va fundiendo versiones segun llegan las
+// fuentes, y cuando una gana la tarjeta, la de antes se va. Asi acababa un
+// "RAR" de DivxTotal pegado a una pelicula de DonTorrent que no lo es.
+// Devuelve -1 si el item ya no esta en la lista -> no se pinta nada.
+function idxDe(list,ik,iAnterior){
+ var L=LISTS[list]||[];
+ if(L[iAnterior]&&itemKey(L[iAnterior])===ik)return iAnterior;
+ for(var j=0;j<L.length;j++)if(itemKey(L[j])===ik)return j;
+ return -1}
+function badgeCard(el,list,ik,i){
+ var j=idxDe(list,ik,i);if(j<0)return null;
+ var g=el.querySelector('.grid');if(!g)return null;
+ return g.querySelector('.card[data-i="'+j+'"]')}
+function rarBadge(job){var c=badgeCard(job.el,job.list,job.ik,job.i);if(!c)return;
+ var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.rartag'))return;
+ var b=document.createElement('span');b.className='rartag';b.textContent='📦 RAR';tl.appendChild(b)}
+function qualBadge(job,q){if(!q)return;var c=badgeCard(job.el,job.list,job.ik,job.i);if(!c)return;
+ var tl=c.querySelector('.tl');if(!tl||tl.querySelector('.q'))return;
+ var b=document.createElement('span');b.className='q';b.textContent=q;tl.insertBefore(b,tl.firstChild)}
 // El corazón: un SVG (el ♡ de texto se ve distinto en cada móvil y no se puede
 // animar). `on` = guardado; al marcarlo late una vez.
 function heartSVG(on){return '<svg class="hsvg'+(on?' on':'')+'" viewBox="0 0 24 24" aria-hidden="true">'+
