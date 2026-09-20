@@ -210,18 +210,44 @@ def _sim_one(t, q):
     return 0.0
 
 
+# Las secuelas: TMDB las titula en ROMANO ("X-Men II") y las fuentes en arabigo
+# ("X-Men 2"). Sin esto no casan, y entonces gana cualquier entrada basura cuyo
+# titulo sea literalmente "X-MEN 2 - Wolverine's story" (8 votos) en vez de la
+# pelicula de 2003 (11.186). Solo para COMPARAR. Ni "i", ni "x", ni "v": "X-Men"
+# no puede volverse "10-Men" y la uve suele ser "versus" o parte del titulo.
+_ROMANOS = {"ii": "2", "iii": "3", "iv": "4", "vi": "6",
+            "vii": "7", "viii": "8", "ix": "9"}
+
+
+def _romanos(t):
+    try:
+        p = (t or "").split()
+        hay = False
+        for i, w in enumerate(p):
+            r = _ROMANOS.get(w.strip(".,:;-"))
+            if r:
+                p[i] = r
+                hay = True
+        return " ".join(p) if hay else t
+    except Exception:
+        return t
+
+
 def _best_sim(result, queries):
     """Mejor similitud del resultado contra cualquiera de las queries,
     comparando tanto el titulo localizado como el ORIGINAL."""
     title = (result.get("title") or result.get("name") or "").lower()
     orig = (result.get("original_title")
             or result.get("original_name") or "").lower()
+    variantes = [title, orig, _romanos(title), _romanos(orig)]
     best = 0.0
     for q in queries:
         q = (q or "").lower().strip()
         if not q:
             continue
-        best = max(best, _sim_one(title, q), _sim_one(orig, q))
+        for t in variantes:
+            if t:
+                best = max(best, _sim_one(t, q))
     return best
 
 
@@ -244,6 +270,12 @@ def _score(result, preferred_kind, queries, year):
     # Señal de contenido real (no entrada basura).
     real_bonus = 60.0 if votes >= 50 else (20.0 if votes >= 5 else 0.0)
     ghost_penalty = -150.0 if (votes < 5 and pop < 1.0) else 0.0
+    # Y un castigo para las entradas ANECDOTICAS aunque tengan el titulo
+    # clavado: "X-MEN 2 - Wolverine's story" (2005, OCHO votos) le ganaba a
+    # X-Men II (2003, 11.186 votos) solo porque su titulo era mas parecido.
+    # Nadie busca eso; si de verdad es lo unico que hay, sigue saliendo.
+    if votes < 40:
+        ghost_penalty -= 400.0
     # Bonus de año SOLO si ademas hay similitud decente (evita que "cualquier
     # cosa del año X" gane por la fecha).
     y_res = (result.get("release_date") or result.get("first_air_date") or "")[:4]
