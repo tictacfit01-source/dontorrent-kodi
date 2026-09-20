@@ -128,6 +128,31 @@ comprueba('entran las 20', LISTS.inicio.length === 20, LISTS.inicio.length + '')
 mergeResults('inicio', g, lote, 1);   // el mismo lote otra vez
 comprueba('repetir el lote no duplica', LISTS.inicio.length === 20, LISTS.inicio.length + '');
 
+console.log('\n=== 9) La misma peli escrita de tres formas (el caso de EliteTorrent) ===');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'X-Men - Dias del futuro pasado', kind: 'movie', source: 'et', content_id: 'e1' },
+  { title: 'X-Men: Días del futuro pasado', kind: 'movie', source: 'et', content_id: 'e2' },
+  { title: 'X Men dias del futuro pasado', kind: 'movie', source: 'dt', content_id: 'd1' }], 1);
+comprueba('las tres se funden en UNA', LISTS.inicio.length === 1,
+  LISTS.inicio.length + ' tarjetas: ' + LISTS.inicio.map(x => x.title).join(' | '));
+
+console.log('\n=== 10) Pero el orden de las palabras SI distingue ===');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'X-Men Dias del futuro pasado', kind: 'movie', source: 'et', content_id: 'f1' },
+  { title: 'X-Men Dias del pasado futuro', kind: 'movie', source: 'et', content_id: 'f2' }], 1);
+comprueba('son dos titulos distintos, no se inventan fusiones',
+  LISTS.inicio.length === 2, LISTS.inicio.length + '');
+
+console.log('\n=== 11) Y los remakes siguen separados por el año ===');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'Suspiria', kind: 'movie', source: 'dt', year: '1977', content_id: 'g1' },
+  { title: 'Suspiria!', kind: 'movie', source: 'dt', year: '2018', content_id: 'g2' }], 1);
+comprueba('dos peliculas, dos tarjetas', LISTS.inicio.length === 2,
+  LISTS.inicio.length + '');
+
 console.log('\n---- VEREDICTO ----');
 if (fallos) { console.log(fallos + ' comprobaciones MAL'); process.exit(1); }
 console.log('TODO OK: la fusion no pierde nada y gana la mejor version');

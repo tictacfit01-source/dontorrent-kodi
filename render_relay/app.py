@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl32"
+BUILD = "dtbl33"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -9771,7 +9771,13 @@ window.addEventListener('scroll',function(){
 // sola vez y ya ordenada, en vez de pintarse y recolocarse un segundo despues.
 function mergeResults(list,g,items,mudo){
  if(!items||!items.length)return;
- var norm=function(s){return (s||'').toLowerCase().replace(/\s+/g,' ').trim()};
+ // Comparar titulos SIN tildes ni signos. Cada fuente escribe como quiere y
+ // salian tarjetas repetidas de la misma pelicula: "X-Men - Dias del futuro
+ // pasado", "X-Men: Días del futuro pasado" y "X Men dias del futuro pasado"
+ // eran tres. El año sigue separando los remakes, que es lo que importa.
+ var norm=function(s){s=(s||'').toLowerCase();
+  try{s=s.normalize('NFD').replace(/[̀-ͯ]/g,'')}catch(e){}
+  return s.replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim()};
  // Dedup por TÍTULO+AÑO (no solo título): los remakes del MISMO título salen LAS DOS
  // (Suspiria 1977 vs 2018, Dune 1984 vs 2021...) porque el año los separa; la misma
  // peli repetida entre fuentes (mismo título+año) se funde. Un item SIN año se funde
