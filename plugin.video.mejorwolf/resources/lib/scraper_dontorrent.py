@@ -698,7 +698,31 @@ def _doh_mark(ok):
              % _DOH_COOLDOWN)
 
 
+_FICHA_RE = re.compile(r'href=["\']/(?:pelicula|serie|documental)/\d+')
+
+
 def fetch_html(path=None, q=None):
+    """HTML de un listado o de una BUSQUEDA de DonTorrent.
+
+    Para las busquedas, ademas de traer el HTML se comprueba que traiga fichas:
+    el buscador de DonTorrent es LITERAL y el guion cuenta, asi que "x men"
+    devuelve su pagina de resultados VACIA mientras que "x-men" devuelve diez
+    (con la pelicula original entre ellas). Sin esto, quien escribe el titulo
+    separado no encuentra nada de esa pelicula -- y este es el camino que usa
+    la web, no `search()`."""
+    html = _fetch_html_una(path=path, q=q)
+    if not q or (html and _FICHA_RE.search(html)):
+        return html
+    for alt in _variantes_query(q):
+        h2 = _fetch_html_una(path=path, q=alt)
+        if h2 and _FICHA_RE.search(h2):
+            _LOG("fetch_html: %r sin fichas, %r -> %d bytes con resultados"
+                 % (q, alt, len(h2)))
+            return h2
+    return html
+
+
+def _fetch_html_una(path=None, q=None):
     """HTML CRUDO de un listado (path: '/', '/peliculas', '/series', '/page/N')
     o de una busqueda (q) de DonTorrent, desde la IP RESIDENCIAL del box (DoH,
     resuelve Anubis). Lo usa el relay cuando DonTorrent le bloquea su IP de

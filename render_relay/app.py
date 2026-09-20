@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl22"
+BUILD = "dtbl23"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4480,6 +4480,29 @@ def _et_relevant(title, q):
     return hit >= max(1, len(toks) - 1)
 
 
+def _dt_variantes(q):
+    """Otras formas de escribir lo mismo para el buscador de DonTorrent.
+
+    Su buscador es LITERAL y el guion cuenta. Medido el 20-09-2026 contra la
+    web real: "x men" -> 0 fichas, "x-men" -> 10 (entre ellas X-Men [4K]),
+    "xmen" -> 0. Asi que quien escribe el titulo separado no encuentra NADA de
+    esa pelicula, y lo mismo pasa con Spider-Man o Wall-E.
+    Solo se usan cuando la primera busqueda vuelve VACIA."""
+    q = (q or "").strip()
+    out = []
+    if " " in q:
+        out.append(q.replace(" ", "-"))
+    if "-" in q:
+        out.append(q.replace("-", " "))
+        out.append(q.replace("-", ""))
+    vistas, limpias = {q.lower()}, []
+    for v in out:
+        if v and v.lower() not in vistas:
+            vistas.add(v.lower())
+            limpias.append(v)
+    return limpias[:2]
+
+
 def _casa_pegado(pegado, palabras):
     """El texto buscado, sin espacios, cubre palabras ENTERAS del titulo?
 
@@ -5284,10 +5307,10 @@ def catsearch():
                 if not box:
                     return
 
-                def _ask(b):
+                def _ask(b, termino=None):
                     j = "ds" + os.urandom(5).hex()
                     _kb_enqueue(b, {"c": "etjob", "job": j, "op": "dthtml",
-                                    "q": q})
+                                    "q": (termino or q)})
                     return j
                 _okh = lambda r: bool((r or {}).get("html"))
                 _jobs = [_ask(box)]
@@ -5308,8 +5331,23 @@ def catsearch():
                         if _okh(res2):
                             res = res2
                 h = (res or {}).get("html") or ""
+                r = _cat_parse_items(h) if h else []
+                # EL GUION. El buscador de DonTorrent es LITERAL: "x men" da
+                # CERO fichas y "x-men" da diez, con la pelicula original entre
+                # ellas (medido el 20-09 contra la web). Si la caja nos trae su
+                # pagina de resultados y no hay NADA, no es un problema de red:
+                # es como esta escrito el termino. Se le pide otra vez con la
+                # otra forma, que con el Anubis ya caliente cuesta ~1 s.
+                # (El addon 2.9.69 lo hace por su cuenta, pero esto funciona ya
+                # con las cajas que aun no se han actualizado.)
+                if h and not r:
+                    for _alt in _dt_variantes(q):
+                        _j3 = _ask(box, _alt)
+                        _h3 = (_catjob_wait_any([_j3], 8.0, _okh) or {}).get("html") or ""
+                        r = _cat_parse_items(_h3) if _h3 else []
+                        if r:
+                            break
                 if h:
-                    r = _cat_parse_items(h) or []
                     _r["box"] = r
                     if r:
                         _dtq_put(q, r)   # aunque la peticion ya haya respondido
