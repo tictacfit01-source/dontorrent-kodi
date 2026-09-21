@@ -755,9 +755,40 @@ def _do_etjob(ev):
                 out["eps"] = _src_episodes(src, (ev.get("url") or "").strip())
             elif op == "infohash":
                 lk = (ev.get("link") or "").strip()
-                out["link"] = lk or _src_resolve(
+                lk = lk or _src_resolve(
                     (ev.get("src") or "").strip(),
                     (ev.get("url") or "").strip())
+                # WolfMax no entrega un magnet: entrega un "enlacito"
+                # ofuscado, y de ahi el relay no puede sacar el info_hash. Sin
+                # esto, sus capitulos se quedan SIN SEMILLAS -- y las semillas
+                # tienen que verse en todas las fuentes. Aqui si se puede:
+                # la caja sabe descifrarlo (lo hace al reproducir) y ademas
+                # tiene IP residencial para bajar el .torrent, que es lo que
+                # el relay no puede.
+                try:
+                    from resources.lib import enlacito as _enl
+                    if lk and _enl.is_enlacito_url(lk):
+                        _real = _enl.resolve(lk)
+                        if _real:
+                            lk = _real
+                except Exception as _e:
+                    xbmc.log("[MejorWolf/service] enlacito: %s" % _e,
+                             xbmc.LOGWARNING)
+                # Y si ya tenemos el .torrent, se calcula el hash AQUI: asi el
+                # relay no necesita alcanzar wolfmax4k.com (que le bloquea).
+                if lk and lk.lower().endswith(".torrent"):
+                    try:
+                        from resources.lib import http_session as _hs
+                        from resources.lib import torrent as _tp
+                        _sess = _hs.make_session()
+                        _r = _hs.get(_sess, lk, timeout=25)
+                        _data = getattr(_r, "content", b"") or b""
+                        if _data:
+                            out["ih"] = _tp.info_hash_hex(_data) or ""
+                    except Exception as _e2:
+                        xbmc.log("[MejorWolf/service] ih de wolfmax: %s" % _e2,
+                                 xbmc.LOGWARNING)
+                out["link"] = lk
             elif op == "dthtml":
                 from resources.lib import scraper_dontorrent as dt
                 out["html"] = dt.fetch_html(path=ev.get("path"),

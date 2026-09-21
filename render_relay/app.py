@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl33"
+BUILD = "dtbl34"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7111,7 +7111,16 @@ def seeds_ep():
                 finally:
                     if _ssem is not None:
                         _lend_release(_ssem)
-                ih = _ih_from_link((res or {}).get("link") or "")
+                # La caja puede mandar el hash YA CALCULADO (addon 2.9.71+):
+                # es lo unico que funciona con WolfMax, que no da un magnet
+                # sino un "enlacito" ofuscado y sirve sus .torrent desde un
+                # dominio que bloquea la IP de Render. Ella lo descifra, baja
+                # el fichero con su IP de casa y nos manda los 40 caracteres.
+                # Si no viene (caja antigua, u otra fuente), como siempre.
+                ih = re.sub(r"[^a-f0-9]", "",
+                            str((res or {}).get("ih") or "").lower())[:40]
+                if len(ih) != 40:
+                    ih = _ih_from_link((res or {}).get("link") or "")
                 if len(ih) == 40:
                     _dih[url] = {"ih": ih, "ts": now}
                     if len(_dih) > 2000:
