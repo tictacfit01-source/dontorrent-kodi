@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl34"
+BUILD = "dtbl35"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7120,7 +7120,12 @@ def seeds_ep():
                 ih = re.sub(r"[^a-f0-9]", "",
                             str((res or {}).get("ih") or "").lower())[:40]
                 if len(ih) != 40:
-                    ih = _ih_from_link((res or {}).get("link") or "")
+                    # Y con TOPE: derivarlo aqui significa bajarse el .torrent,
+                    # y si vive en un dominio que bloquea a Render la peticion
+                    # se queda colgada. Medido hoy: 60 s y sin respuesta.
+                    ih = _bounded(
+                        lambda: _ih_from_link((res or {}).get("link") or ""),
+                        8.0, "") or ""
                 if len(ih) == 40:
                     _dih[url] = {"ih": ih, "ts": now}
                     if len(_dih) > 2000:

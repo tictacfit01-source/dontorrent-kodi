@@ -776,7 +776,11 @@ def _do_etjob(ev):
                              xbmc.LOGWARNING)
                 # Y si ya tenemos el .torrent, se calcula el hash AQUI: asi el
                 # relay no necesita alcanzar wolfmax4k.com (que le bloquea).
-                if lk and lk.lower().endswith(".torrent"):
+                # OJO con la query: WolfMax sirve el fichero como
+                # ".../silo--4K...torrent?md5=t1QWSk9" y un endswith(".torrent")
+                # NO casa -> se saltaba el calculo, el relay intentaba bajarlo
+                # el (wolfmax le bloquea) y la peticion moria a los 60 s.
+                if lk and lk.split("?", 1)[0].lower().endswith(".torrent"):
                     try:
                         from resources.lib import http_session as _hs
                         from resources.lib import torrent as _tp
