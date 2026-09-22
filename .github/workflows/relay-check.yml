@@ -63,4 +63,6 @@ jobs:
           echo "Import OK -> disparando deploy hook de Render..."
           code=$(curl -s -o /dev/null -w "%{http_code}" "$HOOK")
           echo "Deploy hook HTTP $code"
-          [ "$code" = "200" ] || [ "$code" = "201" ]
+          # 202 = aceptado y EN COLA (habia otro despliegue en marcha): tambien
+          # es exito. El 22-09 salio en rojo un despliegue que si entro.
+          [ "$code" = "200" ] || [ "$code" = "201" ] || [ "$code" = "202" ]
