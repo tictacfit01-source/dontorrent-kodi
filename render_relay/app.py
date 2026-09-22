@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl36"
+BUILD = "dtbl37"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -2740,7 +2740,10 @@ _KB_ALLOWED_CMDS = {"home", "back", "playpause", "stop",
                     # subtitulos y audio (addon 2.9.66+): lo que mas se echa en
                     # falta viendo series. Una caja vieja los ignora sin mas.
                     "subs", "subsnext", "audionext",
-                    "list", "open", "play_ref"}
+                    "list", "open", "play_ref",
+                    # cambiar el codigo de la tele desde Mis Kodis (addon
+                    # 2.9.73+; una caja vieja lo ignora y el movil no cambia nada)
+                    "codigo_nuevo"}
 
 # Lista (espejo de la pantalla de Kodi) que el box empuja y el movil lee.
 _KB_LIST_FILE = "/tmp/mw_kb_list.json"
@@ -3488,6 +3491,14 @@ def kb_send():
                 ev["min"] = max(0, int(body.get("min")))
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "minuto inválido"}), 400
+        elif cmd == "codigo_nuevo":
+            nuevo = re.sub(r"\D", "", str(body.get("nuevo") or ""))[:7]
+            if len(nuevo) != 6 or nuevo == code:
+                return jsonify({"ok": False, "error": "código nuevo inválido"}), 400
+            # que no sea el de OTRA tele encendida: quedarian dos con el mismo
+            if _box_live(nuevo):
+                return jsonify({"ok": False, "error": "ese código ya lo usa otra tele"}), 409
+            ev["nuevo"] = nuevo
         elif cmd == "play_ref":
             a = (body.get("a") or "").strip().lower()[:4]
             ev["a"] = a
@@ -9608,8 +9619,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .devmeta{flex:1;min-width:0}
 .devnm{font-size:15px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .devcc{font-size:12px;color:var(--sub);letter-spacing:2px;font-variant-numeric:tabular-nums;margin-top:2px}
-.deved,.devdel{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
-.deved:active{background:rgba(255,255,255,.14)}
+.deved,.devdel,.devkey{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
+.deved:active,.devkey:active{background:rgba(255,255,255,.14)}
 .devdel:active{background:rgba(255,69,58,.18)}
 .devadd{padding:8px 14px 20px;display:flex;flex-direction:column;gap:9px}
 .devin{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:12px;color:var(--txt);padding:13px 14px;font-size:15px;outline:0;box-sizing:border-box}
@@ -10486,6 +10497,9 @@ function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var
   var ed=document.createElement('button');ed.className='deved';ed.title='Editar nombre';ed.textContent='✏️';
   ed.onclick=function(e){e.stopPropagation();editDev(dev.code)};
   row.appendChild(ed);
+  var ky=document.createElement('button');ky.className='devkey';ky.title='Cambiar código';ky.textContent='🔑';
+  ky.onclick=function(e){e.stopPropagation();keyDev(dev.code)};
+  row.appendChild(ky);
   var del=document.createElement('button');del.className='devdel';del.title='Borrar';del.textContent='🗑';
   del.onclick=function(e){e.stopPropagation();delDev(dev.code)};
   row.appendChild(del);
@@ -10496,6 +10510,49 @@ function editDev(c){var d=loadDevs(),dev=null;
  mwPrompt('Nombre de este Kodi',dev.name||'','Salón, Comedor, Tablet…',
   function(nn){dev.name=nn.slice(0,24);saveDevs(d);refreshDevBtn();renderDevs();
    toast('Nombre actualizado ✓')});}
+// ---- Cambiar el codigo de una tele ------------------------------------------
+// 22-09-2026: los codigos del salon y del PC estuvieron publicados en GitHub, y
+// con un codigo se le pueden mandar ordenes a esa tele. El movil elige uno
+// nuevo al azar, la tele lo guarda y AVISA con un latido (addon 2.9.73+), y
+// solo cuando ese latido llega se cambia aqui. Si la tele esta apagada o aun
+// no se ha actualizado, no se toca nada.
+function nuevoCodigo(){var a=new Uint32Array(1);
+ try{crypto.getRandomValues(a)}catch(e){a[0]=Math.floor(Math.random()*4294967295)}
+ return ('000000'+(a[0]%1000000)).slice(-6)}
+function keyDev(c){var d=loadDevs(),dev=null;
+ for(var i=0;i<d.length;i++){if(d[i].code===c){dev=d[i];break}}
+ if(!dev)return;
+ mwConfirm('¿Cambiar el código de «'+(dev.name||'este Kodi')+'»?',
+  'La tele tiene que estar encendida. Se le pone un código nuevo y el viejo deja de funcionar'+
+  (syncOn()?'; tus dispositivos se actualizan solos.':'. Si la usas desde otro móvil, allí tendrás que poner el nuevo.'),
+  'Cambiar',function(){_keyDev(c)});}
+function _keyDev(old){
+ fetch('/kb/status?code='+old).then(function(r){return r.json()}).then(function(j){
+  if(!(j&&j.connected)){toast('Enciende esa tele primero');return}
+  var nuevo=nuevoCodigo();if(nuevo===old)nuevo=nuevoCodigo();
+  toast('Cambiando el código…');
+  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({code:old,cmd:'codigo_nuevo',nuevo:nuevo})})
+   .then(function(r){return r.json()}).then(function(s){
+    if(!s||!s.ok){toast((s&&s.error)||'No se pudo cambiar el código');return}
+    // la tele late al momento con el codigo nuevo; si se perdiera ese latido,
+    // el siguiente llega en 30 s como mucho
+    var t0=Date.now();
+    (function mira(){
+     fetch('/kb/status?code='+nuevo).then(function(r){return r.json()}).then(function(k){
+      if(k&&k.connected){_keyAplica(old,nuevo);return}
+      if(Date.now()-t0<45000){setTimeout(mira,1500);return}
+      toast('La tele no ha confirmado. Si en ella salió «Código nuevo del mando», añádelo aquí; si no, no ha cambiado nada.')
+     }).catch(function(){if(Date.now()-t0<45000)setTimeout(mira,1500)})})();
+   }).catch(function(){toast('No se pudo cambiar el código')});
+ }).catch(function(){toast('No se pudo comprobar esa tele')})}
+function _keyAplica(old,nuevo){
+ var d=loadDevs();d.forEach(function(dev){if(dev.code===old)dev.code=nuevo});
+ // el viejo, como borrado: si no, la copia de Google lo volveria a traer
+ delMarca('d',old);delOlvida('d',nuevo);
+ saveDevs(d);
+ if((code.value||'').replace(/\D/g,'')===old)setActiveCode(nuevo);
+ renderDevs();refreshDevBtn();toast('Código cambiado ✓ El nuevo es '+nuevo)}
 function pickDev(c){setActiveCode(c);renderDevs();toast('Kodi activo: '+(devName(c)||c));setTimeout(closeDevs,220)}
 function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'').replace(/\D/g,'').slice(0,6);
  if(c.length!==6){toast('El código debe tener 6 cifras');return}
