@@ -204,6 +204,35 @@ export default {
       }
     }
 
+    // --- Otras copias del relay, con nombre FIJO --------------------------
+    // Lo mismo que /wfidx para lo que tampoco puede vivir en /tmp. Hoy solo
+    // "semillas": el infohash de cada pelicula que ya se ha visto (conseguirlo
+    // es bajar su .torrent, que es lo que mas banea la IP) y su ultimo conteo.
+    // Lista cerrada de nombres: esto no es un almacen para cualquiera.
+    const kvm = path.match(/^\/kv\/(semillas)$/);
+    if (kvm) {
+      const clave = "kv:" + kvm[1];
+      await ensureKV(env);
+      if (request.method === "GET") {
+        const row = await env.DB.prepare("SELECT v, ts FROM kv WHERE k = ?")
+          .bind(clave).first();
+        if (!row) return json({ ok: true, gz: null, ts: 0 });
+        return json({ ok: true, gz: row.v, ts: row.ts });
+      }
+      if (request.method === "POST") {
+        const body = await request.json().catch(() => null);
+        const gz = body && body.gz;
+        if (typeof gz !== "string" || !gz) return json({ ok: false, error: "sin gz" }, 400);
+        if (gz.length > 1024 * 1024) return json({ ok: false, error: "demasiado grande" }, 413);
+        const ts = Date.now();
+        await env.DB.prepare(
+          "INSERT INTO kv (k, v, ts) VALUES (?, ?, ?) " +
+          "ON CONFLICT(k) DO UPDATE SET v = excluded.v, ts = excluded.ts"
+        ).bind(clave, gz, ts).run();
+        return json({ ok: true, ts, bytes: gz.length });
+      }
+    }
+
     return json({ ok: false, error: "no encontrado" }, 404);
   },
 };

@@ -153,6 +153,62 @@ mergeResults('inicio', g, [
 comprueba('dos peliculas, dos tarjetas', LISTS.inicio.length === 2,
   LISTS.inicio.length + '');
 
+// --- 22-09-2026: el año y el titulo original ENTRE PARENTESIS ---------------
+// WolfMax (y a veces DivxTotal) titulan "Poli malo (Bad Man) (2025)" y
+// DonTorrent "Poli malo". Con el mismo año y el mismo tmdb_id salian DOS
+// tarjetas de la misma pelicula: medido en el Inicio real, 4-5 parejas en
+// Estrenos y otras tantas en Cine.
+console.log('\n=== 12) El año pegado al titulo (WolfMax) no separa la misma peli ===');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'Gail Daughtry y el vale por un rollo VIP (2026)', kind: 'movie', source: 'wf', quality: 'Bluray', year: '2026', content_id: 'https://wolfmax4k.com/movie/270683' },
+  { title: 'Gail Daughtry y el vale por un rollo VIP', kind: 'movie', source: 'dt', quality: 'BluRay', year: '2026', content_id: '31016' }], 1);
+comprueba('una sola tarjeta', LISTS.inicio.length === 1,
+  LISTS.inicio.length + ' tarjetas: ' + LISTS.inicio.map(x => x.title + ' [' + x.source + ']').join(' | '));
+comprueba('y la otra version sigue en "Tambien en"',
+  !!(LISTS.inicio[0] && (LISTS.inicio[0].alts || []).length === 1));
+
+console.log('\n=== 13) El titulo ORIGINAL entre parentesis tampoco ===');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'Poli malo', kind: 'movie', source: 'dt', quality: 'DVDRIP', year: '2025', content_id: '31014' }], 1);
+mergeResults('inicio', g, [
+  { title: 'Poli malo (Bad Man) (2025)', kind: 'movie', source: 'wf', quality: 'Bluray', year: '2025', content_id: 'https://wolfmax4k.com/movie/1' },
+  { title: 'Cuatro historias de deseo 3 (Lust Stories 3) (2026)', kind: 'movie', source: 'wf', quality: 'Bluray', year: '2026', content_id: 'https://wolfmax4k.com/movie/2' }], 1);
+mergeResults('inicio', g, [
+  { title: 'Cuatro historias de deseo 3', kind: 'movie', source: 'dt', quality: 'DVDRIP', year: '2026', content_id: '31020' }], 1);
+comprueba('dos peliculas, dos tarjetas (no cuatro)', LISTS.inicio.length === 2,
+  LISTS.inicio.length + ' tarjetas: ' + LISTS.inicio.map(x => x.title + ' [' + x.source + ']').join(' | '));
+comprueba('gana el BluRay de WolfMax al DVDRip',
+  LISTS.inicio.every(x => x.source === 'wf'), LISTS.inicio.map(x => x.source).join(','));
+
+console.log('\n=== 14) La misma de WolfMax con y sin el año en el titulo ===');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'Adolescencia Sexo y Muerte En Campamento Miasma', kind: 'movie', source: 'wf', quality: 'Bluray', year: '2026', content_id: 'https://wolfmax4k.com/movie/3' },
+  { title: 'Adolescencia Sexo y Muerte En Campamento Miasma (2026)', kind: 'movie', source: 'wf', quality: 'Bluray', year: '2026', content_id: 'https://wolfmax4k.com/movie/4' }], 1);
+comprueba('una sola tarjeta', LISTS.inicio.length === 1, LISTS.inicio.length + '');
+
+console.log('\n=== 15) Lo que NO se puede juntar ===');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'Suspiria', kind: 'movie', source: 'dt', year: '2018', content_id: 'h1' },
+  { title: 'Suspiria (1977)', kind: 'movie', source: 'wf', content_id: 'h2' }], 1);
+comprueba('el año del titulo separa los remakes (1977 y 2018)', LISTS.inicio.length === 2,
+  LISTS.inicio.length + '');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'Dune', kind: 'movie', source: 'dt', year: '2021', content_id: 'i1' },
+  { title: 'Dune (Parte Dos)', kind: 'movie', source: 'et', content_id: 'i2' }], 1);
+comprueba('un parentesis SIN año conocido no se quita (Dune y Dune Parte Dos)',
+  LISTS.inicio.length === 2, LISTS.inicio.length + '');
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: '1917 (2019)', kind: 'movie', source: 'wf', content_id: 'j1' },
+  { title: '1917', kind: 'movie', source: 'dt', year: '2019', content_id: 'j2' }], 1);
+comprueba('un titulo que ES un numero ("1917") sigue funcionando', LISTS.inicio.length === 1,
+  LISTS.inicio.length + '');
+
 console.log('\n---- VEREDICTO ----');
 if (fallos) { console.log(fallos + ' comprobaciones MAL'); process.exit(1); }
 console.log('TODO OK: la fusion no pierde nada y gana la mejor version');

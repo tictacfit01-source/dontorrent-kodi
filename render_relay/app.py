@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl35"
+BUILD = "dtbl36"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -1561,6 +1561,37 @@ def _dtpacked_seeds(ent, now):
     return s
 
 
+# El camino DIRECTO al .torrent de DonTorrent (desde la IP de Render) esta
+# baneado casi siempre, y probarlo cuesta sus 6 s de tope ANTES de ir a la caja:
+# medido el 22-09, la primera semilla de "A la cara" tardo 11,2 s y la mitad se
+# fue en eso. El breaker compartido no lo cubre (dura 90 s y el directo tarda
+# mas que eso en rendirse del todo). Aqui se recuerda el ultimo resultado: si
+# fallo hace menos de media hora, se va a la caja de primeras. Pasada la media
+# hora se vuelve a probar, asi que si Render deja de estar baneado se nota solo.
+_DTDIR = {"ok": 0.0, "fallo": 0.0, "saltados": 0}
+_DTDIR_OLVIDO = 1800.0
+
+
+def _dt_directo_muerto():
+    f = _DTDIR["fallo"]
+    return bool(f) and f > _DTDIR["ok"] and (_t.time() - f) < _DTDIR_OLVIDO
+
+
+def _dt_directo_apunta(ok):
+    _DTDIR["ok" if ok else "fallo"] = _t.time()
+
+
+def _dt_url_directa(dom, cid, tb):
+    """URL del .torrent por el camino directo, o None -- sin gastar los 6 s si
+    sabemos que esta muerto."""
+    if _dt_directo_muerto():
+        _DTDIR["saltados"] += 1
+        return None
+    url = _bounded(lambda: _dt_download_url(dom, cid, tb), 6.0)
+    _dt_directo_apunta(bool(url))
+    return url
+
+
 def _dt_download_url(domain, content_id, tabla):
     """Breaker + tope de concurrencia (max 2 ops DonTorrent), luego delega."""
     if _dt_is_down() or not _DT_SEM.acquire(blocking=False):
@@ -1733,8 +1764,9 @@ def dtpacked():
         return jsonify(out)
     # Mismo tope duro que en /dtseeds (ver el porque alli): el directo baneado
     # se comia ~25s antes de rendirse y esto lo pide la ficha ANTES de reproducir.
+    # Y si acaba de fallar, ni se intenta (ver _dt_url_directa).
     _dom = request.args.get("domain", "").strip()
-    url = _bounded(lambda: _dt_download_url(_dom, cid, tb), 6.0)
+    url = _dt_url_directa(_dom, cid, tb)
     if not url:
         # Render baneado -> via box (IP residencial): rar+quality+info_hash;
         # el relay deriva seeders por scrape UDP. Cacheamos igual que el directo.
@@ -1816,7 +1848,8 @@ def dtseeds():
     # se abandona el directo y se va al box, que es quien puede. No se pierde el
     # camino directo: el hilo sigue de fondo y, si DonTorrent no responde, BAJA
     # el breaker compartido -> las siguientes peticiones ya ni lo intentan.
-    url = _bounded(lambda: _dt_download_url("", cid, tb), 6.0)
+    # (Y durante media hora tras un fallo, ni eso: _dt_url_directa.)
+    url = _dt_url_directa("", cid, tb)
     if not url:
         # Render baneado -> el box trae el info_hash; el scrape UDP va aqui.
         mb = _dt_meta_via_box(cid, tb)
@@ -1999,7 +2032,7 @@ def _dx_save_domain(host):
 _TARPIT = {"cortes": 0, "ultimo": 0}
 
 
-def _leer_con_tope(r, tope_s, tope_mb=6):
+def _leer_con_tope(r, tope_s, tope_mb=6, crudo=False):
     """El cuerpo de una respuesta con tope de tiempo TOTAL, cerrando la conexion
     al pasarse. Devuelve None si no cabe en el presupuesto.
 
@@ -2028,6 +2061,8 @@ def _leer_con_tope(r, tope_s, tope_mb=6):
             r.close()      # sin esto el socket se queda abierto goteando
         except Exception:
             pass
+    if crudo:      # un .torrent: los bytes tal cual (decodificar lo romperia)
+        return b"".join(trozos)
     try:      # mismo encoding que habria usado r.text -> mismo resultado
         enc = r.encoding or r.apparent_encoding or "utf-8"
         return b"".join(trozos).decode(enc, "replace")
@@ -2035,8 +2070,9 @@ def _leer_con_tope(r, tope_s, tope_mb=6):
         return None
 
 
-def _get_con_tope(url, tope_s, headers=None, scraper=None):
-    """GET con tope de tiempo TOTAL de VERDAD. Devuelve (texto, status).
+def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False):
+    """GET con tope de tiempo TOTAL de VERDAD. Devuelve (texto, status), o
+    (bytes, status) con crudo=True -- para los .torrent.
 
     `_leer_con_tope` sola no basta: solo entra cuando requests ya devolvio las
     cabeceras, y el timeout de lectura tambien es entre bytes en esa fase -- un
@@ -2070,7 +2106,7 @@ def _get_con_tope(url, tope_s, headers=None, scraper=None):
             except Exception:
                 pass
             return None, st
-        return _leer_con_tope(r, max(0.5, fin - _t.time())), st
+        return _leer_con_tope(r, max(0.5, fin - _t.time()), crudo=crudo), st
     except Exception:
         return None, 0
     finally:
@@ -4702,6 +4738,63 @@ def _et_norm(s):
     return _re_dt.sub(r"\s+", " ", _re_dt.sub(r"[^a-z0-9 ]", " ", s)).strip()
 
 
+# "Gail Daughtry y el vale por un rollo VIP (2026)", "Poli malo (Bad Man)
+# (2025)": asi titulan WolfMax y DivxTotal. DonTorrent escribe "Poli malo" a
+# secas, y con el año pegado al titulo el dedup no los juntaba: medido el 22-09
+# en el Inicio real, cuatro o cinco parejas repetidas por pestana, todas con el
+# MISMO año y el mismo tmdb_id. La web hace exactamente lo mismo en
+# mergeResults (`clave`): si los dos lados no deciden igual, el servidor junta
+# y el movil separa (o al reves).
+_ANIO_FINAL_RE = _re_dt.compile(r"\s*[\(\[]\s*((?:19|20)\d{2})\s*[\)\]]\s*$")
+_PAREN_FINAL_RE = _re_dt.compile(r"\s*\([^()]{2,60}\)\s*$")
+
+
+def _titulo_clave(it):
+    """(titulo, año) con los que se decide si dos items son la MISMA peli.
+
+    El año que viene entre parentesis al final del titulo pasa a ser el año si
+    el item no traia otro (asi "Suspiria (1977)" y "Suspiria" de 2018 siguen
+    siendo dos). El titulo original entre parentesis ("(Bad Man)") solo se
+    quita cuando hay año con el que distinguir: "Dune (Parte Dos)" sin año no
+    se convierte en "Dune". Solo para COMPARAR; lo que se pinta no se toca."""
+    t = (it or {}).get("title") or ""
+    y = str((it or {}).get("year") or "").strip()
+    m = _ANIO_FINAL_RE.search(t)
+    if m and len(t[:m.start()].strip()) >= 2:
+        t = t[:m.start()]
+        if not y:
+            y = m.group(1)
+    if y:
+        t2 = _PAREN_FINAL_RE.sub("", t)
+        if len(t2.strip()) >= 2:
+            t = t2
+    return t, y
+
+
+def _anio_fuera(items):
+    """Quita el '(2026)' del final del titulo QUE SE PINTA y lo deja como año.
+
+    La tarjeta ya ensena el año debajo ("2026 · ★6,4"), asi que en el titulo
+    sobraba -- y ademas era lo que hacia que la misma pelicula saliera dos
+    veces. Idempotente: lo que ya no lleva el año no cambia. El titulo original
+    entre parentesis ("Poli malo (Bad Man)") se queda: es informacion."""
+    for it in (items or []):
+        try:
+            t = it.get("title") or ""
+            m = _ANIO_FINAL_RE.search(t)
+            if not m:
+                continue
+            base = t[:m.start()].rstrip(" -.:·")
+            if len(base.strip()) < 2:
+                continue
+            it["title"] = base
+            if not it.get("year"):
+                it["year"] = m.group(1)
+        except Exception:
+            pass
+    return items
+
+
 def _et_relevant(title, q):
     nt, nq = _et_norm(title), _et_norm(q)
     if nq and nq in nt:
@@ -4734,6 +4827,63 @@ def _dt_variantes(q):
             vistas.add(v.lower())
             limpias.append(v)
     return limpias[:2]
+
+
+_DTV_TMDB = {}          # "xmen" -> "x-men" ("" si no hay), para no repetir
+
+
+def _dt_variante_tmdb(q):
+    """'xmen' -> 'x-men'. Todo junto no hay por donde meter el guion a ciegas,
+    y el buscador de DonTorrent es literal: "xmen" da CERO (medido el 20-09).
+    TMDB si sabe como se escribe -- buscando "xmen" devuelve X-Men, y
+    "spiderman" Spider-Man (comprobado el 22-09) --, asi que se le pregunta y se
+    toman las palabras del titulo que, juntas, forman lo buscado. Solo para UNA
+    palabra suelta, solo peliculas y series (con "walle" TMDB devuelve
+    personas), y con tope: TMDB banea a Render a ratos."""
+    t = (q or "").strip().lower()
+    if not (4 <= len(t) <= 24) or not t.isalnum():
+        return ""
+    if t in _DTV_TMDB:
+        return _DTV_TMDB[t]
+    if _tmdb_is_down():
+        return ""
+
+    def _f():
+        r = _TMDB_SESS.get("https://api.themoviedb.org/3/search/multi",
+                           params={"api_key": _CAT_TMDB_KEY, "query": t,
+                                   "language": "es-ES", "include_adult": "false"},
+                           timeout=(2, 3))
+        if r.status_code != 200:
+            _tmdb_mark(False)
+            return None
+        return (r.json() or {}).get("results") or []
+
+    res = _bounded(_f, 3.5, None)
+    if res is None:
+        return ""                       # sin respuesta: no se apunta nada
+    out = ""
+    for x in res[:10]:
+        if (x or {}).get("media_type") not in ("movie", "tv"):
+            continue
+        pal = _et_norm(x.get("title") or x.get("name") or "").split()
+        for i in range(len(pal)):
+            acum = ""
+            for j in range(i, len(pal)):
+                acum += pal[j]
+                if acum == t:
+                    if j > i:           # si es UNA palabra ya estaba escrita asi
+                        out = "-".join(pal[i:j + 1])
+                    break
+                if len(acum) >= len(t):
+                    break
+            if out:
+                break
+        if out:
+            break
+    if len(_DTV_TMDB) > 500:
+        _DTV_TMDB.clear()
+    _DTV_TMDB[t] = out
+    return out
 
 
 def _casa_pegado(pegado, palabras):
@@ -4905,10 +5055,10 @@ def _et_resolve(url):
 
 def _cat_merge(dt_items, et_items):
     """DonTorrent manda; EliteTorrent solo añade lo que DonTorrent no tiene."""
-    keys = {_et_norm(it.get("title")) for it in dt_items}
+    keys = {_et_norm(_titulo_clave(it)[0]) for it in dt_items}
     out = list(dt_items)
     for it in et_items:
-        k = _et_norm(it.get("title"))
+        k = _et_norm(_titulo_clave(it)[0])
         if k and k in keys:
             continue
         keys.add(k)
@@ -5143,12 +5293,13 @@ def _cat_rank_dedup(items, q):
     # de la misma peli en otra calidad (Matrix 4K vs SD -> mismo año -> se funden).
     withy, order, titleset, noyear, passthrough = {}, [], {}, {}, []
     for it in items:
-        tn = _et_norm(it.get("title"))
+        # sin el "(2025)" ni el "(Bad Man)" del final: ver _titulo_clave
+        _tc, yr = _titulo_clave(it)
+        tn = _et_norm(_tc)
         if not tn:
             passthrough.append(it)
             continue
         kind = it.get("kind") or "movie"
-        yr = str(it.get("year") or "").strip()
         if yr:
             k = (tn, yr, kind)
             if k not in withy:
@@ -5187,7 +5338,7 @@ def _cat_rank_dedup(items, q):
         return out
 
     def score(it):
-        tn = _et_norm(it.get("title") or "")
+        tn = _et_norm(_titulo_clave(it)[0])
         if not tn:
             return -1
         s = 0
@@ -5606,7 +5757,13 @@ def catsearch():
                 # (El addon 2.9.69 lo hace por su cuenta, pero esto funciona ya
                 # con las cajas que aun no se han actualizado.)
                 if h and not r:
-                    for _alt in _dt_variantes(q):
+                    # espacios <-> guiones; y si va TODO JUNTO ("xmen"), como
+                    # lo escribe TMDB ("x-men"): ver _dt_variante_tmdb
+                    _vs = _dt_variantes(q)
+                    if not _vs:
+                        _vt = _dt_variante_tmdb(q)
+                        _vs = [_vt] if _vt else []
+                    for _alt in _vs:
                         _j3 = _ask(box, _alt)
                         _h3 = (_catjob_wait_any([_j3], 8.0, _okh) or {}).get("html") or ""
                         r = _cat_parse_items(_h3) if _h3 else []
@@ -5893,7 +6050,9 @@ def catdxsearch():
             _catsearch_save(disk)
         except Exception:
             pass
-    return jsonify({"items": items})
+    # igual que cuando sale de la cache (arriba): la primera respuesta y las
+    # repetidas no pueden verse distintas
+    return jsonify({"items": _al_servir(items)})
 
 
 @app.get("/catetresolve")
@@ -6240,9 +6399,10 @@ def _al_servir(items):
     mal durante horas (o para siempre, en los favoritos del movil).
       - las temporadas sueltas de una misma serie se juntan en UNA tarjeta;
       - las caratulas salen todas al mismo tamano, que es lo que hace que la
-        cuadricula se vea pareja.
+        cuadricula se vea pareja;
+      - el "(2026)" del final del titulo pasa a ser el año (ver _anio_fuera).
     Es idempotente: pasar dos veces por aqui no cambia nada."""
-    return _posters_norm(_agrupa_temporadas(items))
+    return _posters_norm(_agrupa_temporadas(_anio_fuera(items)))
 
 
 def _agrupa_temporadas(items):
@@ -6498,7 +6658,7 @@ def catetbox():
         s for s in srcs.split(",") if s)), q.lower())
     _hit = _catbox_get(ckey)
     if _hit is not None:
-        return jsonify({"items": _posters_norm(_hit), "cached": True})
+        return jsonify({"items": _posters_norm(_anio_fuera(_hit)), "cached": True})
     # WOLFMAX AL INSTANTE: si el indice local del relay tiene el titulo, se
     # responde sin cola, sin caja y sin red (ver _wf_idx_search). Si el indice
     # esta vacio (deploy reciente) se le pide a una caja y se sigue por el
@@ -6542,7 +6702,7 @@ def catetbox():
                 _idx = _bounded(lambda: _cat_enrich(_idx, limit=40), 6.0,
                                 default=_idx) or _idx
                 _catbox_put(ckey, _idx)
-                return jsonify({"items": _posters_norm(_idx), "idx": True})
+                return jsonify({"items": _posters_norm(_anio_fuera(_idx)), "idx": True})
         else:
             _wfidx_ask_box()
     box = _box_for(code)     # la suya si esta viva; si no, cualquier caja viva
@@ -6605,7 +6765,7 @@ def catetbox():
                 if not it.get("quality"):
                     it["quality"] = ql or _wf_quality_from_url(
                         it.get("url") or it.get("content_id"))
-            return jsonify({"items": _posters_norm(_idx_respaldo), "idx": True})
+            return jsonify({"items": _posters_norm(_anio_fuera(_idx_respaldo)), "idx": True})
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
     if request.args.get("raw") == "1":
@@ -6650,7 +6810,7 @@ def catetbox():
     items = _wf_completa_partidas(_une_series_partidas(_wf_colapsa(items)))
     _catbox_put(ckey, items)
     _wfidx_learn(_wf_crudo)   # el CRUDO (ver arriba): la proxima vez va en 10ms
-    return jsonify({"items": _posters_norm(items)})
+    return jsonify({"items": _posters_norm(_anio_fuera(items))})
 
 
 @app.get("/catetboxresolve")
@@ -6934,7 +7094,10 @@ def _seeds_save(d):
 # la url de la ficha a su hash UNA vez -> la 2a apertura salta las descargas y va
 # directa a la cache de seeders. No toca DonTorrent/TMDB -> sin riesgo de baneo.
 _DXIH_FILE = "/tmp/mw_dxih.json"
-_DXIH_TTL = 7 * 86400   # 7 dias
+# 30 dias, como el .torrent de DonTorrent: el infohash de una URL no cambia, y
+# con 7 dias habia que volver a bajar cada .torrent (lo que mas banea) cada
+# semana aunque ya lo supieramos.
+_DXIH_TTL = 30 * 86400
 
 
 def _dxih_load():
@@ -6979,10 +7142,14 @@ def _ih_from_link(link):
         return _ih_from_magnet(link)
     if link.startswith("http") and host_allowed(link):
         try:
-            rr = requests.get(link, headers=BROWSER_HEADERS, timeout=20,
-                              allow_redirects=True)
-            if rr.status_code == 200 and rr.content[:1] == b"d":
-                dg = _dt_infohash(rr.content)
+            # Con tope TOTAL (vigia que cierra el socket): era un requests.get
+            # a pelo con timeout=20, que es el maximo ENTRE BYTES -- el mismo
+            # patron que colgaba hilos para siempre cuando Cloudflare gotea
+            # (ver _get_con_tope). Y se llamaba desde /seeds sin _bounded.
+            cont, st = _get_con_tope(link, _bnd_resto(10.0),
+                                     headers=BROWSER_HEADERS, crudo=True)
+            if st == 200 and cont and cont[:1] == b"d":
+                dg = _dt_infohash(cont)
                 if dg:
                     return dg.hex()
         except Exception:
@@ -7015,18 +7182,32 @@ def seedsknown():
         return jsonify({"s": {}})
     claves = [str(k)[:300] for k in claves[:80]]
     now = _t.time()
-    out = {}
+    out, rar, viejas = {}, [], []
     dtp = _dtpacked_load()
     sd = _seeds_load()
     dih = None
 
-    def _por_ih(ih):
-        if not ih or len(ih) != 40:
+    def _cuenta(ih, s_loc=None, ts_loc=0):
+        """El conteo MAS RECIENTE que haya de ese infohash (el que va dentro de
+        la entrada de DonTorrent o el del almacen general), si no pasa de un
+        dia. Antes solo valia si tenia menos de 45 min, y como nadie vuelve a
+        pedirlo, la cuadricula se quedaba sin semillas: medido el 22-09 tras
+        27 h sin desplegar, CERO en las tres pestanas del Inicio. Lo que pase
+        de 45 min se ensena igual y se refresca por detras (_seeds_refresca)."""
+        ih = ih if (isinstance(ih, str) and len(ih) == 40) else ""
+        best_s, best_ts = None, 0
+        if s_loc is not None and ts_loc:
+            best_s, best_ts = s_loc, ts_loc
+        if ih:
+            e = sd.get(ih)
+            if e and e.get("s") is not None and e.get("ts", 0) > best_ts:
+                best_s, best_ts = e.get("s"), e.get("ts", 0)
+        edad = now - best_ts
+        if ih and (best_s is None or edad >= _SEEDS_TTL2):
+            viejas.append(ih)
+        if best_s is None or edad >= _SEEDS_MOSTRAR:
             return None
-        e = sd.get(ih)
-        if e and (now - e.get("ts", 0) < _SEEDS_TTL2):
-            return e.get("s")
-        return None
+        return best_s
 
     for k in claves:
         try:
@@ -7034,9 +7215,11 @@ def seedsknown():
                 ent = dtp.get(k[3:])
                 if not ent or (now - ent.get("ts", 0)) >= _DTPACKED_TTL:
                     continue
-                s = ent.get("s")
-                if s is None or (now - ent.get("sts", 0)) >= _SEEDS_TTL:
-                    s = _por_ih(ent.get("ih"))     # quiza este por infohash
+                # El RAR de DonTorrent sale del propio .torrent: si lo sabemos,
+                # se dice ya en la tarjeta y no solo al abrir la ficha.
+                if ent.get("p") is True:
+                    rar.append(k)
+                s = _cuenta(ent.get("ih"), ent.get("s"), ent.get("sts", 0))
                 if s is not None:
                     out[k] = s
             elif k.startswith("u:"):
@@ -7045,12 +7228,14 @@ def seedsknown():
                 c = dih.get(k[2:])
                 if not c or (now - c.get("ts", 0)) >= _DXIH_TTL:
                     continue
-                s = _por_ih(c.get("ih"))
+                s = _cuenta(c.get("ih"))
                 if s is not None:
                     out[k] = s
         except Exception:
             continue
-    return jsonify({"s": out})
+    if viejas:
+        _seeds_refresca(viejas)
+    return jsonify({"s": out, "r": rar})
 
 
 @app.get("/seeds")
@@ -7147,6 +7332,604 @@ def seeds_ep():
                 d.pop(k, None)
         _seeds_save(d)
     return jsonify({"seeds": s})
+
+
+# ===========================================================================
+# SEMILLAS EN LA CUADRICULA, DE VERDAD (dtbl36)
+# ===========================================================================
+# /seedsknown existia desde dtbl25, pero medido el 22-09 -- 27 horas sin
+# desplegar -- las tres pestanas del Inicio salian con CERO semillas en 163
+# tarjetas. Tres motivos, y aqui van las tres piezas:
+#   1) el conteo solo se ensenaba si tenia menos de 45 min. Ahora se ensena lo
+#      ultimo que se sabe (hasta un dia) y se refresca por detras con UN
+#      paquete UDP por tracker para todas a la vez. No toca ninguna fuente ni
+#      ninguna caja: no banea nada ni cuesta nada.
+#   2) el infohash -- lo caro, hay que bajar el .torrent -- vivia en /tmp y se
+#      perdia en cada despliegue. Ahora hay copia en el D1 del worker propio,
+#      como el indice de WolfMax (dtbk89).
+#   3) solo se sabia el de las pelis cuya ficha habia abierto alguien. Ahora un
+#      APRENDIZ, despacio y sin molestar, averigua el de las peliculas del
+#      Inicio: DivxTotal lo hace el relay (la alcanza), DonTorrent y WolfMax una
+#      caja que NO este reproduciendo, como mucho un trabajo cada 45 s y un PoW
+#      de DonTorrent cada 2 min.
+_SEEDS_MOSTRAR = 24 * 3600      # lo ultimo que se sabe se ensena hasta un dia
+
+
+def _udp_scrape_many(host, port, hashes, timeout=2.5):
+    """Seeders de VARIOS infohash con un solo intercambio por tracker (BEP-15
+    admite ~74 por paquete; aqui de 70 en 70). {ih_bytes: seeders}, vacio si el
+    tracker no contesta. Sin hilos: lo llama quien ya esta en segundo plano."""
+    out = {}
+    if not hashes:
+        return out
+    s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        addr = (host, port)
+        tid = int.from_bytes(os.urandom(4), "big")
+        s.sendto(_struct.pack(">QII", 0x41727101980, 0, tid), addr)
+        data = s.recv(16)
+        if len(data) < 16:
+            return out
+        action, rtid, cid = _struct.unpack(">IIQ", data[:16])
+        if action != 0 or rtid != tid:
+            return out
+        for i in range(0, len(hashes), 70):
+            lote = hashes[i:i + 70]
+            tid = int.from_bytes(os.urandom(4), "big")
+            s.sendto(_struct.pack(">QII", cid, 2, tid) + b"".join(lote), addr)
+            resp = s.recv(8 + 12 * len(lote))
+            if len(resp) < 8:
+                break
+            a2, rt2 = _struct.unpack(">II", resp[:8])
+            if a2 != 2 or rt2 != tid:
+                break
+            for j, ih in enumerate(lote):
+                off = 8 + 12 * j
+                if off + 12 > len(resp):
+                    break
+                seeders, _c, _l = _struct.unpack(">III", resp[off:off + 12])
+                out[ih] = int(seeders)
+    except Exception:
+        pass
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+    return out
+
+
+def _seed_counts_many(ihs_hex):
+    """{ih_hex: seeders} con el MAXIMO entre los trackers (el mismo criterio que
+    _dt_seed_count). Tracker a tracker, sin abrir hilos."""
+    hs = []
+    for h in ihs_hex or []:
+        try:
+            if isinstance(h, str) and len(h) == 40:
+                hs.append(bytes.fromhex(h))
+        except Exception:
+            pass
+    best = {}
+    if not hs:
+        return best
+    for host, port in _SEED_TRACKERS:
+        for ih, n in _udp_scrape_many(host, port, hs).items():
+            k = ih.hex()
+            if n > best.get(k, -1):
+                best[k] = n
+    return best
+
+
+_SEEDS_LOCK = _thr.Lock()
+
+
+def _seeds_guarda(cuentas, now=None):
+    """Apunta conteos {ih: n} en el almacen general (el mismo de /seeds)."""
+    if not cuentas:
+        return
+    now = now or _t.time()
+    try:
+        with _SEEDS_LOCK, _FileLock(_SEEDS_FILE):
+            d = _seeds_load()
+            for ih, n in cuentas.items():
+                if isinstance(ih, str) and len(ih) == 40 and isinstance(n, int) \
+                        and n >= 0:
+                    d[ih] = {"s": n, "ts": now}
+            if len(d) > 4000:
+                for k in sorted(d, key=lambda k: d[k].get("ts", 0))[:len(d) - 4000]:
+                    d.pop(k, None)
+            _seeds_save(d)
+    except Exception:
+        pass
+
+
+_SREF = {"vuelo": False, "ult": 0.0, "rondas": 0, "pedidas": 0, "sabidas": 0}
+_SREF_LOCK = _thr.Lock()
+
+
+def _seeds_refresco_hilo(ihs):
+    try:
+        c = _seed_counts_many(ihs)
+        _SREF["rondas"] += 1
+        _SREF["pedidas"] += len(ihs)
+        _SREF["sabidas"] += len(c)
+        _seeds_guarda(c)
+    except Exception:
+        pass
+    finally:
+        with _SREF_LOCK:
+            _SREF["vuelo"] = False
+
+
+def _seeds_refresca(ihs):
+    """Refresca por detras los conteos viejos. UNO a la vez por worker y como
+    mucho uno cada 20 s: la cuadricula no espera por esto (ya ensena el ultimo
+    conteo) y la siguiente vez sale el nuevo."""
+    ihs = [h for h in dict.fromkeys(ihs or [])
+           if isinstance(h, str) and len(h) == 40][:140]
+    if not ihs:
+        return
+    with _SREF_LOCK:
+        # "en vuelo" caduca a los 2 min: si un refresco se quedara colgado (un
+        # DNS que no contesta), sin esto este worker no volveria a refrescar
+        # NUNCA, y sin dar ningun error -- las semillas se irian quedando viejas.
+        if (_SREF["vuelo"] and (_t.time() - _SREF["ult"]) < 120) or \
+                (_t.time() - _SREF["ult"]) < 20:
+            return
+        _SREF["vuelo"] = True
+        _SREF["ult"] = _t.time()
+    try:
+        _thr.Thread(target=_seeds_refresco_hilo, args=(ihs,), daemon=True).start()
+    except Exception:
+        with _SREF_LOCK:
+            _SREF["vuelo"] = False
+
+
+# --- La copia de los infohash fuera de /tmp ---------------------------------
+_SEMI_SYNC = "https://mw-sync.israeldm93.workers.dev/kv/semillas"
+_SEMI_NUBE = {"subida_ts": 0.0, "firma": None, "subidas": 0, "fallos": 0,
+              "bajadas": 0, "recuperadas": 0}
+# Un relay de PRUEBAS (en el PC) nunca sube: pisaria la copia buena con lo que
+# tenga en su /tmp de juguete. Render define RENDER en todos sus servicios.
+_EN_RENDER = bool(os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))
+_IH_RE = _re_dt.compile(r"^[0-9a-f]{40}$")
+_DTK_RE = _re_dt.compile(r"^[a-z0-9_]{1,24}:\d{1,12}$")
+
+
+def _semillas_firma():
+    f = []
+    for p in (_DTPACKED_FILE, _DXIH_FILE):
+        try:
+            st = os.stat(p)
+            f.append((int(st.st_mtime), st.st_size))
+        except Exception:
+            f.append(None)
+    return tuple(f)
+
+
+def _semillas_nube_sube(forzar=False):
+    """Sube los infohash conocidos (como mucho cada 10 min, y solo si cambio
+    algo). Los conteos van dentro: ensenar el de ayer tras un despliegue es
+    mejor que no ensenar nada, y se refresca solo."""
+    try:
+        if not _EN_RENDER and not forzar:
+            return 0
+        ahora = _t.time()
+        firma = _semillas_firma()
+        if not forzar and ((ahora - _SEMI_NUBE["subida_ts"]) < 600
+                           or firma == _SEMI_NUBE["firma"]):
+            return 0
+        dtp, dih = {}, {}
+        for k, v in (_dtpacked_load() or {}).items():
+            if isinstance(v, dict) and _IH_RE.match(str(v.get("ih") or "")):
+                dtp[k] = {kk: v[kk] for kk in ("p", "q", "ih", "ts", "s", "sts")
+                          if kk in v}
+        for u, v in (_dxih_load() or {}).items():
+            if isinstance(v, dict) and _IH_RE.match(str(v.get("ih") or "")):
+                dih[u] = {"ih": v["ih"], "ts": v.get("ts", 0)}
+        _SEMI_NUBE["subida_ts"] = ahora
+        _SEMI_NUBE["firma"] = firma
+        if not dtp and not dih:
+            return 0
+        import base64
+        import gzip
+        gz = base64.b64encode(gzip.compress(_json.dumps(
+            {"v": 1, "dtp": dtp, "dih": dih}).encode("utf-8"), 6)).decode("ascii")
+        r = requests.post(_SEMI_SYNC, json={"gz": gz}, timeout=(5, 15))
+        if r.status_code == 200:
+            _SEMI_NUBE["subidas"] += 1
+            return len(dtp) + len(dih)
+        _SEMI_NUBE["fallos"] += 1
+    except Exception:
+        _SEMI_NUBE["fallos"] += 1
+    return 0
+
+
+def _semillas_nube_baja():
+    """Al arrancar: lo que haya en la copia y no este en /tmp, a /tmp. Nunca
+    pisa una entrada que ya sabe su infohash (la de aqui es igual o mas nueva)."""
+    try:
+        import base64
+        import gzip
+        r = requests.get(_SEMI_SYNC, timeout=(5, 10))
+        d = r.json() if r.status_code == 200 else {}
+        gz = (d or {}).get("gz")
+        if not gz:
+            return 0
+        dat = _json.loads(gzip.decompress(base64.b64decode(gz)).decode("utf-8"))
+        if not isinstance(dat, dict):
+            return 0
+        _SEMI_NUBE["bajadas"] += 1
+        n = 0
+        dtp = dat.get("dtp") if isinstance(dat.get("dtp"), dict) else {}
+        dih = dat.get("dih") if isinstance(dat.get("dih"), dict) else {}
+        if dtp:
+            with _FileLock(_DTPACKED_FILE):
+                loc = _dtpacked_load()
+                for k, v in dtp.items():
+                    if not (isinstance(k, str) and _DTK_RE.match(k)
+                            and isinstance(v, dict)
+                            and _IH_RE.match(str(v.get("ih") or ""))
+                            and isinstance(v.get("ts"), (int, float))):
+                        continue
+                    if (loc.get(k) or {}).get("ih"):
+                        continue
+                    e = {"ih": v["ih"], "ts": float(v["ts"]),
+                         "p": bool(v.get("p")), "q": str(v.get("q") or "")[:16]}
+                    if isinstance(v.get("s"), int) and v["s"] >= 0 and \
+                            isinstance(v.get("sts"), (int, float)):
+                        e["s"] = v["s"]
+                        e["sts"] = float(v["sts"])
+                    loc[k] = e
+                    n += 1
+                _dtpacked_save(loc)
+        if dih:
+            with _FileLock(_DXIH_FILE):
+                loc = _dxih_load()
+                for u, v in dih.items():
+                    if not (isinstance(u, str) and u.startswith("http")
+                            and len(u) < 2000 and isinstance(v, dict)
+                            and _IH_RE.match(str(v.get("ih") or ""))
+                            and isinstance(v.get("ts"), (int, float))):
+                        continue
+                    if len(str((loc.get(u) or {}).get("ih") or "")) == 40:
+                        continue
+                    loc[u] = {"ih": v["ih"], "ts": float(v["ts"])}
+                    n += 1
+                _dxih_save(loc)
+        _SEMI_NUBE["recuperadas"] += n
+        return n
+    except Exception:
+        return 0
+
+
+def _semillas_arranca():
+    """Recupera la copia nada mas arrancar, en un hilo (como el indice de
+    WolfMax: con preload corre en el proceso padre y deja los ficheros en /tmp,
+    que los dos workers comparten)."""
+    if os.environ.get("MW_SIN_NUBE") == "1":      # las pruebas en local
+        return
+
+    def _ir():
+        try:
+            _t.sleep(3)
+            n = _semillas_nube_baja()
+            if n:
+                print("[semillas] recuperados %d infohash de la copia" % n,
+                      flush=True)
+        except Exception:
+            pass
+    try:
+        _thr.Thread(target=_ir, daemon=True).start()
+    except Exception:
+        pass
+
+
+_semillas_arranca()
+
+
+# --- El aprendiz --------------------------------------------------------------
+_APR_FILE = "/tmp/mw_aprende.json"        # quien lleva el turno (pid, ts)
+_APR = {"turno": False, "rondas": 0, "dt": 0, "dx": 0, "wf": 0, "fallos": 0,
+        "pendientes": -1, "ultimo": "", "ult_ts": 0, "refrescos": 0}
+_APR_NEG = {}                    # clave -> (ts, segundos que no se reintenta)
+_APR_T_DT = [0.0]                # ultimo PoW de DonTorrent pedido a una caja
+_APR_T_REF = [0.0]               # ultimo refresco de conteos del Inicio
+_APR_PAUSA = 45.0
+_APR_PAUSA_DT = 120.0
+_APR_RR = [0]
+_APR_PID = [0]
+
+
+def _apr_turno():
+    """Solo UN worker aprende. Si el que lleva el turno muere (relevo,
+    despliegue), a los 3 minutos lo coge el otro."""
+    yo = os.getpid()
+    now = _t.time()
+    try:
+        with _FileLock(_APR_FILE):
+            try:
+                with open(_APR_FILE, "r", encoding="utf-8") as f:
+                    d = _json.load(f) or {}
+            except Exception:
+                d = {}
+            if d.get("pid") not in (None, yo) and (now - d.get("ts", 0)) < 180:
+                return False
+            # las cuentas van aqui para que /catdiag las vea conteste el
+            # worker que conteste (el otro no tiene el turno ni los numeros)
+            d = {"pid": yo, "ts": now, "st": dict(_APR)}
+            tmp = _APR_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _APR_FILE)
+            return True
+    except Exception:
+        return False
+
+
+def _cajas_libres():
+    """Cajas vivas que NO estan reproduciendo. Un PoW de DonTorrent en una caja
+    Android mientras mueve un 4K puede dar un tiron en la tele: al aprendiz no
+    le corre ninguna prisa, asi que solo molesta a las que estan paradas."""
+    vivas = _live_boxes()
+    if not vivas:
+        return []
+    try:
+        now = _t.time()
+        suenan = {c for c, e in (_kbnow_load() or {}).items()
+                  if (now - e.get("ts", 0)) < _KB_NOW_TTL and e.get("np")}
+    except Exception:
+        suenan = set()
+    return [c for c in vivas if c not in suenan]
+
+
+def _apr_caja():
+    # Los huecos de "caja prestada" son 4 para todo el relay y una busqueda
+    # puede usar 3: el aprendiz solo coge uno si deja 3 libres para la gente.
+    try:
+        if getattr(_BOX_LEND_SEM, "_value", 4) < 4:
+            return None
+    except Exception:
+        pass
+    libres = _cajas_libres()
+    if not libres:
+        return None
+    _APR_RR[0] = (_APR_RR[0] + 1) % 1000000
+    return libres[_APR_RR[0] % len(libres)]
+
+
+def _apr_items_inicio():
+    """Las PELICULAS del Inicio (Estrenos y Cine, en el orden en que se ven),
+    con todas sus versiones: DonTorrent de la cache de /catbrowse y WolfMax y
+    DivxTotal de la mezcla. La web decide despues que version gana cada
+    tarjeta, asi que hay que saberlas todas."""
+    out = []
+    disco = None
+    for kind in ("estrenos", "peliculas"):
+        ent = _CATBROWSE_CACHE.get(kind + ":1")
+        if not ent:
+            if disco is None:
+                disco = _catbrowse_load() or {}
+            ent = disco.get(kind + ":1")
+        mix = (_home_mix_cache(kind) or {}).get("items") or []
+        for it in list((ent or {}).get("items") or []) + list(mix):
+            if isinstance(it, dict) and it.get("kind") == "movie":
+                out.append(it)
+    return out
+
+
+def _apr_clave(it):
+    """(fuente, clave del almacen) -- la MISMA que usa la web (sgKey)."""
+    s = it.get("source") or "dt"
+    if s == "dt":
+        cid = str(it.get("content_id") or "")
+        tb = str(it.get("tabla") or "peliculas")
+        if cid.isdigit() and _DTK_RE.match("%s:%s" % (tb, cid)):
+            return "dt", "%s:%s" % (tb, cid)
+        return None, None
+    if s in ("dx", "wf"):
+        u = str(it.get("url") or it.get("content_id") or "")
+        if u.startswith("http"):
+            return s, u
+    return None, None
+
+
+def _apr_pendientes(items, now):
+    dtp = _dtpacked_load()
+    dih = _dxih_load()
+    out, vistos, ihs_viejos = [], set(), []
+    sd = None
+    for it in items:
+        src, k = _apr_clave(it)
+        if not src or k in vistos:
+            continue
+        vistos.add(k)
+        ih = ""
+        if src == "dt":
+            e = dtp.get(k) or {}
+            if e.get("ih") and (now - e.get("ts", 0)) < _DTPACKED_TTL:
+                ih = e["ih"]
+                if e.get("s") is not None and (now - e.get("sts", 0)) < _SEEDS_TTL:
+                    continue
+        else:
+            c = dih.get(k) or {}
+            if len(str(c.get("ih") or "")) == 40 and (now - c.get("ts", 0)) < _DXIH_TTL:
+                ih = c["ih"]
+        if ih:
+            if sd is None:
+                sd = _seeds_load()
+            e2 = sd.get(ih) or {}
+            if (now - e2.get("ts", 0)) >= _SEEDS_TTL2:
+                ihs_viejos.append(ih)
+            continue
+        neg = _APR_NEG.get(k)
+        if neg and (now - neg[0]) < neg[1]:
+            continue
+        out.append((src, k, it))
+    return out, ihs_viejos
+
+
+def _apr_dt(k):
+    """Infohash (+RAR y calidad) de una peli de DonTorrent, por una caja libre."""
+    box = _apr_caja()
+    if not box:
+        return None
+    sem = _lend_acquire(box)
+    if sem is None:
+        return None
+    tb, cid = k.split(":", 1)
+    try:
+        job = "ap" + os.urandom(5).hex()
+        _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dtmeta",
+                          "cid": cid, "tb": tb})
+        res = _catjob_wait(job, 25.0)
+    finally:
+        _lend_release(sem)
+    if res is None:
+        return {"timeout": True}
+    ih = _re_dt.sub(r"[^a-f0-9]", "", str(res.get("ih") or "").lower())[:40]
+    return {"ih": ih, "p": bool(res.get("rar")),
+            "q": str(res.get("quality") or "")[:16]}
+
+
+def _apr_wf(url):
+    box = _apr_caja()
+    if not box:
+        return None
+    sem = _lend_acquire(box)
+    if sem is None:
+        return None
+    try:
+        job = "ap" + os.urandom(5).hex()
+        _kb_enqueue(box, {"c": "etjob", "job": job, "op": "infohash",
+                          "src": "wf", "url": url})
+        res = _catjob_wait(job, 25.0)
+    finally:
+        _lend_release(sem)
+    if res is None:
+        return {"timeout": True}
+    ih = _re_dt.sub(r"[^a-f0-9]", "", str(res.get("ih") or "").lower())[:40]
+    if len(ih) != 40 and res.get("link"):
+        ih = _bounded(lambda: _ih_from_link(res.get("link") or ""), 10.0, "") or ""
+    return {"ih": ih}
+
+
+def _apr_dx(url):
+    def _f():
+        dls = (_dx_detail(url) or {}).get("downloads") or []
+        return _ih_from_link(dls[0].get("torrent_url") or "") if dls else ""
+    ih = _bounded(_f, 22.0, None)
+    if ih is None:
+        return {"timeout": True}
+    return {"ih": ih or ""}
+
+
+def _apr_guarda(src, k, r, now):
+    ih = r["ih"]
+    cuenta = _seed_counts_many([ih]).get(ih)
+    if src == "dt":
+        with _FileLock(_DTPACKED_FILE):
+            d = _dtpacked_load()
+            ent = d.get(k) or {}
+            ent.update({"ih": ih, "p": r.get("p", ent.get("p", False)),
+                        "q": r.get("q") or ent.get("q", ""), "ts": now})
+            if cuenta is not None:
+                ent["s"] = cuenta
+                ent["sts"] = now
+            d[k] = ent
+            if len(d) > 3000:
+                for kk in sorted(d, key=lambda kk: d[kk].get("ts", 0))[:len(d) - 3000]:
+                    d.pop(kk, None)
+            _dtpacked_save(d)
+    else:
+        with _FileLock(_DXIH_FILE):
+            d = _dxih_load()
+            d[k] = {"ih": ih, "ts": now}
+            if len(d) > 2000:
+                for kk in sorted(d, key=lambda kk: d[kk].get("ts", 0))[:len(d) - 2000]:
+                    d.pop(kk, None)
+            _dxih_save(d)
+    if cuenta is not None:
+        _seeds_guarda({ih: cuenta}, now)
+
+
+def _apr_ronda():
+    """Una vuelta: como mucho UN trabajo. Devuelve cuanto esperar a la siguiente."""
+    _APR["rondas"] += 1
+    # Si el relay va cargado, no es el momento: esto no tiene ninguna prisa.
+    if _BND_VIVOS[0] >= 12 or _thr.active_count() >= 70:
+        return 90.0
+    try:
+        if _mem_cgroup_mb() >= 330:
+            return 120.0
+    except Exception:
+        pass
+    _bounded(_semillas_nube_sube, 25.0, 0)
+    now = _t.time()
+    pend, viejos = _apr_pendientes(_apr_items_inicio(), now)
+    _APR["pendientes"] = len(pend)
+    # Los conteos del Inicio, frescos para quien abra la app (un paquete UDP
+    # por tracker para todas, cada 40 min como mucho).
+    if viejos and (now - _APR_T_REF[0]) >= 2400:
+        _APR_T_REF[0] = now
+        _seeds_guarda(_seed_counts_many(viejos[:140]))
+        _APR["refrescos"] += 1
+    for src, k, it in pend:
+        if src == "dt" and (now - _APR_T_DT[0]) < _APR_PAUSA_DT:
+            continue            # el PoW de DonTorrent, espaciado: toca otra fuente
+        if src == "dt":
+            _APR_T_DT[0] = now
+            r = _apr_dt(k)
+        elif src == "wf":
+            r = _apr_wf(k)
+        else:
+            r = _apr_dx(k)
+        if r is None:           # sin caja libre o sin hueco: otra vuelta
+            continue
+        _APR["ultimo"] = "%s %s" % (src, (it.get("title") or "")[:40])
+        _APR["ult_ts"] = int(now)
+        if len(str(r.get("ih") or "")) == 40:
+            _apr_guarda(src, k, r, now)
+            _APR[src] += 1
+        else:
+            _APR["fallos"] += 1
+            # que no conteste a tiempo no es lo mismo que "no hay .torrent"
+            _APR_NEG[k] = (now, 1200 if r.get("timeout") else 6 * 3600)
+            if len(_APR_NEG) > 3000:
+                for kk in sorted(_APR_NEG, key=lambda kk: _APR_NEG[kk][0])[:1000]:
+                    _APR_NEG.pop(kk, None)
+        return _APR_PAUSA
+    return 300.0 if not pend else 60.0
+
+
+def _apr_bucle():
+    _t.sleep(90 + _rnd_mem.random() * 30)      # que el arranque se asiente
+    while True:
+        pausa = _APR_PAUSA
+        try:
+            _APR["turno"] = _apr_turno()
+            if _APR["turno"]:
+                pausa = _apr_ronda()
+        except Exception:
+            pausa = 120.0
+        _t.sleep(pausa + _rnd_mem.random() * 10)
+
+
+def _apr_arranca():
+    """Se llama desde el primer request de cada worker (despues del fork, igual
+    que el vigilante de memoria). Los dos workers tienen su hilo, pero solo el
+    que lleva el turno trabaja."""
+    if os.environ.get("MW_APRENDIZ", "1") == "0":
+        return
+    yo = os.getpid()
+    if _APR_PID[0] == yo:
+        return
+    _APR_PID[0] = yo
+    try:
+        _kth.Thread(target=_apr_bucle, daemon=True).start()
+    except Exception:
+        pass
 
 
 _CAT_BROWSE = {"estrenos": "/", "peliculas": "/peliculas", "series": "/series"}
@@ -8307,7 +9090,11 @@ def cathomemix():
     todavia no estaba calculada -- entonces el front la pide aqui y las
     tarjetas se anaden AL FINAL, sin mover ni una de las que ya se ven."""
     kind = (request.args.get("kind") or "estrenos").strip().lower()
-    return jsonify(_home_mix(kind))
+    d = dict(_home_mix(kind))
+    # por el mismo sitio que todo lo demas: si no, esta via (la de cuando la
+    # mezcla aun no estaba calculada) servia los titulos con el "(2026)" pegado
+    d["items"] = _al_servir(list(d.get("items") or []))
+    return jsonify(d)
 
 
 def _home_mix(kind):
@@ -8407,6 +9194,38 @@ def catdiag():
         out["boxes_live"] = {"n": len(_ages), "ages_s": _ages[:8], "vers": _vers}
     except Exception:
         out["boxes_live"] = {"n": -1}
+    # 0b) Cuantas teles estan REPRODUCIENDO ahora mismo (sin codigos). Es lo que
+    #     hay que mirar antes de desplegar el relay: un despliegue corta lo que
+    #     se esta viendo (12-09: le salto un error en la tele al dueno).
+    try:
+        _np = [e.get("np") or {} for e in (_kbnow_load() or {}).values()
+               if (now - e.get("ts", 0)) < _KB_NOW_TTL and e.get("np")]
+        out["reproduciendo"] = {"n": sum(1 for x in _np if not x.get("paused")),
+                                "en_pausa": sum(1 for x in _np if x.get("paused"))}
+    except Exception:
+        out["reproduciendo"] = {"n": -1}
+    # 0c) Semillas: lo que se sabe, la copia en la nube y el aprendiz.
+    try:
+        _dtp = _dtpacked_load()
+        out["semillas"] = {
+            "dt_con_ih": sum(1 for v in _dtp.values()
+                             if isinstance(v, dict) and v.get("ih")),
+            "urls_con_ih": len(_dxih_load()),
+            "conteos": len(_seeds_load()),
+            "refresco": dict(_SREF),
+            "nube": {k: v for k, v in _SEMI_NUBE.items() if k != "firma"},
+            "en_render": _EN_RENDER,
+            "dt_directo": {"muerto": _dt_directo_muerto(),
+                           "saltados": _DTDIR["saltados"]}}
+        try:
+            with open(_APR_FILE, "r", encoding="utf-8") as f:
+                _ap = _json.load(f) or {}
+            out["semillas"]["aprendiz"] = dict(_ap.get("st") or {},
+                                               hace_s=int(now - _ap.get("ts", 0)))
+        except Exception:
+            out["semillas"]["aprendiz"] = None
+    except Exception:
+        out["semillas"] = {"error": True}
     # 1) Breaker de DonTorrent: ¿esta Render saltando DT (baneado)?
     down = _dt_is_down()
     out["dt_breaker"] = {
@@ -9792,6 +10611,18 @@ function mergeResults(list,g,items,mudo){
  var norm=function(s){s=(s||'').toLowerCase();
   try{s=s.normalize('NFD').replace(/[̀-ͯ]/g,'')}catch(e){}
   return s.replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim()};
+ // El AÑO y el titulo ORIGINAL entre parentesis tampoco cuentan para decidir
+ // si son la misma: WolfMax escribe "Poli malo (Bad Man) (2025)" y DonTorrent
+ // "Poli malo", y salian DOS tarjetas de la misma pelicula (medido el 22-09 en
+ // el Inicio real: cuatro o cinco parejas por pestana, todas con el mismo año).
+ // El año del titulo pasa a ser el año si no traia otro, asi que los remakes
+ // siguen separados; y el parentesis solo se quita cuando hay año con el que
+ // distinguir ("Dune (Parte Dos)" sin año NO se convierte en "Dune").
+ var clave=function(x){var t=(x&&x.title)||'',y=String((x&&x.year)||'').trim();
+  var m=t.match(/\s*[\(\[]\s*((?:19|20)\d\d)\s*[\)\]]\s*$/);
+  if(m&&t.slice(0,m.index).trim().length>=2){t=t.slice(0,m.index);if(!y)y=m[1];}
+  if(y){var t2=t.replace(/\s*\([^()]{2,60}\)\s*$/,'');if(t2.trim().length>=2)t=t2;}
+  return {t:norm(t),y:y}};
  // Dedup por TÍTULO+AÑO (no solo título): los remakes del MISMO título salen LAS DOS
  // (Suspiria 1977 vs 2018, Dune 1984 vs 2021...) porque el año los separa; la misma
  // peli repetida entre fuentes (mismo título+año) se funde. Un item SIN año se funde
@@ -9804,8 +10635,8 @@ function mergeResults(list,g,items,mudo){
  // primera en llegar, y como DivxTotal sale directo del relay (~2s) y DonTorrent
  // va por una caja (~4s), 'matrix' acababa mostrando la tarjeta de DivxTotal.
  var byKey={},titles={},at={};
- LISTS[list].forEach(function(x,i){var t=norm(x.title);if(!t)return;titles[t]=1;
-  var k=t+'|'+(x.year||'');byKey[k]=1;if(at[k]===undefined)at[k]=i;if(at[t+'|*']===undefined)at[t+'|*']=i;});
+ LISTS[list].forEach(function(x,i){var c=clave(x),t=c.t;if(!t)return;titles[t]=1;
+  var k=t+'|'+c.y;byKey[k]=1;if(at[k]===undefined)at[k]=i;if(at[t+'|*']===undefined)at[t+'|*']=i;});
  // Se recorre item a item y se va AnADIENDO A LA LISTA sobre la marcha, en vez
  // de filtrar primero y concatenar despues. Parece un detalle y no lo es: con
  // el filtro, los items del lote que todavia no estaban en la lista no tenian
@@ -9817,9 +10648,9 @@ function mergeResults(list,g,items,mudo){
  var marca=function(t,y,i){var k=t+'|'+y;if(at[k]===undefined)at[k]=i;
   if(at[t+'|*']===undefined)at[t+'|*']=i;};
  for(var q=0;q<items.length;q++){
-  var x=items[q],t=norm(x.title);
+  var x=items[q],c=clave(x),t=c.t;
   if(!t){LISTS[list].push(x);continue}
-  var y=String(x.year||''),k=t+'|'+y;
+  var y=c.y,k=t+'|'+y;
   if(y&&byKey[k]){upgrade(list,k,x,at,swapped);continue}
   if(!y&&titles[t]){upgrade(list,t+'|*',x,at,swapped);continue}
   var idx=LISTS[list].length;LISTS[list].push(x);
@@ -9830,6 +10661,9 @@ function mergeResults(list,g,items,mudo){
  // Repintar SOLO las tarjetas sustituidas (no toda la cuadricula: el usuario
  // puede estar haciendo scroll y no se le mueve nada de sitio).
  if(!mudo)for(var s2=0;s2<swapped.length;s2++)repaintCard(g,list,swapped[s2]);
+ // y sus sellos: la tarjeta repintada nace sin ellos (y la version que gana
+ // puede tener sus propias semillas)
+ if(!mudo&&swapped.length)try{semillasDe(g,list,swapped)}catch(e){}
  // La barra de fuentes cuenta lo que hay: si acaba de entrar EliteTorrent por
  // una caja, su boton aparece solo.
  if(!mudo&&list==='inicio')try{pintaFuentes()}catch(e){}}
@@ -10793,29 +11627,38 @@ function lazyRar(el,list,from){var items=LISTS[list];var cd=(code.value||'').rep
 // cajas. Lo que no se sepa, no se pinta -- y aparece solo en cuanto se abre la
 // ficha una vez. En Mi lista y en el Historial es donde mas se nota, que es
 // justo donde uno mira antes de poner algo.
-var _sgCache={};
+var _sgCache={},_sgRar={};
 function sgKey(x){
  if(x.kind!=='movie')return null;                  // en una serie, cada capitulo tiene las suyas
  var s=x.source||'dt';
  if(s==='dt')return (x.content_id&&x.tabla)?('dt:'+x.tabla+':'+x.content_id):null;
  var u=x.url||x.content_id;return u?('u:'+u):null;}
-function semillasGrid(el,list,from){
- var items=LISTS[list],claves=[],quien={};
- for(var i=from;i<items.length;i++){
-  var k=sgKey(items[i]);if(!k)continue;
+function semillasGrid(el,list,from){var idx=[],n=(LISTS[list]||[]).length;
+ for(var i=from;i<n;i++)idx.push(i);semillasDe(el,list,idx)}
+// Lo mismo para unas tarjetas sueltas: las que se acaban de REPINTAR al fundir
+// versiones (repaintCard las rehace desde cero y se quedaban sin sus sellos).
+function semillasDe(el,list,idx){
+ var items=LISTS[list]||[],claves=[],quien={};
+ for(var n=0;n<idx.length;n++){var i=idx[n],x=items[i];if(!x)continue;
+  var k=sgKey(x);if(!k)continue;
   // se apunta QUIEN lo pidio, no solo donde estaba: cuando llegue la
   // respuesta esa posicion puede tener ya otra pelicula (ver idxDe).
-  quien[k]=(quien[k]||[]).concat([{ik:itemKey(items[i]),i:i}]);
-  if(_sgCache[k]!==undefined){sgBadge(el,list,quien[k][quien[k].length-1],_sgCache[k]);continue}
+  var q={ik:itemKey(x),i:i};
+  quien[k]=(quien[k]||[]).concat([q]);
+  if(_sgCache[k]!==undefined){sgBadge(el,list,q,_sgCache[k]);if(_sgRar[k])sgRar(el,list,q);continue}
   if(claves.indexOf(k)<0)claves.push(k);}
  if(!claves.length)return;
  fetch('/seedsknown',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({k:claves.slice(0,80)})})
   .then(function(r){return r.json()}).then(function(d){
-   var s=(d&&d.s)||{};
+   var s=(d&&d.s)||{},r=(d&&d.r)||[];
+   // RAR de DonTorrent: sale de su propio .torrent, asi que si el relay lo
+   // sabe es seguro -- y se ve en la tarjeta, no solo al abrir la ficha.
+   r.forEach(function(k){_sgRar[k]=1;(quien[k]||[]).forEach(function(q){sgRar(el,list,q)})});
    for(var k in s){_sgCache[k]=s[k];
     (quien[k]||[]).forEach(function(q){sgBadge(el,list,q,s[k])})}
   }).catch(function(){});}
+function sgRar(el,list,q){if(q)rarBadge({el:el,list:list,ik:q.ik,i:q.i})}
 function sgBadge(el,list,q,n){
  if(typeof n!=='number'||!q)return;
  var c=badgeCard(el,list,q.ik,q.i);if(!c)return;
@@ -11560,9 +12403,55 @@ _MEM_EDAD_MIN = 150.0
 _MEM_RELEVOS_FILE = "/tmp/mw_relevos.json"
 
 
+def _hilos_quien(top=14):
+    """Los hilos del proceso agrupados por la funcion que ejecutan."""
+    quien = {}
+    try:
+        for th in _thr.enumerate():
+            n = "?"
+            try:
+                nom = th.name or ""
+                if nom.startswith("bnd"):
+                    n = "pool _bounded"       # los del pool, todos juntos
+                else:
+                    tgt = getattr(th, "_target", None)
+                    n = getattr(tgt, "__name__", None) or nom or "?"
+                    if n == "<lambda>":
+                        n = "lambda:" + nom
+            except Exception:
+                pass
+            quien[n] = quien.get(n, 0) + 1
+    except Exception:
+        pass
+    return dict(sorted(quien.items(), key=lambda kv: -kv[1])[:top])
+
+
+def _colgados(min_s=60, top=8):
+    """Los trabajos de _bounded que llevan mas de `min_s` vivos, por origen."""
+    out = {}
+    try:
+        ahora = _t.time()
+        for _k, (_org, _ts) in list(_BND_QUIEN.items()):
+            if ahora - _ts > min_s:
+                out[_org] = out.get(_org, 0) + 1
+    except Exception:
+        pass
+    return dict(sorted(out.items(), key=lambda kv: -kv[1])[:top])
+
+
+_MEM_RELEVANDO = [False]
+
+
 def _mem_relevo(motivo):
     """Se despide y deja que gunicorn levante otro worker. Las peticiones en
     curso terminan (SIGTERM = salida ordenada); el otro worker cubre mientras."""
+    # UNA vez por proceso. Mientras las peticiones en curso terminan, el
+    # vigilante sigue muestreando cada 8 s y volvia a entrar aqui: el relevo
+    # del 21-09 a las 17:22 quedo apuntado CUATRO veces (17:22:18, :26, :34,
+    # :42), que en /catmem parecian cuatro relevos distintos.
+    if _MEM_RELEVANDO[0]:
+        return
+    _MEM_RELEVANDO[0] = True
     try:
         try:      # rastro para saber si esto pasa a menudo (y por que)
             d = {}
@@ -11571,7 +12460,11 @@ def _mem_relevo(motivo):
                     d = _json.load(f) or {}
             except Exception:
                 pass
-            d[str(int(_t.time()))] = motivo
+            # Con la FOTO de los hilos: el relevo del 21-09 a las 17:22 solo
+            # dejo "hilos=120" y no habia forma de saber que se habia
+            # acumulado. Con esto, el proximo dice que funcion y desde donde.
+            d[str(int(_t.time()))] = {"m": motivo, "quien": _hilos_quien(8),
+                                      "colgados": _colgados(30, 6)}
             if len(d) > 40:
                 d = dict(sorted(d.items())[-40:])
             with open(_MEM_RELEVOS_FILE, "w") as f:
@@ -11665,6 +12558,9 @@ def _mem_watch_asegura():
         _MEM_WATCH.update({"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0,
                            "libero_mb": 0.0, "total": 0.0, "total_max": 0.0})
     _start_mem_watch()
+    # El aprendiz de semillas, por la misma razon: lanzado en el import se
+    # quedaria en el proceso padre y no correria en ningun worker.
+    _apr_arranca()
 
 
 @app.before_request
@@ -11730,40 +12626,18 @@ def catmem():
     # sin bajar nunca; saber que funcion ejecuta cada uno es la diferencia entre
     # arreglar la fuga y adivinar. Agrupado por funcion, y aparte los que llevan
     # mas de 5 min vivos (esos ya no vuelven).
-    quien = {}
-    try:
-        for th in _thr.enumerate():
-            n = "?"
-            try:
-                nom = th.name or ""
-                if nom.startswith("bnd"):
-                    n = "pool _bounded"       # los del pool, todos juntos
-                else:
-                    tgt = getattr(th, "_target", None)
-                    n = getattr(tgt, "__name__", None) or nom or "?"
-                    if n == "<lambda>":
-                        n = "lambda:" + nom
-            except Exception:
-                pass
-            quien[n] = quien.get(n, 0) + 1
-    except Exception:
-        pass
-    out["hilos_quien"] = dict(sorted(quien.items(), key=lambda kv: -kv[1])[:14])
+    out["hilos_quien"] = _hilos_quien(14)
     out["bounded"] = {"vivos": _BND_VIVOS[0], "max": _BND_MAX,
                       "stats": dict(_BND_STATS)}
     # Los trabajos que llevan MAS DE UN MINUTO vivos: esos ya no vuelven, y
     # aqui sale de que llamada salieron.
+    out["colgados"] = _colgados(60, 8)
     try:
         ahora = _t.time()
-        colgados = {}
-        for _k, (_org, _ts) in list(_BND_QUIEN.items()):
-            if ahora - _ts > 60:
-                colgados[_org] = colgados.get(_org, 0) + 1
-        out["colgados"] = dict(sorted(colgados.items(), key=lambda kv: -kv[1])[:8])
         out["bnd_vivos_detalle"] = {v[0]: int(ahora - v[1])
                                     for v in list(_BND_QUIEN.values())[:8]}
     except Exception:
-        out["colgados"] = {}
+        pass
     out["relevo"] = {"hilos_max": _MEM_HILOS_MAX, "mb_max": _MEM_MATAR_MB,
                      "servicio_max": _MEM_TOTAL_MB}
     out["tarpit_cortes"] = dict(_TARPIT)

@@ -23,6 +23,24 @@ y qué pasa con los capítulos. Ejecuta el **código real** de la web, extraído
 
 **`caratulas.py`** — que no se tire una carátula que ya teníamos al deduplicar.
 
+**`anio_titulo.py`** (22-09-2026) — el año y el título original entre paréntesis
+en el relay. WolfMax titula `"Poli malo (Bad Man) (2025)"` y DonTorrent
+`"Poli malo"`: salían dos tarjetas de la misma película (4-5 parejas por pestaña
+del Inicio). Vigila también lo que **no** se debe juntar: `"Suspiria (1977)"`
+contra la de 2018, y `"Dune (Parte Dos)"` sin año contra `"Dune"`. La mitad de
+la web está en `fusion.js` (casos 12-15).
+
+**`semillas.py`** (22-09-2026) — las semillas en la cuadrícula: el conteo UDP en
+lote contra un tracker de mentira en `127.0.0.1`, `/seedsknown` enseñando lo
+último que se sabe y el RAR de DonTorrent, el aprendiz (qué elige, que el PoW de
+DonTorrent va espaciado y solo a cajas que **no** están reproduciendo) y la
+copia en la nube (valida lo que baja, nunca pisa lo que ya sabe y un relay de
+pruebas **nunca** sube). Escribe en `C:\tmp` y lo deja como estaba.
+
+**`variantes.py`** (22-09-2026) — cómo se reescribe la búsqueda para el
+buscador literal de DonTorrent, incluido `"xmen"` → `"x-men"` preguntando a
+TMDB (simulado, sin red).
+
 ## Qué vigila cada una
 
 **`busqueda.py`** — el filtro de relevancia (`_q_relevant`). 35 casos reales,
