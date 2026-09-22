@@ -33,3 +33,15 @@ t.txt
 
 # Cache local de wrangler (estado de D1 en local, no va al repo)
 .wrangler/
+
+# PRIVADO: el repo es PUBLICO. Memory/ lleva los codigos de las cajas (con un
+# codigo se le mandan ordenes a esa tele) y URLs internas. Se colo en git el
+# 20-09-2026 y se retiro el 22-09: que no vuelva a entrar por un `git add -A`.
+Memory/
+/CLAUDE.md
+/CONTEXTO_MEJORWOLF.txt
+/ICONOS MEJORWOLF/
+# herramientas locales de Claude Code
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+.claude/launch.json
