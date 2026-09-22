@@ -89,6 +89,31 @@ def get_code():
     return c
 
 
+def set_code(nuevo):
+    """Cambia el codigo de esta caja (Mis Kodis -> 'Cambiar codigo').
+
+    PRIMERO al disco, y se relee para comprobarlo; solo entonces a la memoria.
+    Si se adoptara en memoria sin haberlo podido guardar, al reiniciar Kodi
+    volveria el codigo viejo y el movil se quedaria con uno que ya no es de
+    ninguna tele. Devuelve True si el cambio quedo hecho."""
+    c = "".join(ch for ch in str(nuevo or "") if ch.isdigit())
+    if len(c) != 6 or not _CODE_FILE:
+        return False
+    try:
+        os.makedirs(_PROFILE, exist_ok=True)
+        tmp = _CODE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(c)
+        os.replace(tmp, _CODE_FILE)
+        with open(_CODE_FILE, "r", encoding="utf-8") as f:
+            if "".join(ch for ch in f.read() if ch.isdigit()) != c:
+                return False
+    except Exception:
+        return False
+    _CODE_CACHE[0] = c
+    return True
+
+
 # La URL del relay casi nunca cambia -> cache con TTL corto (60s): se ahorra
 # la lectura del setting + posible fallback a Supabase en cada sondeo, pero un
 # cambio de URL en Ajustes se sigue cogiendo en <1 min sin reiniciar Kodi.

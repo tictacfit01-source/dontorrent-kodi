@@ -292,6 +292,8 @@ def _poll_remote_kb():
                 _seek(-10)
             elif c == "seekto":
                 _seek_to(ev.get("min"))
+            elif c == "codigo_nuevo":
+                _codigo_nuevo(ev.get("nuevo"))
             elif c in _KB_ACTIONS:
                 xbmc.executebuiltin(_KB_ACTIONS[c])
             xbmc.sleep(120)   # pequeña separacion entre acciones
@@ -942,6 +944,37 @@ def _addon_version():
         return xbmcaddon.Addon("plugin.video.mejorwolf").getAddonInfo("version")
     except Exception:
         return ""
+
+
+def _codigo_nuevo(nuevo):
+    """El movil pide cambiar el codigo de esta tele (Mis Kodis -> 'Cambiar
+    codigo'), p.ej. porque el viejo se ha visto donde no debia (22-09-2026: los
+    codigos del salon y del PC estuvieron publicados en GitHub).
+
+    Se guarda en disco antes de adoptarlo (remote_kb.set_code) y se manda un
+    latido YA con el codigo nuevo: es lo que espera el movil para dar el cambio
+    por hecho. Si algo falla, la tele se queda con el que tenia -- el movil no
+    ve el latido nuevo y no cambia nada por su lado."""
+    from resources.lib import remote_kb as rkb
+    nuevo = "".join(ch for ch in str(nuevo or "") if ch.isdigit())
+    if len(nuevo) != 6 or nuevo == rkb.get_code():
+        return
+    if not rkb.set_code(nuevo):
+        xbmc.log("[MejorWolf/service] codigo nuevo: no se pudo guardar",
+                 xbmc.LOGWARNING)
+        return
+    xbmc.log("[MejorWolf/service] codigo del mando cambiado", xbmc.LOGINFO)
+    try:
+        rkb.push_status(_addon_version())
+    except Exception:
+        pass
+    try:     # que se vea en la tele: si el movil no se enterase, esta ahi
+        import xbmcgui
+        xbmcgui.Dialog().notification(
+            "MejorWolf", "Código nuevo del mando: %s" % nuevo,
+            xbmcgui.NOTIFICATION_INFO, 10000)
+    except Exception:
+        pass
 
 
 def _update_continue(elapsed, total):
