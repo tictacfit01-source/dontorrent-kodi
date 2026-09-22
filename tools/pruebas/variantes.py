@@ -11,6 +11,7 @@ import os
 import sys
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["MW_SIN_KEEPALIVE"] = "1"     # nada de red de fondo en la prueba
 os.environ["MW_APRENDIZ"] = "0"
 os.environ["MW_SIN_NUBE"] = "1"
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),

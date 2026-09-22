@@ -26,11 +26,16 @@ import threading
 import time
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["MW_SIN_KEEPALIVE"] = "1"     # nada de red de fondo en la prueba
 os.environ["MW_APRENDIZ"] = "0"      # nada de hilos de fondo en la prueba
 os.environ["MW_SIN_NUBE"] = "1"      # ni bajar la copia de verdad al importar
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "render_relay"))
 import app as A                                          # noqa: E402
+
+# Pase lo que pase en la prueba, NADA puede llegar a la copia de produccion.
+A._SEMI_SYNC = "http://127.0.0.1:9/kv/semillas"
+A._WFIDX_SYNC = "http://127.0.0.1:9/wfidx"
 
 fallos = 0
 
@@ -266,18 +271,12 @@ try:
                       "https://x/y": {"ih": IH[56], "ts": "ayer"}}}
     gz = base64.b64encode(gzip.compress(json.dumps(remoto).encode())).decode()
 
-    class R:
-        status_code = 200
-
-        def json(self):
-            return {"ok": True, "gz": gz}
-
-    viejo_get, viejo_post = A.requests.get, A.requests.post
-    A.requests.get = lambda *a, **k: R()
+    viejo_get, viejo_post = A._get_con_tope, A._post_con_tope
+    A._get_con_tope = lambda url, tope, **k: (json.dumps({"ok": True, "gz": gz}), 200)
     try:
         n = A._semillas_nube_baja()
     finally:
-        A.requests.get = viejo_get
+        A._get_con_tope = viejo_get
     dtp, dih = lee(A._DTPACKED_FILE), lee(A._DXIH_FILE)
     comprueba("baja lo que falta (2 buenas) y nada mas", n == 2, n)
     comprueba("nunca pisa lo que ya sabia", dtp["peliculas:50"]["ih"] == IH[50])
@@ -288,29 +287,12 @@ try:
               "peliculas:52" not in dtp and "../../etc" not in dtp
               and list(dih) == ["https://wolfmax4k.com/movie/7"], (list(dtp), list(dih)))
     enviado = []
-
-    class P:
-        status_code = 200
-
-    class Mal:
-        status_code = 503
-
-        def json(self):
-            return {}
-
     # arriba hay algo que aqui NO esta (p.ej. porque la recuperacion del
     # arranque fallo): la subida tiene que conservarlo, no pisarlo
     arriba = {"v": 1, "dtp": {"peliculas:60": {"ih": IH[60], "ts": now - 50}},
               "dih": {}}
     gz2 = base64.b64encode(gzip.compress(json.dumps(arriba).encode())).decode()
-
-    class R2:
-        status_code = 200
-
-        def json(self):
-            return {"ok": True, "gz": gz2}
-
-    A.requests.post = lambda url, json=None, timeout=None: enviado.append(json) or P()
+    A._post_con_tope = lambda url, cuerpo, tope: enviado.append(cuerpo) or 200
     viejo_render = A._EN_RENDER
     try:
         A._EN_RENDER = False
@@ -319,17 +301,24 @@ try:
                   A._semillas_nube_sube() == 0 and not enviado, enviado)
         A._EN_RENDER = True
         A._SEMI_NUBE["firma"] = None
-        A.requests.get = lambda *a, **k: Mal()
+        A._get_con_tope = lambda url, tope, **k: (None, 503)
         n_mal = A._semillas_nube_sube()
         comprueba("si no se puede LEER lo de arriba, no se sube nada",
                   n_mal == 0 and not enviado, enviado)
         A._SEMI_NUBE["subida_ts"] = 0.0
-        A.requests.get = lambda *a, **k: R2()
+        A._get_con_tope = lambda url, tope, **k: (json.dumps({"ok": True, "gz": gz2}), 200)
         n_sub = A._semillas_nube_sube()
         otra = A._semillas_nube_sube()
+        # una subida "en marcha" (colgada) no deja empezar otra
+        A._SEMI_NUBE["subida_ts"] = 0.0
+        A._SEMI_NUBE["firma"] = None
+        A._SEMI_NUBE["vuelo"] = time.time() - 30
+        n_vuelo = A._semillas_nube_sube()
+        vuelo_intacto = A._SEMI_NUBE["vuelo"] > 0
+        A._SEMI_NUBE["vuelo"] = 0.0
     finally:
-        A.requests.post = viejo_post
-        A.requests.get = viejo_get
+        A._post_con_tope = viejo_post
+        A._get_con_tope = viejo_get
         A._EN_RENDER = viejo_render
     dat = json.loads(gzip.decompress(base64.b64decode(enviado[0]["gz"])))
     comprueba("sube la UNION: lo de aqui (3) mas lo que solo estaba arriba (1)",
@@ -339,6 +328,168 @@ try:
     comprueba("y lo que solo estaba arriba se recupera tambien aqui",
               (lee(A._DTPACKED_FILE).get("peliculas:60") or {}).get("ih") == IH[60])
     comprueba("no vuelve a subir antes de 10 min", otra == 0 and len(enviado) == 1)
+    comprueba("con otra subida en marcha no empieza una segunda (ni le quita la marca)",
+              n_vuelo == 0 and len(enviado) == 1 and vuelo_intacto, (n_vuelo, len(enviado)))
+
+    print("\n=== 5b) Contra un servidor que GOTEA (lo que hace Cloudflare a ratos) ===")
+
+    def servidor(modo):
+        """'gotea': la linea de estado y luego un byte cada 0,3 s, para siempre
+        (el timeout de requests es ENTRE bytes: nunca salta). 'bien': un 200."""
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(8)
+        srv.settimeout(0.3)
+        para = threading.Event()
+
+        def atiende(c):
+            try:
+                c.settimeout(5)
+                c.recv(65536)
+                if modo == "bien":
+                    cuerpo = b'{"ok": true}'
+                    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                              b"Content-Length: " + str(len(cuerpo)).encode()
+                              + b"\r\nConnection: close\r\n\r\n" + cuerpo)
+                else:
+                    c.sendall(b"HTTP/1.1 200 OK\r\n")
+                    while not para.is_set():
+                        c.sendall(b"X")
+                        time.sleep(0.3)
+            except Exception:
+                pass
+            finally:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+
+        def corre():
+            while not para.is_set():
+                try:
+                    c, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                threading.Thread(target=atiende, args=(c,), daemon=True).start()
+        threading.Thread(target=corre, daemon=True).start()
+        return "http://127.0.0.1:%d/kv/semillas" % srv.getsockname()[1], para
+
+    url_gotea, para_g = servidor("gotea")
+    url_bien, para_b = servidor("bien")
+    t0 = time.time()
+    st = A._post_con_tope(url_gotea, {"gz": "x"}, 2.0)
+    dur_post = time.time() - t0
+    comprueba("POST contra el goteo: se corta en su tope (2 s) y no se queda colgado",
+              st == 0 and dur_post < 4.0, (st, round(dur_post, 1)))
+    t0 = time.time()
+    txt, st2 = A._get_con_tope(url_gotea, 2.0)
+    dur_get = time.time() - t0
+    comprueba("GET contra el goteo: igual", txt is None and dur_get < 4.0,
+              (st2, round(dur_get, 1)))
+    comprueba("y contra un servidor normal, el POST contesta 200",
+              A._post_con_tope(url_bien, {"gz": "x"}, 5.0) == 200)
+
+    # Y por HTTPS, que es como va TODO en produccion. Al envolver en TLS, Python
+    # "desengancha" el socket crudo: la primera version del vigia lo cortaba y
+    # no pasaba nada (medido: seguia colgado a los 12 s). El certificado de la
+    # prueba se genera aqui con openssl y se tira: una clave en el repo haria
+    # saltar el aviso de secretos de GitHub.
+    import shutil as _sh
+    import ssl as _ssl
+    import subprocess as _sp
+    import tempfile as _tf
+    _openssl = _sh.which("openssl")
+    if not _openssl:
+        print("  (sin openssl: me salto el caso HTTPS)")
+    else:
+        _dir = _tf.mkdtemp(prefix="mw_tls_")
+        _crt, _key = os.path.join(_dir, "c.pem"), os.path.join(_dir, "k.pem")
+        _env = dict(os.environ, MSYS_NO_PATHCONV="1")
+        _sp.run([_openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                 "-keyout", _key, "-out", _crt, "-days", "1",
+                 "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+                capture_output=True, env=_env)
+        _ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+        _ctx.load_cert_chain(_crt, _key)
+        _srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _srv.bind(("127.0.0.1", 0))
+        _srv.listen(4)
+        _srv.settimeout(0.3)
+
+        def _tls_atiende(c):
+            try:
+                s = _ctx.wrap_socket(c, server_side=True)
+                s.recv(65536)
+                s.sendall(b"HTTP/1.1 200 OK\r\n")
+                while not para_g.is_set():
+                    s.sendall(b"X")                 # cada byte, su registro TLS
+                    time.sleep(0.3)
+            except Exception:
+                pass
+            finally:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+
+        def _tls_acepta():
+            while not para_g.is_set():
+                try:
+                    c, _ = _srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                threading.Thread(target=_tls_atiende, args=(c,), daemon=True).start()
+        threading.Thread(target=_tls_acepta, daemon=True).start()
+        _url_tls = "https://127.0.0.1:%d/kv/semillas" % _srv.getsockname()[1]
+        _viejo_ca = os.environ.get("REQUESTS_CA_BUNDLE")
+        os.environ["REQUESTS_CA_BUNDLE"] = _crt
+        try:
+            t0 = time.time()
+            st_tls = A._post_con_tope(_url_tls, {"gz": "x"}, 2.0)
+            dur_tls = time.time() - t0
+            t0 = time.time()
+            txt_tls, _ = A._get_con_tope(_url_tls, 2.0)
+            dur_tls2 = time.time() - t0
+        finally:
+            if _viejo_ca is None:
+                os.environ.pop("REQUESTS_CA_BUNDLE", None)
+            else:
+                os.environ["REQUESTS_CA_BUNDLE"] = _viejo_ca
+            _sh.rmtree(_dir, ignore_errors=True)
+        comprueba("HTTPS: goteo DESPUES del handshake, el POST se corta en su tope",
+                  st_tls == 0 and dur_tls < 4.0, (st_tls, round(dur_tls, 1)))
+        comprueba("HTTPS: y el GET igual", txt_tls is None and dur_tls2 < 4.0,
+                  round(dur_tls2, 1))
+    # la subida del indice de WolfMax: se hacia DENTRO de las peticiones
+    viejo_idx, viejo_url = dict(A._WFIDX), A._WFIDX_SYNC
+    A._WFIDX.clear()
+    A._WFIDX.update({"https://wolfmax4k.com/movie/1": {"t": "Prueba", "k": "movie", "q": ""}})
+    A._WFIDX_SYNC = url_gotea
+    A._WFIDX_SUBE_VUELO[0] = 0.0
+    try:
+        t0 = time.time()
+        r1 = A._wfidx_nube_sube(forzar=True)
+        dur_idx = time.time() - t0
+        r2 = A._wfidx_nube_sube(forzar=True)
+        comprueba("la subida del indice ya no hace esperar a la peticion (segundo plano)",
+                  r1 == 1 and dur_idx < 0.5, (r1, round(dur_idx, 2)))
+        comprueba("y con una en marcha (colgada) no se lanza otra", r2 == 0, r2)
+        fin_espera = time.time() + 30
+        while A._WFIDX_SUBE_VUELO[0] and time.time() < fin_espera:
+            time.sleep(0.2)
+        comprueba("la colgada se corta sola en su tope (20 s) y libera el turno",
+                  A._WFIDX_SUBE_VUELO[0] == 0.0, A._WFIDX_SUBE_VUELO[0])
+    finally:
+        A._WFIDX.clear()
+        A._WFIDX.update(viejo_idx)
+        A._WFIDX_SYNC = viejo_url
+        para_g.set()
+        para_b.set()
 
     print("\n=== 6) /dtpacked: el camino directo muerto no se reintenta ===")
     llamadas = []

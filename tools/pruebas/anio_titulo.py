@@ -14,6 +14,7 @@ import os
 import sys
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["MW_SIN_KEEPALIVE"] = "1"     # nada de red de fondo en la prueba
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "render_relay"))
 import app as A                                          # noqa: E402

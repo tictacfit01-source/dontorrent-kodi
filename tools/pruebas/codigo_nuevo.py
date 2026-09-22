@@ -21,6 +21,7 @@ import time
 import types
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["MW_SIN_KEEPALIVE"] = "1"     # nada de red de fondo en la prueba
 os.environ["MW_APRENDIZ"] = "0"
 os.environ["MW_SIN_NUBE"] = "1"
 AQUI = os.path.dirname(os.path.abspath(__file__))

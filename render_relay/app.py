@@ -2032,6 +2032,82 @@ def _dx_save_domain(host):
 _TARPIT = {"cortes": 0, "ultimo": 0}
 
 
+# --- EL VIGIA DE VERDAD: cerrar el SOCKET, no la sesion (dtbl37) ---------------
+# Medido el 22-09 con un servidor que gotea las cabeceras (un byte cada 0,3 s):
+# _get_con_tope con tope de 2 s SEGUIA COLGADO a los 12. Cerrar la sesion solo
+# cierra las conexiones OCIOSAS del pool, y la que esta leyendo no esta ahi: el
+# vigia disparaba y no pasaba nada. Esa es la causa de fondo de los "colgados"
+# que /catmem enseñaba desde dtbl13 en DivxTotal, DonTorrent y el enrich (la
+# memoria del proyecto lo achacaba al DNS o al TLS).
+# Ahora cada socket que abre urllib3 durante una peticion vigilada se apunta
+# (por hilo) y el vigia lo cierra: el recv bloqueado revienta y el hilo vuelve,
+# tambien a mitad del handshake TLS. La resolucion DNS sigue sin poder cortarse
+# (pasa antes de que exista el socket).
+_VIG_LOCAL = _thr.local()
+try:
+    import urllib3.util.connection as _u3c
+    _U3_CREA = _u3c.create_connection
+
+    def _crea_conexion_vigilada(*a, **k):
+        s = _U3_CREA(*a, **k)
+        try:
+            lista = getattr(_VIG_LOCAL, "socks", None)
+            if lista is not None:
+                lista.append(s)
+        except Exception:
+            pass
+        return s
+
+    if getattr(_u3c.create_connection, "__name__", "") != "_crea_conexion_vigilada":
+        _u3c.create_connection = _crea_conexion_vigilada
+except Exception:
+    pass
+
+# ...y el socket TLS. Al envolver la conexion en TLS, Python "desengancha" el
+# socket crudo (detach: su descriptor pasa al SSLSocket), asi que el que apunto
+# create_connection ya no sirve para cortar nada. Medido: goteo HTTPS DESPUES
+# del handshake (registros TLS validos de un byte), tope 2 s -> seguia colgado a
+# los 12. (El handshake en si ya lo acota CPython con un plazo total; lo que no
+# acota es cada lectura siguiente, que estrena plazo.) El SSLSocket se apunta
+# justo antes de su handshake, y desde ahi el vigia lo puede cortar.
+try:
+    import ssl as _ssl_vig
+
+    class _SSLSocketVigilado(_ssl_vig.SSLSocket):
+        def do_handshake(self, *a, **k):
+            try:
+                lista = getattr(_VIG_LOCAL, "socks", None)
+                if lista is not None:
+                    lista.append(self)
+            except Exception:
+                pass
+            return super().do_handshake(*a, **k)
+
+    if _ssl_vig.SSLContext.sslsocket_class is _ssl_vig.SSLSocket:
+        _ssl_vig.SSLContext.sslsocket_class = _SSLSocketVigilado
+except Exception:
+    pass
+
+
+def _vig_corta(socks, sess):
+    """Lo que hace el vigia al agotarse el tope: shutdown DEL SISTEMA de los
+    sockets de ESA peticion -- despierta la lectura bloqueada, que revienta, y
+    el hilo vuelve -- y cerrar la sesion. Sin close(): el descriptor lo cierra
+    su dueno al deshacer la peticion; cerrarlo desde aqui podria tocar uno que
+    otro hilo acabara de reutilizar. Con el shutdown de la clase base, el de
+    SSLSocket no toca su estado TLS a medias."""
+    import socket as _sk
+    for s in list(socks or []):
+        try:
+            _sk.socket.shutdown(s, _sk.SHUT_RDWR)
+        except Exception:
+            pass          # el crudo "desenganchado" por TLS: no tiene nada ya
+    try:
+        sess.close()
+    except Exception:
+        pass
+
+
 def _leer_con_tope(r, tope_s, tope_mb=6, crudo=False):
     """El cuerpo de una respuesta con tope de tiempo TOTAL, cerrando la conexion
     al pasarse. Devuelve None si no cabe en el presupuesto.
@@ -2064,8 +2140,18 @@ def _leer_con_tope(r, tope_s, tope_mb=6, crudo=False):
     if crudo:      # un .torrent: los bytes tal cual (decodificar lo romperia)
         return b"".join(trozos)
     try:      # mismo encoding que habria usado r.text -> mismo resultado
-        enc = r.encoding or r.apparent_encoding or "utf-8"
-        return b"".join(trozos).decode(enc, "replace")
+        datos = b"".join(trozos)
+        enc = r.encoding
+        if not enc:
+            # r.apparent_encoding RELEE r.content, que con stream=True ya se
+            # ha consumido y revienta: una respuesta sin Content-Type salia
+            # como None. Se detecta sobre lo ya leido, como haria r.text.
+            try:
+                from requests.compat import chardet as _cd
+                enc = (_cd.detect(datos) or {}).get("encoding")
+            except Exception:
+                enc = None
+        return datos.decode(enc or "utf-8", "replace")
     except Exception:
         return None
 
@@ -2085,12 +2171,11 @@ def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False):
     fin = _t.time() + max(1.0, float(tope_s))
     sess = scraper if scraper is not None else requests.Session()
     propia = scraper is None
+    socks = []                 # los sockets de ESTA peticion (ver _VIG_LOCAL)
+    _VIG_LOCAL.socks = socks
 
     def _corta():
-        try:
-            sess.close()       # cierra el socket -> la lectura revienta
-        except Exception:
-            pass
+        _vig_corta(socks, sess)    # cierra el socket -> la lectura revienta
 
     vigia = _thr.Timer(max(1.0, float(tope_s)), _corta)
     vigia.daemon = True
@@ -2110,6 +2195,7 @@ def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False):
     except Exception:
         return None, 0
     finally:
+        _VIG_LOCAL.socks = None
         try:
             vigia.cancel()
         except Exception:
@@ -2119,6 +2205,46 @@ def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False):
                 sess.close()
             except Exception:
                 pass
+
+
+def _post_con_tope(url, cuerpo, tope_s):
+    """POST (JSON) con tope de tiempo TOTAL de verdad, como _get_con_tope: un
+    vigia cierra la sesion al agotarse. Devuelve el status (0 si fallo o se
+    corto).
+
+    Para las copias en el worker propio (mw-sync), que esta detras de
+    Cloudflare: desde la IP de Render tambien gotea a ratos. El 22-09 las dos
+    primeras subidas de la copia de semillas se quedaron colgadas mas de diez
+    minutos con `requests.post(timeout=...)`, que es el maximo ENTRE BYTES."""
+    fin = _t.time() + max(1.0, float(tope_s))
+    sess = requests.Session()
+    socks = []                 # los sockets de ESTA peticion (ver _VIG_LOCAL)
+    _VIG_LOCAL.socks = socks
+
+    def _corta():
+        _vig_corta(socks, sess)
+
+    vigia = _thr.Timer(max(1.0, float(tope_s)), _corta)
+    vigia.daemon = True
+    vigia.start()
+    try:
+        r = sess.post(url, json=cuerpo,
+                      timeout=(min(5.0, tope_s), max(1.0, tope_s)), stream=True)
+        st = r.status_code
+        _leer_con_tope(r, max(0.5, fin - _t.time()))     # drena y cierra
+        return st
+    except Exception:
+        return 0
+    finally:
+        _VIG_LOCAL.socks = None
+        try:
+            vigia.cancel()
+        except Exception:
+            pass
+        try:
+            sess.close()
+        except Exception:
+            pass
 
 
 def _dx_get(url, proxy=False, tope_s=12.0):
@@ -6197,8 +6323,9 @@ def _wfidx_nube_baja():
             return 0
         import base64
         import gzip
-        r = requests.get(_WFIDX_SYNC, timeout=12)
-        d = r.json() if r.status_code == 200 else {}
+        # con tope TOTAL: el worker esta detras de Cloudflare y a ratos gotea
+        txt, st = _get_con_tope(_WFIDX_SYNC, 15.0)
+        d = _json.loads(txt) if (st == 200 and txt) else {}
         gz = (d or {}).get("gz")
         if not gz:
             return 0
@@ -6214,29 +6341,55 @@ def _wfidx_nube_baja():
         return 0
 
 
+_WFIDX_SUBE_VUELO = [0.0]     # desde cuando hay una subida en marcha
+
+
+def _wfidx_sube_hilo():
+    try:
+        idx = dict(_wfidx_load())
+        if idx:
+            import base64
+            import gzip
+            gz = base64.b64encode(
+                gzip.compress(_json.dumps(idx).encode("utf-8"), 6)).decode("ascii")
+            _post_con_tope(_WFIDX_SYNC, {"gz": gz}, 20.0)
+    except Exception:
+        pass
+    finally:
+        _WFIDX_SUBE_VUELO[0] = 0.0
+
+
 def _wfidx_nube_sube(forzar=False):
-    """Guarda el indice en el worker, como mucho cada 5 minutos."""
+    """Guarda el indice en el worker, como mucho cada 5 minutos.
+
+    EN SEGUNDO PLANO y con tope total. Se llama desde dentro de peticiones
+    (/catetbox, /catjob/done, /wffeed) y hacia un `requests.post` a pelo: si
+    Cloudflare goteaba la respuesta -- lo hace a ratos con la IP de Render;
+    el 22-09 se vio con la copia de semillas --, el hilo de gunicorn que
+    atendia esa busqueda se quedaba colgado para siempre."""
     try:
         ahora = _t.time()
         if not forzar and (ahora - _WFIDX_SUBIDO[0] < 300 or _WFIDX_CAMBIOS[0] < 25):
             return 0
-        idx = _wfidx_load()
-        if not idx:
+        if _WFIDX_SUBE_VUELO[0] and (ahora - _WFIDX_SUBE_VUELO[0]) < 120:
+            return 0                        # ya hay una en marcha
+        if not _wfidx_load():
             return 0
-        import base64
-        import gzip
-        gz = base64.b64encode(
-            gzip.compress(_json.dumps(idx).encode("utf-8"), 6)).decode("ascii")
         _WFIDX_SUBIDO[0] = ahora
         _WFIDX_CAMBIOS[0] = 0
-        r = requests.post(_WFIDX_SYNC, json={"gz": gz}, timeout=20)
-        return len(idx) if r.status_code == 200 else 0
+        _WFIDX_SUBE_VUELO[0] = ahora
+        _thr.Thread(target=_wfidx_sube_hilo, daemon=True).start()
+        return 1
     except Exception:
+        _WFIDX_SUBE_VUELO[0] = 0.0
         return 0
 
 
 def _wfidx_arranca():
     """Al arrancar: recuperar el indice (en un hilo, sin frenar el arranque)."""
+    if os.environ.get("MW_SIN_NUBE") == "1":      # las pruebas en local
+        return
+
     def _ir():
         try:
             _t.sleep(2)
@@ -6251,7 +6404,7 @@ def _wfidx_arranca():
         pass
 
 
-_wfidx_arranca()      # recupera el indice nada mas arrancar (hilo aparte)
+# _wfidx_arranca() ya NO se llama aqui: ver _arranque_worker (dtbl37).
 
 
 def _wfidx_save():
@@ -7563,10 +7716,12 @@ def _semillas_nube_lee():
     try:
         import base64
         import gzip
-        r = requests.get(_SEMI_SYNC, timeout=(5, 10))
-        if r.status_code != 200:
+        # con tope TOTAL (vigia): el 22-09 las dos primeras subidas se quedaron
+        # colgadas >10 min con requests a pelo, que no corta un goteo
+        txt, st = _get_con_tope(_SEMI_SYNC, 10.0)
+        if st != 200 or not txt:
             return None
-        gz = (r.json() or {}).get("gz")
+        gz = (_json.loads(txt) or {}).get("gz")
         if not gz:
             return {}, {}                    # vacia de verdad (la primera vez)
         dat = _json.loads(gzip.decompress(base64.b64decode(gz)).decode("utf-8"))
@@ -7615,6 +7770,7 @@ def _semillas_nube_sube(forzar=False):
     recuperacion hubiera fallado, este /tmp tendria cuatro entradas y subirlas
     tal cual pisaria la copia buena. Si no se puede leer lo de arriba, no se
     sube nada; y lo que haya arriba y aqui no, se recupera de paso."""
+    mia = False
     try:
         if not _EN_RENDER and not forzar:
             return 0
@@ -7622,6 +7778,11 @@ def _semillas_nube_sube(forzar=False):
         if not forzar and ((ahora - _SEMI_NUBE["subida_ts"]) < 600
                            or _semillas_firma() == _SEMI_NUBE["firma"]):
             return 0
+        # una sola a la vez: si una se quedara colgada, que no se acumulen
+        if _SEMI_NUBE.get("vuelo") and (ahora - _SEMI_NUBE["vuelo"]) < 120:
+            return 0
+        _SEMI_NUBE["vuelo"] = ahora
+        mia = True
         _SEMI_NUBE["subida_ts"] = ahora
         remoto = _semillas_nube_lee()
         if remoto is None:
@@ -7653,13 +7814,15 @@ def _semillas_nube_sube(forzar=False):
         import gzip
         gz = base64.b64encode(gzip.compress(_json.dumps(
             {"v": 1, "dtp": dtp, "dih": dih}).encode("utf-8"), 6)).decode("ascii")
-        r = requests.post(_SEMI_SYNC, json={"gz": gz}, timeout=(5, 15))
-        if r.status_code == 200:
+        if _post_con_tope(_SEMI_SYNC, {"gz": gz}, 12.0) == 200:
             _SEMI_NUBE["subidas"] += 1
             return len(dtp) + len(dih)
         _SEMI_NUBE["fallos"] += 1
     except Exception:
         _SEMI_NUBE["fallos"] += 1
+    finally:
+        if mia:          # solo quien la puso: si no, pisaria la de otra en marcha
+            _SEMI_NUBE["vuelo"] = 0.0
     return 0
 
 
@@ -7704,7 +7867,7 @@ def _semillas_arranca():
         pass
 
 
-_semillas_arranca()
+# _semillas_arranca() ya NO se llama aqui: ver _arranque_worker (dtbl37).
 
 
 # --- El aprendiz --------------------------------------------------------------
@@ -12686,6 +12849,9 @@ def _mem_watch_asegura():
     # El aprendiz de semillas, por la misma razon: lanzado en el import se
     # quedaria en el proceso padre y no correria en ningun worker.
     _apr_arranca()
+    # Y todo lo que hace red al arrancar: en el padre rompia los workers que
+    # nacian a la vez (ver _arranque_worker).
+    _arranque_worker()
 
 
 @app.before_request
@@ -12773,22 +12939,56 @@ def catmem():
                           "ultimos": dict(sorted(rl.items())[-4:])}
     except Exception:
         out["relevos"] = {"n": 0, "ultimos": {}}
+    # PILAS (?pilas=1): DONDE esta parado cada hilo, agrupado. Un colgado sin
+    # su pila es una adivinanza: el 22-09 hubo que deducir, comparando los dos
+    # workers, que uno tenia TODO su HTTPS muerto desde que nacio. Solo nombres
+    # de funcion y lineas (el codigo ya es publico), nunca datos.
+    if request.args.get("pilas") == "1":
+        try:
+            import traceback
+            marcos = sys._current_frames()
+            pilas = {}
+            for th in _thr.enumerate():
+                f = marcos.get(th.ident)
+                if f is None or th is _thr.main_thread():
+                    continue
+                ult = traceback.extract_stack(f)[-5:]
+                clave = " < ".join("%s:%s:%d" % (os.path.basename(m.filename),
+                                                  m.name, m.lineno)
+                                   for m in reversed(ult))
+                pilas[clave] = pilas.get(clave, 0) + 1
+            out["pilas"] = dict(sorted(pilas.items(), key=lambda kv: -kv[1])[:25])
+        except Exception as e:
+            out["pilas"] = {"error": repr(e)[:120]}
     return jsonify(out)
 
 
 def _start_keepalive():
+    if os.environ.get("MW_SIN_KEEPALIVE") == "1":      # las pruebas en local
+        return
     try:
         _kth.Thread(target=_self_keepalive, daemon=True).start()
     except Exception:
         pass
 
 
-_start_keepalive()
-# El vigilante NO se arranca aqui: con preload esto corre en el proceso padre y
-# el hilo no llega a los workers (dtbl08). Lo arranca _mem_watch_hook en la
-# primera peticion de cada worker, que es despues del fork pase lo que pase.
-# Arrancarlo en los dos sitios dejaria DOS vigilantes por worker si algun dia
-# se quita el preload, podando por duplicado.
+# NADA DE RED EN EL PROCESO PADRE (dtbl37). Aqui se arrancaban el keepalive y,
+# mas arriba, las dos recuperaciones de copias (indice de WolfMax y semillas).
+# Con preload esto corre en el PADRE, y gunicorn crea los workers con fork()
+# mientras esos hilos estan a mitad de una conexion HTTPS: el hijo hereda un
+# cerrojo de OpenSSL CERRADO y todo su HTTPS se cuelga para siempre (su DNS y
+# su UDP siguen bien, por eso parece otra cosa). Medido el 22-09, mismo
+# momento y misma IP: el pid 66 con TMDB 322/322 a tiempo y cero colgados, y el
+# pid 65 con TODO su HTTPS colgado -- TMDB, D1, DonTorrent, DivxTotal -- y los
+# hilos subiendo sin parar. Explica los "colgados" que ningun tope arreglaba
+# desde dtbl13 y el relevo del 21-09. El keepalive ademas repite cada 4 min en
+# el padre, asi que un relevo (que es otro fork) podia salir igual de roto.
+# Ahora todo esto arranca en _arranque_worker, en la primera peticion de cada
+# worker -- despues del fork, como el vigilante de memoria (dtbl08).
+def _arranque_worker():
+    _start_keepalive()          # cada worker el suyo (antes: uno, en el padre)
+    _wfidx_arranca()            # solo baja si el indice esta vacio
+    _semillas_arranca()         # funde, nunca pisa: repetirlo no hace dano
 
 
 if __name__ == "__main__":
