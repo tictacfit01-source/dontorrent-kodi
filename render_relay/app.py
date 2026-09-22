@@ -7508,28 +7508,134 @@ def _semillas_firma():
     return tuple(f)
 
 
+_SEMI_MARCA = "/tmp/mw_semillas_nube.json"   # lo que recupero el arranque
+
+
+def _jload_seguro(p):
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except Exception:
+        return None
+
+
+def _semillas_valida(dat):
+    """(dtp, dih) validados de un volcado de la copia. Nada de fiarse: el
+    worker no tiene sesion, asi que lo que baje se revisa entrada a entrada."""
+    dtp, dih = {}, {}
+    src = dat.get("dtp") if isinstance(dat, dict) else None
+    for k, v in (src.items() if isinstance(src, dict) else []):
+        if not (isinstance(k, str) and _DTK_RE.match(k) and isinstance(v, dict)
+                and _IH_RE.match(str(v.get("ih") or ""))
+                and isinstance(v.get("ts"), (int, float))):
+            continue
+        e = {"ih": v["ih"], "ts": float(v["ts"]),
+             "p": bool(v.get("p")), "q": str(v.get("q") or "")[:16]}
+        if isinstance(v.get("s"), int) and v["s"] >= 0 \
+                and isinstance(v.get("sts"), (int, float)):
+            e["s"] = v["s"]
+            e["sts"] = float(v["sts"])
+        dtp[k] = e
+    src = dat.get("dih") if isinstance(dat, dict) else None
+    for u, v in (src.items() if isinstance(src, dict) else []):
+        if not (isinstance(u, str) and u.startswith("http") and len(u) < 2000
+                and isinstance(v, dict) and _IH_RE.match(str(v.get("ih") or ""))
+                and isinstance(v.get("ts"), (int, float))):
+            continue
+        dih[u] = {"ih": v["ih"], "ts": float(v["ts"])}
+    return dtp, dih
+
+
+def _semillas_nube_lee():
+    """Lo que hay en la copia, ya validado: (dtp, dih). None si NO se pudo leer,
+    que no es lo mismo que una copia vacia: con None no se sube nada."""
+    try:
+        import base64
+        import gzip
+        r = requests.get(_SEMI_SYNC, timeout=(5, 10))
+        if r.status_code != 200:
+            return None
+        gz = (r.json() or {}).get("gz")
+        if not gz:
+            return {}, {}                    # vacia de verdad (la primera vez)
+        dat = _json.loads(gzip.decompress(base64.b64decode(gz)).decode("utf-8"))
+        return _semillas_valida(dat)
+    except Exception:
+        return None
+
+
+def _semillas_funde_local(dtp, dih):
+    """Lo que venga de la copia y aqui no se sepa, a /tmp. Nunca pisa una
+    entrada que ya sabe su infohash. Devuelve cuantas entraron."""
+    n = 0
+    if dtp:
+        with _FileLock(_DTPACKED_FILE):
+            loc = _dtpacked_load()
+            m = 0
+            for k, e in dtp.items():
+                if (loc.get(k) or {}).get("ih"):
+                    continue
+                loc[k] = dict(loc.get(k) or {}, **e)
+                m += 1
+            if m:
+                _dtpacked_save(loc)
+            n += m
+    if dih:
+        with _FileLock(_DXIH_FILE):
+            loc = _dxih_load()
+            m = 0
+            for u, e in dih.items():
+                if len(str((loc.get(u) or {}).get("ih") or "")) == 40:
+                    continue
+                loc[u] = e
+                m += 1
+            if m:
+                _dxih_save(loc)
+            n += m
+    return n
+
+
 def _semillas_nube_sube(forzar=False):
     """Sube los infohash conocidos (como mucho cada 10 min, y solo si cambio
     algo). Los conteos van dentro: ensenar el de ayer tras un despliegue es
-    mejor que no ensenar nada, y se refresca solo."""
+    mejor que no ensenar nada, y se refresca solo.
+
+    LEE ANTES DE ESCRIBIR y sube la UNION: si tras un despliegue la
+    recuperacion hubiera fallado, este /tmp tendria cuatro entradas y subirlas
+    tal cual pisaria la copia buena. Si no se puede leer lo de arriba, no se
+    sube nada; y lo que haya arriba y aqui no, se recupera de paso."""
     try:
         if not _EN_RENDER and not forzar:
             return 0
         ahora = _t.time()
-        firma = _semillas_firma()
         if not forzar and ((ahora - _SEMI_NUBE["subida_ts"]) < 600
-                           or firma == _SEMI_NUBE["firma"]):
+                           or _semillas_firma() == _SEMI_NUBE["firma"]):
             return 0
-        dtp, dih = {}, {}
+        _SEMI_NUBE["subida_ts"] = ahora
+        remoto = _semillas_nube_lee()
+        if remoto is None:
+            _SEMI_NUBE["fallos"] += 1
+            return 0
+        _SEMI_NUBE["recuperadas"] += _semillas_funde_local(*remoto)
+        dtp, dih = dict(remoto[0]), dict(remoto[1])
+        def _mas_nueva(v, ya):
+            return float(v.get("ts") or 0) >= float((ya or {}).get("ts") or 0)
+
         for k, v in (_dtpacked_load() or {}).items():
-            if isinstance(v, dict) and _IH_RE.match(str(v.get("ih") or "")):
+            if isinstance(v, dict) and _IH_RE.match(str(v.get("ih") or "")) \
+                    and _mas_nueva(v, dtp.get(k)):
                 dtp[k] = {kk: v[kk] for kk in ("p", "q", "ih", "ts", "s", "sts")
                           if kk in v}
         for u, v in (_dxih_load() or {}).items():
-            if isinstance(v, dict) and _IH_RE.match(str(v.get("ih") or "")):
+            if isinstance(v, dict) and _IH_RE.match(str(v.get("ih") or "")) \
+                    and _mas_nueva(v, dih.get(u)):
                 dih[u] = {"ih": v["ih"], "ts": v.get("ts", 0)}
-        _SEMI_NUBE["subida_ts"] = ahora
-        _SEMI_NUBE["firma"] = firma
+        # los mismos topes que los ficheros de /tmp: lo mas nuevo
+        if len(dtp) > 3000:
+            dtp = dict(sorted(dtp.items(), key=lambda kv: -float(kv[1].get("ts") or 0))[:3000])
+        if len(dih) > 2000:
+            dih = dict(sorted(dih.items(), key=lambda kv: -float(kv[1].get("ts") or 0))[:2000])
+        _SEMI_NUBE["firma"] = _semillas_firma()
         if not dtp and not dih:
             return 0
         import base64
@@ -7547,61 +7653,22 @@ def _semillas_nube_sube(forzar=False):
 
 
 def _semillas_nube_baja():
-    """Al arrancar: lo que haya en la copia y no este en /tmp, a /tmp. Nunca
-    pisa una entrada que ya sabe su infohash (la de aqui es igual o mas nueva)."""
-    try:
-        import base64
-        import gzip
-        r = requests.get(_SEMI_SYNC, timeout=(5, 10))
-        d = r.json() if r.status_code == 200 else {}
-        gz = (d or {}).get("gz")
-        if not gz:
-            return 0
-        dat = _json.loads(gzip.decompress(base64.b64decode(gz)).decode("utf-8"))
-        if not isinstance(dat, dict):
-            return 0
-        _SEMI_NUBE["bajadas"] += 1
-        n = 0
-        dtp = dat.get("dtp") if isinstance(dat.get("dtp"), dict) else {}
-        dih = dat.get("dih") if isinstance(dat.get("dih"), dict) else {}
-        if dtp:
-            with _FileLock(_DTPACKED_FILE):
-                loc = _dtpacked_load()
-                for k, v in dtp.items():
-                    if not (isinstance(k, str) and _DTK_RE.match(k)
-                            and isinstance(v, dict)
-                            and _IH_RE.match(str(v.get("ih") or ""))
-                            and isinstance(v.get("ts"), (int, float))):
-                        continue
-                    if (loc.get(k) or {}).get("ih"):
-                        continue
-                    e = {"ih": v["ih"], "ts": float(v["ts"]),
-                         "p": bool(v.get("p")), "q": str(v.get("q") or "")[:16]}
-                    if isinstance(v.get("s"), int) and v["s"] >= 0 and \
-                            isinstance(v.get("sts"), (int, float)):
-                        e["s"] = v["s"]
-                        e["sts"] = float(v["sts"])
-                    loc[k] = e
-                    n += 1
-                _dtpacked_save(loc)
-        if dih:
-            with _FileLock(_DXIH_FILE):
-                loc = _dxih_load()
-                for u, v in dih.items():
-                    if not (isinstance(u, str) and u.startswith("http")
-                            and len(u) < 2000 and isinstance(v, dict)
-                            and _IH_RE.match(str(v.get("ih") or ""))
-                            and isinstance(v.get("ts"), (int, float))):
-                        continue
-                    if len(str((loc.get(u) or {}).get("ih") or "")) == 40:
-                        continue
-                    loc[u] = {"ih": v["ih"], "ts": float(v["ts"])}
-                    n += 1
-                _dxih_save(loc)
-        _SEMI_NUBE["recuperadas"] += n
-        return n
-    except Exception:
+    """Al arrancar: lo que haya en la copia y no este en /tmp, a /tmp. Deja
+    apuntado cuantas recupero (lo hace el proceso padre, y /catdiag lo
+    contestan los workers: sin el fichero no habria forma de verlo)."""
+    got = _semillas_nube_lee()
+    if got is None:
         return 0
+    _SEMI_NUBE["bajadas"] += 1
+    n = _semillas_funde_local(*got)
+    _SEMI_NUBE["recuperadas"] += n
+    try:
+        with open(_SEMI_MARCA, "w", encoding="utf-8") as f:
+            _json.dump({"ts": _t.time(), "recuperadas": n,
+                        "en_copia": len(got[0]) + len(got[1])}, f)
+    except Exception:
+        pass
+    return n
 
 
 def _semillas_arranca():
@@ -9214,6 +9281,7 @@ def catdiag():
             "conteos": len(_seeds_load()),
             "refresco": dict(_SREF),
             "nube": {k: v for k, v in _SEMI_NUBE.items() if k != "firma"},
+            "nube_arranque": _jload_seguro(_SEMI_MARCA),
             "en_render": _EN_RENDER,
             "dt_directo": {"muerto": _dt_directo_muerto(),
                            "saltados": _DTDIR["saltados"]}}

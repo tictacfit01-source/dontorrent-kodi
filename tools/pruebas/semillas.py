@@ -292,6 +292,24 @@ try:
     class P:
         status_code = 200
 
+    class Mal:
+        status_code = 503
+
+        def json(self):
+            return {}
+
+    # arriba hay algo que aqui NO esta (p.ej. porque la recuperacion del
+    # arranque fallo): la subida tiene que conservarlo, no pisarlo
+    arriba = {"v": 1, "dtp": {"peliculas:60": {"ih": IH[60], "ts": now - 50}},
+              "dih": {}}
+    gz2 = base64.b64encode(gzip.compress(json.dumps(arriba).encode())).decode()
+
+    class R2:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "gz": gz2}
+
     A.requests.post = lambda url, json=None, timeout=None: enviado.append(json) or P()
     viejo_render = A._EN_RENDER
     try:
@@ -301,16 +319,25 @@ try:
                   A._semillas_nube_sube() == 0 and not enviado, enviado)
         A._EN_RENDER = True
         A._SEMI_NUBE["firma"] = None
+        A.requests.get = lambda *a, **k: Mal()
+        n_mal = A._semillas_nube_sube()
+        comprueba("si no se puede LEER lo de arriba, no se sube nada",
+                  n_mal == 0 and not enviado, enviado)
+        A._SEMI_NUBE["subida_ts"] = 0.0
+        A.requests.get = lambda *a, **k: R2()
         n_sub = A._semillas_nube_sube()
         otra = A._semillas_nube_sube()
     finally:
         A.requests.post = viejo_post
+        A.requests.get = viejo_get
         A._EN_RENDER = viejo_render
     dat = json.loads(gzip.decompress(base64.b64decode(enviado[0]["gz"])))
-    comprueba("en Render sube lo que sabe (3 infohash)", n_sub == 3, n_sub)
-    comprueba("y lo que sube se puede volver a bajar tal cual",
-              set(dat["dtp"]) == {"peliculas:50", "peliculas:51"}
+    comprueba("sube la UNION: lo de aqui (3) mas lo que solo estaba arriba (1)",
+              n_sub == 4 and set(dat["dtp"]) == {"peliculas:50", "peliculas:51",
+                                                 "peliculas:60"}
               and set(dat["dih"]) == {"https://wolfmax4k.com/movie/7"}, dat)
+    comprueba("y lo que solo estaba arriba se recupera tambien aqui",
+              (lee(A._DTPACKED_FILE).get("peliculas:60") or {}).get("ih") == IH[60])
     comprueba("no vuelve a subir antes de 10 min", otra == 0 and len(enviado) == 1)
 
     print("\n=== 6) /dtpacked: el camino directo muerto no se reintenta ===")
