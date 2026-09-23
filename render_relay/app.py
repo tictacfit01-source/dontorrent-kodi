@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl37"
+BUILD = "dtbl38"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -883,6 +883,9 @@ DT_FALLBACK = [
     # en vivo, pero arrancar en frio por el bueno evita ese redirect en CADA
     # deploy (con /tmp recien borrado), y un 301 convierte el POST del PoW en
     # GET -> 405 -> "no se puede reproducir".
+    # 23-09-2026: su Telegram da .moi como oficial desde el 17-09 (y .supply
+    # como "censurado" desde el 05-09): va primero.
+    "dontorrent.moi",
     "dontorrent.supply",
     "dontorrent.management", "dontorrent.review", "dontorrent.support",
     "dontorrent.science", "dontorrent.irish", "dontorrent.club",
@@ -1584,7 +1587,7 @@ def _dt_directo_apunta(ok):
 def _dt_url_directa(dom, cid, tb):
     """URL del .torrent por el camino directo, o None -- sin gastar los 6 s si
     sabemos que esta muerto."""
-    if _dt_directo_muerto():
+    if _dt_directo_muerto() or _dt_caida_ya():
         _DTDIR["saltados"] += 1
         return None
     url = _bounded(lambda: _dt_download_url(dom, cid, tb), 6.0)
@@ -1717,7 +1720,7 @@ def _dt_meta_via_box(cid, tb):
     {'packed','quality','ih','seeds'} o None si no hay box vivo, esta limitado, o
     el box no logro el .torrent (sin ih -> no cacheamos nada falso)."""
     box = _any_live_box()
-    if not box:
+    if not box or _dt_caida_ya():     # caido: la caja no podria bajar el .torrent
         return None
     # 1 a la vez (no avalancha de PoW en el box) + presupuesto por ventana.
     if not _DT_BOX_SEM.acquire(blocking=False):
@@ -1907,7 +1910,7 @@ def catdtmeta():
     if ent and (now - ent.get("ts", 0) < _DTPACKED_TTL) and ("q" in ent):
         return jsonify({"rar": bool(ent.get("p")),
                         "quality": ent.get("q", ""), "cached": True})
-    if len(code) != 6:
+    if len(code) != 6 or _dt_caida_ya():
         return jsonify({"rar": False, "quality": ""})
     job = "et" + os.urandom(5).hex()
     _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dtmeta",
@@ -2156,9 +2159,12 @@ def _leer_con_tope(r, tope_s, tope_mb=6, crudo=False):
         return None
 
 
-def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False):
+def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False,
+                  todo=False):
     """GET con tope de tiempo TOTAL de VERDAD. Devuelve (texto, status), o
-    (bytes, status) con crudo=True -- para los .torrent.
+    (bytes, status) con crudo=True -- para los .torrent. Si no es un 200, el
+    texto es None salvo con todo=True (para leer una pagina de error: la de
+    mantenimiento de DonTorrent llega con un 503).
 
     `_leer_con_tope` sola no basta: solo entra cuando requests ya devolvio las
     cabeceras, y el timeout de lectura tambien es entre bytes en esa fase -- un
@@ -2185,7 +2191,7 @@ def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False):
                      timeout=(min(5.0, tope_s), max(1.0, tope_s)),
                      allow_redirects=True, stream=True)
         st = r.status_code
-        if st != 200:
+        if st != 200 and not todo:
             try:
                 r.close()
             except Exception:
@@ -3320,7 +3326,10 @@ function getCode(){var c=code.value.trim();if(c.length<6){setMsg('Falta el códi
 function post(body,okmsg){
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()})
-  .then(function(j){if(j&&j.ok){if(okmsg)setMsg(okmsg,'ok');}else{setMsg((j&&j.error)||'Error','err');}})
+  // DonTorrent caido (dtbl38): se dice lo que pasa, no el codigo del error
+  .then(function(j){if(j&&j.ok){if(okmsg)setMsg(okmsg+(j.via==='magnet'?' (DonTorrent está caído: va por la red torrent)':''),'ok');}
+   else if(j&&j.error==='dt_caida'){setMsg('DonTorrent está caído ahora mismo (es su web, no tu tele). Prueba más tarde u otra fuente.','err');}
+   else{setMsg((j&&j.error)||'Error','err');}})
   .catch(function(){setMsg('Sin conexión','err');});}
 function send(){haptic();var c=getCode();if(!c)return;var query=q.value.trim();
  if(!query){setMsg('Escribe algo','err');return;}
@@ -3602,6 +3611,7 @@ def kb_send():
         return jsonify({"ok": False, "error": "código inválido"}), 400
     query = (body.get("query") or "").strip()[:120]
     cmd = (body.get("cmd") or "").strip().lower()[:20]
+    via = ""
     if query:
         ev = {"q": query}
     elif cmd in _KB_ALLOWED_CMDS:
@@ -3640,6 +3650,20 @@ def kb_send():
                 if not (ev["cid"] and ev["tb"]):
                     return jsonify({"ok": False,
                                     "error": "referencia inválida"}), 400
+                # DonTorrent CAIDO: la caja ni siquiera podria pedir el
+                # .torrent (sale del PoW de su web) y la tele acabaria, un
+                # minuto despues, en un error. Si ya sabemos la huella de ese
+                # torrent se reproduce por magnet: el enjambre sigue vivo
+                # aunque su web no. Si no la sabemos, se dice YA, sin mandar
+                # nada a la tele.
+                if _dt_caido():
+                    mag = _dt_magnet(ev["cid"], ev["tb"], ev["t"])
+                    if not mag:
+                        return jsonify({"ok": False, "error": "dt_caida",
+                                        "dt_caida": _dt_caida_info()})
+                    ev = {"c": "play_ref", "a": "pl", "t": ev["t"],
+                          "resume": ev["resume"], "u": mag}
+                    via = "magnet"
             elif a == "pl":
                 u = (body.get("u") or "").strip()
                 if not (u.startswith("magnet:") or u.startswith("http")
@@ -3657,7 +3681,7 @@ def kb_send():
     # perderse o ejecutarse duplicada (la misma race que describe _FileLock).
     _kb_enqueue(code, ev)
     _kb_phone_seen(code)
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "via": via} if via else {"ok": True})
 
 
 @app.get("/kb/poll")
@@ -4369,6 +4393,185 @@ def _dt_mark(ok):
             pass
 
 
+# --- ¿DonTorrent CAIDO de verdad? (no es lo mismo que "baneado para Render") --
+# 23-09-2026, 16:17: el centro de datos de DonTorrent se quedo sin conexion y su
+# web contestaba a TODO el mundo un 503 "La web volvera enseguida" (lo contaron
+# en su Telegram). Nada nuestro fallaba, pero la ficha de una serie esperaba
+# 24 s a dos cajas que no podian traer nada y acababa diciendo "enciende tu
+# Kodi e intentalo de nuevo" -- con la tele encendida. Y cada ficha, cada
+# busqueda y el aprendiz seguian mandando trabajos de DonTorrent a las cajas
+# de otras casas, para nada.
+# Se mira por nuestro proxy de Cloudflare (mw-relay), que DonTorrent NO tiene
+# baneado. Solo cuenta como caida lo que lo dice sin dudas: su pagina de
+# mantenimiento, o un 52x de Cloudflare (su servidor no contesta). Cualquier
+# otra cosa -un fallo del proxy, un reto, un 403- no decide nada y todo sigue
+# como siempre: un falso "caido" dejaria a la gente sin DonTorrent.
+_DTCAIDA_FILE = "/tmp/mw_dt_caida.json"
+_DTCAIDA_PROXY = "https://mw-relay.israeldm93.workers.dev/?u="
+_DTCAIDA = {"visto": 0.0, "caida": False, "desde": 0.0, "st": 0, "dom": "",
+            "miradas": 0, "dudas": 0}
+_DTCAIDA_LOCK = _thr.Lock()
+_DTCAIDA_VUELO = [0.0]
+_DTCAIDA_FRESCO = 90      # s que vale un "caido" antes de volver a mirar
+_DTCAIDA_REPASO = 300     # tras un fallo, se mira si hace mas de esto que no
+_DTCAIDA_RE = _re_dt.compile(
+    r"volver[aá] enseguida|problema puntual en el servidor|__proxy-dok", _re_dt.I)
+_DTCAIDA_ORIGEN = (521, 522, 523, 524, 525, 526, 530)
+_DTCAIDA_CAMPOS = ("visto", "caida", "desde", "st", "dom")
+
+
+def _dt_caida_clasifica(st, texto):
+    """True: DonTorrent DICE que esta caido. False: contesta (aunque sea con su
+    reto Anubis). None: no se sabe, y entonces no se decide nada."""
+    if st == 200:
+        return False
+    if st in _DTCAIDA_ORIGEN:
+        return True
+    if st in (500, 502, 503, 504) and _DTCAIDA_RE.search(texto or ""):
+        return True
+    return None
+
+
+def _dt_es_mantenimiento(html):
+    """¿Es ESTO la pagina de mantenimiento de DonTorrent (y no una suya con
+    fichas)? Una caja cuyo DoH SI llega a su web la trae como si fuera HTML
+    bueno: sin esto el relay la leia como la ficha de una serie titulada "La
+    web volvera enseguida" (y hasta buscaba ese titulo en TMDB)."""
+    if not html or len(html) > 60000:
+        return False
+    return bool(_DTCAIDA_RE.search(html)) and not _re_dt.search(
+        r"/(?:pelicula|serie|documental)/\d+", html)
+
+
+def _dt_html_bueno(r):
+    """Para esperar a las cajas: vale un resultado con HTML de verdad. Si lo que
+    trae es la pagina de mantenimiento, no vale -- y de paso se apunta que
+    DonTorrent esta caido (lo dice el), con lo que la espera se corta."""
+    h = (r or {}).get("html") or ""
+    if _dt_es_mantenimiento(h):
+        _dt_caida_apunta(True, 503, "caja")
+        return False
+    return bool(h)
+
+
+def _dt_caida_lee():
+    """El ultimo estado conocido: el mas reciente entre este worker y el disco
+    (por el disco se entera el otro worker)."""
+    try:
+        with open(_DTCAIDA_FILE, "r", encoding="utf-8") as f:
+            d = _json.load(f) or {}
+        if float(d.get("visto") or 0) > float(_DTCAIDA.get("visto") or 0):
+            for k in _DTCAIDA_CAMPOS:
+                if k in d:
+                    _DTCAIDA[k] = d[k]
+    except Exception:
+        pass
+    return _DTCAIDA
+
+
+def _dt_caida_apunta(caida, st, dom):
+    now = _t.time()
+    with _DTCAIDA_LOCK:
+        e = _dt_caida_lee()
+        desde = float(e.get("desde") or 0) if (caida and e.get("caida")) else 0.0
+        _DTCAIDA.update({"visto": now, "caida": bool(caida),
+                         "desde": (desde or now) if caida else 0.0,
+                         "st": int(st or 0), "dom": dom or ""})
+        try:
+            tmp = "%s.%d.tmp" % (_DTCAIDA_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump({k: _DTCAIDA[k] for k in _DTCAIDA_CAMPOS}, f)
+            os.replace(tmp, _DTCAIDA_FILE)
+        except Exception:
+            pass
+
+
+def _dt_caida_mira(tope=5.0):
+    """Pregunta YA (por el proxy) si DonTorrent esta caido. Una mirada a la vez
+    por worker: si ya hay otra en marcha, devuelve lo que se sepa."""
+    with _DTCAIDA_LOCK:
+        if (_t.time() - _DTCAIDA_VUELO[0]) < 30:
+            return _DTCAIDA
+        _DTCAIDA_VUELO[0] = _t.time()
+    try:
+        dom = _dt_load_domain() or DT_FALLBACK[0]
+        texto, st = _get_con_tope(
+            _DTCAIDA_PROXY + _uq("https://%s/" % dom, safe=""), tope, todo=True)
+        v = _dt_caida_clasifica(st, texto)
+        _DTCAIDA["miradas"] = _DTCAIDA.get("miradas", 0) + 1
+        if v is None:
+            _DTCAIDA["dudas"] = _DTCAIDA.get("dudas", 0) + 1
+        else:
+            _dt_caida_apunta(v, st, dom)
+    except Exception:
+        pass
+    finally:
+        _DTCAIDA_VUELO[0] = 0.0
+    return _dt_caida_lee()
+
+
+def _dt_caida_ya():
+    """Si DonTorrent esta caido segun lo que YA se sabe (sin red)."""
+    e = _dt_caida_lee()
+    return bool(e.get("caida")) and \
+        (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_FRESCO + 60
+
+
+def _dt_caido():
+    """¿Esta DonTorrent caido AHORA? Si lo dijo hace menos de _DTCAIDA_FRESCO s,
+    si; si lo dijo antes, se vuelve a mirar (tope corto) para no dejar a nadie
+    fuera ni un minuto mas de lo que dure la caida. Sin caida conocida no toca
+    la red: es lo que se pregunta antes de cada trabajo de DonTorrent."""
+    e = _dt_caida_lee()
+    if not e.get("caida"):
+        return False
+    if (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_FRESCO:
+        return True
+    _dt_caida_mira(4.0)
+    return _dt_caida_ya()     # si otra peticion esta mirando, lo ultimo sabido
+
+
+def _dt_caida_sondea():
+    """Un fallo de DonTorrent invita a mirar si es que esta caido: por detras
+    (no retrasa a nadie) y solo si hace rato que nadie miraba."""
+    e = _dt_caida_lee()
+    if (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_REPASO:
+        return
+    if (_t.time() - _DTCAIDA_VUELO[0]) < 30:
+        return
+    try:
+        _thr.Thread(target=_dt_caida_mira, daemon=True).start()
+    except Exception:
+        pass
+
+
+def _dt_caida_info():
+    """Lo que se le cuenta a la web (desde cuando lo sabemos, si se sabe)."""
+    return {"desde": int(float(_dt_caida_lee().get("desde") or 0))}
+
+
+def _con_caida(d):
+    """El aviso de DonTorrent caido dentro de una respuesta (sin red)."""
+    if _dt_caida_ya():
+        d["dt_caida"] = _dt_caida_info()
+    return d
+
+
+def _dt_magnet(cid, tb, titulo=""):
+    """magnet de un item DonTorrent SIN pasar por su web: con la huella (info
+    hash) que ya sabemos -- la guardan el aprendiz y las semillas, con copia
+    fuera de /tmp. None si no la sabemos, o si viene en RAR (Elementum no lo
+    abriria: mejor decirlo que mandar a la tele algo que va a fallar)."""
+    e = _dtpacked_load().get("%s:%s" % (tb, cid)) or {}
+    ih = str(e.get("ih") or "").lower()
+    if not _re_dt.match(r"^[0-9a-f]{40}$", ih) or e.get("p"):
+        return None
+    tr = "".join("&tr=" + _uq("udp://%s:%d/announce" % hp, safe="")
+                 for hp in _SEED_TRACKERS)
+    dn = ("&dn=" + _uq(titulo[:120], safe="")) if titulo else ""
+    return "magnet:?xt=urn:btih:" + ih + dn + tr
+
+
 def _cat_dt_html(q):
     """Breaker + tope de concurrencia (max 2 ops DonTorrent), luego delega."""
     if _dt_is_down() or not _DT_SEM.acquire(blocking=False):
@@ -4459,7 +4662,11 @@ def _cat_dt_session_get(path):
                     # DT respondio con resultados -> breaker ARRIBA aunque lento
                     # (el PoW en frio tarda 1 vez; _DT_SEM(2) ya evita saturar).
                     _dt_mark(True)
+                    if _dt_caida_lee().get("caida"):
+                        _dt_caida_apunta(False, 200, dom)   # ha vuelto
                     return rr.text, dom
+                if _dt_caida_clasifica(rr.status_code, rr.text):
+                    _dt_caida_apunta(True, rr.status_code, dom)
             except Exception:
                 continue
         _dt_mark(got)   # "caido" SOLO si DT no respondio (no por lento)
@@ -5556,7 +5763,8 @@ def _dt_detail_year(it, deadline, box=None):
         html, _ = _cat_dt_session_get(path)
     except Exception:
         html = ""
-    if not html and box and (deadline - _t.time()) > 2.5:   # 2) via box residencial
+    if not html and box and (deadline - _t.time()) > 2.5 \
+            and not _dt_caida_ya():                          # 2) via box residencial
         try:
             job = "dy" + os.urandom(5).hex()
             _kb_enqueue(box, {"c": "etjob", "job": job, "op": "dthtml",
@@ -5781,7 +5989,8 @@ def catsearch():
         if cent:
             _CATSEARCH_CACHE[qkey] = cent
     if cent and (now - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
-        return jsonify({"items": _al_servir(cent["items"]), "cached": True})
+        return jsonify(_con_caida({"items": _al_servir(cent["items"]),
+                                   "cached": True}))
     # --- Single-flight: si una busqueda IDENTICA ya se esta calculando en este
     # worker, NO lanzamos otro fan-out; esperamos su resultado y servimos la cache.
     # Mata la amplificacion de los reintentos del front (csTry hasta 6x) que era
@@ -5857,7 +6066,9 @@ def catsearch():
 
         def _w_box():
             try:
-                if not box:
+                # DonTorrent caido: ninguna caja va a traer su buscador, y
+                # preguntarle a una de otra casa solo le cuesta a ella
+                if not box or _dt_caido():
                     return
 
                 def _ask(b, termino=None):
@@ -5865,7 +6076,7 @@ def catsearch():
                     _kb_enqueue(b, {"c": "etjob", "job": j, "op": "dthtml",
                                     "q": (termino or q)})
                     return j
-                _okh = lambda r: bool((r or {}).get("html"))
+                _okh = _dt_html_bueno     # su pagina de mantenimiento no vale
                 _jobs = [_ask(box)]
                 # HEDGE: si la caja elegida no ha traído el HTML en 6s, se lo
                 # pedimos TAMBIEN a otra caja viva y nos quedamos con la primera
@@ -5884,6 +6095,10 @@ def catsearch():
                         if _okh(res2):
                             res = res2
                 h = (res or {}).get("html") or ""
+                if _dt_es_mantenimiento(h):
+                    h = ""                 # ni fichas ni guiones que probar
+                if not h:
+                    _dt_caida_sondea()     # ¿es que esta caido? (por detras)
                 r = _cat_parse_items(h) if h else []
                 # EL GUION. El buscador de DonTorrent es LITERAL: "x men" da
                 # CERO fichas y "x-men" da diez, con la pelicula original entre
@@ -6018,7 +6233,7 @@ def catsearch():
                 except Exception:
                     r2 = []
                 _fr = _fdl - _t.time()
-                if not r2 and box and _fr > 2.5:
+                if not r2 and box and _fr > 2.5 and not _dt_caida_ya():
                     try:
                         j2 = "da" + os.urandom(5).hex()
                         _kb_enqueue(box, {"c": "etjob", "job": j2,
@@ -6032,8 +6247,8 @@ def catsearch():
                     dt_items = r2
                     break
             if not dt_items:
-                return jsonify({"items": [],
-                                "partial": not (_r["dt"] or _r["box"])})
+                return jsonify(_con_caida({"items": [],
+                                           "partial": not (_r["dt"] or _r["box"])}))
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
         # Enrich (poster/AÑO/genero TMDB) ACOTADO al deadline total: con TMDB
         # lento/frio podia añadir ~5s y pasarse del tope. Si no le da tiempo,
@@ -6106,7 +6321,7 @@ def catsearch():
                     _CATSEARCH_CACHE.pop(old, None)
                 except Exception:
                     _CATSEARCH_CACHE.clear()
-        return jsonify({"items": items, "partial": _parcial})
+        return jsonify(_con_caida({"items": items, "partial": _parcial}))
     finally:
         # SIEMPRE liberamos el single-flight (aunque haya excepcion) -> nunca deja
         # una query "bloqueada" para siempre, y despierta a los que esperan.
@@ -6242,16 +6457,23 @@ def _kb_enqueue(code, ev):
         _kb_save(d)
 
 
-def _catjob_wait_any(jobs, secs, ok=None):
+def _catjob_wait_any(jobs, secs, ok=None, corta=None):
     """Espera a VARIOS trabajos de caja a la vez y devuelve el PRIMERO que sirva.
     `jobs` es una lista MUTABLE: los que ya contestaron se van quitando (así se
     puede volver a llamar sin re-esperar a los que ya respondieron). `ok(res)`
     decide si un resultado vale; los que no valen se descartan y se sigue
     esperando a los demás — una caja puede contestar VACÍA porque su ISP le tumba
-    la petición mientras otra la trae entera."""
+    la petición mientras otra la trae entera. `corta()` deja de esperar en
+    cuanto dice que sí (p. ej., DonTorrent caído: no va a llegar nada)."""
     end = _t.time() + secs
     last = None
     while jobs and _t.time() < end:
+        if corta is not None:
+            try:
+                if corta():
+                    break
+            except Exception:
+                pass
         got = []
         with _FileLock(_CATJOB_FILE):   # serializa con /catjob/done
             d = _catjob_load()
@@ -7828,20 +8050,24 @@ def _semillas_nube_sube(forzar=False):
 
 def _semillas_nube_baja():
     """Al arrancar: lo que haya en la copia y no este en /tmp, a /tmp. Deja
-    apuntado cuantas recupero (lo hace el proceso padre, y /catdiag lo
-    contestan los workers: sin el fichero no habria forma de verlo)."""
+    apuntado cuantas recupero (/catdiag lo contesta cualquiera de los dos
+    workers: sin el fichero no habria forma de verlo)."""
     got = _semillas_nube_lee()
     if got is None:
         return 0
     _SEMI_NUBE["bajadas"] += 1
     n = _semillas_funde_local(*got)
     _SEMI_NUBE["recuperadas"] += n
-    try:
-        with open(_SEMI_MARCA, "w", encoding="utf-8") as f:
-            _json.dump({"ts": _t.time(), "recuperadas": n,
-                        "en_copia": len(got[0]) + len(got[1])}, f)
-    except Exception:
-        pass
+    # Cada worker hace su recuperacion (dtbl37) y el segundo llega con /tmp ya
+    # lleno: apuntaba "recuperadas: 0" encima de lo que habia recuperado el
+    # primero. Solo se apunta lo que recupera algo (o si aun no habia nada).
+    if n > 0 or not os.path.exists(_SEMI_MARCA):
+        try:
+            with open(_SEMI_MARCA, "w", encoding="utf-8") as f:
+                _json.dump({"ts": _t.time(), "recuperadas": n,
+                            "en_copia": len(got[0]) + len(got[1])}, f)
+        except Exception:
+            pass
     return n
 
 
@@ -8116,8 +8342,9 @@ def _apr_ronda():
         _APR_T_REF[0] = now
         _seeds_guarda(_seed_counts_many(viejos[:140]))
         _APR["refrescos"] += 1
+    _caida = _dt_caida_ya()     # DonTorrent caido: su PoW no puede salir bien
     for src, k, it in pend:
-        if src == "dt" and (now - _APR_T_DT[0]) < _APR_PAUSA_DT:
+        if src == "dt" and (_caida or (now - _APR_T_DT[0]) < _APR_PAUSA_DT):
             continue            # el PoW de DonTorrent, espaciado: toca otra fuente
         if src == "dt":
             _APR_T_DT[0] = now
@@ -8154,7 +8381,19 @@ def _apr_bucle():
                 pausa = _apr_ronda()
         except Exception:
             pausa = 120.0
-        _t.sleep(pausa + _rnd_mem.random() * 10)
+        # A trozos, renovando el turno: con una pausa de 300 s el turno
+        # caducaba a los 180 y el otro worker lo cogia -- se lo iban pasando
+        # (lo enseñaba /catdiag, "turno" cambiando de uno a otro sin motivo).
+        resto = pausa + _rnd_mem.random() * 10
+        while resto > 0:
+            trozo = min(resto, 120.0)
+            _t.sleep(trozo)
+            resto -= trozo
+            if resto > 0 and _APR["turno"]:
+                try:
+                    _APR["turno"] = _apr_turno()
+                except Exception:
+                    pass
 
 
 def _apr_arranca():
@@ -8772,6 +9011,10 @@ def catfeed():
     except Exception:
         raw = []
     if not raw:
+        # Las cajas empujan su listado cada ~8 min: si lo que traen es la
+        # pagina de mantenimiento de DonTorrent, el relay se entera por ellas.
+        if _dt_es_mantenimiento(html):
+            _dt_caida_apunta(True, 503, "caja")
         return jsonify({"ok": False, "items": 0})
     # Cachea YA con la caratula PROPIA de DonTorrent (poster=thumb) -> catbrowse
     # sirve al INSTANTE en cuanto el box empuja. El enrich TMDB (en frio ~40s, si
@@ -9061,6 +9304,7 @@ def catbrowse():
         Solo en la pagina 1: el scroll infinito de DonTorrent sigue igual."""
         out = {"items": _al_servir(items)}
         out.update(extra)
+        _con_caida(out)   # el Inicio lo avisa: sus titulos pueden no abrir
         if page == 1 and request.args.get("mix") == "1":
             ent = _home_mix_cache(kind)
             if ent and ent.get("items"):
@@ -9115,18 +9359,27 @@ def catbrowse():
     budget = 4.0 if dt_ent else 8.0
     html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0],
                     budget, "") or ""
+    if not html and dt_ent and (now - dt_ent.get("ts", 0)) > 3600:
+        # Una hora sin poder refrescar el Inicio: ¿es que DonTorrent esta
+        # caido? Se mira por detras (no retrasa esta respuesta).
+        _dt_caida_sondea()
     if not html and not dt_ent:
         # Inicio frio SIN nada DT que servir: marca el baneo (el slow-drip evade
         # el timeout de requests) para que el resto del Inicio salte DT al instante.
         # Con stale NO marcamos: el budget corto puede abortar a un DT solo lento.
         _dt_mark(False)
-        if len(code) == 6:
+        if len(code) == 6 and not _dt_caida_ya():
             # Render bloqueado por DonTorrent -> traer el listado VIA EL BOX.
             job = "db" + os.urandom(5).hex()
             _kb_enqueue(code, {"c": "etjob", "job": job, "op": "dthtml",
                                "path": path})
             res = _catjob_wait(job, 9.0)
             html = (res or {}).get("html") or ""
+            if _dt_es_mantenimiento(html):
+                # su pagina de mantenimiento guardada como "el Inicio" lo
+                # dejaria vacio
+                _dt_caida_apunta(True, 503, "caja")
+                html = ""
     if html:
         # TOPE DURO al enrich (ver /catetbox): `_cat_enrich` consulta TMDB, que
         # BANEA la IP de Render, y sin limite se queda colgado ocupando uno de
@@ -9475,6 +9728,21 @@ def catdiag():
         "remaining_s": max(0, int(_DT_DOWN_UNTIL[0] - now)) if down else 0,
         "cooldown_s": _DT_DOWN_COOLDOWN,
     }
+    # 1b) ¿DonTorrent CAIDO de verdad (su web lo dice)? Ver _dt_caido. Sin red:
+    #     lo ultimo que se supo, y hace cuanto.
+    try:
+        _e = _dt_caida_lee()
+        out["dt_caida"] = {
+            "caida": bool(_e.get("caida")), "ahora": _dt_caida_ya(),
+            "visto_hace_s": (int(now - float(_e["visto"]))
+                             if _e.get("visto") else None),
+            "desde_hace_s": (int(now - float(_e["desde"]))
+                             if _e.get("desde") else None),
+            "st": _e.get("st"), "dom": _e.get("dom"),
+            "miradas": _DTCAIDA.get("miradas", 0),
+            "dudas": _DTCAIDA.get("dudas", 0)}
+    except Exception:
+        out["dt_caida"] = {"error": True}
     # 2) Estado de la cache del Inicio (memoria + disco): origen (dx vs DT real),
     #    antiguedad y nº de items. Aqui se ve si esta "pegada" en DX.
     def _snap(cache, src):
@@ -9659,6 +9927,19 @@ def catdetail():
             _CATDETAIL_CACHE[path] = ent
     if ent and (now - ent.get("ts", 0)) < _CATDETAIL_TTL:
         return jsonify(ent["data"])
+
+    def _stale_o_vacio():
+        # 4) stale: mejor lo ultimo conocido que una lista vacia. Y si es que
+        #    DonTorrent esta caido, se dice: no es la tele de nadie.
+        d = dict(ent["data"]) if ent else {"episodes": []}
+        if ent:
+            d["stale"] = True
+        if _dt_caida_ya():
+            d["dt_caida"] = _dt_caida_info()
+        return jsonify(d)
+    # DonTorrent CAIDO (lo dice el): ni cajas ni esperas (ver _dt_caido).
+    if _dt_caido():
+        return _stale_o_vacio()
     # 2-3) Render casi NUNCA alcanza DonTorrent (IP de datacenter baneada). Antes
     #    se probaba el directo (8s) y SOLO si fallaba se iba al box (14s) -> 22s en
     #    SERIE, por encima del AbortController de 20s del front -> "no se pudieron
@@ -9694,17 +9975,18 @@ def catdetail():
                     min(2.5, _drem()), "") or ""
     if not html:
         _dt_mark(False)        # marca el baneo -> siguientes aperturas saltan DT ya
+        # Si hace rato que nadie mira si DonTorrent esta caido, se mira ahora,
+        # por detras: si lo esta, la espera de abajo se corta en cuanto se sepa
+        # (~1 s) en vez de agotar los 24 s esperando a unas cajas que no pueden.
+        _dt_caida_sondea()
         if _jobs:              # las cajas ya llevan ~2,5s adelantadas
-            res = _catjob_wait_any(_jobs, _drem(),
-                                   lambda r: bool((r or {}).get("html")))
+            res = _catjob_wait_any(_jobs, _drem(), _dt_html_bueno,
+                                   corta=_dt_caida_ya)
             html = (res or {}).get("html") or ""
+            if _dt_es_mantenimiento(html):
+                html = ""          # su pagina de mantenimiento no es una ficha
     if not html:
-        # 4) stale: mejor lo ultimo conocido que una lista vacia.
-        if ent:
-            d = dict(ent["data"])
-            d["stale"] = True
-            return jsonify(d)
-        return jsonify({"episodes": []})
+        return _stale_o_vacio()
     title, eps = _bounded(lambda: _cat_parse_detail(html),
                           max(1.0, min(4.0, _drem())), ("", []))
     meta = (_bounded(lambda: _cat_tmdb(title, "tv"),
@@ -10274,6 +10556,16 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srcp-f.dt{--c:#0a84ff}.srcp-f.et{--c:#ff9f0a}
 .srcp-f.dx{--c:#30d158}.srcp-f.wf{--c:#bf5af2}
 .srcp-f.zero i{opacity:.35}
+/* DonTorrent caido (lo dice su web): el chip de la busqueda y los avisos */
+.srcp-f.down{border-color:rgba(255,159,10,.35)}
+.srcp-f.down b{color:#ffb340}
+.dtav{display:none;margin:-4px 0 13px;padding:10px 13px;border-radius:12px;background:rgba(255,159,10,.10);border:1px solid rgba(255,159,10,.30);color:#ffd9a0;font-size:13px;line-height:1.4}
+.dtav.on{display:block}
+.dtav b{color:#ffe2b8}
+#ov-body .dtav{margin:0 0 12px}
+.dtcaida{line-height:1.5}
+.dtc-b{border:0;border-radius:12px;padding:12px 16px;min-height:44px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue));cursor:pointer;margin:2px 0 8px}
+.dtc-b:active{transform:scale(.98)}
 /* Versiones de la misma peli en otras fuentes (la 4K de WolfMax, sobre todo) */
 .sh-alts{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
 .sh-alts .altb{min-height:38px;display:inline-flex;align-items:center;gap:5px;
@@ -10342,6 +10634,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <button class="chip" data-k="series" onclick="chip('series')">Series</button>
   </div>
   <div id="fuentes" class="fnt"></div>
+  <div id="dt-aviso" class="dtav"></div>
   <div id="inicio-grid" class="msg"></div>
  </section>
  <section id="pane-buscar" class="pane hidden">
@@ -10852,6 +11145,7 @@ function chip(kind,intento){document.querySelectorAll('.chip').forEach(function(
   if(kind==='estrenos'){setTimeout(function(){if(!g.querySelector('.card'))retry();},14000);}else{retry();}}
  fetch('/catbrowse?kind='+kind+'&page=1&mix=1&code='+(code.value||'').replace(/\D/g,''),ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
   done=true;clearTimeout(slow);clearTimeout(to);
+  pintaDtAviso(d&&d.dt_caida);
   var base=(d&&d.items)||[];
   if(!base.length){fallback();return}
   // La portada de DonTorrent TAMBIEN se funde. Era el unico sitio de la app que
@@ -11061,8 +11355,9 @@ function progSet(src,estado,n){if(PROG.seq!==_searchSeq)return;
 function progPaint(){var el=$('buscar-prog');if(!el)return;
  var ks=['dt','dx','et','wf'],hechas=0,total=0;
  var chips=ks.map(function(k){var e=PROG.st[k]||0;if(e>0)hechas++;if(e===1)total+=PROG.n[k]||0;
-  var cls='srcp-f '+k+(e>0?' on':' wait')+(e===2?' zero':'');
-  var txt=PROGN[k]+(e===1?(' <b>'+PROG.n[k]+'</b>'):(e===2?' <b>0</b>':(e===3?' —':'')));
+  // 4 = la fuente esta caida (lo dice ella misma: ver dt_caida en el relay)
+  var cls='srcp-f '+k+(e>0?' on':' wait')+(e===2?' zero':'')+(e===4?' down':'');
+  var txt=PROGN[k]+(e===1?(' <b>'+PROG.n[k]+'</b>'):(e===2?' <b>0</b>':(e===3?' —':(e===4?' <b>caído</b>':''))));
   return '<span class="'+cls+'"><i></i>'+txt+'</span>'}).join('');
  var seg=((Date.now()-PROG.t0)/1000).toFixed(1).replace('.',',');
  var fin=(hechas===4);
@@ -11178,8 +11473,10 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
    // se marca SIEMPRE con lo que traiga: si viene parcial, la 2ª pasada
    // actualiza el número. (Antes, si era parcial, DonTorrent no se marcaba
    // nunca y el chip se quedaba "buscando" con sus resultados ya en pantalla.)
-   progSet('dt',_ndt?1:2,_ndt);
-   if(d&&d.partial&&!csDone){csDone=1;dtPend=1;
+   // DonTorrent caido: lo suyo que salga es de lo guardado, y volver a
+   // preguntar en 7 s no va a traer nada nuevo
+   progSet('dt',(d&&d.dt_caida)?4:(_ndt?1:2),_ndt);
+   if(d&&d.partial&&!csDone&&!d.dt_caida){csDone=1;dtPend=1;
     setTimeout(function(){if(seq!==_searchSeq)return;
      tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,16000).then(function(r){return r.json()})
       .then(function(d2){if(seq!==_searchSeq)return;mergeResults('buscar',g,(d2&&d2.items)||[]);dtPend=0;
@@ -12172,8 +12469,41 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  toast('Enviando a la tele...');
  var hsnap=null;try{hsnap=histSnap(ref)}catch(e){}   // ver histSnap: `sel` cambia
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-  .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();toast('▶ En la tele');try{histPush(hsnap)}catch(e){};closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
+  .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();
+    // DonTorrent caido y el relay lo ha mandado por magnet (ver /kb/send)
+    toast(d.via==='magnet'?'▶ En la tele · DonTorrent está caído: va directo por la red torrent':'▶ En la tele');
+    try{histPush(hsnap)}catch(e){};closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}
+   else if(d&&d.error==='dt_caida'){dtCaidaDlg(ref.t)}
+   else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
  return true}
+// DonTorrent CAIDO (lo dice su propia web, ver _dt_caido en el relay). Nada de
+// "Error: ..." ni de mandar a la tele algo que va a fallar a los 60 s: se dice
+// lo que pasa, de quien es el fallo y que se puede hacer mientras.
+function dtCaidaDlg(t){var q=_tituloBase(t);
+ mwConfirm('DonTorrent está caído',
+  'Su web no responde ahora mismo: es un fallo de su servidor, no de tu tele. Suele volver sola en unas horas. Mientras, puedes buscarlo en las otras fuentes.',
+  'Buscar en otras fuentes',function(){buscaOtras(q)});}
+function dtCaidaHTML(t,alts){
+ return '<div class="msg dtcaida"><b>DonTorrent está caído ahora mismo</b><br>'+
+  'Su web no responde: es un fallo de su servidor, no de tu tele. Suele volver sola en unas horas.'+
+  (alts?'<br><br>Esta serie también está en otra fuente: la tienes aquí arriba ↑':'')+
+  '<br><br><button class="dtc-b" onclick="buscaOtras(_tituloBase(OVRETRY&&OVRETRY.title))">🔎 Buscar en otras fuentes</button>'+
+  '<br><a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>';}
+// "Fauda 5x03" -> "Fauda": lo que se busca es la serie o la peli, no el capitulo
+function _tituloBase(t){return String(t||'').replace(/\s+\d{1,2}x\d{1,3}\b.*$/i,'').replace(/\s*[\(\[]\s*(19|20)\d{2}\s*[\)\]]\s*$/,'').trim()}
+// Cierra lo que haya abierto (ficha, serie) y busca. A destiempo a proposito:
+// cada cierre es un "atras" del historial y, si la busqueda se abriera antes
+// de que termine, ese atras se la llevaria por delante.
+function buscaOtras(t){t=String(t||'').trim();if(!t)return;
+ var abierto=$('sheet').classList.contains('on')||$('ov').classList.contains('on');
+ closeSheet();closeOv();
+ setTimeout(function(){goView('buscar');$('q').value=t;go()},abierto?350:0);}
+// El aviso del Inicio. Sale solo si el relay dice que DonTorrent esta caido y
+// se va solo cuando vuelve (cada carga del Inicio lo repinta).
+function pintaDtAviso(dc){var e=$('dt-aviso');if(!e)return;
+ if(!dc){e.classList.remove('on');e.innerHTML='';return}
+ e.innerHTML='⚠️ <b>DonTorrent está caído ahora mismo</b> — es un fallo de su web. Sus títulos pueden no abrir; las demás fuentes funcionan.';
+ e.classList.add('on');}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
@@ -12206,6 +12536,9 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov
     poster:x.poster,year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,
     genres:x.genres},x:x};renderEpisodes();return;}
   if(!eps.length){OVRETRY=x;
+   // DonTorrent caido: la verdad al momento (el relay ya no espera 24 s a
+   // unas cajas que no pueden) y la salida a las otras fuentes.
+   if(d&&d.dt_caida){$('ov-body').innerHTML=altsHTML(x)+dtCaidaHTML(x.title,(x.alts||[]).length);return}
    // CON LAS ALTERNATIVAS: sin ellas no se puede volver a la fuente que si
    // tenia los capitulos y hay que cerrar la ficha entera.
    $('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron leer los episodios'+((src!=='dx')?' (enciende tu Kodi e inténtalo de nuevo)':'')+'. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a>'+
@@ -12335,6 +12668,8 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
    (genh?('<div class="ovgen">'+genh+'</div>'):'')+'</div></div></div>'+
    (ovw?('<div class="ovsyn"><div class="sh-ov clamp" id="ov-syn">'+esc(ovw)+'</div><span class="sh-more" onclick="toggleOvSyn()">Leer más</span></div>'):'')+
    altsHTML(x)+
+   // capitulos de la ultima vez, con DonTorrent caido: que se sepa antes de pulsar
+   (d.dt_caida?'<div class="dtav on">⚠️ <b>DonTorrent está caído ahora mismo.</b> Estos capítulos son los de la última vez y puede que no arranquen hasta que vuelva.</div>':'')+
    _seguirHTML()+
    '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+favLabel(x)+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
  // PESTANAS DE TEMPORADA: la ficha trae la serie entera, y verlas todas
@@ -12557,7 +12892,75 @@ _MEM_T0 = [_t.time()]
 _MEM_AVISO_MB = 150.0      # poda suave: lo que se rehace solo y nadie nota
 _MEM_GRAVE_MB = 200.0      # poda seria: tambien el Inicio (vuelve de /tmp)
 _MEM_WATCH = {"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0, "libero_mb": 0.0,
-              "total": 0.0, "total_max": 0.0}
+              "total": 0.0, "total_max": 0.0, "trims": 0, "trim_mb": 0.0,
+              "pausadas": 0}
+# Si una poda no suelta nada, no se repite hasta pasado este rato (ver abajo).
+_MEM_PODA_NO_ANTES = [0.0]
+
+# --- La memoria que glibc se queda (dtbl38) -----------------------------------
+# 23-09, 22:30: cada worker en 161 MB con 1,6 h de vida (esa manana, 78 MB con
+# 7 h) y las cachas sumaban ~1 MB: lo que crecia no era nuestro. Con muchos
+# hilos, glibc da una "arena" a cada uno y lo que Python libera se queda dentro
+# (fragmentacion): el RSS sube y ya no baja. El vigilante, por encima de 150 MB,
+# podaba cada 8 s sin soltar nada -- 626 podas, "libero 0" -- y de paso vaciaba
+# CADA VEZ las cachas buenas (busquedas, TMDB, fichas: todas a cero).
+# Dos cosas: como mucho DOS arenas (lo mismo que MALLOC_ARENA_MAX=2, que no se
+# puede poner en el panel de Render; se fija en el import, cuando el padre aun
+# no tiene hilos, y los workers lo heredan con el fork), y devolver al sistema
+# lo que se libera al podar (malloc_trim). Fuera de Linux no hace nada.
+def _libc_abre():
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+        return ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+    except Exception:
+        return None
+
+
+_LIBC = _libc_abre()
+_MALLOC_ARENAS = [0]
+try:
+    if _LIBC is not None and _LIBC.mallopt(-8, 2) == 1:      # M_ARENA_MAX = 2
+        _MALLOC_ARENAS[0] = 2
+except Exception:
+    pass
+
+
+def _mem_trim():
+    """Devuelve al sistema la memoria que Python ya solto y glibc guardaba."""
+    try:
+        if _LIBC is not None:
+            _LIBC.malloc_trim(0)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _mem_malloc():
+    """Como esta el monton de glibc: cuanto pide al sistema (arena + mmap),
+    cuanto usa Python de verdad y cuanto tiene LIBRE dentro sin devolver (lo
+    que mide la fragmentacion). None fuera de Linux."""
+    if _LIBC is None:
+        return None
+    try:
+        import ctypes
+
+        class _MI2(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_size_t) for n in (
+                "arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks",
+                "fsmblks", "uordblks", "fordblks", "keepcost")]
+        f = _LIBC.mallinfo2
+        f.restype = _MI2
+        mi = f()
+        mb = lambda b: round(b / 1048576.0, 1)
+        return {"arena_mb": mb(mi.arena), "mmap_mb": mb(mi.hblkhd),
+                "en_uso_mb": mb(mi.uordblks), "libre_mb": mb(mi.fordblks),
+                "arenas_max": _MALLOC_ARENAS[0]}
+    except Exception:
+        return None
 
 
 def _rss_mb():
@@ -12654,6 +13057,12 @@ def _mem_poda(grave=False):
         gc.collect()
     except Exception:
         pass
+    # ...y lo que Python acaba de soltar, de vuelta al sistema (ver _mem_trim):
+    # sin esto se quedaba dentro de glibc y el RSS no bajaba nunca.
+    pre = _rss_mb()
+    if _mem_trim():
+        _MEM_WATCH["trims"] = _MEM_WATCH.get("trims", 0) + 1
+        _MEM_WATCH["trim_mb"] = round(max(0.0, pre - _rss_mb()), 1)
     ahora = _rss_mb()
     libero = round(max(0.0, antes - ahora), 1)
     _MEM_WATCH["podas"] += 1
@@ -12766,44 +13175,57 @@ def _mem_relevo(motivo):
         pass
 
 
+def _mem_vigila_vuelta():
+    """Una vuelta del vigilante (aparte para poder probarla sin el bucle)."""
+    r = _rss_mb()
+    tot = _mem_cgroup_mb()        # el servicio ENTERO (lo que mira Render)
+    _MEM_WATCH["rss"] = r
+    _MEM_WATCH["total"] = tot
+    if r > _MEM_WATCH["max"]:
+        _MEM_WATCH["max"] = r
+    if tot > _MEM_WATCH.get("total_max", 0):
+        _MEM_WATCH["total_max"] = tot
+    # Podar antes si el CONJUNTO va apurado, aunque este worker vaya
+    # holgado: la memoria que mata el servicio es la suma, no la mia.
+    grave = r >= _MEM_GRAVE_MB or (tot and tot >= _MEM_TOTAL_MB - 60)
+    leve = r >= _MEM_AVISO_MB or (tot and tot >= _MEM_TOTAL_MB - 120)
+    if (grave or leve) and _t.time() < _MEM_PODA_NO_ANTES[0]:
+        _MEM_WATCH["pausadas"] = _MEM_WATCH.get("pausadas", 0) + 1
+    elif grave or leve:
+        lib = _mem_poda(grave=bool(grave))
+        # Si no ha soltado nada es que no hay nada que soltar, y
+        # repetirla cada 8 s solo vacia las cachas buenas (el 23-09:
+        # 626 podas en 1,6 h, 0 MB). Se espera: 2 min si va apurado,
+        # 10 si no. El relevo de abajo NO depende de esto.
+        if lib < 5.0:
+            _MEM_PODA_NO_ANTES[0] = _t.time() + (120 if grave else 600)
+    _bnd_revisa()
+    # Relevo: hilos colgados que ya no vuelven, o memoria que no baja ni
+    # despues de podar. Mejor un relevo de 3 s con el otro worker
+    # cubriendo que el OOM, que se lleva el servicio entero por delante.
+    # Nunca a un worker recien nacido: si naciera ya por encima del tope
+    # se relevaria en bucle y el servicio no llegaria a contestar nunca.
+    if (_t.time() - _MEM_T0[0]) >= _MEM_EDAD_MIN:
+        h = _thr.active_count()
+        r2 = _rss_mb()
+        t2 = _mem_cgroup_mb()
+        if h >= _MEM_HILOS_MAX:
+            _mem_relevo("hilos=%d (tope %d)" % (h, _MEM_HILOS_MAX))
+        elif r2 >= _MEM_MATAR_MB:
+            _mem_relevo("memoria=%.0f MB tras podar" % r2)
+        elif t2 and t2 >= _MEM_TOTAL_MB and r2 >= 120:
+            # El tope del servicio lo aplica el worker GORDO. Sin la
+            # condicion del RSS propio, un worker recien nacido y
+            # limpio podria relevarse una y otra vez por culpa del
+            # otro, y ahi si nos quedariamos sin servicio.
+            _mem_relevo("servicio=%.0f MB (mio %.0f) tras podar"
+                        % (t2, r2))
+
+
 def _mem_vigila():
     while True:
         try:
-            r = _rss_mb()
-            tot = _mem_cgroup_mb()        # el servicio ENTERO (lo que mira Render)
-            _MEM_WATCH["rss"] = r
-            _MEM_WATCH["total"] = tot
-            if r > _MEM_WATCH["max"]:
-                _MEM_WATCH["max"] = r
-            if tot > _MEM_WATCH.get("total_max", 0):
-                _MEM_WATCH["total_max"] = tot
-            # Podar antes si el CONJUNTO va apurado, aunque este worker vaya
-            # holgado: la memoria que mata el servicio es la suma, no la mia.
-            if r >= _MEM_GRAVE_MB or (tot and tot >= _MEM_TOTAL_MB - 60):
-                _mem_poda(grave=True)
-            elif r >= _MEM_AVISO_MB or (tot and tot >= _MEM_TOTAL_MB - 120):
-                _mem_poda(grave=False)
-            _bnd_revisa()
-            # Relevo: hilos colgados que ya no vuelven, o memoria que no baja ni
-            # despues de podar. Mejor un relevo de 3 s con el otro worker
-            # cubriendo que el OOM, que se lleva el servicio entero por delante.
-            # Nunca a un worker recien nacido: si naciera ya por encima del tope
-            # se relevaria en bucle y el servicio no llegaria a contestar nunca.
-            if (_t.time() - _MEM_T0[0]) >= _MEM_EDAD_MIN:
-                h = _thr.active_count()
-                r2 = _rss_mb()
-                t2 = _mem_cgroup_mb()
-                if h >= _MEM_HILOS_MAX:
-                    _mem_relevo("hilos=%d (tope %d)" % (h, _MEM_HILOS_MAX))
-                elif r2 >= _MEM_MATAR_MB:
-                    _mem_relevo("memoria=%.0f MB tras podar" % r2)
-                elif t2 and t2 >= _MEM_TOTAL_MB and r2 >= 120:
-                    # El tope del servicio lo aplica el worker GORDO. Sin la
-                    # condicion del RSS propio, un worker recien nacido y
-                    # limpio podria relevarse una y otra vez por culpa del
-                    # otro, y ahi si nos quedariamos sin servicio.
-                    _mem_relevo("servicio=%.0f MB (mio %.0f) tras podar"
-                                % (t2, r2))
+            _mem_vigila_vuelta()
         except Exception:
             pass
         # Cada 8 s, no cada 30: una busqueda puede sumar decenas de MB en
@@ -12844,7 +13266,9 @@ def _mem_watch_asegura():
         # Los numeros heredados del padre no son de este proceso.
         _MEM_T0[0] = _t.time()
         _MEM_WATCH.update({"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0,
-                           "libero_mb": 0.0, "total": 0.0, "total_max": 0.0})
+                           "libero_mb": 0.0, "total": 0.0, "total_max": 0.0,
+                           "trims": 0, "trim_mb": 0.0, "pausadas": 0})
+        _MEM_PODA_NO_ANTES[0] = 0.0
     _start_mem_watch()
     # El aprendiz de semillas, por la misma razon: lanzado en el import se
     # quedaria en el proceso padre y no correria en ningun worker.
@@ -12871,6 +13295,10 @@ def catmem():
            # esta funcionando solo con el RSS de cada worker (como antes).
            "servicio_mb": _mem_cgroup_mb(),
            "uptime_s": int(_t.time() - _MEM_T0[0]),
+           # el monton de glibc: si "libre_mb" es grande, el RSS es memoria
+           # que Python ya solto y glibc no ha devuelto (ver _mem_trim)
+           "malloc": _mem_malloc(),
+           "poda_pausada_s": max(0, int(_MEM_PODA_NO_ANTES[0] - _t.time())),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH),
            "enrich": dict(_ENR_STATS, vuelo=_ENR_VUELO[0], max=_ENR_MAX,
                           bg_en_vuelo=len(_BGENR_VUELO))}
@@ -12960,6 +13388,18 @@ def catmem():
             out["pilas"] = dict(sorted(pilas.items(), key=lambda kv: -kv[1])[:25])
         except Exception as e:
             out["pilas"] = {"error": repr(e)[:120]}
+    # TIPOS (?tipos=1): cuantos objetos vivos de cada clase. Si lo que crece
+    # es nuestro (sesiones, respuestas, sockets), aqui se ve; si el RSS sube y
+    # esto no, es el monton de glibc (ver "malloc"). Cuesta ~0,2 s: a mano.
+    if request.args.get("tipos") == "1":
+        try:
+            import gc
+            from collections import Counter
+            cuenta = Counter(type(o).__name__ for o in gc.get_objects())
+            out["tipos"] = dict(cuenta.most_common(25))
+            out["tipos_total"] = sum(cuenta.values())
+        except Exception as e:
+            out["tipos"] = {"error": repr(e)[:120]}
     return jsonify(out)
 
 

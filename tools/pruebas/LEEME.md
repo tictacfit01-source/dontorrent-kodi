@@ -41,6 +41,44 @@ pruebas **nunca** sube). Escribe en `C:\tmp` y lo deja como estaba.
 buscador literal de DonTorrent, incluido `"xmen"` → `"x-men"` preguntando a
 TMDB (simulado, sin red).
 
+**`pagina.py`** (23-09-2026) — que **todo el JavaScript de las páginas
+compile** (`node --check` sobre cada `<script>` de `_CAT_PAGE` y `_KB_PAGE`,
+tal cual las sirve el relay) y que `/`, `/cat` y `/kb` se sirvan. La web entera
+es un solo script: un paréntesis de más y se queda en blanco para todos, con
+el relay contestando 200. **Pasarla SIEMPRE que se toque `_CAT_PAGE`.**
+
+**`caida.py`** + **`caida.js`** (23-09-2026) — DonTorrent caído de verdad (su
+503 "La web volverá enseguida"). La de Python: que solo cuenta como caída lo
+que DonTorrent dice sin dudas, el estado compartido y su caducidad, que
+`/catdetail` contesta al momento (o corta la espera en cuanto se entera: 0,8 s
+en vez de 24), que `/kb/send` reproduce por magnet si ya sabemos la huella y si
+no lo dice sin mandar nada a la tele, y que búsqueda, Inicio y aprendiz no
+mandan trabajo inútil a las cajas. La de Node: lo que ve la persona (el
+cuadro, el aviso de la ficha y del Inicio, el chip "caído" de la búsqueda y
+qué se busca en "otras fuentes"), con el código real de la web.
+
+**`dominio_dt.py`** (23-09-2026, addon 2.9.74) — el `resolve_domain` de la
+caja con DonTorrent caído: su página de mantenimiento corta la búsqueda al
+primer dominio (antes probaba los 14, más de un minuto por intento), el fallo
+se recuerda 3 min también en disco, un acierto rápido ya no espera al sondeo
+más lento, y la tele dice "DonTorrent está caído" al fallar un play. Con Kodi
+de mentira y perfil temporal; ni Telegram, ni Supabase, ni DoH de verdad.
+
+**`memoria.py`** (23-09-2026) — el vigilante de memoria del relay: una poda
+que no suelta nada no se repite cada 8 s (el 23-09 hubo 626 en 1,6 h, 0 MB,
+vaciando cada vez las cachés buenas), el relevo no depende de esa pausa, y
+`/catmem` enseña el montón de glibc (`malloc`) y, con `?tipos=1`, los objetos
+vivos. Lo de glibc solo existe en Linux: en el PC se comprueba que no rompe
+nada y en Linux lo informa el workflow `relay-check`.
+
+Para pasarlas todas de una vez:
+
+```bash
+cd "C:/Users/israe/Desktop/Projects/Nueva App Kodi" && rm -rf render_relay/__pycache__
+for t in tools/pruebas/*.py; do PYTHONDONTWRITEBYTECODE=1 python -u "$t" >/dev/null 2>&1 && echo "ok  $t" || echo "MAL $t"; done
+for t in tools/pruebas/*.js; do node "$t" >/dev/null 2>&1 && echo "ok  $t" || echo "MAL $t"; done
+```
+
 ## Qué vigila cada una
 
 **`busqueda.py`** — el filtro de relevancia (`_q_relevant`). 35 casos reales,

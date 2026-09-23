@@ -1,0 +1,155 @@
+# -*- coding: utf-8 -*-
+"""El vigilante de memoria del relay (dtbl38): sin red.
+
+23-09-2026, 22:30: cada worker en 161 MB con 1,6 h de vida y las cachas en
+~1 MB. Por encima de 150 MB el vigilante podaba CADA 8 s sin soltar nada (626
+podas, "libero 0") y cada poda vaciaba las cachas buenas: busquedas, TMDB y
+fichas estaban a cero en plena hora de tele. Esto vigila:
+  1) una poda que no suelta nada no se repite hasta pasado un rato (10 min;
+     2 si va apurado), y una que si suelta no se frena;
+  2) el relevo por memoria NO depende de esa pausa;
+  3) /catmem ensena el monton de glibc ("malloc") y, a mano, los tipos de
+     objeto vivos (?tipos=1).
+La parte de glibc (dos arenas, malloc_trim, mallinfo2) solo existe en Linux:
+aqui se comprueba que fuera de Linux no hace nada ni rompe; en Linux la
+comprueba el workflow relay-check antes de desplegar.
+"""
+import os
+import sys
+import time
+
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ["MW_SIN_KEEPALIVE"] = "1"
+os.environ["MW_APRENDIZ"] = "0"
+os.environ["MW_SIN_NUBE"] = "1"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "render_relay"))
+import app as A                                          # noqa: E402
+
+A._SEMI_SYNC = "http://127.0.0.1:9/kv/semillas"
+A._WFIDX_SYNC = "http://127.0.0.1:9/wfidx"
+
+fallos = 0
+
+
+def comprueba(nombre, ok, detalle=""):
+    global fallos
+    print(("  ok   " if ok else "  MAL  ") + nombre + ("" if ok else "  -> " + str(detalle)))
+    if not ok:
+        fallos += 1
+
+
+RSS, TOT, LIB = [160.0], [300.0], [0.0]
+PODAS, RELEVOS = [], []
+viejos = {k: getattr(A, k) for k in ("_rss_mb", "_mem_cgroup_mb", "_mem_poda",
+                                     "_bnd_revisa", "_mem_relevo")}
+A._rss_mb = lambda: RSS[0]
+A._mem_cgroup_mb = lambda: TOT[0]
+
+
+def poda_falsa(grave=False):
+    PODAS.append(grave)
+    return LIB[0]
+
+
+A._mem_poda = poda_falsa
+A._bnd_revisa = lambda: None
+A._mem_relevo = lambda motivo: RELEVOS.append(motivo)
+
+
+def limpia():
+    del PODAS[:]
+    del RELEVOS[:]
+    A._MEM_PODA_NO_ANTES[0] = 0.0
+    A._MEM_WATCH["pausadas"] = 0
+    A._MEM_T0[0] = time.time()          # recien nacido: sin relevos
+
+
+try:
+    print("\n=== 1) Una poda que no suelta nada no se repite cada 8 s ===")
+    limpia()
+    RSS[0], TOT[0], LIB[0] = 160.0, 300.0, 0.0
+    A._mem_vigila_vuelta()
+    comprueba("160 MB: poda (suave) una vez", PODAS == [False], PODAS)
+    espera = A._MEM_PODA_NO_ANTES[0] - time.time()
+    comprueba("...no solto nada: pausa de ~10 min (%.0f s)" % espera, 590 < espera <= 600)
+    for _ in range(5):
+        A._mem_vigila_vuelta()
+    comprueba("las 5 vueltas siguientes NO podan (antes: 5 podas mas)",
+              PODAS == [False] and A._MEM_WATCH["pausadas"] == 5,
+              (PODAS, A._MEM_WATCH["pausadas"]))
+    A._MEM_PODA_NO_ANTES[0] = time.time() - 1
+    A._mem_vigila_vuelta()
+    comprueba("pasada la pausa, vuelve a intentarlo", PODAS == [False, False], PODAS)
+
+    print("\n=== 2) Una poda que SI suelta no se frena ===")
+    limpia()
+    LIB[0] = 12.0
+    A._mem_vigila_vuelta()
+    A._mem_vigila_vuelta()
+    comprueba("solto 12 MB: la siguiente vuelta puede volver a podar",
+              PODAS == [False, False] and A._MEM_PODA_NO_ANTES[0] == 0.0, PODAS)
+
+    print("\n=== 3) Apurado (poda grave) sin soltar nada: pausa corta ===")
+    limpia()
+    RSS[0], LIB[0] = 205.0, 0.0
+    A._mem_vigila_vuelta()
+    espera = A._MEM_PODA_NO_ANTES[0] - time.time()
+    comprueba("205 MB: poda GRAVE y pausa de ~2 min (%.0f s)" % espera,
+              PODAS == [True] and 110 < espera <= 120, (PODAS, espera))
+    comprueba("por debajo de 150 y con el servicio holgado: ni poda ni pausa",
+              (lambda: (limpia(), RSS.__setitem__(0, 100.0), TOT.__setitem__(0, 200.0),
+                        A._mem_vigila_vuelta(), PODAS == []
+                        and A._MEM_WATCH["pausadas"] == 0)[-1])())
+
+    print("\n=== 4) El relevo no depende de la pausa ===")
+    limpia()
+    A._MEM_T0[0] = time.time() - 3600        # worker con una hora
+    A._MEM_PODA_NO_ANTES[0] = time.time() + 600
+    RSS[0], TOT[0] = A._MEM_MATAR_MB + 5, 300.0
+    A._mem_vigila_vuelta()
+    comprueba("memoria por encima del tope, con la poda en pausa: se releva",
+              RELEVOS and RELEVOS[0].startswith("memoria=") and not PODAS, (RELEVOS, PODAS))
+    limpia()
+    A._MEM_T0[0] = time.time() - 3600
+    RSS[0], TOT[0] = 130.0, A._MEM_TOTAL_MB + 5
+    A._MEM_PODA_NO_ANTES[0] = time.time() + 600
+    A._mem_vigila_vuelta()
+    comprueba("el servicio entero por encima del tope: se releva el gordo",
+              RELEVOS and RELEVOS[0].startswith("servicio="), RELEVOS)
+finally:
+    for k, v in viejos.items():
+        setattr(A, k, v)
+
+print("\n=== 5) glibc: fuera de Linux no hace nada ni rompe ===")
+if not sys.platform.startswith("linux"):
+    comprueba("sin libc: _mem_trim() -> False y _mem_malloc() -> None",
+              A._mem_trim() is False and A._mem_malloc() is None)
+else:
+    m = A._mem_malloc()
+    comprueba("Linux: mallinfo2 contesta", isinstance(m, dict) and "libre_mb" in m, m)
+    comprueba("Linux: dos arenas como mucho", A._MALLOC_ARENAS[0] == 2, A._MALLOC_ARENAS)
+    comprueba("Linux: malloc_trim contesta", A._mem_trim() is True)
+antes = A._MEM_WATCH.get("podas", 0)
+lib = A._mem_poda(grave=False)
+comprueba("una poda de verdad sigue funcionando (%.1f MB)" % lib,
+          isinstance(lib, float) and A._MEM_WATCH["podas"] == antes + 1)
+
+print("\n=== 6) /catmem ===")
+cli = A.app.test_client()
+js = cli.get("/catmem").get_json()
+comprueba("trae 'malloc' y cuanto le queda a la pausa de las podas",
+          "malloc" in js and "poda_pausada_s" in js
+          and {"trims", "trim_mb", "pausadas"} <= set(js.get("watch") or {}), sorted(js))
+js = cli.get("/catmem?tipos=1").get_json()
+t = js.get("tipos") or {}
+comprueba("?tipos=1: los tipos de objeto vivos (%d objetos)" % js.get("tipos_total", 0),
+          isinstance(t, dict) and "dict" in t and js.get("tipos_total", 0) > 1000,
+          list(t)[:5])
+comprueba("...y sin ?tipos=1 no se cuentan (cuesta)", "tipos" not in cli.get("/catmem").get_json())
+
+print("\n---- VEREDICTO ----")
+if fallos:
+    print("%d comprobaciones MAL" % fallos)
+    sys.exit(1)
+print("TODO OK: el vigilante no vacia las cachas en bucle y ensena el monton")

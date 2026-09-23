@@ -50,6 +50,16 @@ jobs:
         run: |
           python -m py_compile app.py
           python -c "import app; print('import app OK')"
+          # glibc (dtbl38): dos arenas, malloc_trim y mallinfo2 solo existen en
+          # Linux y en el PC (Windows) no se pueden probar. Aqui solo se informa:
+          # si algo de esto fallara, el relay sigue igual que antes.
+          python -c "import app; print('glibc: arenas', app._MALLOC_ARENAS[0], '| malloc', app._mem_malloc(), '| trim', app._mem_trim())"
+
+      # La web entera es UN <script> dentro de app.py: un parentesis de mas y
+      # sale en blanco para todos, con el relay contestando 200 (nada avisaria).
+      # Si no compila, no se despliega. (Node viene en ubuntu-latest.)
+      - name: El JavaScript de las paginas compila
+        run: python tools/pruebas/pagina.py
 
       - name: Deploy a Render (solo si el import paso y hay hook)
         env:
