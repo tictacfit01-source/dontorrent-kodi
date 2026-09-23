@@ -1213,6 +1213,27 @@ def play(torrent_url, title=""):
     xbmcplugin.setResolvedUrl(HANDLE, True, item)
 
 
+def _dt_magnet_relay(content_id, tabla, title=""):
+    """magnet de un item de DonTorrent que el relay ya conoce (su huella la
+    guardan el aprendiz y las semillas), sin tocar DonTorrent. '' si no la
+    sabe o si el relay es anterior a /dtmagnet (dtbl38)."""
+    try:
+        base = dt._render_relay_url()
+        if not base:
+            return ""
+        import requests as _rq
+        r = _rq.get(f"{base}/dtmagnet",
+                    params={"c": content_id, "tb": tabla, "t": title or ""},
+                    timeout=8)
+        if r.status_code == 200:
+            m = ((r.json() or {}).get("magnet") or "").strip()
+            if m.startswith("magnet:?xt=urn:btih:"):
+                return m
+    except Exception as e:
+        xbmc.log(f"[MejorWolf] dtmagnet: {e}", xbmc.LOGWARNING)
+    return ""
+
+
 def dt_play(content_id, tabla, page_url="", title=""):
     """Resuelve PoW de DonTorrent y reproduce."""
     if not content_id or not tabla:
@@ -1319,7 +1340,22 @@ def dt_play(content_id, tabla, page_url="", title=""):
         # Fallback: magnet URI (puede tardar 60s+ en resolver metadata)
         if not play_uri:
             magnet = tparse.torrent_to_magnet(torrent_data or b"")
-            play_uri = magnet or torrent_url
+            # SIN .torrent no hay nada que darle a Elementum. Antes se le pasaba
+            # la URL de DonTorrent "por si acaso", y el tampoco puede con ella
+            # (reto Anubis, y en casa el operador corta su IP). 23-09, con su
+            # web caida: "Could not resolve torrent" en el log y la tele sin
+            # hacer NADA tras "Descargando torrent...", ni un aviso. Ahora: si
+            # el relay ya sabe la huella de ese torrent, magnet (el enjambre
+            # sigue vivo aunque DonTorrent no); si no, se dice lo que pasa.
+            if not magnet:
+                magnet = _dt_magnet_relay(content_id, tabla, title)
+                if magnet:
+                    xbmc.log("[MejorWolf] dt_play: sin .torrent -> magnet del "
+                             "relay (huella sabida)", xbmc.LOGINFO)
+            if not magnet:
+                raise RuntimeError("No se pudo descargar el torrent ahora "
+                                   "mismo. Inténtalo de nuevo en un rato.")
+            play_uri = magnet
 
         try:
             if progress:
