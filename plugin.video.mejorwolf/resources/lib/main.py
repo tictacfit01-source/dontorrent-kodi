@@ -1346,7 +1346,17 @@ def dt_play(content_id, tabla, page_url="", title=""):
         # cortando la conexion con DonTorrent mientras el relay no estaba: se
         # arregla solo en un minuto, asi que eso es lo que hay que decirle.
         _msg = str(e)
-        if ("doh" in _msg or "JSON fallo" in _msg or "Connection" in _msg
+        # DonTorrent CAIDO de verdad (su pagina de "volvera enseguida", 23-09):
+        # ni es la tele ni se arregla en un minuto, y hay que decirlo asi.
+        _mant = False
+        try:
+            _mant = dt.en_mantenimiento()
+        except Exception:
+            pass
+        if _mant:
+            _msg = ("DonTorrent está caído ahora mismo (su web no responde). "
+                    "Suele volver solo en unas horas.")
+        elif ("doh" in _msg or "JSON fallo" in _msg or "Connection" in _msg
                 or "sin challenge" in _msg):
             _msg = ("No se pudo preparar la descarga ahora mismo. "
                     "Inténtalo de nuevo en un minuto.")

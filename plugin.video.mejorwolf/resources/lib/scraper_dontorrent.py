@@ -97,9 +97,11 @@ def _resolve_cache_put(content_id, tabla, url):
 # OJO: DonTorrent ROTA de dominio; cuando este caduque tambien redirigira. Para
 # que se auto-cure, _probe_domain ADOPTA el destino del 301 (abajo) y hay que
 # anadir el viejo a _STALE en resolve_domain(). Historial: .science -> .review
-# -> .management -> .supply (12-09-2026).
-_CANONICAL_DOMAIN = "dontorrent.supply"
+# -> .management -> .supply (12-09-2026) -> .moi (17-09-2026, segun su
+# Telegram; las cajas ya iban por .moi el 23-09).
+_CANONICAL_DOMAIN = "dontorrent.moi"
 FALLBACK_DOMAINS = [
+    "dontorrent.moi",
     "dontorrent.supply",
     "dontorrent.management",
     "dontorrent.review",
@@ -266,6 +268,7 @@ def _doh_fetch(method, url, data=None, json_data=None, max_anubis=2,
                                allow_redirects=True)
 
             if not anubis.is_anubis(r.text):
+                _mira_mantenimiento(r)
                 r.raise_for_status()
                 return r
 
@@ -282,6 +285,17 @@ def _doh_fetch(method, url, data=None, json_data=None, max_anubis=2,
         # Agoté reintentos — devolver lo que sea
         r.raise_for_status()
         return r
+
+
+def _mira_mantenimiento(r):
+    """Si DonTorrent contesta con su pagina de mantenimiento, se apunta: asi
+    resolve_domain deja de sondear un rato y la tele dice lo que pasa (ver
+    _DTCaido y en_mantenimiento)."""
+    try:
+        if _es_mantenimiento(r):
+            _apunta_fallo(False, mant=True)
+    except Exception:
+        pass
 
 
 def _proxy_base():
@@ -415,6 +429,7 @@ def _proxy_get(url, **kwargs):
         except Exception:
             pass
 
+    _mira_mantenimiento(r)
     r.raise_for_status()
     return r
 
@@ -470,6 +485,7 @@ def _proxy_post(url, data=None, json_data=None, **kwargs):
         except Exception:
             pass
 
+    _mira_mantenimiento(r)
     r.raise_for_status()
     return r
 
@@ -517,8 +533,88 @@ def _resolve_via_telegram():
         return [], set()
 
 
+# --- DonTorrent CAIDO (su servidor, no el ISP) --------------------------------
+# 23-09-2026: su centro de datos se quedo sin conexion y TODOS sus dominios
+# contestaban un 503 con su pagina de mantenimiento ("La web volvera
+# enseguida"). resolve_domain probaba entonces los 14 dominios (DoH 15 s + proxy
+# 30 s cada uno, mas Telegram y Supabase) y, como no guardaba el fallo, lo
+# repetia en CADA trabajo: medido en el PC, mas de un minuto por intento, hilos
+# ocupados y Kodi tardando 14 s de mas en cerrarse. Si es su pagina de
+# mantenimiento no hay otro dominio que probar (es la misma casa), y si nada
+# contesta se deja de buscar un rato: 3 min, apuntado en disco porque cada
+# accion de la tele es un proceso nuevo.
+_MANT_RE = re.compile(
+    r"volver[aá] enseguida|problema puntual en el servidor|__proxy-dok", re.I)
+_RESUELVE_FALLO = [0.0]
+_RESUELVE_MANT = [False]       # el ultimo fallo fue SU pagina de mantenimiento
+_RESUELVE_FALLO_TTL = 180
+_FALLO_FILE = (os.path.join(_DT_PROFILE, "dt_dominio_fallo.json")
+               if _DT_PROFILE else "")
+
+
+class _DTCaido(Exception):
+    """DonTorrent contesta con su pagina de mantenimiento."""
+
+
+def _es_mantenimiento(resp):
+    try:
+        return (resp is not None and resp.status_code >= 500
+                and bool(_MANT_RE.search(resp.text or "")))
+    except Exception:
+        return False
+
+
+def _fallo_reciente(ttl=None):
+    ttl = _RESUELVE_FALLO_TTL if ttl is None else ttl
+    if (time.time() - _RESUELVE_FALLO[0]) < ttl:
+        return True
+    if not _FALLO_FILE:
+        return False
+    try:
+        with open(_FALLO_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f) or {}
+        ts = float(d.get("ts") or 0)
+        if (time.time() - ts) < ttl:
+            _RESUELVE_FALLO[0] = ts
+            _RESUELVE_MANT[0] = bool(d.get("mant"))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _apunta_fallo(ok, mant=False):
+    """Apunta (o borra) que resolver el dominio acaba de fallar del todo, y si
+    fue porque DonTorrent enseñaba su pagina de mantenimiento."""
+    if ok:
+        if not _RESUELVE_FALLO[0] and not (_FALLO_FILE and os.path.exists(_FALLO_FILE)):
+            return          # lo normal: nada que borrar, ni una escritura
+        _RESUELVE_FALLO[0] = 0.0
+        _RESUELVE_MANT[0] = False
+        try:
+            os.remove(_FALLO_FILE)
+        except Exception:
+            pass
+        return
+    _RESUELVE_FALLO[0] = time.time()
+    _RESUELVE_MANT[0] = bool(mant)
+    if _FALLO_FILE:
+        try:
+            with open(_FALLO_FILE, "w", encoding="utf-8") as f:
+                json.dump({"ts": _RESUELVE_FALLO[0], "mant": bool(mant)}, f)
+        except Exception:
+            pass
+
+
+def en_mantenimiento():
+    """True si hace poco DonTorrent contestaba con su pagina de mantenimiento:
+    para decirlo tal cual en la tele en vez de "intentalo en un minuto"."""
+    return _fallo_reciente(600) and _RESUELVE_MANT[0]
+
+
 def _probe_domain(host):
-    """Verifica si un dominio de DonTorrent esta activo."""
+    """Verifica si un dominio de DonTorrent esta activo. Si contesta con su
+    pagina de mantenimiento lanza _DTCaido: no hay otro dominio que probar."""
     url = f"https://{host}/"
     # DoH directo (evita ISP + resuelve Anubis correctamente)
     try:
@@ -536,6 +632,8 @@ def _probe_domain(host):
             return host
     except Exception as e:
         _LOG(f"_probe_domain DoH fallo {host}: {e}")
+        if _es_mantenimiento(getattr(e, "response", None)):
+            raise _DTCaido(host)
     # Fallback: proxy
     try:
         r = _proxy_get(url)
@@ -544,8 +642,9 @@ def _probe_domain(host):
             final = r.headers.get("x-mw-relay-final", r.url)
             m = re.match(r'https?://([^/]+)', final)
             return m.group(1).lower() if m else host
-    except Exception:
-        pass
+    except Exception as e:
+        if _es_mantenimiento(getattr(e, "response", None)):
+            raise _DTCaido(host)
     return None
 
 
@@ -583,6 +682,11 @@ def resolve_domain(force=False):
     if not force and _cached_domain and (time.time() - _cached_domain_ts) < _DOMAIN_TTL:
         return _cached_domain
 
+    # Acaba de fallar del todo (o DonTorrent esta en mantenimiento): no se
+    # vuelve a sondear hasta dentro de _RESUELVE_FALLO_TTL (ver _DTCaido).
+    if not force and _fallo_reciente():
+        return _cached_domain or FALLBACK_DOMAINS[0]
+
     # Fast path: dominio CANONICO vigente. Evita que la carrera paralela (o un
     # Supabase/cache con un mirror viejo) elija un dominio que redirige el POST
     # del PoW (.science -> 301 .review -> POST se vuelve GET -> 405).
@@ -592,7 +696,14 @@ def resolve_domain(force=False):
             _cached_domain = canon
             _cached_domain_ts = time.time()
             _LOG(f"resolve_domain: canonico {canon}")
+            _apunta_fallo(True)
             return canon
+    except _DTCaido:
+        _LOG("resolve_domain: DonTorrent en MANTENIMIENTO (su pagina de "
+             "'volvera enseguida'); no se prueban mas dominios en %d s"
+             % _RESUELVE_FALLO_TTL)
+        _apunta_fallo(False, mant=True)
+        return _cached_domain or FALLBACK_DOMAINS[0]
     except Exception:
         pass
 
@@ -636,39 +747,68 @@ def resolve_domain(force=False):
     if not candidates:
         return _cached_domain or FALLBACK_DOMAINS[0]
 
-    # Probar todos en PARALELO — el primero que responda gana
+    # Probar todos en PARALELO — el primero que responda gana.
+    # SIN `with`: al salir de un `with ThreadPoolExecutor` se ESPERA a todos los
+    # sondeos que sigan en marcha (15 s de DoH + 30 s de proxy cada uno), asi
+    # que hasta un acierto rapido tardaba lo que el mas lento. Y si ninguno
+    # contestaba en 20 s, el TimeoutError caia en el "secuencial" de abajo, que
+    # volvia a probar TODOS uno a uno: mas de un minuto (medido el 23-09).
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import TimeoutError as _FuturosTarde
     _LOG(f"resolve_domain: probando {len(candidates)} candidatos en paralelo")
+    ex = None
+    caido = False
     try:
-        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as ex:
-            futures = {ex.submit(_probe_domain, h): h for h in candidates}
+        ex = ThreadPoolExecutor(max_workers=min(8, len(candidates)))
+        futures = {ex.submit(_probe_domain, h): h for h in candidates}
+        try:
             for fut in as_completed(futures, timeout=20):
                 try:
                     result = fut.result()
-                    if result:
-                        _cached_domain = result
-                        _cached_domain_ts = time.time()
-                        _LOG(f"Dominio confirmado (paralelo): {result}")
-                        # Cancelar el resto
-                        for f in futures:
-                            if not f.done():
-                                f.cancel()
-                        return result
+                except _DTCaido:
+                    caido = True        # mantenimiento: es la misma casa
+                    break
                 except Exception:
                     continue
+                if result:
+                    _cached_domain = result
+                    _cached_domain_ts = time.time()
+                    _LOG(f"Dominio confirmado (paralelo): {result}")
+                    _apunta_fallo(True)
+                    return result
+        except _FuturosTarde:
+            _LOG("resolve_domain: ningun candidato contesto en 20 s")
     except Exception as e:
+        # El pool en si fallo (no los sondeos): secuencial, como siempre.
         _LOG(f"resolve_domain paralelo falló: {e}, secuencial...")
         for h in candidates:
             try:
                 confirmed = _probe_domain(h)
-                if confirmed:
-                    _cached_domain = confirmed
-                    _cached_domain_ts = time.time()
-                    return confirmed
+            except _DTCaido:
+                caido = True
+                break
             except Exception:
                 continue
+            if confirmed:
+                _cached_domain = confirmed
+                _cached_domain_ts = time.time()
+                _apunta_fallo(True)
+                return confirmed
+    finally:
+        if ex is not None:
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except TypeError:           # Python < 3.9
+                ex.shutdown(wait=False)
+            except Exception:
+                pass
 
-    _LOG(f"resolve_domain: ningun candidato respondio, usando cache/fallback")
+    if caido:
+        _LOG("resolve_domain: DonTorrent en MANTENIMIENTO; no se prueban mas "
+             "dominios en %d s" % _RESUELVE_FALLO_TTL)
+    else:
+        _LOG(f"resolve_domain: ningun candidato respondio, usando cache/fallback")
+    _apunta_fallo(False, mant=caido)
     return _cached_domain or FALLBACK_DOMAINS[0]
 
 
