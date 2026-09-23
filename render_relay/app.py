@@ -12971,12 +12971,13 @@ _MEM_PODA_NO_ANTES = [0.0]
 # no tiene hilos, y los workers lo heredan con el fork), y devolver al sistema
 # lo que se libera al podar (malloc_trim). Fuera de Linux no hace nada.
 def _libc_abre():
+    # Directamente por su nombre: ctypes.util.find_library lanzaria un
+    # subproceso (ldconfig) en el import, o sea en el proceso padre.
     if not sys.platform.startswith("linux"):
         return None
     try:
         import ctypes
-        import ctypes.util
-        return ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+        return ctypes.CDLL("libc.so.6")
     except Exception:
         return None
 
