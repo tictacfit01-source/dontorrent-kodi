@@ -71,6 +71,12 @@ vaciando cada vez las cachés buenas), el relevo no depende de esa pausa, y
 vivos. Lo de glibc solo existe en Linux: en el PC se comprueba que no rompe
 nada y en Linux lo informa el workflow `relay-check`.
 
+**`versiones.py`** (23-09-2026) — las cajas muy desactualizadas: cómo se
+comparan versiones (se toleran 5 de retraso, porque al publicar las cajas
+tardan un día en actualizarse), que los trabajos PRESTADOS solo van a cajas al
+día (una en 2.9.54 no entendía varias operaciones y uno de cada ocho trabajos
+caducaba esperándola) y que `/kb/status` le dice a su dueño que la actualice.
+
 Para pasarlas todas de una vez:
 
 ```bash

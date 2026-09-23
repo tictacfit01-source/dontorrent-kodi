@@ -2950,15 +2950,64 @@ def _kbstatus_save(d):
         pass
 
 
-def _live_boxes(max_age=90):
-    """Codes de TODAS las cajas con latido reciente, de más reciente a menos."""
+def _ver_tupla(v):
+    """'2.9.73' -> (2, 9, 73). Sin version (cajas muy viejas) -> (0,)."""
+    try:
+        return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:4]) or (0,)
+    except Exception:
+        return (0,)
+
+
+# Cuantas versiones de retraso se toleran antes de dejar de PRESTAR una caja.
+# Con margen a proposito: al publicar una version, las cajas se actualizan a lo
+# largo de un dia, y dejar fuera a todas menos a la primera que se actualiza la
+# ahogaria de trabajo.
+_VER_MARGEN = 5
+
+
+def _ver_vieja(v, ultima):
+    """¿`v` va MUY por detras de `ultima`? (otra rama, o mas de _VER_MARGEN)."""
+    a, b = _ver_tupla(v), _ver_tupla(ultima)
+    if a >= b:
+        return False
+    if a[:2] < b[:2]:
+        return True
+    return ((b[2] if len(b) > 2 else 0) - (a[2] if len(a) > 2 else 0)) > _VER_MARGEN
+
+
+def _ver_ultima(d=None):
+    """La version mas nueva entre las cajas vivas ('' si no hay ninguna)."""
     try:
         now = _t.time()
+        vs = [ent.get("v") or "" for ent in (d or _kbstatus_load()).values()
+              if (now - ent.get("ts", 0)) < 90]
+        return max(vs, key=_ver_tupla) if vs else ""
+    except Exception:
+        return ""
+
+
+def _live_boxes(max_age=90, al_dia=False):
+    """Codes de TODAS las cajas con latido reciente, de más reciente a menos.
+
+    al_dia=True (para los trabajos PRESTADOS): sin las que van muy por detras
+    de la version mas nueva. Medido el 23-09: 8 cajas vivas y una en 2.9.54,
+    veinte versiones atras -- no entiende varias operaciones de hoy, asi que
+    uno de cada ocho trabajos prestados se quedaba esperando a que caducara.
+    Si quitarlas dejara la lista vacia, se usan todas (algo es mejor que nada)."""
+    try:
+        now = _t.time()
+        d = _kbstatus_load()
         out = [(ent.get("ts", 0), code)
-               for code, ent in _kbstatus_load().items()
+               for code, ent in d.items()
                if (now - ent.get("ts", 0)) < max_age]
         out.sort(reverse=True)
-        return [c for _ts, c in out]
+        todas = [c for _ts, c in out]
+        if not al_dia or len(todas) < 2:
+            return todas
+        ultima = _ver_ultima(d)
+        buenas = [c for c in todas
+                  if not _ver_vieja((d.get(c) or {}).get("v"), ultima)]
+        return buenas or todas
     except Exception:
         return []
 
@@ -2977,8 +3026,9 @@ def _any_live_box(max_age=90):
     antes UNA sola caja cargaba con todo el trabajo prestado del sistema (y el
     tope de concurrencia la ahogaba), mientras las otras 5 estaban ociosas. Los
     trabajos son independientes entre sí, así que repartir no rompe nada y
-    multiplica el paralelismo real."""
-    boxes = _live_boxes(max_age)
+    multiplica el paralelismo real. Solo entre las que estan al dia (ver
+    _live_boxes): un trabajo prestado a una caja que no lo entiende se pierde."""
+    boxes = _live_boxes(max_age, al_dia=True)
     if not boxes:
         return None
     _LIVE_RR[0] = (_LIVE_RR[0] + 1) % 1000000
@@ -3464,7 +3514,7 @@ function renderStatus(j){
  var el=document.getElementById('boxst'),cc=document.getElementById('contc');
  if(!j){el.innerHTML='';cc.classList.add('hidden');contRef=null;return;}
  var conn=!!j.connected;
- el.innerHTML='<span class="dot '+(conn?'on':'off')+'"></span>'+(conn?('Tele conectada'+(j.v?' · MejorWolf '+j.v:'')):'Tele desconectada — abre Kodi en la tele');
+ el.innerHTML='<span class="dot '+(conn?'on':'off')+'"></span>'+(conn?('Tele conectada'+(j.v?' · MejorWolf '+j.v:'')+(j.vieja?' · ⚠ muy antigua: actualízala en Kodi (Complementos → MejorWolf → Actualizar)':'')):'Tele desconectada — abre Kodi en la tele');
  var c=j.cont;
  if(conn&&c&&c.total>0&&c.elapsed<c.total*0.92&&contKey(c)!==contDismissed){
   contRef=c;
@@ -3819,13 +3869,19 @@ def kb_status_get():
     if len(code) != 6:
         return jsonify({"connected": False})
     _kb_phone_seen(code)
-    entry = _kbstatus_load().get(code)
+    d = _kbstatus_load()
+    entry = d.get(code)
     if not entry:
         return jsonify({"connected": False})
     age = _t.time() - entry.get("ts", 0)
+    # Si esta tele va muy por detras de la version mas nueva, que lo sepa su
+    # dueño: una caja en 2.9.54 (23-09) llevaba veinte versiones de arreglos
+    # sin recibir y nadie lo habria notado nunca.
+    ultima = _ver_ultima(d)
     return jsonify({"connected": age < 90, "age": int(age),
                     "v": entry.get("v", ""), "cont": entry.get("cont"),
-                    "diag": entry.get("diag")})
+                    "diag": entry.get("diag"), "ultima": ultima,
+                    "vieja": bool(ultima) and _ver_vieja(entry.get("v"), ultima)})
 
 
 @app.get("/kb/qr")
@@ -6087,7 +6143,7 @@ def catsearch():
                 # nada: la segunda solo se pregunta cuando la primera se retrasa.
                 res = _catjob_wait_any(_jobs, 6.0, _okh)
                 if not _okh(res):
-                    b2 = next((b for b in _live_boxes() if b != box), None)
+                    b2 = next((b for b in _live_boxes(al_dia=True) if b != box), None)
                     if b2:
                         _jobs.append(_ask(b2))
                     if _jobs:
@@ -7131,7 +7187,7 @@ def catetbox():
         # (es la MISMA web), asi que ahi no se molesta a nadie mas.
         res = _catjob_wait_any(_jobs, min(8.0, wait))
         if res is None:
-            b2 = next((b for b in _live_boxes() if b != box), None)
+            b2 = next((b for b in _live_boxes(al_dia=True) if b != box), None)
             if b2:
                 _jobs.append(_ask(b2))
             if _jobs:
@@ -7380,7 +7436,7 @@ def catboxeps():
                 len(((res or {}).get("eps") or {}).get("episodes") or []),
                 _t.time() - _t0))
             if not _okeps(res):
-                for _b2 in [b for b in _live_boxes() if b != box][:2]:
+                for _b2 in [b for b in _live_boxes(al_dia=True) if b != box][:2]:
                     _jobs.append(_pide(_b2))
                 if _jobs:
                     r2 = _catjob_wait_any(_jobs, 7.0, _okeps)
@@ -8139,7 +8195,7 @@ def _cajas_libres():
     """Cajas vivas que NO estan reproduciendo. Un PoW de DonTorrent en una caja
     Android mientras mueve un 4K puede dar un tiron en la tele: al aprendiz no
     le corre ninguna prisa, asi que solo molesta a las que estan paradas."""
-    vivas = _live_boxes()
+    vivas = _live_boxes(al_dia=True)     # al aprendiz, solo cajas al dia
     if not vivas:
         return []
     try:
@@ -9967,7 +10023,7 @@ def catdetail():
                             "path": path})
             return j
         _jobs.append(_pide_html(box))
-        _b2 = next((b for b in _live_boxes() if b != box), None)
+        _b2 = next((b for b in _live_boxes(al_dia=True) if b != box), None)
         if _b2:
             _jobs.append(_pide_html(_b2))
     # El intento DIRECTO, corto: la IP de Render esta baneada casi siempre.
@@ -10064,6 +10120,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .devmeta{flex:1;min-width:0}
 .devnm{font-size:15px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .devcc{font-size:12px;color:var(--sub);letter-spacing:2px;font-variant-numeric:tabular-nums;margin-top:2px}
+.devold{font-size:11.5px;line-height:1.35;color:#ffb340;margin-top:4px;white-space:normal}
 .deved,.devdel,.devkey{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
 .deved:active,.devkey:active{background:rgba(255,255,255,.14)}
 .devdel:active{background:rgba(255,69,58,.18)}
@@ -10937,8 +10994,13 @@ function openDevs(){var cur=(code.value||'').replace(/\D/g,'');
  renderDevs();$('devsheet').classList.add('on');mwOpen('devs',$('devsheet').querySelector('.box'),_closeDevs)}
 function _closeDevs(){$('devsheet').classList.remove('on')}
 function closeDevs(){mwBack('devs')}
-function liveDot(dot,c){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(function(j){
- dot.className='devdot '+((j&&j.connected)?'on':'off')}).catch(function(){})}
+function liveDot(dot,c,meta){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(function(j){
+ dot.className='devdot '+((j&&j.connected)?'on':'off');
+ // Muy por detras de la version mas nueva (el relay lo decide, ver _ver_vieja):
+ // sin esto nadie se enteraba de que una tele llevaba meses sin actualizarse.
+ if(meta&&j&&j.vieja&&!meta.querySelector('.devold')){var w=document.createElement('div');w.className='devold';
+  w.textContent='⚠ MejorWolf '+(j.v||'?')+': muy antigua. En esa tele: Complementos → MejorWolf → Actualizar';
+  meta.appendChild(w)}}).catch(function(){})}
 function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var cur=(code.value||'').replace(/\D/g,'');
  if(!d.length){wrap.innerHTML='<div class="devempty">Aún no has guardado ningún Kodi.<br>Añade tu salón, tablet o PC aquí abajo 👇</div>';return}
  wrap.innerHTML='';
@@ -10959,7 +11021,7 @@ function renderDevs(){var wrap=$('devlist');if(!wrap)return;var d=loadDevs();var
   var del=document.createElement('button');del.className='devdel';del.title='Borrar';del.textContent='🗑';
   del.onclick=function(e){e.stopPropagation();delDev(dev.code)};
   row.appendChild(del);
-  wrap.appendChild(row);liveDot(dot,dev.code)})}
+  wrap.appendChild(row);liveDot(dot,dev.code,meta)})}
 function editDev(c){var d=loadDevs(),dev=null;
  for(var i=0;i<d.length;i++){if(d[i].code===c){dev=d[i];break}}
  if(!dev)return;
