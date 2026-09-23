@@ -468,6 +468,15 @@ try:
     finally:
         A._apr_items_inicio, A._apr_dt = viejo_items, viejo_dt
 
+    print("\n=== 7b) /dtmagnet: lo que pide la caja cuando no baja el .torrent ===")
+    js = cli.get("/dtmagnet?c=123&tb=peliculas&t=Una%20peli").get_json()
+    comprueba("con la huella sabida: el magnet", js.get("magnet", "").startswith(
+        "magnet:?xt=urn:btih:" + IH1 + "&dn=Una%20peli"), js)
+    comprueba("sin huella, en RAR o sin id: vacio",
+              cli.get("/dtmagnet?c=125&tb=peliculas").get_json() == {"magnet": ""}
+              and cli.get("/dtmagnet?c=124&tb=peliculas").get_json() == {"magnet": ""}
+              and cli.get("/dtmagnet?tb=peliculas").get_json() == {"magnet": ""})
+
     print("\n=== 8) El magnet, a mano ===")
     m = A._dt_magnet("123", "peliculas", "Título con tilde")
     comprueba("magnet con la huella, el titulo codificado y 3 trackers",

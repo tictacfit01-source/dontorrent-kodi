@@ -77,6 +77,13 @@ tardan un día en actualizarse), que los trabajos PRESTADOS solo van a cajas al
 día (una en 2.9.54 no entendía varias operaciones y uno de cada ocho trabajos
 caducaba esperándola) y que `/kb/status` le dice a su dueño que la actualice.
 
+**`dt_play.py`** (23-09-2026, addon 2.9.75) — reproducir de DonTorrent cuando
+no se puede bajar el `.torrent`. En el Comedor, con DonTorrent caído, la caja
+usaba el enlace guardado, enseñaba "Descargando torrent…" y le pasaba a
+Elementum la URL de DonTorrent, que tampoco podía: la tele se quedaba SIN
+HACER NADA (reproducido igual en el Kodi del PC). Ahora: magnet si el relay
+sabe la huella (`/dtmagnet`), y si no, un aviso — nunca silencio.
+
 Para pasarlas todas de una vez:
 
 ```bash

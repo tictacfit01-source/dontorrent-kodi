@@ -1893,6 +1893,23 @@ def dtseeds():
     return jsonify({"seeds": None})
 
 
+@app.get("/dtmagnet")
+def dtmagnet():
+    """magnet de un item de DonTorrent SIN pasar por su web, con la huella que
+    ya sabemos (ver _dt_magnet). Lo pide la CAJA (addon 2.9.75) cuando no
+    consigue el .torrent: el 23-09, con DonTorrent caido, le pasaba a Elementum
+    la URL de su web, Elementum no podia ("Could not resolve torrent") y la
+    tele se quedaba sin hacer nada tras "Descargando torrent...". Solo lee lo
+    guardado: ni red ni cajas."""
+    cid = re.sub(r"\D", "", request.args.get("c", ""))[:12]
+    tb = re.sub(r"[^a-z0-9_]", "",
+                request.args.get("tb", "").lower())[:24] or "peliculas"
+    if not cid:
+        return jsonify({"magnet": ""})
+    return jsonify({"magnet": _dt_magnet(cid, tb, (request.args.get("t") or "")[:160])
+                    or ""})
+
+
 @app.get("/catdtmeta")
 def catdtmeta():
     """Calidad + RAR de un item DonTorrent, resueltos por el BOX (la IP de Render
