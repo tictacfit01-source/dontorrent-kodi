@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl41"
+BUILD = "dtbl42"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4673,7 +4673,11 @@ _FC_VUELO = {}               # src -> cuando empezo su mirada en curso
 # DonTorrent, 0,1 s). Con un tope de 4-5 s la mirada no lo veia NUNCA. Por eso
 # estas miradas van siempre POR DETRAS, con margen, y empiezan a la vez que se
 # pregunta a las cajas: cuando la caja falla, el resultado ya casi esta.
-_FC_TOPE = 25.0
+_FC_TOPE = 40.0
+# La ultima mirada de cada fuente (codigo, segundos, bytes, error) para
+# /catdiag: el 24-09 las de WolfMax/EliteTorrent salian del relay y volvian
+# sin conclusion, y sin esto no habia forma de saber que recibian.
+_FC_ULT = {}
 # Una caida vista hace menos de esto se da por buena MIENTRAS se vuelve a mirar
 # por detras: si no, al caducar a los 90 s, alguien volvia a pagar los 24 s de
 # esperar a unas cajas que no pueden.
@@ -4716,17 +4720,22 @@ def _fc_mira(src, tope=_FC_TOPE):
     if src not in _FUENTE_WEB:
         return None
     with _FC_LOCK:
-        if (_t.time() - _FC_VUELO.get(src, 0.0)) < 30:
+        if (_t.time() - _FC_VUELO.get(src, 0.0)) < 45:
             return _FC.get(src)
         _FC_VUELO[src] = _t.time()
+    t0 = _t.time()
     try:
         texto, st = _get_con_tope(
             _DTCAIDA_PROXY + _uq(_FUENTE_WEB[src], safe=""), tope, todo=True)
         v = _dt_caida_clasifica(st, texto)
+        _FC_ULT[src] = {"st": st, "s": round(_t.time() - t0, 1),
+                        "bytes": len(texto or ""), "v": v, "t": int(_t.time()),
+                        "cab": re.sub(r"\s+", " ", (texto or "")[:90])}
         if v is not None:
             _fc_apunta(src, v, st)
-    except Exception:
-        pass
+    except Exception as e:
+        _FC_ULT[src] = {"err": repr(e)[:120], "s": round(_t.time() - t0, 1),
+                        "t": int(_t.time())}
     finally:
         _FC_VUELO[src] = 0.0
     return _fc_lee().get(src)
@@ -4766,7 +4775,7 @@ def _fc_sondea(src, forzar=False):
     e = _fc_lee().get(src) or {}
     if not forzar and (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_REPASO:
         return None
-    if (_t.time() - _FC_VUELO.get(src, 0.0)) < 30:
+    if (_t.time() - _FC_VUELO.get(src, 0.0)) < 45:
         return None
     try:
         th = _thr.Thread(target=_fc_mira, args=(src,), daemon=True)
@@ -10217,6 +10226,7 @@ def catdiag():
                        "st": _e.get("st")}
         out["fuentes"] = {"estado": _fs, "caidas": _fuentes_caidas(),
                           "vivas": _fuentes_vivas(),
+                          "ultima_mirada": dict(_FC_ULT),   # de ESTE worker
                           "listas_guardadas": len(_epsc_load() or {})}
     except Exception:
         out["fuentes"] = {"error": True}
