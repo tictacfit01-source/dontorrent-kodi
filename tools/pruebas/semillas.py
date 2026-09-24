@@ -343,10 +343,34 @@ try:
         srv.settimeout(0.3)
         para = threading.Event()
 
+        def lee_peticion(c):
+            """La peticion ENTERA (cabeceras + cuerpo) antes de contestar. Con un
+            solo recv, a veces el cuerpo llegaba despues; al cerrar con datos sin
+            leer, Windows manda un RST y el cliente veia "conexion reiniciada":
+            la prueba fallaba 1 de cada 4 veces (medido el 24-09, igual con
+            requests a secas) sin que el relay tuviera nada que ver."""
+            datos = b""
+            while b"\r\n\r\n" not in datos:
+                trozo = c.recv(65536)
+                if not trozo:
+                    return datos
+                datos += trozo
+            cab, _, cuerpo = datos.partition(b"\r\n\r\n")
+            largo = 0
+            for ln in cab.split(b"\r\n"):
+                if ln.lower().startswith(b"content-length:"):
+                    largo = int(ln.split(b":", 1)[1].strip() or 0)
+            while len(cuerpo) < largo:
+                trozo = c.recv(65536)
+                if not trozo:
+                    break
+                cuerpo += trozo
+            return datos
+
         def atiende(c):
             try:
                 c.settimeout(5)
-                c.recv(65536)
+                lee_peticion(c)
                 if modo == "bien":
                     cuerpo = b'{"ok": true}'
                     c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"

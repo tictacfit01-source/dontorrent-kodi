@@ -58,8 +58,14 @@ PROXY = {"resp": (None, 522)}
 MIRADAS = []
 
 
+TOPES = []
+
+
 def get_falso(url, tope_s, headers=None, scraper=None, crudo=False, todo=False):
     MIRADAS.append(url)
+    TOPES.append(tope_s)
+    if PROXY.get("espera"):
+        time.sleep(PROXY["espera"])     # el 522 de verdad tarda ~19,5 s
     return PROXY["resp"]
 
 
@@ -112,6 +118,8 @@ try:
         comprueba("WolfMax %s -> %s" % (nombre, esperado), got is esperado, e)
     comprueba("la mirada va a su portada por el proxy",
               MIRADAS and "wolfmax4k.com" in MIRADAS[-1], MIRADAS)
+    comprueba("...con tope para que llegue el 522 (tarda ~19,5 s, medido)",
+              TOPES and min(TOPES) >= 20, TOPES)
     limpia_estado()
     PROXY["resp"] = (None, 522)
     A._fc_mira("et")
@@ -123,7 +131,18 @@ try:
         json.dump({"et": e}, fh)
     A._FC.clear()
     PROXY["resp"] = ("<html>ok</html>", 200)
-    comprueba("caida vieja + ahora contesta -> ya no esta caida", A._fc_caido("et") is False)
+    comprueba("caida de hace 200 s: se sigue dando por buena AL MOMENTO (sin esperar 20 s)",
+              A._fc_caido("et") is True)
+    time.sleep(0.4)          # la mirada de fondo (aqui contesta al instante)
+    comprueba("...mientras se vuelve a mirar por detras: contesta -> ya no esta caida",
+              A._fc_ya("et") is False and A._fc_caido("et") is False, A._fc_lee().get("et"))
+    e = {"visto": time.time() - 16 * 60, "caida": True, "desde": time.time() - 3600, "st": 522}
+    with open(A._FC_FILE, "w") as fh:
+        json.dump({"et": e}, fh)
+    A._FC.clear()
+    PROXY["resp"] = (None, 0)          # y la nueva mirada no sabe decir nada
+    comprueba("una caida de hace 16 min ya no se da por buena", A._fc_caido("et") is False)
+    time.sleep(0.3)
     limpia_estado()
     comprueba("sin caida conocida, preguntar no toca la red",
               A._fc_caido("wf") is False and not MIRADAS)
@@ -281,6 +300,15 @@ try:
         js = cli.get("/catetboxresolve?code=111111&src=wf&url=" + SERIE).get_json()
         comprueba("no se sabia: la caja no trae enlace, se mira y se dice YA",
                   js.get("fuente_caida") == "wf" and RES, (js, RES))
+        limpia_estado()
+        PROXY.update(resp=(None, 522), espera=1.5)       # una mirada lenta, como la real
+        del RES[:]
+        t0 = time.time()
+        js = cli.get("/catetboxresolve?code=111111&src=wf&url=" + SERIE).get_json()
+        dt = time.time() - t0
+        PROXY["espera"] = 0
+        comprueba("la mirada lenta empieza A LA VEZ que la caja y se la espera (%.1f s)" % dt,
+                  js.get("fuente_caida") == "wf" and 1.3 < dt < 5, (dt, js))
         limpia_estado()
         PROXY["resp"] = ("<html>ok</html>", 200)
         del RES[:]

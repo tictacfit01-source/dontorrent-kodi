@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl40"
+BUILD = "dtbl41"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4668,6 +4668,16 @@ _FC_FILE = "/tmp/mw_fuentes_caidas.json"
 _FC = {}                     # src -> {"visto", "caida", "desde", "st"}
 _FC_LOCK = _thr.Lock()
 _FC_VUELO = {}               # src -> cuando empezo su mirada en curso
+# El 522 de Cloudflare llega cuando se cansa de intentar conectar con su
+# servidor: medido el 24-09, 19,5 s para WolfMax y EliteTorrent (el 503 de
+# DonTorrent, 0,1 s). Con un tope de 4-5 s la mirada no lo veia NUNCA. Por eso
+# estas miradas van siempre POR DETRAS, con margen, y empiezan a la vez que se
+# pregunta a las cajas: cuando la caja falla, el resultado ya casi esta.
+_FC_TOPE = 25.0
+# Una caida vista hace menos de esto se da por buena MIENTRAS se vuelve a mirar
+# por detras: si no, al caducar a los 90 s, alguien volvia a pagar los 24 s de
+# esperar a unas cajas que no pueden.
+_FC_VALE = 15 * 60
 
 
 def _fc_lee():
@@ -4700,8 +4710,9 @@ def _fc_apunta(src, caida, st):
             pass
 
 
-def _fc_mira(src, tope=5.0):
-    """Pregunta YA por el proxy si esa fuente esta caida (una mirada a la vez)."""
+def _fc_mira(src, tope=_FC_TOPE):
+    """Pregunta YA por el proxy si esa fuente esta caida (una mirada a la vez).
+    Tarda lo que tarde el 522 (~20 s): llamarla solo desde un hilo aparte."""
     if src not in _FUENTE_WEB:
         return None
     with _FC_LOCK:
@@ -4727,50 +4738,52 @@ def _fc_ya(src):
         return _dt_caida_ya()
     e = _fc_lee().get(src) or {}
     return bool(e.get("caida")) and \
-        (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_FRESCO + 60
+        (_t.time() - float(e.get("visto") or 0)) < _FC_VALE
 
 
 def _fc_caido(src):
-    """¿Esta caida AHORA? Como _dt_caido: sin caida conocida no toca la red;
-    con una caida vieja, vuelve a mirar (tope corto) antes de decir que si."""
+    """¿Esta caida AHORA? Sin caida conocida no toca la red. Con una caida
+    vista hace poco dice que si SIN ESPERAR, y si ya tiene mas de 90 s manda
+    volver a mirar por detras (ver _FC_VALE)."""
     if src == "dt":
         return _dt_caido()
     e = _fc_lee().get(src) or {}
     if not e.get("caida"):
         return False
-    if (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_FRESCO:
-        return True
-    _fc_mira(src, 4.0)
-    return _fc_ya(src)
+    edad = _t.time() - float(e.get("visto") or 0)
+    if edad >= _DTCAIDA_FRESCO:
+        _fc_sondea(src, forzar=True)
+    return edad < _FC_VALE
 
 
-def _fc_sondea(src):
-    """Un fallo invita a mirar si esa fuente esta caida: por detras, y solo si
-    hace rato que nadie miraba."""
+def _fc_sondea(src, forzar=False):
+    """Mira POR DETRAS si esa fuente esta caida, si hace rato que nadie miraba
+    (o `forzar`). Devuelve el hilo, para quien quiera esperarlo un poco."""
     if src == "dt":
         return _dt_caida_sondea()
     if src not in _FUENTE_WEB:
-        return
+        return None
     e = _fc_lee().get(src) or {}
-    if (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_REPASO:
-        return
+    if not forzar and (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_REPASO:
+        return None
     if (_t.time() - _FC_VUELO.get(src, 0.0)) < 30:
+        return None
+    try:
+        th = _thr.Thread(target=_fc_mira, args=(src,), daemon=True)
+        th.start()
+        return th
+    except Exception:
+        return None
+
+
+def _fc_espera(th, hasta):
+    """Espera a una mirada lanzada al principio, como mucho hasta `hasta`."""
+    if th is None:
         return
     try:
-        _thr.Thread(target=_fc_mira, args=(src,), daemon=True).start()
+        th.join(max(0.0, hasta - _t.time()))
     except Exception:
         pass
-
-
-def _fc_mira_si_toca(src):
-    """Tras un fallo de esa fuente, con alguien esperando la respuesta: si hace
-    rato que nadie miraba, se mira YA (tope 4 s) para poder decirlo en ESTA
-    respuesta y no en la siguiente."""
-    if src not in _FUENTE_WEB:
-        return
-    e = _fc_lee().get(src) or {}
-    if (_t.time() - float(e.get("visto") or 0)) >= _DTCAIDA_REPASO:
-        _fc_mira(src, 4.0)
 
 
 def _fuentes_caidas():
@@ -7794,7 +7807,10 @@ def catboxeps():
         else:
             d["parcial"] = True     # solo lo que traia el indice
         return jsonify(_con_caida(d))
-    # 3) Lo de siempre: las cajas.
+    # 3) Lo de siempre: las cajas. Y A LA VEZ, si hace rato que nadie miraba,
+    #    se mira si la fuente esta caida (su 522 tarda ~20 s: ver _FC_TOPE).
+    t0 = _t.time()
+    th = _fc_sondea(src)
     r = _catboxeps_impl()
     d, st = _respuesta(r)
     if d is None:
@@ -7806,7 +7822,9 @@ def catboxeps():
     if de_caja:
         _epsc_put(src, url, d.get("title"), eps)
     else:
-        _fc_mira_si_toca(src)      # la caja no pudo: ¿es que la fuente esta caida?
+        # la caja no pudo: la mirada ya casi esta; se le da un poco mas para
+        # poder decirlo en ESTA respuesta (la ficha la pide por detras)
+        _fc_espera(th, t0 + 22.0)
         if len(ceps) > len(eps):
             d["episodes"] = ceps
             d["stale"] = True
@@ -7823,6 +7841,9 @@ def catboxeps():
 def catetbox():
     """Busqueda/estrenos en fuentes-box (ver _catetbox_impl): las tarjetas de
     series, con la lista completa si la tenemos, y las fuentes caidas dichas."""
+    for _s in (request.args.get("srcs") or "et").split(","):
+        if _s.strip() in ("wf", "et"):
+            _fc_sondea(_s.strip())       # por detras: chips y avisos al dia
     r = _catetbox_impl()
     d, st = _respuesta(r)
     if d is None:
@@ -7840,11 +7861,13 @@ def catetboxresolve():
     src = (request.args.get("src") or "et").strip()
     if src in ("wf", "et") and _fc_caido(src):
         return jsonify({"link": "", "fuente_caida": src})
+    t0 = _t.time()
+    th = _fc_sondea(src) if src in ("wf", "et") else None   # a la vez que la caja
     r = _catetboxresolve_impl()
     d, st = _respuesta(r)
     if d is None or d.get("link") or src not in ("wf", "et") or st != 200:
         return r
-    _fc_mira_si_toca(src)          # sin enlace: ¿es que la fuente esta caida?
+    _fc_espera(th, t0 + 23.0)      # sin enlace: la mirada ya casi esta
     if _fc_ya(src):
         d["fuente_caida"] = src
         return jsonify(d), st
@@ -9738,6 +9761,11 @@ def catbrowse():
         Solo en la pagina 1: el scroll infinito de DonTorrent sigue igual."""
         out = {"items": _al_servir(items)}
         out.update(extra)
+        # El estado de las fuentes, al dia (por detras, como mucho cada 5 min):
+        # el aviso tiene que irse solo cuando vuelvan, no solo aparecer.
+        for _s in ("wf", "et"):
+            _fc_sondea(_s)
+        _dt_caida_sondea()
         _con_caida(out)   # el Inicio lo avisa: sus titulos pueden no abrir
         _epsc_completa(out["items"])     # series con su lista completa (dtbl40)
         if page == 1 and request.args.get("mix") == "1":
