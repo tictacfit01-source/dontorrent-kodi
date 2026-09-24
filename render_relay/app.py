@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl38"
+BUILD = "dtbl39"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -10217,6 +10217,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .card .t{font-size:12.5px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .y{font-size:11px;color:var(--sub);margin-top:2px}
 .msg{color:var(--sub);text-align:center;padding:34px 10px;font-size:14px}
+/* los enlaces de los mensajes ("Reintentar"): sin esto salian en el azul por
+   defecto del navegador, casi invisible sobre el fondo oscuro */
+.msg a{color:var(--blue2);font-weight:600;display:inline-block;padding:10px 6px;min-height:44px;box-sizing:border-box}
 /* CAPAS. Todas las hojas comparten .sheet, y hasta dtbl13 compartian tambien
    el z-index -> con dos abiertas ganaba la que iba DESPUES en el DOM, no la que
    se acababa de abrir. Por eso el dialogo de listas salia DEBAJO de la tarjeta
@@ -12972,7 +12975,8 @@ _MEM_AVISO_MB = 150.0      # poda suave: lo que se rehace solo y nadie nota
 _MEM_GRAVE_MB = 200.0      # poda seria: tambien el Inicio (vuelve de /tmp)
 _MEM_WATCH = {"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0, "libero_mb": 0.0,
               "total": 0.0, "total_max": 0.0, "trims": 0, "trim_mb": 0.0,
-              "pausadas": 0}
+              "pausadas": 0, "gcs": 0, "gc_obj": 0, "gc_mb": 0.0,
+              "gc_mb_total": 0.0}
 # Si una poda no suelta nada, no se repite hasta pasado este rato (ver abajo).
 _MEM_PODA_NO_ANTES = [0.0]
 
@@ -13017,6 +13021,37 @@ def _mem_trim():
     except Exception:
         pass
     return False
+
+
+# --- Recoger la basura A TIEMPO (dtbl39) --------------------------------------
+# Medido el 24-09 a las 03:15, worker de 2,3 h: 827 `traceback`, 1.119 `frame`,
+# 417 `Condition` y 33.000 celdas vivas (recien arrancado: 0, 0, 7 y 1.250), y
+# 89,5 MB EN USO en el monton de glibc -- o sea, no era fragmentacion. En local,
+# 50 peticiones fallidas (conexion rechazada, como las de una fuente caida)
+# dejan 825 frames, 601 tracebacks y 51 sesiones de requests con sus pools, todo
+# en CICLOS de referencias (la excepcion guarda la pila y la pila la excepcion).
+# Solo los suelta el recolector de ciclos completo, y con un monton grande
+# Python lo pasa muy de tarde en tarde; tras un gc.collect() vuelve todo a la
+# base. Se pasa a mano cada 5 min (unos milisegundos) y se devuelve lo soltado.
+_MEM_GC_CADA = 300.0
+_MEM_GC_ULT = [0.0]
+
+
+def _mem_recoge():
+    """Recoleccion completa + devolver al sistema lo soltado. MB liberados."""
+    antes = _rss_mb()
+    try:
+        import gc
+        n = gc.collect()
+    except Exception:
+        n = 0
+    _mem_trim()
+    lib = round(max(0.0, antes - _rss_mb()), 1)
+    _MEM_WATCH["gcs"] = _MEM_WATCH.get("gcs", 0) + 1
+    _MEM_WATCH["gc_obj"] = n
+    _MEM_WATCH["gc_mb"] = lib
+    _MEM_WATCH["gc_mb_total"] = round(_MEM_WATCH.get("gc_mb_total", 0.0) + lib, 1)
+    return lib
 
 
 def _mem_malloc():
@@ -13257,6 +13292,11 @@ def _mem_relevo(motivo):
 
 def _mem_vigila_vuelta():
     """Una vuelta del vigilante (aparte para poder probarla sin el bucle)."""
+    # La basura en ciclos, cada 5 min y ANTES de medir (ver _mem_recoge): lo
+    # que suelte ya no cuenta para decidir podas ni relevos.
+    if (_t.time() - _MEM_GC_ULT[0]) >= _MEM_GC_CADA:
+        _MEM_GC_ULT[0] = _t.time()
+        _mem_recoge()
     r = _rss_mb()
     tot = _mem_cgroup_mb()        # el servicio ENTERO (lo que mira Render)
     _MEM_WATCH["rss"] = r
@@ -13347,8 +13387,11 @@ def _mem_watch_asegura():
         _MEM_T0[0] = _t.time()
         _MEM_WATCH.update({"rss": 0.0, "max": 0.0, "podas": 0, "ultima": 0,
                            "libero_mb": 0.0, "total": 0.0, "total_max": 0.0,
-                           "trims": 0, "trim_mb": 0.0, "pausadas": 0})
+                           "trims": 0, "trim_mb": 0.0, "pausadas": 0,
+                           "gcs": 0, "gc_obj": 0, "gc_mb": 0.0,
+                           "gc_mb_total": 0.0})
         _MEM_PODA_NO_ANTES[0] = 0.0
+        _MEM_GC_ULT[0] = _t.time()      # la primera, a los 5 min de nacer
     _start_mem_watch()
     # El aprendiz de semillas, por la misma razon: lanzado en el import se
     # quedaria en el proceso padre y no correria en ningun worker.
@@ -13369,6 +13412,14 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
+    # ?gc=1: recoge la basura en ciclos AHORA y dice cuanto solto (ver
+    # _mem_recoge). Va lo primero para que el resto ya se mida despues.
+    _recogida = None
+    if request.args.get("gc") == "1":
+        _r0 = _rss_mb()
+        _lib = _mem_recoge()
+        _recogida = {"objetos": _MEM_WATCH.get("gc_obj"), "mb": _lib,
+                     "rss_antes": _r0}
     out = {"build": BUILD, "pid": os.getpid(), "rss_mb": _rss_mb(),
            # El numero que de verdad decide si Render nos mata: el del servicio
            # entero. Si sale 0.0 es que el cgroup no se pudo leer y el vigilante
@@ -13379,6 +13430,7 @@ def catmem():
            # que Python ya solto y glibc no ha devuelto (ver _mem_trim)
            "malloc": _mem_malloc(),
            "poda_pausada_s": max(0, int(_MEM_PODA_NO_ANTES[0] - _t.time())),
+           "gc_proxima_s": max(0, int(_MEM_GC_ULT[0] + _MEM_GC_CADA - _t.time())),
            "hilos": _thr.active_count(), "watch": dict(_MEM_WATCH),
            "enrich": dict(_ENR_STATS, vuelo=_ENR_VUELO[0], max=_ENR_MAX,
                           bg_en_vuelo=len(_BGENR_VUELO))}
@@ -13404,6 +13456,16 @@ def catmem():
         except Exception:
             pass
     out["caches"] = cach
+    if _recogida is not None:
+        out["recogida"] = _recogida
+    try:      # el recolector de Python: cuantas pasadas por generacion y cuanto
+        import gc as _gcm
+        out["gc"] = {"pendientes": list(_gcm.get_count()),
+                     "umbral": list(_gcm.get_threshold()),
+                     "pasadas": [s.get("collections") for s in _gcm.get_stats()],
+                     "recogidos": [s.get("collected") for s in _gcm.get_stats()]}
+    except Exception:
+        pass
     # Los ficheros de /tmp: se parsean ENTEROS cada vez que una peticion falla
     # en memoria, asi que su tamano pesa tanto como el de las cachas.
     tmp = {}

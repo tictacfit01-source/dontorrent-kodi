@@ -121,6 +121,50 @@ finally:
     for k, v in viejos.items():
         setattr(A, k, v)
 
+print("\n=== 4b) La basura en ciclos, recogida cada 5 min (dtbl39) ===")
+import gc as _gc
+
+
+class _Nodo(object):
+    pass
+
+
+def _basura(n=300):
+    """Ciclos como los de una peticion fallida: el objeto se apunta a si mismo."""
+    for _ in range(n):
+        a, b = _Nodo(), _Nodo()
+        a.otro, b.otro = b, a
+        a.pila = [a, b, {"html": "x" * 200}]
+
+
+_gc.disable()
+try:
+    _basura()
+    antes = A._MEM_WATCH.get("gcs", 0)
+    A._mem_recoge()
+    comprueba("_mem_recoge() recoge los ciclos (%s objetos) y lo apunta"
+              % A._MEM_WATCH.get("gc_obj"),
+              A._MEM_WATCH.get("gc_obj", 0) >= 600 and A._MEM_WATCH["gcs"] == antes + 1,
+              A._MEM_WATCH)
+    viejos2 = {k: getattr(A, k) for k in ("_rss_mb", "_mem_cgroup_mb", "_bnd_revisa")}
+    A._rss_mb = lambda: 50.0
+    A._mem_cgroup_mb = lambda: 100.0
+    A._bnd_revisa = lambda: None
+    try:
+        A._MEM_T0[0] = time.time()
+        A._MEM_GC_ULT[0] = time.time() - A._MEM_GC_CADA - 1
+        n0 = A._MEM_WATCH["gcs"]
+        _basura(50)
+        A._mem_vigila_vuelta()
+        comprueba("el vigilante la lanza si hace mas de 5 min", A._MEM_WATCH["gcs"] == n0 + 1)
+        A._mem_vigila_vuelta()
+        comprueba("...y no en cada vuelta de 8 s", A._MEM_WATCH["gcs"] == n0 + 1)
+    finally:
+        for k, v in viejos2.items():
+            setattr(A, k, v)
+finally:
+    _gc.enable()
+
 print("\n=== 5) glibc: fuera de Linux no hace nada ni rompe ===")
 if not sys.platform.startswith("linux"):
     comprueba("sin libc: _mem_trim() -> False y _mem_malloc() -> None",
@@ -147,6 +191,20 @@ comprueba("?tipos=1: los tipos de objeto vivos (%d objetos)" % js.get("tipos_tot
           isinstance(t, dict) and "dict" in t and js.get("tipos_total", 0) > 1000,
           list(t)[:5])
 comprueba("...y sin ?tipos=1 no se cuentan (cuesta)", "tipos" not in cli.get("/catmem").get_json())
+js = cli.get("/catmem").get_json()
+comprueba("trae las pasadas del recolector y cuando toca la siguiente",
+          isinstance((js.get("gc") or {}).get("pasadas"), list)
+          and "gc_proxima_s" in js and {"gcs", "gc_obj", "gc_mb"} <= set(js.get("watch") or {}),
+          js.get("gc"))
+_gc.disable()
+try:
+    _basura(100)
+    js = cli.get("/catmem?gc=1").get_json()
+finally:
+    _gc.enable()
+comprueba("?gc=1 recoge YA y dice cuanto (%s objetos)" % (js.get("recogida") or {}).get("objetos"),
+          (js.get("recogida") or {}).get("objetos", 0) >= 200, js.get("recogida"))
+comprueba("...y sin ?gc=1 no recoge nada", "recogida" not in cli.get("/catmem").get_json())
 
 print("\n---- VEREDICTO ----")
 if fallos:
