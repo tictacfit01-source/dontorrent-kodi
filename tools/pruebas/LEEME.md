@@ -69,7 +69,12 @@ que no suelta nada no se repite cada 8 s (el 23-09 hubo 626 en 1,6 h, 0 MB,
 vaciando cada vez las cachés buenas), el relevo no depende de esa pausa, y
 `/catmem` enseña el montón de glibc (`malloc`) y, con `?tipos=1`, los objetos
 vivos. Lo de glibc solo existe en Linux: en el PC se comprueba que no rompe
-nada y en Linux lo informa el workflow `relay-check`.
+nada y en Linux lo informa el workflow `relay-check`. Desde dtbl45, el
+**censo** (`/catmem?censo=1`): cuánto pesa lo vivo por tipo y por la global de
+la que cuelga, contando lo que el gc no sigue (una caché de textos en tuplas
+no se veía contando objetos). Se prueba con una caché así de 4 MB: tiene que
+salir con su nombre, y nunca claves ni contenidos (hay códigos de caja).
+tracemalloc se descartó midiendo: frena de 17 a 30 veces el trabajo típico.
 
 **`versiones.py`** (23-09-2026) — las cajas muy desactualizadas: cómo se
 comparan versiones (se toleran 5 de retraso, porque al publicar las cajas
@@ -93,6 +98,10 @@ qué vivas se anuncian, la caché de listas completas (se guarda, se SUMA, no
 encoge, olvida a los 30 días) y los tres envoltorios: `/catboxeps`,
 `/catetbox` y `/catetboxresolve`. La parte de la web (aviso con varias
 fuentes, la ficha "de la última vez" o "a medias") está en `caida.js`.
+Sección 8 (dtbl45): con la fuente caída y confirmada por una caja hace menos
+de 5 min, la búsqueda contesta al momento sin encolar nada (antes: un hilo del
+relay 24 s esperando a una caja que volvía con el mismo 522); pasado ese rato,
+una búsqueda sí va a la caja, que es la única que puede ver que ha vuelto.
 
 **`salud_cajas.py`** (24-09-2026, addon 2.9.76) — el relay no puede ver si
 WolfMax o EliteTorrent están caídos: desde la zona de Render sus webs le ponen

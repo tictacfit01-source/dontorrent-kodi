@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl44"
+BUILD = "dtbl45"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4584,10 +4584,14 @@ def _dt_caida_mira(tope=5.0):
 
 
 def _dt_caida_ya():
-    """Si DonTorrent esta caido segun lo que YA se sabe (sin red)."""
+    """Si DonTorrent esta caido segun lo que YA se sabe (sin red). Una caida
+    vale 15 min (como las de WolfMax/EliteTorrent, _FC_VALE) mientras se
+    vuelve a mirar cada 90 s: con 150 s de validez y el repaso a los 300, el
+    24-09 el aviso del Inicio dejaba de nombrar a DonTorrent la mitad del
+    tiempo, con DonTorrent caido todo el dia."""
     e = _dt_caida_lee()
     return bool(e.get("caida")) and \
-        (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_FRESCO + 60
+        (_t.time() - float(e.get("visto") or 0)) < _FC_VALE
 
 
 def _dt_caido():
@@ -4608,7 +4612,10 @@ def _dt_caida_sondea():
     """Un fallo de DonTorrent invita a mirar si es que esta caido: por detras
     (no retrasa a nadie) y solo si hace rato que nadie miraba."""
     e = _dt_caida_lee()
-    if (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_REPASO:
+    # caido: se re-mira cada 90 s (asi se nota enseguida cuando vuelve);
+    # sano o sin saber: cada 5 min como mucho
+    cada = _DTCAIDA_FRESCO if e.get("caida") else _DTCAIDA_REPASO
+    if (_t.time() - float(e.get("visto") or 0)) < cada:
         return
     if (_t.time() - _DTCAIDA_VUELO[0]) < 30:
         return
@@ -4763,6 +4770,21 @@ def _fc_caido(src):
     if edad >= _DTCAIDA_FRESCO:
         _fc_sondea(src, forzar=True)
     return edad < _FC_VALE
+
+
+# Caida CONFIRMADA hace menos de esto -> la busqueda contesta sin caja (ver
+# _fc_atajo). Mas corto que _FC_VALE a proposito: pasado este rato, UNA
+# busqueda si llega a la caja, y es la que se entera de que la web ha vuelto
+# (con el atajo puesto nadie mas la mira: desde Render sale un reto 403).
+_FC_ATAJO = 5 * 60
+
+
+def _fc_atajo(src):
+    """¿Contestar YA, sin caja? Solo si una caja confirmo la caida hace nada."""
+    if src not in _FUENTE_WEB:
+        return False
+    e = _fc_lee().get(src) or {}
+    return bool(e.get("caida")) and         (_t.time() - float(e.get("visto") or 0)) < _FC_ATAJO
 
 
 def _fc_sondea(src, forzar=False):
@@ -7284,9 +7306,10 @@ def wffeed():
     return jsonify({"ok": True, "n": len(idx), "nuevas": n})
 
 
-def _catetbox_impl():
+def _catetbox_impl(sin_caja=False):
     """Busqueda/estrenos en fuentes que necesitan el box (EliteTorrent, DivxTotal,
-    WolfMax). op=search|latest, srcs=csv (et,dx,wf)."""
+    WolfMax). op=search|latest, srcs=csv (et,dx,wf). `sin_caja`: la fuente
+    pedida esta caida (ver _fc_atajo): la cache y el indice si, la caja no."""
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     q = (request.args.get("q") or "").strip()
     op = (request.args.get("op") or "search").strip()
@@ -7345,6 +7368,20 @@ def _catetbox_impl():
                 return jsonify({"items": _posters_norm(_anio_fuera(_idx)), "idx": True})
         else:
             _wfidx_ask_box()
+
+    def _respaldo():
+        for it in _idx_respaldo:
+            disp, ql = _cat_clean_quality(it.get("title", ""))
+            it["title"] = disp
+            if not it.get("quality"):
+                it["quality"] = ql or _wf_quality_from_url(
+                    it.get("url") or it.get("content_id"))
+        return _posters_norm(_anio_fuera(_idx_respaldo))
+    if sin_caja:
+        # dtbl45: la caja tardaria ~20 s en volver con el mismo 522, con un
+        # hilo del relay esperandola (6 por worker) y "Buscando WolfMax..." 24 s
+        # para acabar en nada. No se cachea: cuando vuelva, que se busque.
+        return jsonify({"items": _respaldo(), "idx": bool(_idx_respaldo), "atajo": True})
     box = _box_for(code)     # la suya si esta viva; si no, cualquier caja viva
     if not box or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
@@ -7399,13 +7436,7 @@ def _catetbox_impl():
         # TIMEOUT: NO se cachea (puede ser un pico puntual; la proxima reintenta).
         # Si el indice tenia algo (aunque fuera pobre), mejor eso que nada.
         if _idx_respaldo:
-            for it in _idx_respaldo:
-                disp, ql = _cat_clean_quality(it.get("title", ""))
-                it["title"] = disp
-                if not it.get("quality"):
-                    it["quality"] = ql or _wf_quality_from_url(
-                        it.get("url") or it.get("content_id"))
-            return jsonify({"items": _posters_norm(_anio_fuera(_idx_respaldo)), "idx": True})
+            return jsonify({"items": _respaldo(), "idx": True})
         return jsonify({"items": [], "timeout": True})
     items = res.get("items") or []
     if request.args.get("raw") == "1":
@@ -7888,10 +7919,14 @@ def catboxeps():
 def catetbox():
     """Busqueda/estrenos en fuentes-box (ver _catetbox_impl): las tarjetas de
     series, con la lista completa si la tenemos, y las fuentes caidas dichas."""
-    for _s in (request.args.get("srcs") or "et").split(","):
-        if _s.strip() in ("wf", "et"):
-            _fc_sondea(_s.strip())       # por detras: chips y avisos al dia
-    r = _catetbox_impl()
+    pedidas = [_s.strip() for _s in (request.args.get("srcs") or "et").split(",")
+               if _s.strip()]
+    for _s in pedidas:
+        if _s in ("wf", "et"):
+            _fc_sondea(_s)       # por detras: chips y avisos al dia
+    # Todas las pedidas caidas y confirmado hace nada: sin caja (dtbl45). Si
+    # alguna esta viva, la caja busca como siempre (en el mismo trabajo).
+    r = _catetbox_impl(sin_caja=bool(pedidas) and all(_fc_atajo(_s) for _s in pedidas))
     d, st = _respuesta(r)
     if d is None:
         return r
@@ -13532,6 +13567,153 @@ _MEM_GC_CADA = 300.0
 _MEM_GC_ULT = [0.0]
 
 
+# --- QUIEN retiene la memoria VIVA: el censo (dtbl45) -------------------------
+# 24-09, 16:10: con la basura ya recogida (dtbl39), dos relevos por memoria esa
+# tarde (servicio 419 MB; un worker 232 MB). Los dos workers tenian casi los
+# mismos objetos (56.000-57.000) y 17 MB de diferencia "en uso" (malloc): lo
+# que crece no se ve contando objetos. Puede ser texto/bytes grandes (no los
+# sigue el gc; y un dict o una tupla que solo guardan textos tampoco) o memoria
+# en C (SSL). tracemalloc lo diria por linea, pero MEDIDO frena de 17 a 30
+# veces el trabajo tipico del relay: descartado. Esto es una sola pasada, a
+# demanda (/catmem?censo=1), sin coste mientras no se pide:
+#   1) etiqueta cada contenedor con la global de la que cuelga (primero las del
+#      relay, luego las de las librerias), en anchura;
+#   2) recorre todo lo que ve el gc y lo que cuelga de ello aunque el gc no lo
+#      siga (textos, bytes, tuplas y dicts "planos"), sumando sys.getsizeof
+#      por tipo y por DUENO.
+# Comparando el censo de un worker joven con el de uno viejo sale QUE global
+# crece. Si lo que suma no llega a lo que dice malloc, lo que crece esta en C.
+# Nombres de variables y tipos, nunca contenidos ni claves (hay codigos de caja).
+_CENSO_LOCK = _thr.Lock()
+_CENSO_RED = ("SSLContext", "SSLSocket", "SSLObject", "Session", "CloudScraper",
+              "PoolManager", "HTTPSConnectionPool", "HTTPConnectionPool",
+              "HTTPSConnection", "HTTPConnection", "socket", "Thread", "Response",
+              "ThreadPoolExecutor", "Future")
+
+
+def _mem_censo(top=16, tope_s=90.0):
+    """Cuanto pesa lo vivo, por tipo y por global de la que cuelga."""
+    import gc
+    import types
+    if not _CENSO_LOCK.acquire(False):
+        return {"ocupado": True}
+    try:
+        t0 = _t.time()
+        salta = (types.ModuleType, type, types.FunctionType, types.BuiltinFunctionType,
+                 types.MethodType, types.CodeType, types.FrameType)
+        hoja = (str, bytes, bytearray, int, float, complex, bool, type(None))
+        # 1) de quien es cada contenedor: desde las globales, en anchura
+        etiqueta = {}
+        mods = sorted(list(sys.modules.items()), key=lambda kv: kv[0] != __name__)
+        for mn, m in mods:
+            d = getattr(m, "__dict__", None)
+            if not isinstance(d, dict):
+                continue
+            for gn, gv in list(d.items()):
+                if isinstance(gv, salta) or isinstance(gv, hoja) or id(gv) in etiqueta:
+                    continue
+                lab = "%s.%s" % (mn, gn)
+                cola, prof = [gv], 0
+                while cola and prof < 10:
+                    sig = []
+                    for x in cola:
+                        if isinstance(x, salta) or isinstance(x, hoja) or id(x) in etiqueta:
+                            continue
+                        etiqueta[id(x)] = lab
+                        try:
+                            sig.extend(gc.get_referents(x))
+                        except Exception:
+                            pass
+                    cola, prof = sig, prof + 1
+            if _t.time() - t0 > tope_s / 3:
+                break
+        # ...y lo fijo (modulos, clases, funciones y sus diccionarios) aparte:
+        # pesa lo mismo en un worker joven que en uno viejo
+        objs = gc.get_objects()
+        for m in list(sys.modules.values()):
+            d = getattr(m, "__dict__", None)
+            if isinstance(d, dict):
+                etiqueta.setdefault(id(d), "(codigo)")
+        for o in objs:
+            if isinstance(o, salta):
+                etiqueta.setdefault(id(o), "(codigo)")
+                if isinstance(o, type):
+                    try:
+                        for r in gc.get_referents(o):
+                            if type(r) is dict:
+                                etiqueta.setdefault(id(r), "(codigo)")
+                    except Exception:
+                        pass
+        # 2) todo lo vivo: lo que sigue el gc y lo que cuelga de ello
+        por_tipo, por_dueno, grandes = {}, {}, []
+
+        def cuenta(x, lab):
+            try:
+                s = sys.getsizeof(x)
+            except Exception:
+                s = 0
+            tn = type(x).__name__
+            a = por_tipo.get(tn)
+            if a is None:
+                a = por_tipo[tn] = [0, 0]
+            a[0] += 1
+            a[1] += s
+            b = por_dueno.get(lab)
+            if b is None:
+                b = por_dueno[lab] = [0, 0]
+            b[0] += 1
+            b[1] += s
+            if s >= 65536 and len(grandes) < 4000:
+                grandes.append((s, tn, lab))
+
+        vistos = set(map(id, objs))
+        cortado = False
+        for i, o in enumerate(objs):
+            if i % 2000 == 0 and _t.time() - t0 > tope_s:
+                cortado = True
+                break
+            lab = etiqueta.get(id(o)) or ("(%s suelto)" % type(o).__name__)
+            cuenta(o, lab)
+            try:
+                pila = [(r, lab) for r in gc.get_referents(o)
+                        if id(r) not in vistos and not gc.is_tracked(r)]
+            except Exception:
+                pila = []
+            while pila:
+                x, lx = pila.pop()
+                if id(x) in vistos:
+                    continue
+                vistos.add(id(x))
+                lx = etiqueta.get(id(x)) or lx
+                cuenta(x, lx)
+                if not isinstance(x, hoja):
+                    try:
+                        pila.extend((r, lx) for r in gc.get_referents(x)
+                                    if id(r) not in vistos and not gc.is_tracked(r))
+                    except Exception:
+                        pass
+        n_objs = len(objs)
+        del objs, vistos, etiqueta
+        tot = sum(v[1] for v in por_tipo.values())
+
+        def orden(d, n):
+            return sorted(d.items(), key=lambda kv: -kv[1][1])[:n]
+
+        grandes.sort(key=lambda g: -g[0])
+        return {"s": round(_t.time() - t0, 2), "cortado": cortado,
+                "objetos_gc": n_objs, "mb": round(tot / 1048576.0, 1),
+                "por_tipo": [{"tipo": k, "n": v[0], "mb": round(v[1] / 1048576.0, 2)}
+                             for k, v in orden(por_tipo, 12)],
+                "por_dueno": [{"dueno": k, "n": v[0], "mb": round(v[1] / 1048576.0, 2)}
+                              for k, v in orden(por_dueno, top)],
+                "grandes": [{"kb": int(s / 1024), "tipo": tn, "dueno": lab}
+                            for s, tn, lab in grandes[:10]],
+                "red": dict((k, por_tipo[k][0]) for k in _CENSO_RED if k in por_tipo),
+                "hilos": _thr.active_count()}
+    finally:
+        _CENSO_LOCK.release()
+
+
 def _mem_recoge():
     """Recoleccion completa + devolver al sistema lo soltado. MB liberados."""
     antes = _rss_mb()
@@ -13907,6 +14089,18 @@ def catmem():
     """QUE se come la memoria, para arreglarlo con datos y no con teoria.
     Barato y sin efectos: no toca ninguna fuente externa ni carga ficheros
     enteros (de /tmp solo mira el tamano)."""
+    # ?censo=1: quien retiene la memoria viva (ver _mem_censo). Tarda unos
+    # segundos y no se hace si el servicio va justo de memoria.
+    if request.args.get("censo") == "1":
+        tot = _mem_cgroup_mb()
+        if tot > 380:
+            return jsonify({"censo": "no: el servicio va justo (%s MB)" % tot, "pid": os.getpid()})
+        try:
+            return jsonify(dict(_mem_censo(), pid=os.getpid(), rss=_rss_mb(),
+                                vida_h=round((_t.time() - _MEM_T0[0]) / 3600.0, 2),
+                                malloc=_mem_malloc()))
+        except Exception as e:
+            return jsonify({"error": repr(e)[:160], "pid": os.getpid()})
     # ?gc=1: recoge la basura en ciclos AHORA y dice cuanto solto (ver
     # _mem_recoge). Va lo primero para que el resto ya se mida despues.
     _recogida = None

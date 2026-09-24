@@ -14,6 +14,7 @@ La parte de glibc (dos arenas, malloc_trim, mallinfo2) solo existe en Linux:
 aqui se comprueba que fuera de Linux no hace nada ni rompe; en Linux la
 comprueba el workflow relay-check antes de desplegar.
 """
+import json
 import os
 import sys
 import time
@@ -205,6 +206,33 @@ finally:
 comprueba("?gc=1 recoge YA y dice cuanto (%s objetos)" % (js.get("recogida") or {}).get("objetos"),
           (js.get("recogida") or {}).get("objetos", 0) >= 200, js.get("recogida"))
 comprueba("...y sin ?gc=1 no recoge nada", "recogida" not in cli.get("/catmem").get_json())
+
+print("\n=== 7) el censo de la memoria viva (dtbl45) ===")
+# Una cache "plana" (dict de tuplas de textos): el gc no la sigue, y es justo
+# lo que no se veia contando objetos. El censo tiene que ponerle nombre.
+A._PRUEBA_CENSO = dict(("k%d" % i, ("x" * 100000 + str(i), 1.0)) for i in range(40))
+import gc as _gc
+_gc.collect()
+t0 = time.time()
+js = cli.get("/catmem?censo=1").get_json()
+dur = time.time() - t0
+duenos = dict((d["dueno"], d["mb"]) for d in js.get("por_dueno", []))
+comprueba("?censo=1 contesta en poco (%.1f s) y sin cortar" % dur,
+          dur < 30 and js.get("cortado") is False and js.get("objetos_gc", 0) > 1000, js.get("s"))
+comprueba("la cache plana sale con SU nombre y su peso (%s MB)" % duenos.get("app._PRUEBA_CENSO"),
+          duenos.get("app._PRUEBA_CENSO", 0) >= 3.7, list(duenos.items())[:5])
+gr = js.get("grandes") or [{}]
+comprueba("los textos grandes dicen de quien son",
+          any(g.get("dueno") == "app._PRUEBA_CENSO" and g.get("kb", 0) >= 97 for g in gr), gr[:3])
+comprueba("el censo cuenta la red (sesiones, hilos) y nunca claves ni contenidos",
+          "red" in js and js.get("hilos", 0) >= 1 and "k0" not in json.dumps(js)
+          and "xxxx" not in json.dumps(js), js.get("red"))
+comprueba("dos censos a la vez: el segundo no se amontona",
+          A._CENSO_LOCK.acquire(False) and A._mem_censo().get("ocupado") is True)
+A._CENSO_LOCK.release()
+del A._PRUEBA_CENSO
+print("   censo: %s s, %s MB vistos; duenos: %s" % (js.get("s"), js.get("mb"),
+      ", ".join("%s %s" % (d["dueno"], d["mb"]) for d in js.get("por_dueno", [])[:6])))
 
 print("\n---- VEREDICTO ----")
 if fallos:

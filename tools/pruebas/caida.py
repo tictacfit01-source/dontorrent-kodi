@@ -201,8 +201,20 @@ try:
               A._dt_caido() is True and len(MIRADAS) == 1, len(MIRADAS))
     estado(True, hace=200)
     del MIRADAS[:]
-    comprueba("caido hace 200 s + mirada sin respuesta -> ya no se da por caido",
+    # dtbl45: una caida vale 15 min mientras se re-mira (antes 150 s, y el
+    # aviso del Inicio dejaba de nombrar a DonTorrent la mitad del tiempo)
+    comprueba("caido hace 200 s + mirada sin respuesta -> sigue caido (vale 15 min)",
+              A._dt_caido() is True and len(MIRADAS) == 1, len(MIRADAS))
+    estado(True, hace=16 * 60)
+    del MIRADAS[:]
+    comprueba("caido hace 16 min + mirada sin respuesta -> ya no se da por caido",
               A._dt_caido() is False and len(MIRADAS) == 1, len(MIRADAS))
+    estado(True, hace=100)
+    del MIRADAS[:]
+    A._dt_caida_sondea()
+    time.sleep(0.3)
+    comprueba("caido: el sondeo re-mira a los 90 s (no a los 5 min)", len(MIRADAS) == 1,
+              len(MIRADAS))
     # ha vuelto
     estado(True, hace=200, desde_hace=3600)
     PROXY["resp"] = (ANUBIS, 200)

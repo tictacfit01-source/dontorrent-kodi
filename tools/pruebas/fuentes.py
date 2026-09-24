@@ -14,7 +14,9 @@ WolfMax acababa a los 18 s en "¿box encendido?". Esto vigila:
   4) /catboxeps: la de hace poco al momento; con la fuente caida, la de la
      ultima vez o lo que haya, y dicho; lo que traiga una caja, guardado;
   5) /catetbox y el Inicio: las tarjetas con la lista completa;
-  6) /catetboxresolve: con la fuente caida se dice al momento.
+  6) /catetboxresolve: con la fuente caida se dice al momento;
+  7) lo que cuentan las cajas (addon 2.9.76) manda sobre la mirada del relay;
+  8) /catetbox: con la fuente caida (confirmada hace < 5 min), sin caja.
 Escribe en el /tmp del relay (C:\\tmp): guarda y restaura lo que hubiera.
 """
 import json
@@ -276,7 +278,7 @@ try:
     TARJETA = {"title": "Ted Lasso", "source": "wf", "kind": "serie", "url": SERIE,
                "content_id": SERIE, "quality": "4K", "eps": list(INDICE)}
     viejo_cb = A._catetbox_impl
-    A._catetbox_impl = lambda: A.jsonify({"items": [dict(TARJETA)], "idx": True})
+    A._catetbox_impl = lambda **k: A.jsonify({"items": [dict(TARJETA)], "idx": True})
     try:
         js = cli.get("/catetbox?code=111111&op=search&srcs=wf&q=ted%20lasso").get_json()
         it = (js.get("items") or [{}])[0]
@@ -348,6 +350,63 @@ try:
     comprueba("desde Render el reto no concluye nada, y no se vuelve a mirar en 5 min",
               len([m for m in MIRADAS if "wolfmax" in m]) == 1 and th2 is None
               and A._fc_ya("wf") is False, (MIRADAS, th2))
+    print("\n=== 8) Busqueda con la fuente caida: sin caja (dtbl45) ===")
+    ENCOLADO = []
+    reales = (A._kb_enqueue, A._catjob_wait_any, A._box_for, A._wf_idx_search,
+              A._wfidx_ask_box, A._live_boxes, A._catbox_get)
+    A._kb_enqueue = lambda b, ev: ENCOLADO.append((b, ev.get("srcs")))
+    A._catjob_wait_any = lambda jobs, espera: {"items": []}
+    A._box_for = lambda code: "111111"
+    A._wf_idx_search = lambda q, limit=40: []
+    A._wfidx_ask_box = lambda: None
+    A._live_boxes = lambda *a, **k: ["111111"]
+    A._catbox_get = lambda k: None
+
+    def caida_hace(src, s):
+        A._fc_apunta(src, True, 522)
+        A._FC[src]["visto"] = time.time() - s
+        try:
+            os.remove(A._FC_FILE)          # que mande la memoria (la del disco es "ahora")
+        except Exception:
+            pass
+
+    try:
+        limpia_estado()
+        caida_hace("wf", 60)
+        del ENCOLADO[:]
+        t0 = time.time()
+        js = cli.get("/catetbox?code=111111&op=search&srcs=wf&q=zzz%20nada").get_json()
+        dt = time.time() - t0
+        comprueba("WolfMax caido (confirmado hace 1 min): contesta YA (%.2f s) y sin caja" % dt,
+                  dt < 1.0 and not ENCOLADO and js.get("atajo") is True
+                  and "wf" in (js.get("caidas") or []), (dt, ENCOLADO, js))
+        limpia_estado()
+        caida_hace("wf", 6 * 60)
+        del ENCOLADO[:]
+        js = cli.get("/catetbox?code=111111&op=search&srcs=wf&q=zzz%20nada").get_json()
+        comprueba("confirmado hace 6 min: esa busqueda SI va a la caja (se entera de si volvio)",
+                  len(ENCOLADO) == 1 and not js.get("atajo")
+                  and "wf" in (js.get("caidas") or []), (ENCOLADO, js))
+        limpia_estado()
+        caida_hace("wf", 60)
+        del ENCOLADO[:]
+        js = cli.get("/catetbox?code=111111&op=search&srcs=wf,et&q=zzz%20nada").get_json()
+        comprueba("WolfMax caido pero EliteTorrent no: la caja busca como siempre",
+                  len(ENCOLADO) == 1 and ENCOLADO[0][1] == "wf,et", ENCOLADO)
+        limpia_estado()
+        caida_hace("et", 30)
+        del ENCOLADO[:]
+        js = cli.get("/catetbox?code=111111&op=search&srcs=et&q=zzz%20nada").get_json()
+        comprueba("EliteTorrent caido: lo mismo, sin caja",
+                  not ENCOLADO and js.get("atajo") is True, (ENCOLADO, js))
+        limpia_estado()
+        del ENCOLADO[:]
+        js = cli.get("/catetbox?code=111111&op=search&srcs=wf&q=zzz%20nada").get_json()
+        comprueba("sin caida sabida: a la caja, como siempre",
+                  len(ENCOLADO) == 1 and not js.get("atajo"), (ENCOLADO, js))
+    finally:
+        (A._kb_enqueue, A._catjob_wait_any, A._box_for, A._wf_idx_search,
+         A._wfidx_ask_box, A._live_boxes, A._catbox_get) = reales
 finally:
     for f in FICHEROS:
         try:
