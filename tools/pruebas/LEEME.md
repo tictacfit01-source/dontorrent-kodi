@@ -84,6 +84,16 @@ Elementum la URL de DonTorrent, que tampoco podía: la tele se quedaba SIN
 HACER NADA (reproducido igual en el Kodi del PC). Ahora: magnet si el relay
 sabe la huella (`/dtmagnet`), y si no, un aviso — nunca silencio.
 
+**`fuentes.py`** (24-09-2026, dtbl40) — WolfMax y EliteTorrent caídos (522) y
+la lista COMPLETA de capítulos. El 24-09 seguían caídas tres fuentes y la web
+decía "las demás funcionan", enseñaba Ted Lasso con los 15 capítulos del índice
+como si fueran todos (son ~35) y reproducir de WolfMax acababa en "¿box
+encendido?" a los 18 s. Vigila el detector (solo un 52x decide), qué caídas y
+qué vivas se anuncian, la caché de listas completas (se guarda, se SUMA, no
+encoge, olvida a los 30 días) y los tres envoltorios: `/catboxeps`,
+`/catetbox` y `/catetboxresolve`. La parte de la web (aviso con varias
+fuentes, la ficha "de la última vez" o "a medias") está en `caida.js`.
+
 Para pasarlas todas de una vez:
 
 ```bash

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl39"
+BUILD = "dtbl40"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4624,9 +4624,16 @@ def _dt_caida_info():
 
 
 def _con_caida(d):
-    """El aviso de DonTorrent caido dentro de una respuesta (sin red)."""
+    """El aviso de fuentes caidas dentro de una respuesta (sin red): DonTorrent
+    como siempre (`dt_caida`) y, desde dtbl40, la lista entera (`caidas`) con
+    las que sabemos que si contestan (`vivas`), para que el aviso no diga que
+    "las demas funcionan" cuando no es verdad."""
     if _dt_caida_ya():
         d["dt_caida"] = _dt_caida_info()
+    c = _fuentes_caidas()
+    if c:
+        d["caidas"] = c
+        d["vivas"] = [s for s in _fuentes_vivas() if s not in c]
     return d
 
 
@@ -4643,6 +4650,155 @@ def _dt_magnet(cid, tb, titulo=""):
                  for hp in _SEED_TRACKERS)
     dn = ("&dn=" + _uq(titulo[:120], safe="")) if titulo else ""
     return "magnet:?xt=urn:btih:" + ih + dn + tr
+
+
+# --- Las OTRAS fuentes caidas: WolfMax y EliteTorrent (dtbl40) ----------------
+# 24-09, 07:07: seguian caidos DonTorrent (503), WolfMax y EliteTorrent (522
+# por nuestro proxy: Cloudflare no llega a su servidor) -- el mismo centro de
+# datos. La web decia en el Inicio "las demas fuentes funcionan" (falso: solo
+# DivxTotal), la ficha de Ted Lasso de WolfMax enseñaba 15 capitulos del indice
+# como si fueran todos, y reproducir de WolfMax acababa a los 18 s en "¿box
+# encendido?". Mismas reglas que _dt_caido: se mira por el proxy y solo cuenta
+# lo que la fuente dice sin dudas (un 52x); lo demas no decide nada.
+_FUENTE_WEB = {"wf": "https://www.wolfmax4k.com/",
+               "et": "https://www.elitetorrent.com/"}
+_FUENTE_NOMBRE = {"dt": "DonTorrent", "wf": "WolfMax", "et": "EliteTorrent",
+                  "dx": "DivxTotal"}
+_FC_FILE = "/tmp/mw_fuentes_caidas.json"
+_FC = {}                     # src -> {"visto", "caida", "desde", "st"}
+_FC_LOCK = _thr.Lock()
+_FC_VUELO = {}               # src -> cuando empezo su mirada en curso
+
+
+def _fc_lee():
+    """Estado de WolfMax/EliteTorrent: el mas reciente entre memoria y disco."""
+    try:
+        with open(_FC_FILE, "r", encoding="utf-8") as f:
+            d = _json.load(f) or {}
+        for src, e in d.items():
+            if src in _FUENTE_WEB and isinstance(e, dict) and \
+                    float(e.get("visto") or 0) > float((_FC.get(src) or {}).get("visto") or 0):
+                _FC[src] = dict(e)
+    except Exception:
+        pass
+    return _FC
+
+
+def _fc_apunta(src, caida, st):
+    now = _t.time()
+    with _FC_LOCK:
+        e = dict(_fc_lee().get(src) or {})
+        desde = float(e.get("desde") or 0) if (caida and e.get("caida")) else 0.0
+        _FC[src] = {"visto": now, "caida": bool(caida),
+                    "desde": (desde or now) if caida else 0.0, "st": int(st or 0)}
+        try:
+            tmp = "%s.%d.tmp" % (_FC_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(_FC, f)
+            os.replace(tmp, _FC_FILE)
+        except Exception:
+            pass
+
+
+def _fc_mira(src, tope=5.0):
+    """Pregunta YA por el proxy si esa fuente esta caida (una mirada a la vez)."""
+    if src not in _FUENTE_WEB:
+        return None
+    with _FC_LOCK:
+        if (_t.time() - _FC_VUELO.get(src, 0.0)) < 30:
+            return _FC.get(src)
+        _FC_VUELO[src] = _t.time()
+    try:
+        texto, st = _get_con_tope(
+            _DTCAIDA_PROXY + _uq(_FUENTE_WEB[src], safe=""), tope, todo=True)
+        v = _dt_caida_clasifica(st, texto)
+        if v is not None:
+            _fc_apunta(src, v, st)
+    except Exception:
+        pass
+    finally:
+        _FC_VUELO[src] = 0.0
+    return _fc_lee().get(src)
+
+
+def _fc_ya(src):
+    """Caida segun lo que YA se sabe (sin red)."""
+    if src == "dt":
+        return _dt_caida_ya()
+    e = _fc_lee().get(src) or {}
+    return bool(e.get("caida")) and \
+        (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_FRESCO + 60
+
+
+def _fc_caido(src):
+    """¿Esta caida AHORA? Como _dt_caido: sin caida conocida no toca la red;
+    con una caida vieja, vuelve a mirar (tope corto) antes de decir que si."""
+    if src == "dt":
+        return _dt_caido()
+    e = _fc_lee().get(src) or {}
+    if not e.get("caida"):
+        return False
+    if (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_FRESCO:
+        return True
+    _fc_mira(src, 4.0)
+    return _fc_ya(src)
+
+
+def _fc_sondea(src):
+    """Un fallo invita a mirar si esa fuente esta caida: por detras, y solo si
+    hace rato que nadie miraba."""
+    if src == "dt":
+        return _dt_caida_sondea()
+    if src not in _FUENTE_WEB:
+        return
+    e = _fc_lee().get(src) or {}
+    if (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_REPASO:
+        return
+    if (_t.time() - _FC_VUELO.get(src, 0.0)) < 30:
+        return
+    try:
+        _thr.Thread(target=_fc_mira, args=(src,), daemon=True).start()
+    except Exception:
+        pass
+
+
+def _fc_mira_si_toca(src):
+    """Tras un fallo de esa fuente, con alguien esperando la respuesta: si hace
+    rato que nadie miraba, se mira YA (tope 4 s) para poder decirlo en ESTA
+    respuesta y no en la siguiente."""
+    if src not in _FUENTE_WEB:
+        return
+    e = _fc_lee().get(src) or {}
+    if (_t.time() - float(e.get("visto") or 0)) >= _DTCAIDA_REPASO:
+        _fc_mira(src, 4.0)
+
+
+def _fuentes_caidas():
+    """Las fuentes caidas AHORA segun lo que ya se sabe (sin red)."""
+    return [s for s in ("dt", "wf", "et") if _fc_ya(s)]
+
+
+def _fuentes_vivas():
+    """Las que sabemos que CONTESTAN (mirada reciente, o el camino directo de
+    DivxTotal sano). Lo que no se sabe no se afirma: el aviso del Inicio solo
+    dice "X si funciona" de estas."""
+    out = []
+    now = _t.time()
+    d = _dt_caida_lee()
+    if d.get("visto") and not d.get("caida") and \
+            (now - float(d.get("visto") or 0)) < _DTCAIDA_REPASO * 2:
+        out.append("dt")
+    for s in ("wf", "et"):
+        e = _fc_lee().get(s) or {}
+        if e.get("visto") and not e.get("caida") and \
+                (now - float(e.get("visto") or 0)) < _DTCAIDA_REPASO * 2:
+            out.append(s)
+    try:
+        if not _dx_is_down():
+            out.append("dx")
+    except Exception:
+        pass
+    return out
 
 
 def _cat_dt_html(q):
@@ -7102,8 +7258,7 @@ def wffeed():
     return jsonify({"ok": True, "n": len(idx), "nuevas": n})
 
 
-@app.get("/catetbox")
-def catetbox():
+def _catetbox_impl():
     """Busqueda/estrenos en fuentes que necesitan el box (EliteTorrent, DivxTotal,
     WolfMax). op=search|latest, srcs=csv (et,dx,wf)."""
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
@@ -7272,8 +7427,7 @@ def catetbox():
     return jsonify({"items": _posters_norm(_anio_fuera(items))})
 
 
-@app.get("/catetboxresolve")
-def catetboxresolve():
+def _catetboxresolve_impl():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     url = (request.args.get("url") or "").strip()
     src = (request.args.get("src") or "et").strip()
@@ -7375,8 +7529,7 @@ def _box_eps_by_title(code, src, title, wait=None, cache_only=False):
     return (mejor or {}).get("eps") or []
 
 
-@app.get("/catboxeps")
-def catboxeps():
+def _catboxeps_impl():
     """Episodios de una serie de una fuente-box (EliteTorrent/WolfMax) resueltos
     por el box, o de DivxTotal DIRECTO desde el relay (sin box, sin code: el
     relay alcanza DivxTotal igual que en la busqueda). Enriquece con TMDB."""
@@ -7488,6 +7641,214 @@ def catboxeps():
                     "title": title or "Serie", "poster": meta.get("poster"),
                     "year": meta.get("year"), "rating": meta.get("rating"),
                     "episodes": eps.get("episodes") or []})
+
+
+# --- La lista COMPLETA de capitulos de cada serie (dtbl40) --------------------
+# La tarjeta de una serie de WolfMax trae los capitulos que tiene el INDICE, y
+# el indice solo sabe los que han salido en los listados: de Ted Lasso, 15 de
+# unos 35 (T2 sin el 2x07; de la T4, 01, 04, 05 y 06). La lista buena la trae
+# una caja leyendo las paginas de la serie (completaFicha), pero no se
+# guardaba en ningun sitio: con WolfMax caido (24-09) la ficha volvia a los 15
+# y se enseñaban como si fueran todos. Ahora cada lista que trae una caja se
+# guarda (y se suma a la anterior: una caja con la fuente a medias no puede
+# encoger la buena) y se sirve: al momento si es de hace menos de 6 h, y como
+# "la de la ultima vez" cuando la fuente no contesta. Tambien completa las
+# tarjetas de la busqueda y del Inicio.
+_EPSC_FILE = "/tmp/mw_boxeps.json"
+_EPSC_MAX = 300
+_EPSC_FRESCA = 6 * 3600
+_EPSC_OLVIDO = 30 * 86400        # un capitulo que no se ve en 30 dias, fuera
+_EPSC_MEM = {"mtime": -1.0, "d": {}}
+
+
+def _epsc_clave(src, url):
+    u = (url or "").strip().lower().split("#", 1)[0].rstrip("/")
+    return "%s|%s" % (src, u.replace("://www.", "://"))
+
+
+def _epsc_load():
+    """La cache entera, sin releer el fichero si no ha cambiado."""
+    try:
+        mt = os.path.getmtime(_EPSC_FILE)
+    except Exception:
+        return {}
+    if mt != _EPSC_MEM["mtime"]:
+        try:
+            with open(_EPSC_FILE, "r", encoding="utf-8") as f:
+                _EPSC_MEM["d"] = _json.load(f) or {}
+            _EPSC_MEM["mtime"] = mt
+        except Exception:
+            return _EPSC_MEM["d"] or {}
+    return _EPSC_MEM["d"]
+
+
+def _epsc_limpia(eps):
+    return [{k: v for k, v in e.items() if k != "_ts"}
+            for e in (eps or []) if isinstance(e, dict)]
+
+
+def _epsc_get(src, url):
+    if src not in ("wf", "et") or not url:
+        return None
+    return _epsc_load().get(_epsc_clave(src, url))
+
+
+def _epsc_put(src, url, titulo, eps):
+    """Guarda la lista que trajo una caja, SUMADA a la que ya habia."""
+    if src not in ("wf", "et") or not url or not eps:
+        return
+    k = _epsc_clave(src, url)
+    now = _t.time()
+    try:
+        with _FileLock(_EPSC_FILE):
+            _EPSC_MEM["mtime"] = -1.0            # releer: el otro worker escribe
+            d = dict(_epsc_load())
+            viejo = d.get(k) or {}
+            por = {}
+            for e in viejo.get("eps") or []:
+                if isinstance(e, dict) and e.get("label") and \
+                        (now - float(e.get("_ts") or viejo.get("ts") or now)) < _EPSC_OLVIDO:
+                    por[e["label"]] = e
+            for e in eps:
+                if isinstance(e, dict) and e.get("label"):
+                    ne = dict(e)
+                    ne["_ts"] = now
+                    por[e["label"]] = ne
+
+            def _orden(e):
+                try:
+                    return (int(e.get("season") or 0), int(e.get("episode") or 0),
+                            str(e.get("label")))
+                except Exception:
+                    return (0, 0, str(e.get("label")))
+            d[k] = {"t": titulo or viejo.get("t") or "",
+                    "eps": sorted(por.values(), key=_orden)[:400], "ts": now}
+            if len(d) > _EPSC_MAX:
+                for kk in sorted(d, key=lambda kk: d[kk].get("ts", 0))[:len(d) - _EPSC_MAX]:
+                    d.pop(kk, None)
+            tmp = "%s.%d.tmp" % (_EPSC_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _EPSC_FILE)
+            _EPSC_MEM["mtime"] = -1.0
+    except Exception:
+        pass
+
+
+def _epsc_completa(items):
+    """Las tarjetas de series de WolfMax/EliteTorrent, con la lista completa si
+    la tenemos (mas larga que la del indice). Devuelve cuantas cambio."""
+    n = 0
+    for it in items or []:
+        try:
+            src = it.get("source")
+            if src not in ("wf", "et") or it.get("kind") != "serie":
+                continue
+            c = _epsc_get(src, it.get("url") or it.get("content_id"))
+            ceps = _epsc_limpia((c or {}).get("eps"))
+            if len(ceps) > len(it.get("eps") or []):
+                it["eps"] = ceps
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
+def _respuesta(r):
+    """(dict, status) de lo que devuelve una ruta: Response o (Response, st)."""
+    resp, st = (r if isinstance(r, tuple) else (r, 200))
+    try:
+        d = resp.get_json()
+    except Exception:
+        d = None
+    return (d if isinstance(d, dict) else None), st
+
+
+@app.get("/catboxeps")
+def catboxeps():
+    """Capitulos de una serie de una fuente-box (ver _catboxeps_impl), con la
+    lista completa guardada delante y la fuente caida dicha (dtbl40)."""
+    src = (request.args.get("src") or "dx").strip()
+    url = (request.args.get("url") or "").strip()
+    if src not in ("wf", "et") or not url.lower().startswith("http"):
+        return _catboxeps_impl()
+    c = _epsc_get(src, url)
+    ceps = _epsc_limpia((c or {}).get("eps"))
+    # 1) La lista completa de hace poco: al momento y sin molestar a nadie.
+    if ceps and (_t.time() - float((c or {}).get("ts") or 0)) < _EPSC_FRESCA:
+        return jsonify(_con_caida({"title": (c or {}).get("t") or "",
+                                   "episodes": ceps, "via": "lista-guardada"}))
+    # 2) La fuente caida: ni cajas ni esperas; lo que se sepa, y dicho.
+    if _fc_caido(src):
+        eps = ceps
+        if not eps:
+            try:
+                eps = _box_eps_by_title("", src, (request.args.get("t") or "")[:120],
+                                        cache_only=True) or []
+            except Exception:
+                eps = []
+        d = {"episodes": eps, "fuente_caida": src, "via": "fuente-caida"}
+        if c:
+            d["title"] = c.get("t") or ""
+            d["stale"] = True       # la lista completa de la ultima vez
+        else:
+            d["parcial"] = True     # solo lo que traia el indice
+        return jsonify(_con_caida(d))
+    # 3) Lo de siempre: las cajas.
+    r = _catboxeps_impl()
+    d, st = _respuesta(r)
+    if d is None:
+        return r
+    eps = d.get("episodes") or []
+    via = str(d.get("via") or "")
+    de_caja = bool(eps) and "titulo" not in via and \
+        bool(_re_dt.search(r"caja\d?:[1-9]", via))
+    if de_caja:
+        _epsc_put(src, url, d.get("title"), eps)
+    else:
+        _fc_mira_si_toca(src)      # la caja no pudo: ¿es que la fuente esta caida?
+        if len(ceps) > len(eps):
+            d["episodes"] = ceps
+            d["stale"] = True
+            d["title"] = d.get("title") or (c or {}).get("t") or ""
+            st = 200
+        if _fc_ya(src):
+            d["fuente_caida"] = src
+            if not d.get("stale"):
+                d["parcial"] = True
+    return jsonify(_con_caida(d)), st
+
+
+@app.get("/catetbox")
+def catetbox():
+    """Busqueda/estrenos en fuentes-box (ver _catetbox_impl): las tarjetas de
+    series, con la lista completa si la tenemos, y las fuentes caidas dichas."""
+    r = _catetbox_impl()
+    d, st = _respuesta(r)
+    if d is None:
+        return r
+    n = _epsc_completa(d.get("items"))
+    if n or _fuentes_caidas():
+        return jsonify(_con_caida(d)), st
+    return r
+
+
+@app.get("/catetboxresolve")
+def catetboxresolve():
+    """El enlace de un titulo de fuente-box (ver _catetboxresolve_impl). Con la
+    fuente caida se dice al momento (antes: 18 s y "¿box encendido?")."""
+    src = (request.args.get("src") or "et").strip()
+    if src in ("wf", "et") and _fc_caido(src):
+        return jsonify({"link": "", "fuente_caida": src})
+    r = _catetboxresolve_impl()
+    d, st = _respuesta(r)
+    if d is None or d.get("link") or src not in ("wf", "et") or st != 200:
+        return r
+    _fc_mira_si_toca(src)          # sin enlace: ¿es que la fuente esta caida?
+    if _fc_ya(src):
+        d["fuente_caida"] = src
+        return jsonify(d), st
+    return r
 
 
 @app.post("/catjob/done")
@@ -9378,10 +9739,12 @@ def catbrowse():
         out = {"items": _al_servir(items)}
         out.update(extra)
         _con_caida(out)   # el Inicio lo avisa: sus titulos pueden no abrir
+        _epsc_completa(out["items"])     # series con su lista completa (dtbl40)
         if page == 1 and request.args.get("mix") == "1":
             ent = _home_mix_cache(kind)
             if ent and ent.get("items"):
                 out["mix"] = _al_servir(ent["items"])
+                _epsc_completa(out["mix"])
             else:
                 out["mix"] = []
                 out["mixpend"] = True
@@ -9816,6 +10179,19 @@ def catdiag():
             "dudas": _DTCAIDA.get("dudas", 0)}
     except Exception:
         out["dt_caida"] = {"error": True}
+    # 1c) WolfMax y EliteTorrent (dtbl40), y lo que diria el aviso del Inicio
+    try:
+        _fs = {}
+        for _s, _e in (_fc_lee() or {}).items():
+            _fs[_s] = {"caida": bool(_e.get("caida")), "ahora": _fc_ya(_s),
+                       "visto_hace_s": (int(now - float(_e["visto"]))
+                                        if _e.get("visto") else None),
+                       "st": _e.get("st")}
+        out["fuentes"] = {"estado": _fs, "caidas": _fuentes_caidas(),
+                          "vivas": _fuentes_vivas(),
+                          "listas_guardadas": len(_epsc_load() or {})}
+    except Exception:
+        out["fuentes"] = {"error": True}
     # 2) Estado de la cache del Inicio (memoria + disco): origen (dx vs DT real),
     #    antiguedad y nº de items. Aqui se ve si esta "pegada" en DX.
     def _snap(cache, src):
@@ -11227,7 +11603,7 @@ function chip(kind,intento){document.querySelectorAll('.chip').forEach(function(
   if(kind==='estrenos'){setTimeout(function(){if(!g.querySelector('.card'))retry();},14000);}else{retry();}}
  fetch('/catbrowse?kind='+kind+'&page=1&mix=1&code='+(code.value||'').replace(/\D/g,''),ctrl?{signal:ctrl.signal}:{}).then(function(r){return r.json()}).then(function(d){
   done=true;clearTimeout(slow);clearTimeout(to);
-  pintaDtAviso(d&&d.dt_caida);
+  pintaCaidas(d);
   var base=(d&&d.items)||[];
   if(!base.length){fallback();return}
   // La portada de DonTorrent TAMBIEN se funde. Era el unico sitio de la app que
@@ -11587,12 +11963,13 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
     // DOS reintentos, no uno: un titulo que ninguna caja tiene indexado le
     // cuesta ~88s de rastreo y el primer reintento (35s) llegaba demasiado
     // pronto. Al segundo (95s) ya esta en el indice y contesta en milisegundos.
-    if(!(r&&r.got)&&wfRe<2){wfRe++;
+    // con WolfMax caido no hay nada que esperar: ni reintentos (dtbl40)
+    if(!(r&&r.got)&&!(r&&r.caida)&&wfRe<2){wfRe++;
      progSet('wf',0);                       // sigue buscando, no es un cero
      if(more)paint();
      setTimeout(function(){if(seq===_searchSeq)wfPide()},wfRe===1?35000:60000);
      lanzarResto();return;}
-    progSet('wf',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);
+    progSet('wf',(r&&r.caida)?4:((r&&r.got)?1:((r&&r.timeout)?3:2)),(r&&r.got)||0);
     // llega DESPUES de que la barra se cerrara: se vuelve a asomar un momento
     // con la cifra buena, para que se vea de donde han salido esas tarjetas.
     if(wfRe&&r&&r.got){var _b=$('buscar-prog');if(_b){_b.classList.add('on');
@@ -11632,7 +12009,7 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  // EliteTorrent y WolfMax via caja (propia o PRESTADA): SIEMPRE, con o sin código.
  // DivxTotal NO se le pide a la caja aquí: ya va directo por /catdxsearch (más
  // rápido) y arriba está su plan B.
- boxMerge('buscar',g,'search',q,'et',function(r){progSet('et',(r&&r.got)?1:((r&&r.timeout)?3:2),(r&&r.got)||0);done(r)},seq,1);
+ boxMerge('buscar',g,'search',q,'et',function(r){progSet('et',(r&&r.caida)?4:((r&&r.got)?1:((r&&r.timeout)?3:2)),(r&&r.got)||0);done(r)},seq,1);
  }}
 function dxMerge(list,g,q,seq,cb){
  // 14s de tope: Cloudflare "tarpitea" a la IP de Render y este endpoint ha
@@ -11710,7 +12087,10 @@ function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replac
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  var _c=('AbortController'in window)?new AbortController():null;
  if(op==='search')sreqAdd(_c);   // las del INICIO no: no las cancela nadie
- fetch(u,_c?{signal:_c.signal}:{}).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b,got:got})}).catch(function(){if(cb)cb({})})}
+ fetch(u,_c?{signal:_c.signal}:{}).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);
+  // `caida`: alguna de las fuentes pedidas esta caida segun el relay (dtbl40)
+  var cai=((d&&d.caidas)||[]),caida=(srcs||'').split(',').some(function(s){return cai.indexOf(s)>=0});
+  if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b,got:got,caida:caida})}).catch(function(){if(cb)cb({})})}
 // Un favorito guardado ANTES de que las tarjetas trajeran capitulos no los
 // tiene. La primera vez que se abren por red, se los quedamos -> la proxima vez
 // abre al instante. (Sin esto habria que quitarlo y volver a añadirlo a mano.)
@@ -11718,7 +12098,10 @@ function favLearnEps(x,eps){
  if(!x||!eps||!eps.length)return;
  for(var i=0;i<favs.length;i++){
   if(fk(favs[i])!==fk(x))continue;
-  if(!(favs[i].eps&&favs[i].eps.length)){favs[i].eps=slimEps(eps);saveFavs()}
+  // y si llega una lista MAS LARGA, tambien (dtbl40): Ted Lasso en «Siguiendo»
+  // se quedaba para siempre con los 15 capitulos que tenia al guardarla
+  var ya=(favs[i].eps||[]).length;
+  if(!ya||eps.length>ya){favs[i].eps=slimEps(eps);saveFavs()}
   return;}}
 // ===== HISTORIAL =====================================================
 // Lo último que se ha mandado a la tele, para volver a ponerlo de UN TOQUE
@@ -12542,7 +12925,9 @@ function play(){if(!sel)return;
  if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
   toast('Resolviendo en tu box…');
   fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
-   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
+   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}
+   else if(d&&d.fuente_caida){fuenteCaidaDlg(d.fuente_caida,sel.title)}     // dtbl40
+   else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
  var _x=sel;seedGate(_x.content_id,_x.tabla||'peliculas',function(){if(sendPlay({a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title}))closeSheet()})}
 function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return false}
@@ -12561,10 +12946,11 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
 // DonTorrent CAIDO (lo dice su propia web, ver _dt_caido en el relay). Nada de
 // "Error: ..." ni de mandar a la tele algo que va a fallar a los 60 s: se dice
 // lo que pasa, de quien es el fallo y que se puede hacer mientras.
-function dtCaidaDlg(t){var q=_tituloBase(t);
- mwConfirm('DonTorrent está caído',
+function fuenteCaidaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
+ mwConfirm(n+' está caído',
   'Su web no responde ahora mismo: es un fallo de su servidor, no de tu tele. Suele volver sola en unas horas. Mientras, puedes buscarlo en las otras fuentes.',
   'Buscar en otras fuentes',function(){buscaOtras(q)});}
+function dtCaidaDlg(t){fuenteCaidaDlg('dt',t)}
 function dtCaidaHTML(t,alts){
  return '<div class="msg dtcaida"><b>DonTorrent está caído ahora mismo</b><br>'+
   'Su web no responde: es un fallo de su servidor, no de tu tele. Suele volver sola en unas horas.'+
@@ -12580,12 +12966,21 @@ function buscaOtras(t){t=String(t||'').trim();if(!t)return;
  var abierto=$('sheet').classList.contains('on')||$('ov').classList.contains('on');
  closeSheet();closeOv();
  setTimeout(function(){goView('buscar');$('q').value=t;go()},abierto?350:0);}
-// El aviso del Inicio. Sale solo si el relay dice que DonTorrent esta caido y
-// se va solo cuando vuelve (cada carga del Inicio lo repinta).
-function pintaDtAviso(dc){var e=$('dt-aviso');if(!e)return;
- if(!dc){e.classList.remove('on');e.innerHTML='';return}
- e.innerHTML='⚠️ <b>DonTorrent está caído ahora mismo</b> — es un fallo de su web. Sus títulos pueden no abrir; las demás fuentes funcionan.';
+// El aviso del Inicio: QUE fuentes estan caidas y cuales SI contestan, segun
+// el relay (dtbl40). Antes decia "las demas fuentes funcionan" con DonTorrent,
+// WolfMax y EliteTorrent caidas a la vez (24-09): solo quedaba DivxTotal. De
+// las que no se sabe nada no se afirma nada. Cada carga del Inicio lo repinta,
+// asi que se va solo cuando vuelven.
+function _listaY(a){return a.length<2?(a[0]||''):(a.slice(0,-1).join(', ')+' y '+a[a.length-1])}
+function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;
+ var c=((d&&d.caidas)||[]).slice();if(d&&d.dt_caida&&c.indexOf('dt')<0)c.unshift('dt');
+ if(!c.length){e.classList.remove('on');e.innerHTML='';return}
+ var nom=c.map(function(s){return PROGN[s]||s}),un=nom.length===1;
+ var viv=((d&&d.vivas)||[]).filter(function(s){return c.indexOf(s)<0}).map(function(s){return PROGN[s]||s});
+ e.innerHTML='⚠️ <b>'+_listaY(nom)+(un?' está caído':' están caídos')+' ahora mismo</b> — es un fallo de '+(un?'su web':'sus webs')+'. Sus títulos pueden no abrir'+
+  (viv.length?('; '+_listaY(viv)+(viv.length===1?' sí funciona':' sí funcionan')):'')+'.';
  e.classList.add('on');}
+function pintaDtAviso(dc){pintaCaidas(dc?{dt_caida:dc}:null)}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
@@ -12718,17 +13113,23 @@ function completaFicha(x){
        '&t='+encodeURIComponent(x.title||''))
   .then(function(r){return r.json()}).then(function(d){
    var eps=(d&&d.episodes)||[];
-   if(!eps.length)return;
+   // LA FUENTE NO CONTESTA (dtbl40): se dice en la ficha. Con WolfMax caido,
+   // Ted Lasso salia con los 15 capitulos del indice como si fueran todos. Y
+   // se podra volver a intentar al abrirla otra vez (antes, una vez por carga).
+   var aviso=(d&&(d.fuente_caida||d.stale))?
+    {src:(d.fuente_caida||src),viejo:!!(d.stale&&!d.parcial)}:null;
+   if(aviso)_COMPLETANDO='';
    if(!OVDATA||OVDATA.x!==x)return;            // ya no esta abierta esa ficha
+   if(aviso)OVDATA.d.aviso=aviso;
    var antes=(OVDATA.d.episodes||[]).length;
-   var union=mergeEps(OVDATA.d.episodes||[],eps);
-   if(union.length<=antes)return;              // no aporta nada nuevo
+   var union=eps.length?mergeEps(OVDATA.d.episodes||[],eps):(OVDATA.d.episodes||[]);
+   if(union.length<=antes){if(aviso)renderEpisodes();return;}   // nada nuevo (el aviso si)
    OVDATA.d.episodes=union;
    x.eps=slimEps(union);                       // y la tarjeta se lo queda
    try{favLearnEps(x,union)}catch(e){}
    renderEpisodes();
-   toast('Serie completa: '+union.length+' cap\u00edtulos');
-  }).catch(function(){});}
+   toast((aviso&&aviso.viejo?'Lista de la \u00faltima vez: ':'Serie completa: ')+union.length+' cap\u00edtulos');
+  }).catch(function(){_COMPLETANDO=''});}
 var OVSEASON=null;      // temporada abierta en la ficha (ver las pestanas)
 function ovTemp(s){OVSEASON=s;renderEpisodes();
  try{var b=$('ov-body');if(b)b.scrollTop=0}catch(e){}}
@@ -12752,6 +13153,10 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
    altsHTML(x)+
    // capitulos de la ultima vez, con DonTorrent caido: que se sepa antes de pulsar
    (d.dt_caida?'<div class="dtav on">⚠️ <b>DonTorrent está caído ahora mismo.</b> Estos capítulos son los de la última vez y puede que no arranquen hasta que vuelva.</div>':'')+
+   // WolfMax / EliteTorrent sin contestar (ver completaFicha, dtbl40)
+   (d.aviso?'<div class="dtav on">⚠️ <b>'+esc(PROGN[d.aviso.src]||'Esta fuente')+' no responde ahora mismo.</b> '+
+    (d.aviso.viejo?'Es la lista de la última vez que la vimos entera; puede que no arranquen hasta que vuelva.':
+     'Pueden faltar capítulos: lo que ves es lo que teníamos guardado.')+'</div>':'')+
    _seguirHTML()+
    '<div class="ovactions"><button class="ovfav" id="ov-fav" onclick="ovFav()">'+favLabel(x)+'</button> <button class="ovfav" onclick="shareSeries()">📤 Compartir</button> <button class="ovfav" id="ov-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button></div>';
  // PESTANAS DE TEMPORADA: la ficha trae la serie entera, y verlas todas
@@ -12831,6 +13236,7 @@ function playEp(id){var e=EPS[id];if(!e)return;
   fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id))
    .then(function(r){return r.json()}).then(function(d){
     if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2,q:e.quality}))closeOv();}
+    else if(d&&d.fuente_caida)fuenteCaidaDlg(d.fuente_caida,_t2);            // dtbl40
     else toast('No se pudo obtener el enlace de ese capítulo');
    }).catch(function(){toast('No se pudo obtener el enlace de ese capítulo')});
   return}

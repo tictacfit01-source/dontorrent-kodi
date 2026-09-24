@@ -23,6 +23,10 @@ function saca(desde, hasta) {
 const codigo = [
   saca('function sendPlay(', '\nfunction openSeries('),
   saca('var PROG={', '\nfunction progStop('),
+  saca('function mergeEps(', '\nfunction upgrade'),
+  saca('function slimEps(', '\nfunction slimAlts'),
+  saca('function favLearnEps(', '\n// ===== HISTORIAL'),
+  saca("var _COMPLETANDO='';", '\nvar OVSEASON='),
 ].join('\n');
 
 // --- DOM y entorno de mentira -------------------------------------------------
@@ -59,6 +63,10 @@ let RESP = null;
 function fetch() { return Promise.resolve({ json: () => Promise.resolve(RESP) }); }
 const OVRETRY = { title: 'Fauda' };
 const window = { LISTS };
+let OVDATA = null, favs = [], PINTADAS = 0;
+function renderEpisodes() { PINTADAS++; }
+function fk(x) { return (x.source || '') + '|' + (x.url || x.title || ''); }
+function saveFavs() {}
 
 eval(codigo);
 
@@ -133,6 +141,71 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
   pintaDtAviso(undefined);
   comprueba('...y se va cuando vuelve', !$('dt-aviso').classList.contains('on')
     && $('dt-aviso').innerHTML === '');
+
+  console.log('\n=== 4b) El aviso del Inicio con VARIAS fuentes (dtbl40) ===');
+  pintaCaidas({ caidas: ['dt', 'wf', 'et'], vivas: ['dx'] });
+  const av = $('dt-aviso').innerHTML;
+  comprueba('dice las tres y que DivxTotal si funciona',
+    /DonTorrent, WolfMax y EliteTorrent están caídos ahora mismo/.test(av)
+    && /sus webs/.test(av) && /DivxTotal sí funciona/.test(av), av);
+  comprueba('...y NUNCA "las demás fuentes funcionan"', !/las demás fuentes funcionan/.test(av));
+  pintaCaidas({ dt_caida: { desde: 1 } });
+  const av2 = $('dt-aviso').innerHTML;
+  comprueba('solo DonTorrent y sin saber de las otras: no afirma nada de ellas',
+    /DonTorrent está caído ahora mismo/.test(av2) && !/funciona/.test(av2), av2);
+  pintaCaidas({ caidas: ['wf'], vivas: ['dt', 'et', 'dx'] });
+  comprueba('una sola, con las vivas en lista', /WolfMax está caído/.test($('dt-aviso').innerHTML)
+    && /DonTorrent, EliteTorrent y DivxTotal sí funcionan/.test($('dt-aviso').innerHTML),
+    $('dt-aviso').innerHTML);
+  pintaCaidas({ items: [] });
+  comprueba('sin caidas, fuera', !$('dt-aviso').classList.contains('on'));
+
+  console.log('\n=== 4c) Reproducir de una fuente caida (WolfMax) ===');
+  DLGS.length = 0; LLAMADAS.length = 0;
+  fuenteCaidaDlg('wf', 'Ted Lasso 4x02');
+  comprueba('"WolfMax está caído", con salida a otras fuentes',
+    DLGS.length === 1 && DLGS[0].titulo === 'WolfMax está caído'
+    && DLGS[0].etiqueta === 'Buscar en otras fuentes', JSON.stringify(DLGS[0] || {}));
+  $('ov').classList.add('on');
+  DLGS[0].alAceptar();
+  await espera(420);
+  comprueba('...y busca la serie, no el capitulo', LLAMADAS.includes('go:Ted Lasso'), LLAMADAS.join(','));
+
+  console.log('\n=== 4d) La ficha cuando la fuente no responde ===');
+  const eps = (t, ns) => ns.map((n) => ({ label: t + 'x' + String(n).padStart(2, '0'), season: t, episode: n, url: 'u' + t + n }));
+  const x = { title: 'Ted Lasso', source: 'wf', kind: 'serie', url: 'https://wolfmax4k.com/serie-online-4k/270209' };
+  const indice = eps(2, [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12]).concat(eps(4, [1, 4, 5, 6]));
+  OVDATA = { d: { episodes: indice.slice() }, x: x };
+  favs = [Object.assign({}, x, { eps: indice.slice() })];
+  RESP = { episodes: indice.slice(), fuente_caida: 'wf', parcial: true, stale: true };
+  PINTADAS = 0; TOASTS.length = 0;
+  completaFicha(x);
+  await espera(20);
+  comprueba('a medias: la ficha lo avisa (sin tocar la lista)',
+    OVDATA.d.aviso && OVDATA.d.aviso.src === 'wf' && OVDATA.d.aviso.viejo === false
+    && OVDATA.d.episodes.length === 15 && PINTADAS === 1, JSON.stringify(OVDATA.d.aviso));
+  comprueba('...y se podra reintentar al volver a abrirla', _COMPLETANDO === '');
+  const completa = eps(1, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).concat(eps(2, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+    eps(3, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), eps(4, [1, 2, 3, 4, 5, 6, 7]));
+  OVDATA = { d: { episodes: indice.slice() }, x: x };
+  RESP = { episodes: completa, fuente_caida: 'wf', stale: true };
+  PINTADAS = 0; TOASTS.length = 0;
+  completaFicha(x);
+  await espera(20);
+  comprueba('la de la ultima vez: 41 capitulos, avisada como "de la ultima vez"',
+    OVDATA.d.episodes.length === 41 && OVDATA.d.aviso.viejo === true && PINTADAS === 1
+    && TOASTS.some((t) => /Lista de la última vez: 41/.test(t)), JSON.stringify(TOASTS));
+  comprueba('...y «Siguiendo» se queda con la lista larga (antes, 15 para siempre)',
+    favs[0].eps.length === 41, favs[0].eps.length);
+  OVDATA = { d: { episodes: indice.slice() }, x: x };
+  RESP = { episodes: completa };
+  TOASTS.length = 0;
+  _COMPLETANDO = '';
+  completaFicha(x);
+  await espera(20);
+  comprueba('con la fuente viva: "Serie completa" y sin aviso',
+    OVDATA.d.episodes.length === 41 && !OVDATA.d.aviso
+    && TOASTS.some((t) => /Serie completa: 41/.test(t)), JSON.stringify(TOASTS));
 
   console.log('\n=== 5) El chip de la busqueda ===');
   PROG = { t0: Date.now(), st: { dt: 4, et: 1, dx: 2, wf: 0 }, n: { dt: 1, et: 3, dx: 0, wf: 0 }, tick: null, seq: 1 };
