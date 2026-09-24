@@ -234,6 +234,99 @@ del A._PRUEBA_CENSO
 print("   censo: %s s, %s MB vistos; duenos: %s" % (js.get("s"), js.get("mb"),
       ", ".join("%s %s" % (d["dueno"], d["mb"]) for d in js.get("por_dueno", [])[:6])))
 
+print("\n=== 8) POR QUE sigue vivo: la cadena de quien lo retiene (dtbl46) ===")
+# Cuatro formas de retener algo, y el diagnostico tiene que nombrar cada una.
+import gc as _gc2
+import threading as _th
+
+
+class FugaGlobal(object):
+    pass
+
+
+class FugaHilo(object):
+    pass
+
+
+class FugaExc(object):
+    pass
+
+
+class FugaCiclo(object):
+    pass
+
+
+A._PRUEBA_QUIEN = {"retenida": FugaGlobal()}
+_suelta = _th.Event()
+_lista = _th.Event()
+
+
+def _retiene_en_hilo():
+    retenido = FugaHilo()
+    _lista.set()
+    _suelta.wait(30)
+    return retenido
+
+
+_h = _th.Thread(target=_retiene_en_hilo, name="prueba-quien", daemon=True)
+_h.start()
+_lista.wait(5)
+
+
+def _falla_con_pool():
+    pool_x = FugaExc()
+    raise ValueError("prueba %s" % id(pool_x))
+
+
+try:
+    _falla_con_pool()
+except ValueError as _e:
+    A._PRUEBA_EXC = [_e]      # (Python borra _e al salir del except)
+
+
+def cadena(tipo):
+    js = cli.get("/catmem?quien=" + tipo).get_json()
+    return js, " | ".join(js.get("cadenas") or [])
+
+
+try:
+    js, c = cadena("FugaGlobal")
+    comprueba("retenido por una global: la nombra",
+              js.get("vivos") == 1 and c.endswith("GLOBAL app._PRUEBA_QUIEN"), c)
+    js, c = cadena("FugaHilo")
+    comprueba("retenido por un hilo en marcha: su funcion, su variable y su hilo",
+              "MARCO _retiene_en_hilo()" in c and "var=retenido" in c
+              and "hilo=prueba-quien" in c, c)
+    js, c = cadena("FugaExc")
+    comprueba("retenido por una excepcion guardada: el marco muerto y quien la guarda",
+              "MARCO-EXC _falla_con_pool()" in c and "var=pool_x" in c
+              and "ValueError" in c and c.endswith("GLOBAL app._PRUEBA_EXC"), c)
+    _gc2.disable()
+    try:
+        _x = FugaCiclo()
+        _x.yo = _x
+        del _x
+        js, c = cadena("FugaCiclo")
+        comprueba("un ciclo suelto: se dice que es basura esperando al gc",
+                  js.get("vivos") == 1 and "CICLO suelto" in c, c)
+    finally:
+        _gc2.enable()
+        _gc2.collect()
+    js = cli.get("/catmem?quien=NoExisteNada").get_json()
+    comprueba("un tipo sin vivos: 0 y ya", js.get("vivos") == 0, js)
+    r = cli.get("/catmem?quien=a;b")
+    comprueba("un tipo raro no pasa (solo identificadores)", r.status_code == 400, r.status_code)
+    js = cli.get("/catmem?censo=1").get_json()
+    comprueba("el censo dice de quien son los objetos de red y cuanta basura sin recoger hay",
+              "red_duenos" in js and js.get("gc_basura") == 0, (js.get("red_duenos"), js.get("gc_basura")))
+    print("   ejemplo:", cadena("FugaExc")[1][:300])
+finally:
+    _suelta.set()
+    _h.join(5)
+    for _n in ("_PRUEBA_QUIEN", "_PRUEBA_EXC"):
+        if hasattr(A, _n):
+            delattr(A, _n)
+
 print("\n---- VEREDICTO ----")
 if fallos:
     print("%d comprobaciones MAL" % fallos)

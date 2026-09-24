@@ -75,6 +75,13 @@ la que cuelga, contando lo que el gc no sigue (una caché de textos en tuplas
 no se veía contando objetos). Se prueba con una caché así de 4 MB: tiene que
 salir con su nombre, y nunca claves ni contenidos (hay códigos de caja).
 tracemalloc se descartó midiendo: frena de 17 a 30 veces el trabajo típico.
+Sección 8 (dtbl46): **`/catmem?quien=Tipo`**, la cadena de quién retiene a
+los objetos vivos de un tipo (los más viejos), hacia arriba hasta una global,
+un hilo en marcha (su función, su variable y su hilo), una clase o nadie. Se
+prueba con las cuatro formas de retener: una global, un hilo, una excepción
+guardada (hay que atravesar el marco muerto y su traceback hasta quien la
+guarda) y un ciclo suelto. Nació el 24-09: 95 SSLContext vivos con una sola
+Session, +76 MB en C que el censo de objetos no podía ver.
 
 **`versiones.py`** (23-09-2026) — las cajas muy desactualizadas: cómo se
 comparan versiones (se toleran 5 de retraso, porque al publicar las cajas

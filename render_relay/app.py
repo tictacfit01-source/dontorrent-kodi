@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl45"
+BUILD = "dtbl46"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13585,10 +13585,14 @@ _MEM_GC_ULT = [0.0]
 # crece. Si lo que suma no llega a lo que dice malloc, lo que crece esta en C.
 # Nombres de variables y tipos, nunca contenidos ni claves (hay codigos de caja).
 _CENSO_LOCK = _thr.Lock()
-_CENSO_RED = ("SSLContext", "SSLSocket", "SSLObject", "Session", "CloudScraper",
-              "PoolManager", "HTTPSConnectionPool", "HTTPConnectionPool",
-              "HTTPSConnection", "HTTPConnection", "socket", "Thread", "Response",
-              "ThreadPoolExecutor", "Future")
+_CENSO_RED = ("SSLContext", "SSLSocket", "_SSLSocketVigilado", "SSLObject", "Session",
+              "CloudScraper", "HTTPAdapter", "CipherSuiteAdapter", "PoolManager",
+              "HTTPSConnectionPool", "HTTPConnectionPool", "HTTPSConnection",
+              "HTTPConnection", "HTTPResponse", "socket", "Thread", "Timer", "Response",
+              "ThreadPoolExecutor", "Future", "traceback", "frame", "MaxRetryError",
+              "ConnectionError", "NewConnectionError", "ReadTimeoutError",
+              "ConnectTimeoutError", "SSLError")
+_CENSO_RED_SET = frozenset(_CENSO_RED)
 
 
 def _mem_censo(top=16, tope_s=90.0):
@@ -13614,7 +13618,7 @@ def _mem_censo(top=16, tope_s=90.0):
                     continue
                 lab = "%s.%s" % (mn, gn)
                 cola, prof = [gv], 0
-                while cola and prof < 10:
+                while cola and prof < 24:
                     sig = []
                     for x in cola:
                         if isinstance(x, salta) or isinstance(x, hoja) or id(x) in etiqueta:
@@ -13645,7 +13649,7 @@ def _mem_censo(top=16, tope_s=90.0):
                     except Exception:
                         pass
         # 2) todo lo vivo: lo que sigue el gc y lo que cuelga de ello
-        por_tipo, por_dueno, grandes = {}, {}, []
+        por_tipo, por_dueno, grandes, red_duenos = {}, {}, [], {}
 
         def cuenta(x, lab):
             try:
@@ -13665,6 +13669,9 @@ def _mem_censo(top=16, tope_s=90.0):
             b[1] += s
             if s >= 65536 and len(grandes) < 4000:
                 grandes.append((s, tn, lab))
+            if tn in _CENSO_RED_SET:
+                rd = red_duenos.setdefault(tn, {})
+                rd[lab] = rd.get(lab, 0) + 1
 
         vistos = set(map(id, objs))
         cortado = False
@@ -13709,7 +13716,213 @@ def _mem_censo(top=16, tope_s=90.0):
                 "grandes": [{"kb": int(s / 1024), "tipo": tn, "dueno": lab}
                             for s, tn, lab in grandes[:10]],
                 "red": dict((k, por_tipo[k][0]) for k in _CENSO_RED if k in por_tipo),
+                "red_duenos": dict((k, sorted(v.items(), key=lambda kv: -kv[1])[:3])
+                                   for k, v in red_duenos.items()),
+                "gc_basura": len(gc.garbage),
                 "hilos": _thr.active_count()}
+    finally:
+        _CENSO_LOCK.release()
+
+
+
+# --- POR QUE sigue vivo: la cadena de quien lo retiene (dtbl46) ---------------
+# 24-09, 18:47 (worker de 2,2 h): el censo seguia en 28 MB de objetos de Python
+# pero malloc habia pasado de 20 a 96 MB, y la red decia 95 SSLContext, 97
+# PoolManager y 94 pools HTTPS vivos con UNA sola Session (a las 0,14 h: 10,
+# 32 y 16). Cada SSLContext lleva los certificados raiz cargados en C (~0,9 MB):
+# 85 de mas son justo los 76 MB. En el PC no se reproduce (con el gc se sueltan
+# todos), asi que hay que preguntarle al proceso de Render QUIEN los retiene:
+# desde unos cuantos objetos vivos de ese tipo (los mas viejos: el gc los
+# lista al final) se sube por gc.get_referrers hasta una global, un marco en
+# ejecucion (con su hilo), una clase... o nadie (basura que espera al gc).
+# Solo tipos y nombres de atributo/variable: nunca contenidos ni claves de
+# datos (hay codigos de caja; una clave solo sale si parece un identificador).
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,40}$")
+
+
+def _mem_nombre_en(cont, hijo):
+    """Como se llama `hijo` dentro de `cont`: atributo, clave-identificador o
+    posicion. "" si no se sabe."""
+    try:
+        if isinstance(cont, dict):
+            for k, v in list(cont.items()):
+                if v is hijo:
+                    return k if (isinstance(k, str) and _IDENT_RE.match(k)) else "[·]"
+                if k is hijo:
+                    return "(clave)"
+            return ""
+        if isinstance(cont, (list, tuple)):
+            for i, v in enumerate(cont):
+                if v is hijo:
+                    return "[%d]" % i
+            return ""
+        d = getattr(cont, "__dict__", None)
+        if isinstance(d, dict):
+            for k, v in list(d.items()):
+                if v is hijo:
+                    return k if (isinstance(k, str) and _IDENT_RE.match(k)) else ""
+        for k in (getattr(type(cont), "__slots__", ()) or ()):
+            if isinstance(k, str) and getattr(cont, k, None) is hijo:
+                return k
+    except Exception:
+        pass
+    return ""
+
+
+def _mem_var_en(fr, v):
+    """El nombre de la variable local de `fr` que apunta a `v` ("" si no)."""
+    try:
+        for k, x in list(fr.f_locals.items()):
+            if x is v:
+                return k if _IDENT_RE.match(str(k)) else ""
+    except Exception:
+        pass
+    return ""
+
+
+def _mem_pref(r, es_marco):
+    """Por donde seguir subiendo. El marco muerto de una excepcion y su
+    traceback, lo primero: es lo que suele retener pools y conexiones (y hay
+    que llegar a quien guarda la excepcion); luego el DUENO de verdad antes
+    que el contenedor suelto. (Fuera de _mem_cadena a proposito: un cierre
+    alli dentro convertiria `actual` en celda y saldria como referente.)"""
+    import types
+    if isinstance(r, types.TracebackType):
+        return 0
+    if isinstance(r, types.FrameType):
+        return 4 if es_marco else 0
+    if isinstance(r, (dict, list, tuple, set, frozenset)):
+        return 2
+    if isinstance(r, types.CellType):
+        return 3
+    return 1
+
+
+def _mem_cadena(obj, prof, mods, marcos_hilo, propios, en_marco):
+    """La cadena de quien retiene a `obj`, hacia arriba, como texto."""
+    import gc
+    import types
+    pasos = [type(obj).__name__]
+    actual = obj
+    vistos = {id(obj)}
+    mios = set()
+    f = sys._getframe()
+    while f is not None:           # los marcos de este diagnostico no cuentan
+        mios.add(id(f))
+        f = f.f_back
+    for _ in range(prof):
+        # una variable local de un hilo EN MARCHA (desde 3.11 su marco no sale
+        # en get_referrers: sin esto pareceria basura)
+        if id(actual) in en_marco:
+            pasos.append(en_marco[id(actual)])
+            break
+        try:
+            refs = gc.get_referrers(actual)
+        except Exception:
+            pasos.append("(error)")
+            break
+        cands, ciclo = [], False
+        for r in refs:
+            if id(r) in propios or id(r) in mios:
+                continue
+            if id(r) in vistos:
+                ciclo = True
+                continue
+            cands.append(r)
+        del refs
+        if not cands:
+            # refs que quedan: las nuestras (~3) y, si hay mas, alguien que no
+            # se ve desde Python (C, o un marco que no se pudo leer)
+            pasos.append("(nadie mas: CICLO suelto, basura que espera al gc; refs=%d)" % sys.getrefcount(actual)
+                         if ciclo else "(nadie visible; refs=%d)" % sys.getrefcount(actual))
+            break
+        g = next((r for r in cands if id(r) in mods), None)
+        if g is not None:
+            pasos.append("GLOBAL %s.%s" % (mods[id(g)], _mem_nombre_en(g, actual) or "?"))
+            break
+        fr = next((r for r in cands if isinstance(r, types.FrameType)
+                   and id(r) in marcos_hilo), None)
+        if fr is not None:          # un marco EN MARCHA: fin (con su hilo)
+            pasos.append("MARCO %s() %s:%d var=%s hilo=%s" % (
+                fr.f_code.co_name, os.path.basename(fr.f_code.co_filename),
+                fr.f_lineno, _mem_var_en(fr, actual) or "?", marcos_hilo[id(fr)]))
+            break
+        cl = next((r for r in cands if isinstance(r, type)), None)
+        if cl is not None:
+            pasos.append("CLASE %s.%s" % (getattr(cl, "__module__", "?"),
+                                          getattr(cl, "__qualname__", "?")))
+            break
+        es_marco = isinstance(actual, types.FrameType)
+        cands.sort(key=lambda r: _mem_pref(r, es_marco))
+        sig = cands[0]
+        if isinstance(sig, types.FrameType):
+            paso = "MARCO-EXC %s() %s:%d var=%s" % (
+                sig.f_code.co_name, os.path.basename(sig.f_code.co_filename),
+                sig.f_lineno, _mem_var_en(sig, actual) or "?")
+        else:
+            nombre = _mem_nombre_en(sig, actual)
+            paso = type(sig).__name__ + (("." + nombre) if nombre and not nombre.startswith(("[", "(")) else nombre)
+        if len(cands) > 1:
+            paso += " (+%d: %s)" % (len(cands) - 1, ",".join(
+                sorted(set(type(x).__name__ for x in cands[1:6]))))
+        pasos.append(paso)
+        vistos.add(id(sig))
+        actual = sig
+        del cands, sig       # que la lista de esta vuelta no salga como referente
+    return " <- ".join(pasos)
+
+
+def _mem_quien(tipo, n=3, prof=22):
+    """POR QUE siguen vivos los objetos de un tipo: la cadena de unos cuantos."""
+    import gc
+    if not _CENSO_LOCK.acquire(False):
+        return {"ocupado": True}
+    try:
+        t0 = _t.time()
+        insts = [o for o in gc.get_objects() if type(o).__name__ == tipo]
+        vivos = len(insts)
+        if not vivos:
+            return {"tipo": tipo, "vivos": 0}
+        # los mas VIEJOS primero (el gc lista la generacion vieja al final)
+        pos = []
+        for i in (vivos - 1, vivos - 2, vivos // 2, 0):
+            if 0 <= i < vivos and i not in pos:
+                pos.append(i)
+        muestra = [insts[i] for i in pos[:max(1, n)]]
+        del insts
+        mods = {}
+        for mn, m in list(sys.modules.items()):
+            d = getattr(m, "__dict__", None)
+            if isinstance(d, dict):
+                mods[id(d)] = mn
+        marcos_hilo, en_marco = {}, {}
+        atomicos = (str, bytes, int, float, bool, type(None))
+        try:
+            nombres = dict((th.ident, th.name) for th in _thr.enumerate())
+            yo = _thr.get_ident()
+            for tid, fr in sys._current_frames().items():
+                while fr is not None:
+                    marcos_hilo[id(fr)] = nombres.get(tid, str(tid))
+                    if tid != yo:
+                        try:
+                            for k, v in list(fr.f_locals.items()):
+                                if not isinstance(v, atomicos):
+                                    en_marco.setdefault(id(v), "MARCO %s() %s:%d var=%s hilo=%s" % (
+                                        fr.f_code.co_name, os.path.basename(fr.f_code.co_filename),
+                                        fr.f_lineno, k, nombres.get(tid, str(tid))))
+                        except Exception:
+                            pass
+                    fr = fr.f_back
+        except Exception:
+            pass
+        propios = {id(muestra), id(mods), id(marcos_hilo), id(en_marco)}
+        cadenas = []
+        for obj in muestra:
+            cadenas.append(_mem_cadena(obj, prof, mods, marcos_hilo, propios, en_marco))
+            if _t.time() - t0 > 60:
+                break
+        return {"tipo": tipo, "vivos": vivos, "s": round(_t.time() - t0, 2),
+                "cadenas": cadenas}
     finally:
         _CENSO_LOCK.release()
 
@@ -14099,6 +14312,19 @@ def catmem():
             return jsonify(dict(_mem_censo(), pid=os.getpid(), rss=_rss_mb(),
                                 vida_h=round((_t.time() - _MEM_T0[0]) / 3600.0, 2),
                                 malloc=_mem_malloc()))
+        except Exception as e:
+            return jsonify({"error": repr(e)[:160], "pid": os.getpid()})
+    # ?quien=Tipo: POR QUE siguen vivos (ver _mem_quien). Solo nombres de tipo.
+    _qn = (request.args.get("quien") or "").strip()
+    if _qn:
+        if not _IDENT_RE.match(_qn):
+            return jsonify({"error": "tipo no valido"}), 400
+        tot = _mem_cgroup_mb()
+        if tot > 380:
+            return jsonify({"quien": "no: el servicio va justo (%s MB)" % tot, "pid": os.getpid()})
+        try:
+            return jsonify(dict(_mem_quien(_qn), pid=os.getpid(),
+                                vida_h=round((_t.time() - _MEM_T0[0]) / 3600.0, 2)))
         except Exception as e:
             return jsonify({"error": repr(e)[:160], "pid": os.getpid()})
     # ?gc=1: recoge la basura en ciclos AHORA y dice cuanto solto (ver
