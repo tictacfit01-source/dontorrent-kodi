@@ -247,6 +247,15 @@ try:
         comprueba("caida y sin lista guardada: lo del indice, marcado a medias",
                   len(js.get("episodes") or []) == 15 and js.get("parcial") is True
                   and js.get("fuente_caida") == "wf", js)
+        viejo_bt, viejo_di = A._box_eps_by_title, A._epsc_del_indice
+        A._box_eps_by_title = lambda code, src, t, wait=None, cache_only=False: []
+        A._epsc_del_indice = lambda u, t: list(INDICE) if t == "Ted Lasso" else []
+        try:
+            js = pide()
+            comprueba("sin la cache de busquedas (tras desplegar): del INDICE de WolfMax",
+                      len(js.get("episodes") or []) == 15 and js.get("parcial") is True, js)
+        finally:
+            A._box_eps_by_title, A._epsc_del_indice = viejo_bt, viejo_di
         limpia_estado()
         PROXY["resp"] = ("<html>ok</html>", 200)
         IMPL["r"] = {"title": "Ted Lasso", "episodes": INDICE,

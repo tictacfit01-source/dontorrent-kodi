@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl43"
+BUILD = "dtbl44"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7780,6 +7780,38 @@ def _epsc_completa(items):
     return n
 
 
+def _epsc_del_indice(url, titulo):
+    """Los capitulos de esa serie que tiene el INDICE de WolfMax (sobrevive a
+    los despliegues: se recupera de D1). Para cuando WolfMax no contesta y la
+    cache de busquedas esta vacia (tras un despliegue): sin esto, una ficha
+    abierta desde un enlace compartido salia con cero capitulos."""
+    if not titulo:
+        return []
+    try:
+        # la MISMA cadena que la busqueda de WolfMax en /catetbox: los
+        # capitulos del indice solo se agrupan en su serie pasando por todas
+        its = _wf_idx_search(titulo) or []
+        its = [it for it in its if not _wf_pobre(
+            it.get("url") or it.get("content_id"), it.get("title"), it.get("kind"))]
+        its = _cat_group_episodes(its)
+        for it in its:
+            it["title"] = _cat_clean_quality(it.get("title", ""))[0]
+        its = _wf_completa_partidas(_une_series_partidas(_wf_colapsa(its)))
+        k = _epsc_clave("wf", url)
+        mejor = []
+        for it in its:
+            if not it.get("eps"):
+                continue
+            if _epsc_clave("wf", it.get("url") or it.get("content_id")) == k:
+                return it["eps"]
+            if _et_norm(it.get("title") or "") == _et_norm(titulo) and \
+                    len(it["eps"]) > len(mejor):
+                mejor = it["eps"]
+        return mejor
+    except Exception:
+        return []
+
+
 def _respuesta(r):
     """(dict, status) de lo que devuelve una ruta: Response o (Response, st)."""
     resp, st = (r if isinstance(r, tuple) else (r, 200))
@@ -7813,6 +7845,8 @@ def catboxeps():
                                         cache_only=True) or []
             except Exception:
                 eps = []
+        if not eps and src == "wf":
+            eps = _epsc_del_indice(url, (request.args.get("t") or "")[:120])
         d = {"episodes": eps, "fuente_caida": src, "via": "fuente-caida"}
         if c:
             d["title"] = c.get("t") or ""
