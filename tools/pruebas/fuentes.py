@@ -80,6 +80,7 @@ def limpia_estado():
             pass
     A._FC.clear()
     A._FC_VUELO.clear()
+    A._FC_ULT.clear()                  # el ultimo intento tambien frena (dtbl43)
     A._DTCAIDA.update({"visto": 0.0, "caida": False, "desde": 0.0, "st": 0, "dom": ""})
     A._DTCAIDA_VUELO[0] = 0.0
     del MIRADAS[:]
@@ -316,6 +317,28 @@ try:
         comprueba("con la fuente viva, el 'sin enlace' de siempre", js == {"link": ""}, js)
     finally:
         A._catetboxresolve_impl = viejo_res
+    print("\n=== 7) Lo que cuentan las cajas (addon 2.9.76) ===")
+    limpia_estado()
+    r = cli.post("/catjob/done", json={"job": "etxx1", "items": [], "caidas": ["wf", "et", "zz"]})
+    comprueba("una caja cuenta WolfMax y EliteTorrent caidas: se apuntan (y lo raro no)",
+              r.status_code == 200 and A._fc_ya("wf") and A._fc_ya("et")
+              and "zz" not in A._fc_lee(), A._fc_lee())
+    cli.post("/catjob/done", json={"job": "etxx2", "items": [{"t": 1}], "vivas": ["wf"]})
+    comprueba("otra cuenta que WolfMax le contesta: vuelve a estar viva",
+              A._fc_ya("wf") is False and A._fc_ya("et") is True, A._fc_lee())
+    comprueba("...y el aviso ya no la da por caida", A._con_caida({}).get("caidas") == ["et"],
+              A._con_caida({}))
+    limpia_estado()
+    PROXY["resp"] = ("<html>Just a moment...</html>", 403)   # lo que ve Render
+    del MIRADAS[:]
+    A._FC_ULT.clear()
+    th = A._fc_sondea("wf")
+    if th:
+        th.join(2)
+    th2 = A._fc_sondea("wf")
+    comprueba("desde Render el reto no concluye nada, y no se vuelve a mirar en 5 min",
+              len([m for m in MIRADAS if "wolfmax" in m]) == 1 and th2 is None
+              and A._fc_ya("wf") is False, (MIRADAS, th2))
 finally:
     for f in FICHEROS:
         try:

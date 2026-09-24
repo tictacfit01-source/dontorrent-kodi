@@ -303,6 +303,35 @@ def _poll_remote_kb():
     return False
 
 
+_FUENTE_HOSTS = {"wf": ("wolfmax4k.com",), "et": ("elitetorrent.com",)}
+_CODIGOS_CAIDA = (521, 522, 523, 524, 525, 526, 530)
+
+
+def _salud_en(out, t0):
+    """Añade al resultado de un trabajo lo que la caja VIO de WolfMax y
+    EliteTorrent mientras lo hacia (ver http_session._salud): `caidas` si su
+    web dio un 52x de Cloudflare (su servidor no contesta) y `vivas` si
+    contesto bien. El relay no lo puede ver desde su IP (24-09: las dos webs le
+    ponen un reto antes de intentar nada) y con esto se entera -- tambien de
+    cuando vuelven -- sin una sola peticion de mas."""
+    try:
+        from resources.lib import http_session as _hs
+        vistos = _hs.salud_desde(t0)
+    except Exception:
+        return
+    caidas, vivas = [], []
+    for src, hosts in _FUENTE_HOSTS.items():
+        sts = [st for h, st in vistos.items() if any(h.endswith(x) for x in hosts)]
+        if any(200 <= s < 400 for s in sts):
+            vivas.append(src)
+        elif any(s in _CODIGOS_CAIDA for s in sts):
+            caidas.append(src)
+    if caidas:
+        out["caidas"] = caidas
+    if vivas:
+        out["vivas"] = vivas
+
+
 def _src_mod(src):
     """Modulo scraper para una fuente del catalogo (et/dx/wf)."""
     from resources.lib import scraper_elitetorrent as et
@@ -674,6 +703,7 @@ def _do_etjob(ev):
             from resources.lib import remote_kb as rkb
             op = (ev.get("op") or "search").strip()
             out = {"job": ev.get("job") or "", "op": op}
+            t_ini = time.time()          # para _salud_en (lo visto en ESTE trabajo)
             if op in ("search", "latest"):
                 srcs = [s for s in (ev.get("srcs") or "et").split(",") if s]
                 q = (ev.get("q") or "").strip()
@@ -809,6 +839,7 @@ def _do_etjob(ev):
                 out["ih"] = m.get("ih", "")
             else:
                 return
+            _salud_en(out, t_ini)        # WolfMax/EliteTorrent: caidas o vivas
             rkb.push_etjob(out)
             xbmc.log("[MejorWolf/service] srcjob %s -> ok (%d)"
                      % (op, len(out.get("items", []))), xbmc.LOGINFO)

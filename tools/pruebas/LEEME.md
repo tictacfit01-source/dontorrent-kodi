@@ -94,6 +94,14 @@ encoge, olvida a los 30 días) y los tres envoltorios: `/catboxeps`,
 `/catetbox` y `/catetboxresolve`. La parte de la web (aviso con varias
 fuentes, la ficha "de la última vez" o "a medias") está en `caida.js`.
 
+**`salud_cajas.py`** (24-09-2026, addon 2.9.76) — el relay no puede ver si
+WolfMax o EliteTorrent están caídos: desde la zona de Render sus webs le ponen
+un reto ("Just a moment", 403) antes de intentar nada, incluso por nuestro
+proxy (medido en producción). Las cajas, en España, sí ven el 522. Vigila que
+`http_session` apunta el código de cada web (también cuando falla) y que la
+caja cuenta `caidas`/`vivas` con cada trabajo; la parte del relay (lo aplica en
+`/catjob/done`) está en `fuentes.py`, sección 7.
+
 Para pasarlas todas de una vez:
 
 ```bash

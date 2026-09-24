@@ -16,6 +16,8 @@ Public API:
 
 import re
 import socket
+import threading
+import time
 from urllib.parse import urlparse, urlunparse, quote as urlquote
 
 import requests
@@ -319,7 +321,52 @@ def _via_proxy(method, url, session=None, **kwargs):
     return r
 
 
+# --- Lo que la caja VE de cada web (2.9.76) ------------------------------------
+# 24-09-2026: WolfMax y EliteTorrent caidos (522: Cloudflare no llega a su
+# servidor). El relay no lo puede ver: desde la zona de Render sus webs le
+# ponen un reto ("Just a moment", 403) antes de intentar nada, incluso por
+# nuestro proxy. Las cajas, en casas de España, SI ven el 522. Aqui se apunta
+# el ultimo codigo de cada web, y el servicio lo cuenta al relay con cada
+# trabajo (ver _salud_en en service.py): caidas y vivas, sin una peticion mas.
+_SALUD = {}                  # host -> (cuando, codigo)
+_SALUD_LOCK = threading.Lock()
+
+
+def _salud(url, status):
+    try:
+        host = (urlparse(url).hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        st = int(status or 0)
+        if host and st:
+            with _SALUD_LOCK:
+                _SALUD[host] = (time.time(), st)
+    except Exception:
+        pass
+
+
+def salud_desde(t0):
+    """{host: codigo} de lo que se ha visto desde t0."""
+    with _SALUD_LOCK:
+        return {h: st for h, (ts, st) in _SALUD.items() if ts >= t0}
+
+
 def _try_with_fallbacks(method, session, url, **kwargs):
+    """_try_with_fallbacks_impl, apuntando que codigo dio la web (ver _salud).
+    Por el proxy, el codigo es el de la web de verdad (el worker lo pasa tal
+    cual): un 522 alli es un 522 suyo."""
+    try:
+        r = _try_with_fallbacks_impl(method, session, url, **kwargs)
+    except Exception as e:
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            _salud(url, getattr(resp, "status_code", 0))
+        raise
+    _salud(url, getattr(r, "status_code", 0))
+    return r
+
+
+def _try_with_fallbacks_impl(method, session, url, **kwargs):
     """Direct -> DoH+IP-pin -> Cloudflare Worker proxy. First success wins.
 
     If proxy_force=True the direct/DoH steps are skipped entirely (useful

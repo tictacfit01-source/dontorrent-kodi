@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl42"
+BUILD = "dtbl43"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4773,7 +4773,11 @@ def _fc_sondea(src, forzar=False):
     if src not in _FUENTE_WEB:
         return None
     e = _fc_lee().get(src) or {}
-    if not forzar and (_t.time() - float(e.get("visto") or 0)) < _DTCAIDA_REPASO:
+    # Tambien cuenta el ultimo INTENTO aunque no concluyera: desde Render estas
+    # webs contestan con un reto (403) y, sin esto, se miraba en cada carga del
+    # Inicio para nada. Quien de verdad lo sabe son las cajas (/catjob/done).
+    ult = max(float(e.get("visto") or 0), float((_FC_ULT.get(src) or {}).get("t") or 0))
+    if not forzar and (_t.time() - ult) < _DTCAIDA_REPASO:
         return None
     if (_t.time() - _FC_VUELO.get(src, 0.0)) < 45:
         return None
@@ -7893,6 +7897,19 @@ def catjob_done():
     job = (str(body.get("job") or ""))[:40]
     if not job:
         return jsonify({"ok": False}), 400
+    # Lo que la caja VIO de WolfMax/EliteTorrent haciendo este trabajo (addon
+    # 2.9.76, ver _salud_en): el relay no lo puede ver desde su IP -- sus webs
+    # le ponen un reto antes de intentar nada --, las cajas desde España si.
+    # Una caida que cuentan se apunta; una web que les contesta, la levanta.
+    try:
+        for _s in (body.get("caidas") or [])[:4]:
+            if _s in _FUENTE_WEB:
+                _fc_apunta(_s, True, 522)
+        for _s in (body.get("vivas") or [])[:4]:
+            if _s in _FUENTE_WEB:
+                _fc_apunta(_s, False, 200)
+    except Exception:
+        pass
     now = _t.time()
     with _FileLock(_CATJOB_FILE):   # serializa con _catjob_wait (no perder el resultado)
         d = _catjob_load()
