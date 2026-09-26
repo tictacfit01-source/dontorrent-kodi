@@ -118,6 +118,17 @@ proxy (medido en producción). Las cajas, en España, sí ven el 522. Vigila que
 caja cuenta `caidas`/`vivas` con cada trabajo; la parte del relay (lo aplica en
 `/catjob/done`) está en `fuentes.py`, sección 7.
 
+**`fuga_ssl.py`** (26-09-2026, dtbl47) — la fuga de memoria que relevaba el
+relay cada ~3 h (14 relevos en 41 h). Un cloudscraper soltado SIN cerrar, con
+una conexión abierta en su pool, no se libera nunca: su SSLContext apunta al
+adaptador (cloudscraper le cuelga un método suyo) y el objeto SSL de C apunta
+al SSLContext con una flecha que el gc no ve, así que el ciclo entero parece
+vivo (~0,9 MB de certificados en C cada uno). Lo encontró `/catmem?quien=`.
+Con un servidor HTTPS en 127.0.0.1 y un certificado de usar y tirar (openssl,
+en una carpeta temporal): la fuga existe con un cloudscraper pelado, no queda
+nada con `_make_scraper()` (lo cierra un finalizador al soltarlo), y
+`_dx_get`/`_dx_probe` cierran el suyo siempre, también si revienta.
+
 Para pasarlas todas de una vez:
 
 ```bash

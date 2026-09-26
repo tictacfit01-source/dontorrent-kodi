@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl46"
+BUILD = "dtbl47"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -125,10 +125,47 @@ def _wolf_post(session_number, url, data=None, headers=None, timeout=60):
 
 
 def _make_scraper():
-    """Cloudscraper para flujos donde no haya ScraperAPI configurado."""
-    return cloudscraper.create_scraper(
+    """Cloudscraper para flujos donde no haya ScraperAPI configurado. Quien lo
+    crea debe cerrarlo (`cs.close()`); si se le olvida, lo cierra el
+    finalizador al soltarlo (ver _scraper_con_cierre)."""
+    return _scraper_con_cierre(cloudscraper.create_scraper(
         browser={"browser": "chrome", "platform": "windows", "mobile": False}
-    )
+    ))
+
+
+# --- UN CLOUDSCRAPER SIN CERRAR NO SE LIBERA NUNCA (dtbl47) --------------------
+# 24-09: cada worker perdia ~36 MB/h de memoria en C y el servicio se relevaba
+# cada ~3 h (14 relevos en 41 h). /catmem?quien= lo encontro: decenas de
+# adaptadores de cloudscraper vivos SIN su sesion, cada uno con su PoolManager,
+# su pool, una conexion abierta y su SSLContext (los certificados raiz, ~0,9 MB
+# en C), todos en un "ciclo suelto" que sobrevivia a cada gc.collect(). Por que:
+#   SSLContext -> wrap_socket (metodo del adaptador, lo pone cloudscraper)
+#   -> adaptador -> PoolManager -> pool -> conexion keep-alive -> socket SSL
+#   -> objeto SSL de C -> SSLContext   <- esta ultima flecha el gc NO la ve
+# El objeto SSL de C no la declara, asi que para el gc el SSLContext tiene un
+# dueno de fuera y el ciclo entero parece vivo. Solo pasa si la sesion se suelta
+# SIN cerrar y con una conexion abierta en el pool: exactamente lo que hacian
+# _dx_probe, _dx_get y el catalogo de WolfMax. Reproducido en el PC (3 sin
+# cerrar -> 3 que sobreviven a dos gc; cerrando -> 0) y en tools/pruebas/
+# fuga_ssl.py. Cerrar la sesion cierra la conexion y rompe la flecha invisible.
+def _cierra_adaptadores(adaptadores):
+    for ad in adaptadores:
+        try:
+            ad.close()
+        except Exception:
+            pass
+
+
+def _scraper_con_cierre(cs):
+    """Red de seguridad: al morir la sesion, se cierran sus adaptadores (y con
+    ellos las conexiones). El finalizador guarda los ADAPTADORES, no la sesion,
+    para no mantenerla viva el mismo."""
+    try:
+        import weakref
+        weakref.finalize(cs, _cierra_adaptadores, list(cs.adapters.values()))
+    except Exception:
+        pass
+    return cs
 
 
 # === ScraperAPI MODO PROXY (failover anti-baneo para la BUSQUEDA) ===========
@@ -570,7 +607,10 @@ def _wf_build_catalog():
             # para el AJAX data.find.php (que cloudscraper no puede). Asi
             # el catalogo (Cine/Series/Documentales/busqueda WF) es gratis.
             cs = _make_scraper()
-            r = cs.get(url, headers=BROWSER_HEADERS, timeout=30)
+            try:
+                r = cs.get(url, headers=BROWSER_HEADERS, timeout=30)
+            finally:
+                cs.close()        # sin esto no se liberaba nunca (dtbl47)
             _diag_status[path] = r.status_code
             if r.status_code != 200:
                 return out
@@ -2304,11 +2344,16 @@ def _dx_get(url, proxy=False, tope_s=12.0):
     _q2 = _fin - _t.time()
     if _q2 < 1.5:
         return None        # sin presupuesto: no empezar algo que nadie espera
+    cs = None
     try:
-        t2, _st2 = _get_con_tope(url, _q2, scraper=_make_scraper())
+        cs = _make_scraper()
+        t2, _st2 = _get_con_tope(url, _q2, scraper=cs)
         return t2 if _st2 == 200 else None
     except Exception:
         pass
+    finally:
+        if cs is not None:
+            cs.close()        # sin esto no se liberaba nunca (dtbl47)
     return None
 
 
@@ -2321,7 +2366,11 @@ def _dx_probe(domain):
     for use_cs in (False, True):
         try:
             if use_cs:
-                r = _make_scraper().get(url, timeout=30, allow_redirects=True)
+                cs = _make_scraper()
+                try:
+                    r = cs.get(url, timeout=30, allow_redirects=True)
+                finally:
+                    cs.close()    # sin esto no se liberaba nunca (dtbl47)
             else:
                 r = requests.get(url, headers=BROWSER_HEADERS, timeout=15,
                                  allow_redirects=True)
@@ -5311,9 +5360,9 @@ _ET_ENABLED = os.environ.get("ET_ENABLED", "").strip() == "1"
 
 def _et_session():
     try:
-        return cloudscraper.create_scraper(
+        return _scraper_con_cierre(cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows",
-                     "mobile": False})
+                     "mobile": False}))
     except Exception:
         s = requests.Session()
         s.headers.update(BROWSER_HEADERS)
