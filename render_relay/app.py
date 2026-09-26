@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl48"
+BUILD = "dtbl49"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4744,7 +4744,7 @@ def _dt_magnet(cid, tb, titulo=""):
 # como si fueran todos, y reproducir de WolfMax acababa a los 18 s en "¿box
 # encendido?". Mismas reglas que _dt_caido: se mira por el proxy y solo cuenta
 # lo que la fuente dice sin dudas (un 52x); lo demas no decide nada.
-_FUENTE_WEB = {"wf": "https://www.wolfmax4k.com/",
+_FUENTE_WEB = {"wf": "https://wolfmax4k.com/",
                "et": "https://www.elitetorrent.com/"}
 _FUENTE_NOMBRE = {"dt": "DonTorrent", "wf": "WolfMax", "et": "EliteTorrent",
                   "dx": "DivxTotal"}
@@ -5827,7 +5827,7 @@ _EP_CUT = _re_dt.compile(
 def _ep_parse(it):
     """(season, episode) de un item de fuente-caja, o None si no es un capitulo."""
     u = (it.get("url") or it.get("content_id") or "").strip()
-    for rx in (_EPU_RE, _EPU_TC):
+    for rx in (() if _wf_url_nueva(u) else (_EPU_RE, _EPU_TC)):
         m = rx.search(u)
         if m:
             return int(m.group(1)), int(m.group(2))
@@ -5890,8 +5890,70 @@ def _title_score(t):
 # detras de un 1080p de otra fuente.
 _WFQ = (("4k", "4K"), ("2160", "4K"), ("1080", "1080p"), ("720", "720p"))
 
+# --- LA WEB NUEVA DE WOLFMAX (dtbl49, addon 2.9.77) ----------------------------
+# El 26-09 WolfMax volvio de su caida con la web rehecha: /pelicula/<id> (una
+# ficha por version), /serie/<id> (una por temporada y calidad),
+# /serie/episodio/<id>, /documental/<id>... con ids de letras y numeros al azar
+# ("5d7uyr"). Las URLs viejas dan 404. Con las nuevas, la calidad y el capitulo
+# los manda SIEMPRE la caja: adivinarlos de la URL daria "4K" a un id como
+# "a4kx12" (1 de cada ~250) o temporada 12 a "12x345".
+_WF_NUEVA_RE = re.compile(
+    r"^https?://(?:www\.)?wolfmax4k\.com/(?:pelicula|serie/episodio|serie|"
+    r"documental/episodio|documental)/[a-z0-9]{4,16}/?$", re.I)
+
+
+def _wf_url_nueva(u):
+    return bool(_WF_NUEVA_RE.match((u or "").strip()))
+
+
+def _wfidx_solo_nuevas(d):
+    """El indice sin lo de la web vieja (sus URLs dan 404 desde el 26-09)."""
+    return dict((u, e) for u, e in (d or {}).items() if _wf_url_nueva(u))
+
+
+# EL CUPO DE WOLFMAX. Su web nueva da el torrent por el boton protegido, con un
+# limite de 60 descargas por hora (por IP: y todas las cajas salen por el mismo
+# proxy). Sacar la HUELLA de un capitulo (para sus semillas) es bajarse su
+# torrent, y la web pide las de TODOS los capitulos al abrir una serie: Ted
+# Lasso son 37, mas de medio cupo, y al darle al play WolfMax diria "limite".
+# Para huellas (semillas y aprendiz) se gasta como mucho esto por hora; el
+# resto queda para REPRODUCIR. Las huellas se guardan 7 dias: la serie se
+# completa sola en las siguientes visitas y la segunda vez no cuesta nada.
+_WF_CUPO_FILE = "/tmp/mw_wf_cupo.json"
+_WF_CUPO_HORA = 24
+
+
+def _wf_cupo_lee(now=None):
+    now = now or _t.time()
+    try:
+        with open(_WF_CUPO_FILE, "r", encoding="utf-8") as f:
+            return [float(x) for x in (_json.load(f) or []) if now - float(x) < 3600]
+    except Exception:
+        return []
+
+
+def _wf_cupo_toma():
+    """¿Queda cupo para una huella de WolfMax? Si queda, se apunta (y lo ve
+    el otro worker: es un fichero de /tmp)."""
+    now = _t.time()
+    try:
+        with _FileLock(_WF_CUPO_FILE):
+            ts = _wf_cupo_lee(now)
+            if len(ts) >= _WF_CUPO_HORA:
+                return False
+            ts.append(now)
+            tmp = "%s.%d.tmp" % (_WF_CUPO_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(ts, f)
+            os.replace(tmp, _WF_CUPO_FILE)
+            return True
+    except Exception:
+        return True         # sin fichero no se bloquea nada
+
 
 def _wf_quality_from_url(u):
+    if _wf_url_nueva(u):
+        return ""
     u = (u or "").lower()
     # OJO: el DOMINIO ya lleva "4k" (wolfmax4k.com) -> si se mira la URL entera,
     # hasta /serie-online-1080p/ sale como 4K. Solo la RUTA.
@@ -6879,7 +6941,7 @@ def _wfidx_load():
     try:
         with open(_WFIDX_FILE, "r", encoding="utf-8") as f:
             d = _json.load(f) or {}
-        _WFIDX.update(d.get("e") or {})
+        _WFIDX.update(_wfidx_solo_nuevas(d.get("e") or {}))
         _WFIDX_TS[0] = d.get("ts", 0)
     except Exception:
         pass
@@ -6907,7 +6969,8 @@ def _wfidx_nube_baja():
             return 0
         crudo = gzip.decompress(base64.b64decode(gz)).decode("utf-8")
         ent = _json.loads(crudo) or {}
-        if not isinstance(ent, dict) or not ent:
+        ent = _wfidx_solo_nuevas(ent) if isinstance(ent, dict) else {}
+        if not ent:
             return 0
         _WFIDX.update(ent)
         _WFIDX_TS[0] = _t.time()
@@ -7268,7 +7331,8 @@ def _wf_colapsa(items):
         if (it or {}).get("source") != "wf":
             otros.append(it)
             continue
-        k = ((it.get("title") or "").strip().lower(), it.get("quality") or "")
+        k = ((it.get("title") or "").strip().lower(), it.get("quality") or "",
+             it.get("year") or "")
         vieja = fuera.get(k)
         if vieja is None:
             fuera[k] = it
@@ -7303,7 +7367,7 @@ def _wfidx_learn(items):
                 continue
             u = it.get("url") or it.get("content_id")
             t = it.get("title")
-            if not u or not t or "wolfmax" not in u.lower():
+            if not u or not t or not _wf_url_nueva(u):
                 continue
             rec = {"t": t[:160], "k": ("tvshow" if it.get("kind") == "serie"
                                        else "movie"),
@@ -7343,8 +7407,8 @@ def wffeed():
     idx = _wfidx_load()
     n = 0
     for u, e in list(ent.items())[:_WFIDX_MAX]:
-        if not isinstance(u, str) or "wolfmax" not in u.lower():
-            continue
+        if not isinstance(u, str) or not _wf_url_nueva(u):
+            continue            # la web vieja de WolfMax: da 404 (dtbl49)
         if not isinstance(e, dict):
             continue
         rec = {"t": (e.get("t") or e.get("title") or "")[:160],
@@ -7383,6 +7447,14 @@ def wffeed():
     return jsonify({"ok": True, "n": len(idx), "nuevas": n})
 
 
+# La busqueda de WolfMax desde el indice del relay, sin caja (214 ms). APAGADA
+# desde la web nueva (dtbl49): el indice se rehace desde cero con lo que las
+# cajas van buscando y contestaria A MEDIAS (tendria 2 de las 10 temporadas de
+# "Ted Lasso"). Tampoco hace falta como antes: la caja ya no busca por Brave
+# (10-24 s) sino en /buscar de WolfMax, ~1 s.
+_WF_IDX_AL_INSTANTE = False
+
+
 def _catetbox_impl(sin_caja=False):
     """Busqueda/estrenos en fuentes que necesitan el box (EliteTorrent, DivxTotal,
     WolfMax). op=search|latest, srcs=csv (et,dx,wf). `sin_caja`: la fuente
@@ -7404,7 +7476,7 @@ def _catetbox_impl(sin_caja=False):
     # esta vacio (deploy reciente) se le pide a una caja y se sigue por el
     # camino de siempre para no dejar al usuario sin nada.
     _idx_respaldo = []
-    if op == "search" and q and srcs.replace(" ", "") == "wf":
+    if _WF_IDX_AL_INSTANTE and op == "search" and q and srcs.replace(" ", "") == "wf":
         _idx = _wf_idx_search(q)
         # Las entradas degradadas se descartan SIEMPRE, no solo cuando lo son
         # todas: en cuanto hubo mezcla (las buenas que traen las cajas 2.9.64 y
@@ -7727,7 +7799,8 @@ def _catboxeps_impl():
         def _pide(b):
             j = "et" + os.urandom(5).hex()
             _kb_enqueue(b, {"c": "etjob", "job": j, "op": "episodes",
-                            "src": src, "url": url})
+                            "src": src, "url": url,
+                            "t": (request.args.get("t") or "")[:120]})
             return j
         _okeps = lambda r: bool(((r or {}).get("eps") or {}).get("episodes"))
         _jobs = [_pide(box)]
@@ -7824,7 +7897,17 @@ def _epsc_limpia(eps):
 def _epsc_get(src, url):
     if src not in ("wf", "et") or not url:
         return None
-    return _epsc_load().get(_epsc_clave(src, url))
+    e = _epsc_load().get(_epsc_clave(src, url))
+    if e and src == "wf":
+        # capitulos de la web VIEJA de WolfMax: dan 404 desde el 26-09 (dtbl49)
+        todos = e.get("eps") or []
+        eps = [x for x in todos if isinstance(x, dict)
+               and _wf_url_nueva(x.get("url") or x.get("content_id"))]
+        if len(eps) != len(todos):
+            if not eps:
+                return None
+            e = dict(e, eps=eps)
+    return e
 
 
 def _epsc_put(src, url, titulo, eps):
@@ -8018,6 +8101,10 @@ def catetboxresolve():
     """El enlace de un titulo de fuente-box (ver _catetboxresolve_impl). Con la
     fuente caida se dice al momento (antes: 18 s y "¿box encendido?")."""
     src = (request.args.get("src") or "et").strip()
+    if src == "wf" and not _wf_url_nueva((request.args.get("url") or "").strip()):
+        # un enlace de la web VIEJA de WolfMax (historial, favoritos): da 404
+        # desde el 26-09. Al momento y dicho, en vez de 20 s y "¿box encendido?"
+        return jsonify({"link": "", "vieja": "wf"})
     if src in ("wf", "et") and _fc_caido(src):
         return jsonify({"link": "", "fuente_caida": src})
     t0 = _t.time()
@@ -8298,6 +8385,8 @@ def seeds_ep():
         _c = _dih.get(url)
         if _c and len(_c.get("ih", "")) == 40 and (now - _c.get("ts", 0) < _DXIH_TTL):
             ih = _c["ih"]
+        elif src == "wf" and not (_wf_url_nueva(url) and _wf_cupo_toma()):
+            pass        # web vieja (404) o sin cupo: sin semillas por ahora (dtbl49)
         else:
             _sbox = _box_for(code)
             _ssem = _lend_acquire(_sbox) if (_sbox and _sbox != code) else None
@@ -8734,6 +8823,10 @@ _APR_T_DT = [0.0]                # ultimo PoW de DonTorrent pedido a una caja
 _APR_T_REF = [0.0]               # ultimo refresco de conteos del Inicio
 _APR_PAUSA = 45.0
 _APR_PAUSA_DT = 120.0
+# WolfMax: una huella cada 5 min como mucho, y dentro del cupo (ver
+# _WF_CUPO_HORA): su web nueva cobra cada una como una descarga.
+_APR_PAUSA_WF = 300.0
+_APR_T_WF = [0.0]
 _APR_RR = [0]
 _APR_PID = [0]
 
@@ -8975,6 +9068,11 @@ def _apr_ronda():
     for src, k, it in pend:
         if src == "dt" and (_caida or (now - _APR_T_DT[0]) < _APR_PAUSA_DT):
             continue            # el PoW de DonTorrent, espaciado: toca otra fuente
+        if src == "wf" and ((now - _APR_T_WF[0]) < _APR_PAUSA_WF
+                            or not _wf_url_nueva(k) or not _wf_cupo_toma()):
+            continue            # WolfMax: espaciado y con cupo (dtbl49)
+        if src == "wf":
+            _APR_T_WF[0] = now
         if src == "dt":
             _APR_T_DT[0] = now
             r = _apr_dt(k)
@@ -10427,6 +10525,8 @@ def catdiag():
                      "proxima_s": max(0, int(_DX_DESC["proxima"] - now))},
         "trace": dict(_DX_TRACE),
     }
+    # el cupo de descargas de WolfMax que se lleva lo de las semillas (dtbl49)
+    out["wf_cupo"] = {"usadas_hora": len(_wf_cupo_lee()), "tope": _WF_CUPO_HORA}
     # 3) ¿Esta el box EMPUJANDO /catfeed? (segundos desde el ultimo empuje por kind)
     out["catfeed_last_s"] = {k: int(now - v) for k, v in _CATFEED_LAST.items()}
     # 4) Memoria del worker (Render free = 512MB; el usuario sospechaba OOM).
@@ -13129,6 +13229,7 @@ function play(){if(!sel)return;
   toast('Resolviendo en tu box…');
   fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}
+   else if(d&&d.vieja){webViejaDlg(d.vieja,sel.title)}                      // dtbl49
    else if(d&&d.fuente_caida){fuenteCaidaDlg(d.fuente_caida,sel.title)}     // dtbl40
    else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
@@ -13149,6 +13250,12 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
 // DonTorrent CAIDO (lo dice su propia web, ver _dt_caido en el relay). Nada de
 // "Error: ..." ni de mandar a la tele algo que va a fallar a los 60 s: se dice
 // lo que pasa, de quien es el fallo y que se puede hacer mientras.
+// WolfMax estreno web el 26-09 y sus enlaces viejos dan 404: lo guardado antes
+// (historial, "Siguiendo") se busca otra vez por su nombre (dtbl49).
+function webViejaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
+ mwConfirm(n+' ha cambiado su web',
+  'Este enlace es de su web antigua y ya no funciona. Búscalo otra vez y sale con el enlace nuevo.',
+  'Buscar «'+q+'»',function(){buscaOtras(q)});}
 function fuenteCaidaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
  mwConfirm(n+' está caído',
   'Su web no responde ahora mismo: es un fallo de su servidor, no de tu tele. Suele volver sola en unas horas. Mientras, puedes buscarlo en las otras fuentes.',
@@ -13439,6 +13546,7 @@ function playEp(id){var e=EPS[id];if(!e)return;
   fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id))
    .then(function(r){return r.json()}).then(function(d){
     if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2,q:e.quality}))closeOv();}
+    else if(d&&d.vieja)webViejaDlg(d.vieja,SHOW||_t2);                       // dtbl49
     else if(d&&d.fuente_caida)fuenteCaidaDlg(d.fuente_caida,_t2);            // dtbl40
     else toast('No se pudo obtener el enlace de ese capítulo');
    }).catch(function(){toast('No se pudo obtener el enlace de ese capítulo')});

@@ -98,12 +98,13 @@ def limpia_eps():
 
 def ep(s, e, q="4K", url=None):
     return {"label": "%dx%02d" % (s, e), "season": s, "episode": e, "quality": q,
-            "url": url or "https://wolfmax4k.com/serie/x/%dx%02d" % (s, e),
-            "content_id": url or "https://wolfmax4k.com/serie/x/%dx%02d" % (s, e),
+            "url": url or "https://wolfmax4k.com/serie/episodio/e%dx%02d" % (s, e),
+            "content_id": url or "https://wolfmax4k.com/serie/episodio/e%dx%02d" % (s, e),
             "src": "wf"}
 
 
-SERIE = "https://wolfmax4k.com/serie-online-4k/270209"
+# la web NUEVA de WolfMax (dtbl49): con URLs viejas el relay ya no guarda nada
+SERIE = "https://wolfmax4k.com/serie/5ecqn5"
 INDICE = [ep(2, i) for i in (1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12)] + [ep(4, i) for i in (1, 4, 5, 6)]
 COMPLETA = [ep(t, i) for t, n in ((1, 10), (2, 12), (3, 12), (4, 7)) for i in range(1, n + 1)]
 

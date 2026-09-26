@@ -132,6 +132,29 @@ Sección 4 (dtbl48): desde Render los 8 dominios de DivxTotal dan el reto
 (403) y el keepalive los volvía a probar todos cada 4 min; ahora, sin éxito,
 espera 4, 8, 16 y 30 min como mucho, y al funcionar uno vuelve al ritmo normal.
 
+**`wf_web.py`** (27-09-2026, addon 2.9.77) — la web NUEVA de WolfMax, del
+lado de la caja. El 26-09 WolfMax volvió de su caída con la web rehecha y todo
+lo anterior dio 404: `/pelicula/<id>` (una ficha por versión), `/serie/<id>`
+(una por temporada y calidad, con sus capítulos `/serie/episodio/<id>`),
+`/buscar?q=`, y el torrent por `POST /api/descargas` con la misma prueba de
+trabajo que DonTorrent (límite: 60 descargas por hora). Con marcado REAL
+recortado: el lector (búsquedas con todas las versiones, temporadas, capítulo
+suelto, peli, documental), el torrent (reto → prueba → enlace, recordado; con el
+límite no se insiste; el captcha se dice) y la caja con un Kodi de mentira: una
+versión de peli por item, capítulos "Título SxEE" con la mejor calidad primero,
+la serie completa juntando temporadas y calidades (la MEJOR de cada capítulo),
+enlaces DIFERIDOS en las temporadas (el torrent al reproducir) y el índice de la
+caja sin URLs viejas. Probado además contra la web real y reproduciendo en el
+Kodi del PC (Ted Lasso 4x07 en 4K).
+
+**`wf_relay.py`** (27-09-2026, dtbl49) — la web nueva de WolfMax, del lado del
+relay: lo que manda la caja se agrupa en UNA tarjeta por serie; "Dune" 1984 y
+2021 no se funden; de un id al azar ("a4kx12") no se adivina calidad ni
+capítulo; índice y caché de listas sin nada de la web vieja (por ninguna vía);
+la búsqueda de WolfMax va a la caja (el índice se rehace y daría resultados a
+medias); un enlace viejo se dice al momento; el trabajo de capítulos lleva el
+título para que la caja busque la serie si la URL es vieja.
+
 Para pasarlas todas de una vez:
 
 ```bash
