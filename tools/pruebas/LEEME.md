@@ -128,6 +128,9 @@ Con un servidor HTTPS en 127.0.0.1 y un certificado de usar y tirar (openssl,
 en una carpeta temporal): la fuga existe con un cloudscraper pelado, no queda
 nada con `_make_scraper()` (lo cierra un finalizador al soltarlo), y
 `_dx_get`/`_dx_probe` cierran el suyo siempre, también si revienta.
+Sección 4 (dtbl48): desde Render los 8 dominios de DivxTotal dan el reto
+(403) y el keepalive los volvía a probar todos cada 4 min; ahora, sin éxito,
+espera 4, 8, 16 y 30 min como mucho, y al funcionar uno vuelve al ritmo normal.
 
 Para pasarlas todas de una vez:
 

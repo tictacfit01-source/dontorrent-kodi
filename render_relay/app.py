@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl47"
+BUILD = "dtbl48"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -2420,6 +2420,35 @@ def _dx_domain(force_probe=False):
     return _DX_DOM_CACHE["dom"] or saved or _DX_DOMAINS[0]
 
 
+# Buscar el dominio, con PACIENCIA si no sale ninguno (dtbl48). 26-09: desde
+# Render los 8 dominios de DivxTotal dan el reto de Cloudflare (403; desde
+# casa, el operador corta la conexion), asi que no se aprendia ninguno y el
+# keepalive los volvia a probar TODOS cada 4 min, cada uno con requests y con
+# cloudscraper: ~16 cloudscraper por worker cada 5 min para nada. (DivxTotal
+# sigue llegando a la web por el plan B de las cajas.) Sin exito, cada intento
+# espera el doble que el anterior: 4, 8, 16 y 30 min como mucho; en cuanto uno
+# funciona, vuelve el ritmo normal. (Lo mismo que el vigilante de memoria del
+# 23-09: una accion automatica que no consigue nada no se repite en bucle.)
+_DX_DESC = {"fallos": 0, "proxima": 0.0}
+_DX_DESC_BASE = 240.0
+_DX_DESC_MAX = 30 * 60.0
+
+
+def _dx_descubre():
+    """_dx_domain(force_probe=True), pero sin repetirlo en bucle si no sale."""
+    if _t.time() < _DX_DESC["proxima"]:
+        return None
+    dom = _dx_domain(force_probe=True)
+    if _dx_load_domain():
+        _DX_DESC["fallos"] = 0
+        _DX_DESC["proxima"] = 0.0
+    else:
+        _DX_DESC["fallos"] += 1
+        _DX_DESC["proxima"] = _t.time() + min(
+            _DX_DESC_MAX, _DX_DESC_BASE * (2 ** (_DX_DESC["fallos"] - 1)))
+    return dom
+
+
 _DX_REPROBE = {"ts": 0.0}
 _DX_REPROBE_LOCK = _thr.Lock()
 
@@ -2432,8 +2461,7 @@ def _dx_reprobe_async():
         if _t.time() - _DX_REPROBE["ts"] < 120:
             return
         _DX_REPROBE["ts"] = _t.time()
-    _thr.Thread(target=lambda: _dx_domain(force_probe=True),
-                daemon=True).start()
+    _thr.Thread(target=_dx_descubre, daemon=True).start()
 
 
 @app.route("/dxsearch", methods=["GET", "POST"])
@@ -10395,6 +10423,8 @@ def catdiag():
         "sem_free": getattr(_DX_SEM, "_value", None),
         "domain_mem": _DX_DOM_CACHE.get("dom"),
         "domain_saved": _dx_load_domain(),
+        "descubre": {"fallos": _DX_DESC["fallos"],
+                     "proxima_s": max(0, int(_DX_DESC["proxima"] - now))},
         "trace": dict(_DX_TRACE),
     }
     # 3) ¿Esta el box EMPUJANDO /catfeed? (segundos desde el ultimo empuje por kind)
@@ -13522,7 +13552,7 @@ def _self_keepalive():
             # (/tmp borrado): asi el sondeo-loteria (tarpit de Cloudflare) lo
             # paga este hilo, nunca la busqueda de un usuario.
             if not _dx_load_domain():
-                _dx_domain(force_probe=True)
+                _dx_descubre()      # con paciencia si no sale (dtbl48)
         except Exception:
             pass
         if url:

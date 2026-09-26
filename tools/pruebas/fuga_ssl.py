@@ -16,7 +16,9 @@ Esto vigila:
      arreglo): si un dia deja de reproducirse, esta prueba lo dira y habra que
      revisar si el arreglo sigue haciendo falta;
   2) que con _make_scraper() soltado SIN cerrar no queda nada (el finalizador);
-  3) que _dx_get y _dx_probe cierran su cloudscraper siempre.
+  3) que _dx_get y _dx_probe cierran su cloudscraper siempre;
+  4) que el dominio de DivxTotal no se busca en bucle si no sale (dtbl48:
+     4, 8, 16 y 30 min como mucho; al funcionar, ritmo normal).
 Sin red: un servidor HTTPS en 127.0.0.1 con un certificado de usar y tirar
 (openssl, en una carpeta temporal que se borra; nunca va al repo). Sin
 openssl, las partes 1 y 2 se saltan (y se dice).
@@ -29,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -193,6 +196,46 @@ try:
               len(CREADOS) == 1 and CREADOS[0].cerrado == 1, [c.cerrado for c in CREADOS])
 finally:
     A._make_scraper, A._get_con_tope, A.requests.get = reales
+
+print("\n=== 4) El dominio de DivxTotal no se busca en bucle (dtbl48) ===")
+PROBES = []
+GUARDADO = [None]
+reales = (A._dx_probe, A._dx_load_domain, A._dx_save_domain, dict(A._DX_DESC),
+          dict(A._DX_DOM_CACHE))
+try:
+    A._dx_probe = lambda d: PROBES.append(d) or None
+    A._dx_load_domain = lambda: GUARDADO[0]
+    A._dx_save_domain = lambda h: GUARDADO.__setitem__(0, h)
+    A._DX_DESC.update(fallos=0, proxima=0.0)
+    A._DX_DOM_CACHE.update(dom=None, ts=0.0)
+    ahora = time.time()
+    A._dx_descubre()
+    n1 = len(PROBES)
+    comprueba("sin exito: prueba los %d dominios una vez y espera 4 min" % n1,
+              n1 == len(A._DX_DOMAINS) and A._DX_DESC["fallos"] == 1
+              and 230 < A._DX_DESC["proxima"] - ahora < 250, A._DX_DESC)
+    A._dx_descubre()
+    comprueba("...y antes de esos 4 min no vuelve a probar nada", len(PROBES) == n1, len(PROBES))
+    A._DX_DESC["proxima"] = 0.0
+    A._dx_descubre()
+    comprueba("el 2o fallo espera 8 min", A._DX_DESC["fallos"] == 2
+              and 470 < A._DX_DESC["proxima"] - time.time() < 490, A._DX_DESC)
+    A._DX_DESC.update(fallos=9, proxima=0.0)
+    A._dx_descubre()
+    comprueba("y nunca mas de 30 min", 1790 < A._DX_DESC["proxima"] - time.time() <= 1800,
+              A._DX_DESC)
+    A._DX_DESC["proxima"] = 0.0
+    A._dx_probe = lambda d: "divxtotal.nuevo"
+    A._dx_descubre()
+    comprueba("en cuanto uno funciona: se guarda y vuelve el ritmo normal",
+              GUARDADO[0] == "divxtotal.nuevo" and A._DX_DESC["fallos"] == 0
+              and A._DX_DESC["proxima"] == 0.0, (GUARDADO, A._DX_DESC))
+finally:
+    A._dx_probe, A._dx_load_domain, A._dx_save_domain = reales[:3]
+    A._DX_DESC.clear()
+    A._DX_DESC.update(reales[3])
+    A._DX_DOM_CACHE.clear()
+    A._DX_DOM_CACHE.update(reales[4])
 
 print("\n---- VEREDICTO ----")
 if fallos:
