@@ -346,19 +346,31 @@ def _src_item_compact(it, src):
     episodios via op=episodes (la web usa la url de la ficha)."""
     k = (it.get("kind") or "movie")
     kind = "serie" if (k.startswith("tvshow") or k == "serie") else "movie"
-    return {"title": it.get("title", ""), "kind": kind, "source": src,
-            "url": it.get("url", ""), "content_id": it.get("url", ""),
-            "thumb": it.get("thumb") or it.get("image") or None,
-            "quality": it.get("quality") or "", "tabla": src}
+    out = {"title": it.get("title", ""), "kind": kind, "source": src,
+           "url": it.get("url", ""), "content_id": it.get("url", ""),
+           "thumb": it.get("thumb") or it.get("image") or None,
+           "quality": it.get("quality") or "", "tabla": src}
+    if it.get("year"):
+        out["year"] = it["year"]    # la web nueva de WolfMax lo trae (2.9.77)
+    return out
 
 
-def _src_episodes(src, url):
+def _src_episodes(src, url, titulo=""):
     """Episodios de una serie de una fuente-box. Devuelve {title, episodes:[{
     label, season, episode, quality, link}]}. El link (magnet/.torrent) ya sirve
     para reproducir directo (play_ref a='pl')."""
     mod = _src_mod(src)
-    if not mod or not url:
+    if not mod or not (url or titulo):
         return {"title": "", "episodes": []}
+    if src == "wf" and hasattr(mod, "episodios_serie"):
+        # La web NUEVA de WolfMax (2.9.77): una pagina por temporada y calidad,
+        # con todos sus capitulos; se juntan todas y cada capitulo se queda con
+        # la mejor calidad. Una URL de la web vieja (404) se busca por titulo.
+        try:
+            return mod.episodios_serie(url, titulo) or {"title": "", "episodes": []}
+        except Exception as ex:
+            xbmc.log("[MejorWolf/service] wf episodios: %s" % ex, xbmc.LOGWARNING)
+            return {"title": "", "episodes": []}
     import re as _re
     eps = []
     try:
@@ -578,6 +590,9 @@ def _src_resolve(src, url):
             d = mod.detail(url)
             dls = (d or {}).get("downloads") or []
             return (dls[0].get("torrent_url") if dls else "") or ""
+        if src == "wf" and hasattr(mod, "torrent_de"):
+            # web nueva (2.9.77): el .torrent de esa version o ese capitulo
+            return mod.torrent_de(url) or ""
         if src == "wf":
             d = mod.detail(url)
             if isinstance(d, dict):
@@ -784,12 +799,20 @@ def _do_etjob(ev):
                 out["quality"] = m["quality"]
             elif op == "episodes":
                 src = (ev.get("src") or "").strip()
-                out["eps"] = _src_episodes(src, (ev.get("url") or "").strip())
+                out["eps"] = _src_episodes(src, (ev.get("url") or "").strip(),
+                                           (ev.get("t") or "").strip())
             elif op == "infohash":
                 lk = (ev.get("link") or "").strip()
                 lk = lk or _src_resolve(
                     (ev.get("src") or "").strip(),
                     (ev.get("url") or "").strip())
+                if lk.startswith("wf2:"):
+                    # enlace diferido de la web nueva de WolfMax (2.9.77)
+                    try:
+                        lk = _src_mod("wf").resolver_diferido(lk) or ""
+                    except Exception as _e0:
+                        xbmc.log("[MejorWolf/service] wf2: %s" % _e0, xbmc.LOGWARNING)
+                        lk = ""
                 # WolfMax no entrega un magnet: entrega un "enlacito"
                 # ofuscado, y de ahi el relay no puede sacar el info_hash. Sin
                 # esto, sus capitulos se quedan SIN SEMILLAS -- y las semillas

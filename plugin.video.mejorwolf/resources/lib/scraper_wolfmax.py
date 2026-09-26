@@ -3071,3 +3071,289 @@ def search_and_expand(query):
         "container": None,
         "seasons":   seasons,
     }
+
+
+# =============================================================================
+# LA WEB NUEVA (27-09-2026)
+# =============================================================================
+# El 26-09 WolfMax volvio de su caida con la web rehecha (ver wf_web.py): las
+# URLs de arriba (/movie/, /online/, /serie-online-*, /series/<slug>), el
+# "enlacito", los sitemaps y la busqueda por Brave/DDG dejaron de valer (404).
+# Las funciones publicas se REDEFINEN aqui, con la misma forma de salida, sobre
+# el lector de la web nueva. Lo de arriba ya no lo llama nadie; se quitara
+# cuando la web nueva lleve un tiempo estable.
+from . import wf_web as _W
+import concurrent.futures as _wf_cf
+import threading as _wf_th
+import time as _wf_time
+import unicodedata as _wf_ud
+
+_WF_SES = [None]
+_WF_SES_LOCK = _wf_th.Lock()
+# URL de cada archivo -> (content-id, tabla, calidad), aprendido al listar:
+# reproducir no necesita volver a abrir la ficha.
+_WF_CID = {}
+
+
+def _base():
+    return _W.BASE
+
+
+def _wf_ses():
+    with _WF_SES_LOCK:
+        if _WF_SES[0] is None:
+            _WF_SES[0] = hs.make_session(_W.BASE)
+        return _WF_SES[0]
+
+
+def _wf_pide(ruta, timeout=20):
+    """HTML de una pagina de WolfMax (directo -> DNS seguro -> proxy)."""
+    url = ruta if ruta.startswith("http") else _W.BASE + ruta
+    r = hs.get(_wf_ses(), url, timeout=timeout,
+               headers={"Referer": _W.BASE + "/"})
+    r.encoding = "utf-8"
+    return r.text or ""
+
+
+def _wf_post_json(url, cuerpo, cab):
+    """POST JSON -> (status, dict). Un 429 tambien trae su JSON (el limite)."""
+    try:
+        r = hs.post(_wf_ses(), url, json=cuerpo, headers=cab, timeout=20,
+                    allow_redirects=False)
+    except Exception as e:
+        r = getattr(e, "response", None)
+        if r is None:
+            raise
+    try:
+        return r.status_code, (r.json() or {})
+    except Exception:
+        return r.status_code, {}
+
+
+def _wf_recuerda(a):
+    if a.get("url") and a.get("cid"):
+        _WF_CID[a["url"]] = (a["cid"], a["tabla"], a.get("calidad") or "")
+        if len(_WF_CID) > 6000:
+            for k in list(_WF_CID)[:2000]:
+                _WF_CID.pop(k, None)
+
+
+def _wf_norm(s):
+    s = _wf_ud.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not _wf_ud.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def _wf_items(tarjetas):
+    """Tarjetas de la web -> items de siempre. Una peli, UNA POR VERSION (4K,
+    1080p...: el relay las junta y se queda con la mejor); una serie, un item
+    por capitulo "Titulo 4x07" (el relay los agrupa en su tarjeta), con la
+    mejor calidad primero para que gane al agrupar."""
+    pelis, caps = [], []
+    for t in tarjetas:
+        base = t.get("base") or t.get("titulo") or ""
+        comun = {"thumb": t.get("thumb") or None, "image": t.get("thumb") or None}
+        if t.get("anio"):
+            comun["year"] = t["anio"]
+        con_caps = [a for a in t.get("archivos") or [] if a.get("temporada") or a.get("episodio")]
+        if t.get("tipo") in ("serie", "documental") and con_caps:
+            for a in con_caps:
+                _wf_recuerda(a)
+                caps.append(dict(comun, title="%s %dx%02d" % (base, a["temporada"], a["episodio"]),
+                                 kind="tvshow", url=a["url"],
+                                 quality=t.get("calidad") or a.get("calidad") or ""))
+            continue
+        archivos = t.get("archivos") or []
+        if not archivos:
+            pelis.append(dict(comun, title=base, url=t["url"], quality=t.get("calidad") or "",
+                              kind="movie" if t.get("tipo") == "pelicula" else "tvshow"))
+            continue
+        for a in archivos:
+            _wf_recuerda(a)
+            pelis.append(dict(comun, title=base, kind="movie", url=a["url"],
+                              quality=a.get("calidad") or t.get("calidad") or ""))
+    caps.sort(key=lambda it: -_W.rango(it.get("quality")))
+    return pelis + caps
+
+
+def search(query):
+    """Busqueda en la web nueva: /buscar?q= (una o dos paginas)."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    html = _wf_pide("/buscar?q=" + urlquote(q))
+    ts = _W.tarjetas(html)
+    if _W.paginas(html)[1] > 1:
+        try:
+            ts += _W.tarjetas(_wf_pide("/buscar?q=%s&pagina=2" % urlquote(q)))
+        except Exception as e:
+            _LOG("buscar p2: %s" % e)
+    items = _wf_items(ts)
+    _LOG("search %r: %d tarjetas -> %d items" % (q, len(ts), len(items)))
+    try:
+        wf_index.add(items)
+    except Exception:
+        pass
+    return items
+
+
+def search_and_expand(query):
+    return search(query)
+
+
+_WF_SECCION = {"movie": "/ultimos", "movie_720p": "/peliculas", "movie_hd": "/peliculas",
+               "movie_4k": "/peliculas", "tvshow": "/series", "tvshow_720p": "/series",
+               "tvshow_hd": "/series", "tvshow_4k": "/series",
+               "documentary": "/documentales"}
+_WF_FILTRO = {"movie_4k": "4K", "tvshow_4k": "4K", "movie_hd": "1080p",
+              "tvshow_hd": "1080p", "movie_720p": "720p", "tvshow_720p": "720p"}
+
+
+def latest(kind="movie", page=1):
+    """Lo ultimo de una seccion. La web no filtra por calidad: se filtra aqui."""
+    ruta = _WF_SECCION.get(kind, "/peliculas")
+    page = int(page or 1)
+    if ruta == "/ultimos" and page > 1:
+        ruta = "/peliculas"
+    if page > 1:
+        ruta += "?pagina=%d" % page
+    items = _wf_items(_W.tarjetas(_wf_pide(ruta)))
+    # /ultimos mezcla pelis y capitulos de series: cada seccion, lo suyo
+    quiero = "movie" if kind.startswith("movie") else "tvshow"
+    items = [it for it in items if (it.get("kind") or "movie") == quiero]
+    q = _WF_FILTRO.get(kind)
+    if q:
+        items = [it for it in items if it.get("quality") == q]
+    try:
+        wf_index.add(items)
+    except Exception:
+        pass
+    return items
+
+
+def resolver_diferido(link, referer=""):
+    """"wf2:<tabla>:<id>" -> URL del .torrent (la prueba de trabajo, ahora)."""
+    cid, tabla = _W.de_diferido(link)
+    return _W.torrent(_wf_post_json, cid, tabla, referer)
+
+
+def torrent_de(url):
+    """URL del .torrent de una peli (una version) o un capitulo."""
+    u = _W.absoluta(url)
+    e = _WF_CID.get(u)
+    if e:
+        return _W.torrent(_wf_post_json, e[0], e[1], u)
+    d = _W.ficha(_wf_pide(u), u)
+    if len(d["archivos"]) != 1:
+        raise RuntimeError("WolfMax: %s no es un archivo suelto" % u)
+    a = d["archivos"][0]
+    _wf_recuerda(a)
+    return _W.torrent(_wf_post_json, a["cid"], a["tabla"], u)
+
+
+def detail(url):
+    """La ficha en la forma de siempre: {title, plot, image, year, quality,
+    downloads:[{label, season, episode, quality, torrent_url, url, size}]}.
+    Una peli o un capitulo: su torrent, pedido ya. Una temporada: sus
+    capitulos con el enlace DIFERIDO (se pide al reproducir: una temporada son
+    10-20 capitulos y WolfMax permite 60 descargas por hora)."""
+    u = _W.absoluta(url)
+    if not _W.es_nueva(u):
+        raise RuntimeError("WolfMax: URL de la web vieja (%s)" % u)
+    _LOG("detail: %s" % u)
+    d = _W.ficha(_wf_pide(u), u)
+    suelto = d["tipo"] in ("pelicula", "episodio", "episodio_doc") and len(d["archivos"]) == 1
+    downloads = []
+    for a in d["archivos"]:
+        _wf_recuerda(a)
+        tu = _W.torrent(_wf_post_json, a["cid"], a["tabla"], u) if suelto \
+            else _W.diferido(a["cid"], a["tabla"])
+        s, e = a.get("temporada") or 0, a.get("episodio") or 0
+        es_cap = bool(s or e) and d["tipo"] != "pelicula"
+        downloads.append({"label": ("%dx%02d" % (s, e)) if es_cap
+                          else (a.get("etiqueta") or d["calidad"] or "Descargar"),
+                          "season": s if es_cap else None, "episode": e if es_cap else None,
+                          "quality": a.get("calidad") or d["calidad"], "torrent_url": tu,
+                          "url": a.get("url") or u, "size": a.get("tamano") or ""})
+    title = d["base"] or d["titulo"]
+    if d["tipo"] in ("episodio", "episodio_doc") and downloads and downloads[0]["season"] is not None:
+        title = "%s %s" % (d["base"], downloads[0]["label"])
+    return {"title": title, "plot": d["sinopsis"], "image": d["thumb"],
+            "year": d["anio"] or None, "quality": d["calidad"], "downloads": downloads}
+
+
+def episodios_serie(url, titulo=""):
+    """TODOS los capitulos de una serie, juntando temporadas y calidades, cada
+    uno en la MEJOR calidad que haya. Vale cualquier URL suya (temporada o
+    capitulo) o, si es de la web vieja, su titulo. {title, episodes:[...]}"""
+    u = _W.absoluta(url)
+    base, fichas, vistas = "", [], set()
+    if _W.es_nueva(u):
+        d = _W.ficha(_wf_pide(u), u)
+        if d["tipo"] in ("episodio", "episodio_doc") and d.get("temporada_url"):
+            tu = d["temporada_url"]
+            d = _W.ficha(_wf_pide(tu), tu)
+            vistas.add(tu)
+        vistas.add(u)
+        base = d["base"]
+        fichas.append(d)
+    base = base or _W.titulo_base(titulo)
+    if not base:
+        return {"title": "", "episodes": []}
+    # las demas temporadas y calidades, por la busqueda
+    try:
+        html = _wf_pide("/buscar?q=" + urlquote(base))
+        ts = _W.tarjetas(html)
+        if _W.paginas(html)[1] > 1:
+            ts += _W.tarjetas(_wf_pide("/buscar?q=%s&pagina=2" % urlquote(base)))
+    except Exception as e:
+        _LOG("episodios_serie buscar: %s" % e)
+        ts = []
+    nb = _wf_norm(base)
+    otras = [t["url"] for t in ts if t["tipo"] in ("serie", "documental")
+             and _wf_norm(t["base"]) == nb and t["url"] not in vistas]
+    tope = _wf_time.time() + 12.0
+    ex = _wf_cf.ThreadPoolExecutor(max_workers=6)
+    try:
+        futs = [ex.submit(lambda x: _W.ficha(_wf_pide(x, timeout=10), x), x) for x in otras[:16]]
+        for f in futs:
+            try:
+                fichas.append(f.result(timeout=max(0.1, tope - _wf_time.time())))
+            except Exception:
+                continue
+    finally:
+        ex.shutdown(wait=False)
+    mejor = {}
+    for d in fichas:
+        for a in d.get("archivos") or []:
+            s, e = a.get("temporada") or 0, a.get("episodio") or 0
+            if not (s or e):
+                continue
+            _wf_recuerda(a)
+            q = d.get("calidad") or a.get("calidad") or ""
+            k = (s, e)
+            if k not in mejor or _W.rango(q) > _W.rango(mejor[k]["quality"]):
+                mejor[k] = {"label": "%dx%02d" % (s, e), "season": s, "episode": e,
+                            "quality": q, "url": a["url"], "content_id": a["url"],
+                            "src": "wf"}
+    eps = [mejor[k] for k in sorted(mejor)]
+    _LOG("episodios_serie %r: %d fichas -> %d capitulos" % (base, len(fichas), len(eps)))
+    return {"title": base, "episodes": eps}
+
+
+def serie_slug(cap_url):
+    return ""
+
+
+def episodios_completos(cap_url, slug=""):
+    return (episodios_serie(cap_url) or {}).get("episodes") or []
+
+
+def _build_catalog():
+    return [], True
+
+
+def rebuild_index(progress_cb=None, max_workers=20, max_urls=None):
+    """La web nueva no publica sitemaps: el indice se rehace solo con lo que
+    se busca y se lista."""
+    return 0

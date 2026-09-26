@@ -79,8 +79,18 @@ def _load():
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             entries = data.get("entries") or {}
-            _LOG(f"loaded {len(entries)} entries from {path}")
+            # La web NUEVA de WolfMax (27-09-2026): las URLs viejas dan 404.
+            # Se tiran al cargar (y se guarda), para no subirle al relay
+            # enlaces muertos; el indice se rehace con lo que se busca.
+            viejas = [u for u in entries if not _PLAYABLE_RE.search(u or "")]
+            for u in viejas:
+                entries.pop(u, None)
+            _LOG(f"loaded {len(entries)} entries from {path}"
+                 + (f" ({len(viejas)} de la web vieja, fuera)" if viejas else ""))
             _cache = entries
+            if viejas:
+                global _dirty
+                _dirty = True
             return _cache
     except Exception as e:
         _LOG(f"load failed: {e}; starting empty")
@@ -169,8 +179,11 @@ def stats():
     return len(cache), by_kind
 
 
+# Solo la web NUEVA (27-09-2026): una version de peli o un capitulo, que es
+# lo que se reproduce. Las fichas de temporada no (se abren por su capitulo).
 _PLAYABLE_RE = re.compile(
-    r"/(movie|online|pelicula|capitulo|episodio|serie-online(?:-[\w-]+)?)/\d+",
+    r"^https?://(?:www\.)?wolfmax4k\.com/(?:pelicula|serie/episodio|documental/episodio)"
+    r"/[a-z0-9]{4,16}/?$",
     re.I,
 )
 

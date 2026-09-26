@@ -1105,6 +1105,29 @@ def play(torrent_url, title=""):
     except Exception:
         progress = None
 
+    # WolfMax, web nueva (2.9.77): enlace DIFERIDO "wf2:<tabla>:<id>". El
+    # torrent se pide ahora (prueba de trabajo), no al listar la temporada.
+    if torrent_url.startswith("wf2:"):
+        try:
+            if progress:
+                progress.update(15, "MejorWolf", "Pidiendo el torrent a WolfMax...")
+        except Exception:
+            pass
+        try:
+            torrent_url = wf.resolver_diferido(torrent_url) or ""
+        except Exception as e:
+            xbmc.log(f"[MejorWolf] wf2: {e}", xbmc.LOGWARNING)
+            torrent_url = ""
+        if not torrent_url:
+            try:
+                if progress:
+                    progress.close()
+            except Exception:
+                pass
+            _error("WolfMax no ha dado el torrent ahora mismo. Inténtalo en un rato.")
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+            return
+
     # Enlacito shortener
     if enlacito.is_enlacito_url(torrent_url):
         try:
@@ -1127,7 +1150,10 @@ def play(torrent_url, title=""):
             # fuentes como DivxTotal están bloqueadas en directo desde el box.
             data = b""
             try:
-                relay_url = dt._render_relay_url()
+                # WolfMax NO por el relay: desde Render le pone un reto de
+                # Cloudflare (y por alli gastaria creditos de ScraperAPI). La
+                # caja lo baja ella misma, con sus caminos de respaldo.
+                relay_url = "" if "wolfmax4k." in low else dt._render_relay_url()
                 if relay_url:
                     import requests as _rq
                     rr = _rq.get(f"{relay_url}/relay",
