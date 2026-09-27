@@ -354,10 +354,11 @@ try:
     print("\n=== 8) Busqueda con la fuente caida: sin caja (dtbl45) ===")
     ENCOLADO = []
     reales = (A._kb_enqueue, A._catjob_wait_any, A._box_for, A._wf_idx_search,
-              A._wfidx_ask_box, A._live_boxes, A._catbox_get)
+              A._wfidx_ask_box, A._live_boxes, A._catbox_get, A._box_wf)
     A._kb_enqueue = lambda b, ev: ENCOLADO.append((b, ev.get("srcs")))
     A._catjob_wait_any = lambda jobs, espera: {"items": []}
     A._box_for = lambda code: "111111"
+    A._box_wf = lambda code, excluir=(): "111111"     # caja al dia (dtbl50)
     A._wf_idx_search = lambda q, limit=40: []
     A._wfidx_ask_box = lambda: None
     A._live_boxes = lambda *a, **k: ["111111"]
@@ -407,7 +408,7 @@ try:
                   len(ENCOLADO) == 1 and not js.get("atajo"), (ENCOLADO, js))
     finally:
         (A._kb_enqueue, A._catjob_wait_any, A._box_for, A._wf_idx_search,
-         A._wfidx_ask_box, A._live_boxes, A._catbox_get) = reales
+         A._wfidx_ask_box, A._live_boxes, A._catbox_get, A._box_wf) = reales
 finally:
     for f in FICHEROS:
         try:

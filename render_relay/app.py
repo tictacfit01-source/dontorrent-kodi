@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl49"
+BUILD = "dtbl50"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3207,6 +3207,33 @@ def _box_for(code):
     return _any_live_box()
 
 
+# WolfMax estreno web el 26-09 y solo la entienden las cajas con el addon
+# 2.9.77 o mas. Mientras se actualizan (tardan hasta un dia), un trabajo de
+# WolfMax que caia en una caja vieja volvia con BASURA: su scraper viejo leia
+# de la web nueva los enlaces de capitulo sin el nombre de la serie, y la
+# busqueda enseñaba tarjetas sueltas "4x01", "4x02"... (visto por el dueño el
+# 27-09 buscando "el dorado"). Los trabajos de WolfMax, solo a cajas al dia.
+_WF_ADDON_MIN = (2, 9, 77)
+
+
+def _box_wf_ok(code):
+    try:
+        return _ver_tupla((_kbstatus_load().get(code) or {}).get("v")) >= _WF_ADDON_MIN
+    except Exception:
+        return False
+
+
+def _box_wf(code, excluir=()):
+    """Caja para un trabajo de WOLFMAX: la suya si esta viva y al dia; si no,
+    otra viva al dia; None si no hay ninguna (mejor nada que basura)."""
+    if len(code or "") == 6 and code not in excluir and _box_live(code) and _box_wf_ok(code):
+        return code
+    for b in _live_boxes():
+        if b not in excluir and _box_wf_ok(b):
+            return b
+    return None
+
+
 _KB_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -5979,7 +6006,8 @@ def _cat_group_episodes(items):
             continue
         base = _ep_base_title(it.get("title") or "", se)
         if not base:
-            out.append(it)
+            # "4x01" a secas: un capitulo sin el nombre de su serie no se puede
+            # agrupar ni reconocer. Como tarjeta suelta solo confunde (dtbl50).
             continue
         k = (src, _et_norm(base))
         ep = {"label": "%dx%02d" % se, "season": se[0], "episode": se[1],
@@ -7531,7 +7559,7 @@ def _catetbox_impl(sin_caja=False):
         # hilo del relay esperandola (6 por worker) y "Buscando WolfMax..." 24 s
         # para acabar en nada. No se cachea: cuando vuelva, que se busque.
         return jsonify({"items": _respaldo(), "idx": bool(_idx_respaldo), "atajo": True})
-    box = _box_for(code)     # la suya si esta viva; si no, cualquier caja viva
+    box = _box_wf(code) if "wf" in srcs.split(",") else _box_for(code)   # dtbl50
     if not box or (op == "search" and not q):
         return jsonify({"items": [], "off": True})
     # WolfMax es lento (catalogo->brave). Para et/dx, 20s: las cajas LENTAS (TV)
@@ -7571,7 +7599,8 @@ def _catetbox_impl(sin_caja=False):
         # (es la MISMA web), asi que ahi no se molesta a nadie mas.
         res = _catjob_wait_any(_jobs, min(8.0, wait))
         if res is None:
-            b2 = next((b for b in _live_boxes(al_dia=True) if b != box), None)
+            b2 = _box_wf("", excluir=(box,)) if _wf else \
+                next((b for b in _live_boxes(al_dia=True) if b != box), None)
             if b2:
                 _jobs.append(_ask(b2))
             if _jobs:
@@ -7637,7 +7666,7 @@ def _catetboxresolve_impl():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     url = (request.args.get("url") or "").strip()
     src = (request.args.get("src") or "et").strip()
-    box = _box_for(code)     # ver _box_for: la suya, o cualquier caja viva
+    box = _box_wf(code) if src == "wf" else _box_for(code)   # dtbl50
     if not box or not url.lower().startswith("http"):
         return jsonify({"link": ""}), 400
     job = "et" + os.urandom(5).hex()
@@ -7685,7 +7714,7 @@ def _box_eps_by_title(code, src, title, wait=None, cache_only=False):
     if items is None:
         if cache_only:     # solo mirar, sin tocar ninguna caja
             return []
-        box = _box_for(code)
+        box = _box_wf(code) if src == "wf" else _box_for(code)   # dtbl50
         if not box:
             return []
         prestada = (box != code)
@@ -7748,7 +7777,7 @@ def _catboxeps_impl():
     # episodios no cargan" cuando el box esta apagado. Si DivxTotal banea la IP
     # de Render (directo vacio) Y hay box emparejado, cae al box (DoH de casa,
     # NO baneado) -> robusto pase lo que pase.
-    box = _box_for(code)     # ver _box_for: la suya, o cualquier caja viva
+    box = _box_wf(code) if src == "wf" else _box_for(code)   # dtbl50
     if src == "dx" and "divxtotal" in url.lower():
         try:
             payload = _dx_episodes_payload(url)
@@ -7813,7 +7842,8 @@ def _catboxeps_impl():
                 len(((res or {}).get("eps") or {}).get("episodes") or []),
                 _t.time() - _t0))
             if not _okeps(res):
-                for _b2 in [b for b in _live_boxes(al_dia=True) if b != box][:2]:
+                for _b2 in [b for b in _live_boxes(al_dia=True) if b != box
+                            and (src != "wf" or _box_wf_ok(b))][:2]:
                     _jobs.append(_pide(_b2))
                 if _jobs:
                     r2 = _catjob_wait_any(_jobs, 7.0, _okeps)
@@ -8075,6 +8105,15 @@ def catboxeps():
     return jsonify(_con_caida(d)), st
 
 
+_SOLO_CAP_RE = re.compile(r"^\s*(?:\d{1,2}\s*[x\u00d7]\s*\d{1,3}|cap(?:itulo)?\.?\s*\d+)?\s*$", re.I)
+
+
+def _sin_serie(it):
+    """Un capitulo de et/wf que llego sin el nombre de su serie ("4x01")."""
+    return (it or {}).get("source") in ("wf", "et") and \
+        bool(_SOLO_CAP_RE.match((it or {}).get("title") or ""))
+
+
 @app.get("/catetbox")
 def catetbox():
     """Busqueda/estrenos en fuentes-box (ver _catetbox_impl): las tarjetas de
@@ -8090,6 +8129,11 @@ def catetbox():
     d, st = _respuesta(r)
     if d is None:
         return r
+    _its = d.get("items") or []
+    _limpios = [it for it in _its if not _sin_serie(it)]
+    if len(_limpios) != len(_its):
+        d["items"] = _limpios
+        return jsonify(_con_caida(d)), st
     n = _epsc_completa(d.get("items"))
     if n or _fuentes_caidas():
         return jsonify(_con_caida(d)), st
@@ -8388,7 +8432,7 @@ def seeds_ep():
         elif src == "wf" and not (_wf_url_nueva(url) and _wf_cupo_toma()):
             pass        # web vieja (404) o sin cupo: sin semillas por ahora (dtbl49)
         else:
-            _sbox = _box_for(code)
+            _sbox = _box_wf(code) if src == "wf" else _box_for(code)   # dtbl50
             _ssem = _lend_acquire(_sbox) if (_sbox and _sbox != code) else None
             if _sbox and not (_sbox != code and _ssem is None):
                 try:
@@ -8984,7 +9028,7 @@ def _apr_dt(k):
 
 def _apr_wf(url):
     box = _apr_caja()
-    if not box:
+    if not box or not _box_wf_ok(box):    # solo cajas que entienden la web nueva
         return None
     sem = _lend_acquire(box)
     if sem is None:

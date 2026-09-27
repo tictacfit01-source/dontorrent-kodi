@@ -135,10 +135,11 @@ try:
     print("\n=== 4) La busqueda de WolfMax, de la caja ===")
     ENCOLADO = []
     reales = (A._kb_enqueue, A._catjob_wait_any, A._box_for, A._catbox_get, A._live_boxes,
-              A._fc_caido, A._fc_atajo)
+              A._fc_caido, A._fc_atajo, A._box_wf)
     A._kb_enqueue = lambda b, ev: ENCOLADO.append(dict(ev))
     A._catjob_wait_any = lambda jobs, espera, *a, **k: {"items": ted}
     A._box_for = lambda code: "111111"
+    A._box_wf = lambda code, excluir=(): "111111"       # una caja al dia (ver 7)
     A._catbox_get = lambda k: None
     A._live_boxes = lambda *a, **k: ["111111"]
     A._fc_caido = lambda s: False
@@ -171,7 +172,7 @@ try:
                   ev.get("t") == "Ted Lasso" and ev.get("url") == SER, ENCOLADO)
     finally:
         (A._kb_enqueue, A._catjob_wait_any, A._box_for, A._catbox_get, A._live_boxes,
-         A._fc_caido, A._fc_atajo) = reales
+         A._fc_caido, A._fc_atajo, A._box_wf) = reales
     comprueba("la web avisa de la web vieja con su dialogo",
               "function webViejaDlg(" in A._CAT_PAGE and "d.vieja" in A._CAT_PAGE)
 
@@ -185,9 +186,10 @@ try:
     comprueba("como mucho %d huellas por hora; las demas, no" % A._WF_CUPO_HORA,
               tomas.count(True) == A._WF_CUPO_HORA and tomas[-1] is False, tomas.count(True))
     ENC2 = []
-    r2 = (A._kb_enqueue, A._box_for, A._catjob_wait, A._dxih_load)
+    r2 = (A._kb_enqueue, A._box_for, A._catjob_wait, A._dxih_load, A._box_wf)
     A._kb_enqueue = lambda b, ev: ENC2.append(dict(ev))
     A._box_for = lambda code: "111111"
+    A._box_wf = lambda code, excluir=(): "111111"
     A._catjob_wait = lambda job, espera: {"ih": "a" * 40}
     A._dxih_load = lambda: {}
     try:
@@ -203,7 +205,42 @@ try:
         comprueba("/catdiag ensena el cupo", js.get("wf_cupo") == {"usadas_hora": 1, "tope": A._WF_CUPO_HORA},
                   js.get("wf_cupo"))
     finally:
-        A._kb_enqueue, A._box_for, A._catjob_wait, A._dxih_load = r2
+        A._kb_enqueue, A._box_for, A._catjob_wait, A._dxih_load, A._box_wf = r2
+
+    print("\n=== 7) Cajas viejas y capitulos sin serie (dtbl50) ===")
+    # 27-09: buscando "el dorado", el dueño vio tarjetas sueltas "4x01", "4x02"...:
+    # el trabajo cayo en una caja aun en 2.9.76, cuyo scraper viejo leia de la
+    # web nueva los enlaces de capitulo sin el nombre de la serie
+    r3 = (A._kbstatus_load, A._box_live, A._live_boxes)
+    ESTADO = {"111111": {"ts": time.time(), "v": "2.9.76"},
+              "222222": {"ts": time.time(), "v": "2.9.77"},
+              "333333": {"ts": time.time(), "v": "2.9.80"}}
+    A._kbstatus_load = lambda: ESTADO
+    A._box_live = lambda c: c in ESTADO
+    A._live_boxes = lambda *a, **k: ["111111", "222222", "333333"]
+    try:
+        comprueba("un trabajo de WolfMax NO va a una caja en 2.9.76, aunque sea la suya",
+                  A._box_wf("111111") == "222222", A._box_wf("111111"))
+        comprueba("la suya, si esta al dia", A._box_wf("333333") == "333333")
+        comprueba("la segunda caja, otra al dia distinta", A._box_wf("", excluir=("222222",)) == "333333")
+        ESTADO["222222"]["v"] = ESTADO["333333"]["v"] = "2.9.76"
+        comprueba("si no hay ninguna al dia: ninguna (mejor nada que basura)", A._box_wf("111111") is None)
+    finally:
+        A._kbstatus_load, A._box_live, A._live_boxes = r3
+    g = A._cat_group_episodes([caja("4x01", N + "/serie/episodio/aa0001", "4K"),
+                               caja("La ruta hacia El Dorado", N + "/pelicula/bb0001", "DVDRip", "movie")])
+    comprueba("un capitulo sin el nombre de su serie no es una tarjeta",
+              [x["title"] for x in g] == ["La ruta hacia El Dorado"], g)
+    r4 = (A._catbox_get,)
+    A._catbox_get = lambda k: [caja("4x01", N + "/serie/episodio/aa0001", "4K"),
+                               caja("4x02", N + "/serie/episodio/aa0002", "4K"),
+                               caja("La ruta hacia El Dorado", N + "/pelicula/bb0001", "DVDRip", "movie")]
+    try:
+        js = cli.get("/catetbox?code=111111&op=search&srcs=wf&q=el%20dorado").get_json()
+        comprueba("...ni sale de lo que ya estaba guardado de antes",
+                  [x["title"] for x in js.get("items") or []] == ["La ruta hacia El Dorado"], js.get("items"))
+    finally:
+        (A._catbox_get,) = r4
 finally:
     for f in FICHEROS:
         try:
