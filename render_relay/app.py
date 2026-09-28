@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl52"
+BUILD = "dtbl53"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -9149,6 +9149,111 @@ def _apr_ronda():
     return 300.0 if not pend else 60.0
 
 
+# --- EL VIGIA DE LAS FUENTES (dtbl53) ------------------------------------------
+# Lo que se rompe en una fuente no da error: se ve vacio. El 28-09 WolfMax
+# retoco su marcado y sus series llegaron sin capitulos sin que nada lo dijera;
+# EliteTorrent llevaba dias sin calidad. Cada 3 h -- el worker que lleva el
+# turno del aprendiz, aunque nadie use la app -- UNA busqueda de prueba en
+# WolfMax, EliteTorrent y DivxTotal, y se mira que tenga buena pinta: que haya
+# resultados, que traigan calidad, que las series traigan capitulos. /catdiag
+# -> vigia: por fuente, la ultima mirada, desde cuando va mal y que falla.
+# "dune" tiene pelis en varias calidades y series con capitulos en las tres.
+_VIGIA_FILE = "/tmp/mw_vigia.json"
+_VIGIA_CADA = 3 * 3600
+_VIGIA_T = [0.0]
+_VIGIA_Q = "dune"
+
+
+def _vigia_lee():
+    try:
+        with open(_VIGIA_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _vigia_juzga(src, items):
+    """Buena pinta o no: lo que falla, en palabras."""
+    problemas = []
+    n = len(items)
+    if n < 3:
+        problemas.append("solo %d resultados" % n)
+    con_q = sum(1 for x in items if (x.get("quality") or "").strip())
+    pct = int(100 * con_q / n) if n else 0
+    if src in ("wf", "et") and n and pct < 50:
+        problemas.append("sin calidad (%d%% con calidad)" % pct)
+    series_caps = None
+    if src == "wf" and n:
+        sueltos = sum(1 for x in items if _sin_serie(x))
+        if sueltos:
+            problemas.append("%d capitulos sin el nombre de su serie" % sueltos)
+        g = _cat_group_episodes([dict(x) for x in items])
+        series_caps = sum(1 for x in g if x.get("kind") == "serie" and x.get("eps"))
+        if not series_caps:
+            problemas.append("series sin capitulos")
+    return {"n": n, "calidad_pct": pct, "series_con_caps": series_caps,
+            "problemas": problemas}
+
+
+def _vigia_busca(src):
+    """(items, "") o (None, por que no)."""
+    if src == "dx":
+        its = _bounded(lambda: _dx_search_items(_VIGIA_Q, max_pages=1), 25.0, None)
+        return (its, "") if its is not None else (None, "no contesto")
+    box = _box_wf("") if src == "wf" else _box_for("")
+    if not box:
+        return None, "sin caja al dia"
+    j = "vg" + os.urandom(5).hex()
+    _kb_enqueue(box, {"c": "etjob", "job": j, "op": "search", "q": _VIGIA_Q,
+                      "srcs": src})
+    res = _catjob_wait(j, 30.0)
+    if res is None:
+        return None, "la caja no contesto"
+    return [x for x in (res.get("items") or []) if (x or {}).get("source") == src], ""
+
+
+def _vigia_ronda():
+    """Una mirada a cada fuente. Se guarda en /tmp (lo lee /catdiag)."""
+    out = _vigia_lee()
+    now = int(_t.time())
+    caidas = _fuentes_caidas()
+    for src in ("wf", "et", "dx"):
+        try:
+            if src in caidas:
+                juicio = {"n": 0, "problemas": ["caida (su web no responde)"], "caida": True}
+            else:
+                items, por = _vigia_busca(src)
+                juicio = _vigia_juzga(src, items) if items is not None else \
+                    {"n": 0, "problemas": [por]}
+        except Exception as e:
+            juicio = {"n": 0, "problemas": ["error %s" % type(e).__name__]}
+        ok = not juicio["problemas"]
+        antes = out.get(src) or {}
+        rec = dict(juicio, ok=ok, ts=now)
+        if not ok:
+            rec["mal_desde"] = antes.get("mal_desde") if antes.get("ok") is False else now
+        rec["historia"] = ((antes.get("historia") or "") + ("+" if ok else "-"))[-8:]
+        out[src] = rec
+    try:
+        tmp = "%s.%d.tmp" % (_VIGIA_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(out, f)
+        os.replace(tmp, _VIGIA_FILE)
+    except Exception:
+        pass
+    return out
+
+
+def _vigia_toca():
+    """Cada 3 h, contando tambien lo que hizo el otro worker (fichero)."""
+    ult = max(_VIGIA_T[0], max([float((v or {}).get("ts") or 0)
+                                for v in _vigia_lee().values()] or [0]))
+    if (_t.time() - ult) < _VIGIA_CADA:
+        return False
+    _VIGIA_T[0] = _t.time()
+    return True
+
+
 def _apr_bucle():
     _t.sleep(90 + _rnd_mem.random() * 30)      # que el arranque se asiente
     while True:
@@ -9157,6 +9262,8 @@ def _apr_bucle():
             _APR["turno"] = _apr_turno()
             if _APR["turno"]:
                 pausa = _apr_ronda()
+                if _vigia_toca():
+                    _vigia_ronda()          # el vigia de las fuentes (dtbl53)
         except Exception:
             pausa = 120.0
         # A trozos, renovando el turno: con una pausa de 300 s el turno
@@ -10710,6 +10817,11 @@ def catdiag():
                      "proxima_s": max(0, int(_DX_DESC["proxima"] - now))},
         "trace": dict(_DX_TRACE),
     }
+    # el vigia de las fuentes (dtbl53); ?vigia=ya lo hace mirar AHORA
+    try:
+        out["vigia"] = _vigia_ronda() if request.args.get("vigia") == "ya" else _vigia_lee()
+    except Exception:
+        out["vigia"] = {}
     # lo ultimo de WolfMax para el Inicio (dtbl52)
     out["wf_ultimos"] = dict((c, {"n": len(_wfult_lee(c).get("items") or []),
                                   "edad_s": int(now - float(_wfult_lee(c).get("ts") or 0))

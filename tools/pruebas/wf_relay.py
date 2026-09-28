@@ -330,6 +330,57 @@ try:
     comprueba("/catdiag ensena lo ultimo de WolfMax", "wf_ultimos" in js and "movie" in js["wf_ultimos"],
               js.get("wf_ultimos"))
 
+    print("\n=== 10) El vigia de las fuentes (dtbl53) ===")
+    FICHEROS.append(A._VIGIA_FILE)
+    if os.path.exists(A._VIGIA_FILE):
+        copia[A._VIGIA_FILE] = A._VIGIA_FILE + ".prueba_wf_bak"
+        shutil.copy(A._VIGIA_FILE, copia[A._VIGIA_FILE])
+        os.remove(A._VIGIA_FILE)
+    BUENO = {"wf": [caja("Dune", N + "/pelicula/aa0001", "4K", "movie", 2021),
+                    caja("Dune", N + "/pelicula/aa0002", "1080p", "movie", 2021),
+                    caja("Dune La profecia 1x06", N + "/serie/episodio/aa0003", "4K")],
+             "et": [dict(caja("Dune: Parte dos", "https://www.elitetorrent.com/p/1", "720p", "movie"), source="et"),
+                    dict(caja("Exoplaneta Dune", "https://www.elitetorrent.com/p/2", "720p", "movie"), source="et"),
+                    dict(caja("Hijos de Dune", "https://www.elitetorrent.com/p/3", "", "movie"), source="et")]}
+    MALO = {"wf": [caja("Dune", N + "/serie/aa0009", "", "serie"), caja("Dune", N + "/serie/aa0010", "", "serie"),
+                   caja("4x01", N + "/serie/episodio/aa0011", "4K")],
+            "et": [dict(x, quality="") for x in BUENO["et"]]}
+    ESCENA = {"v": BUENO}
+    r8 = (A._box_wf, A._box_for, A._kb_enqueue, A._catjob_wait, A._dx_search_items, A._fuentes_caidas)
+    ULT = []
+    A._box_wf = lambda code, excluir=(), minimo=None: "222222"
+    A._box_for = lambda code: "222222"
+    A._kb_enqueue = lambda b, ev: ULT.append(dict(ev))
+    A._catjob_wait = lambda job, espera: {"items": ESCENA["v"].get(ULT[-1].get("srcs"), [])}
+    A._dx_search_items = lambda q, max_pages=5, proxy=False: [
+        {"title": "Dune", "source": "dx", "url": "https://divxtotal.foo/p/%d" % i, "quality": ""} for i in range(4)]
+    A._fuentes_caidas = lambda: []
+    try:
+        v = A._vigia_ronda()
+        comprueba("todo bien: las tres fuentes 'ok' (DivxTotal sin calidad es lo normal)",
+                  [v[s]["ok"] for s in ("wf", "et", "dx")] == [True, True, True]
+                  and v["wf"]["series_con_caps"] == 1 and all(ev.get("q") == "dune" for ev in ULT), v)
+        ESCENA["v"] = MALO
+        v = A._vigia_ronda()
+        comprueba("WolfMax con series sin capitulos y un '4x01' suelto: se dice que falla y por que",
+                  v["wf"]["ok"] is False and "series sin capitulos" in v["wf"]["problemas"]
+                  and any("sin el nombre de su serie" in p for p in v["wf"]["problemas"]), v["wf"])
+        comprueba("EliteTorrent sin calidad: se dice", v["et"]["ok"] is False
+                  and any("sin calidad" in p for p in v["et"]["problemas"]), v["et"])
+        desde = v["wf"]["mal_desde"]
+        v = A._vigia_ronda()
+        comprueba("recuerda DESDE CUANDO va mal (no se reinicia en cada mirada) y la historia",
+                  v["wf"]["mal_desde"] == desde and v["wf"]["historia"].endswith("+--"), (v["wf"].get("mal_desde"), desde, v["wf"]["historia"]))
+        A._fuentes_caidas = lambda: ["et"]
+        v = A._vigia_ronda()
+        comprueba("una fuente caida se dice caida (no 'le ha cambiado la web')",
+                  v["et"].get("caida") is True and "caida" in v["et"]["problemas"][0], v["et"])
+        comprueba("cada 3 h, contando lo que hizo el otro worker", A._vigia_toca() is False)
+        js = cli.get("/catdiag").get_json()
+        comprueba("/catdiag ensena el vigia", set(js.get("vigia") or {}) >= {"wf", "et", "dx"}, js.get("vigia"))
+    finally:
+        (A._box_wf, A._box_for, A._kb_enqueue, A._catjob_wait, A._dx_search_items, A._fuentes_caidas) = r8
+
     comprueba("la web lo explica (limite o captcha) con 'Buscar en otras fuentes'",
               "function limiteDlg(" in A._CAT_PAGE and "d.error)limiteDlg(" in A._CAT_PAGE
               and "d.error){limiteDlg(" in A._CAT_PAGE)
