@@ -3183,6 +3183,9 @@ def search(query):
         return []
     html = _wf_pide("/buscar?q=" + urlquote(q))
     ts = _W.tarjetas(html)
+    if _W.sin_archivos_raro(html, ts):
+        _LOG("OJO: la pagina de WolfMax trae archivos y no se ha leido ninguno: "
+             "ha cambiado su marcado (wf_web.tarjetas)")
     if _W.paginas(html)[1] > 1:
         try:
             ts += _W.tarjetas(_wf_pide("/buscar?q=%s&pagina=2" % urlquote(q)))
@@ -3201,7 +3204,10 @@ def search_and_expand(query):
     return search(query)
 
 
-_WF_SECCION = {"movie": "/ultimos", "movie_720p": "/peliculas", "movie_hd": "/peliculas",
+# Pelis: /peliculas (lo ultimo subido, con todas sus versiones) y no /ultimos:
+# el 28-09 /ultimos eran 45 series, 4 documentales y UNA peli, y el Inicio se
+# quedaba casi sin WolfMax; /peliculas daba 24 de 2025-2026, varias en 4K.
+_WF_SECCION = {"movie": "/peliculas", "movie_720p": "/peliculas", "movie_hd": "/peliculas",
                "movie_4k": "/peliculas", "tvshow": "/series", "tvshow_720p": "/series",
                "tvshow_hd": "/series", "tvshow_4k": "/series",
                "documentary": "/documentales"}
@@ -3213,8 +3219,6 @@ def latest(kind="movie", page=1):
     """Lo ultimo de una seccion. La web no filtra por calidad: se filtra aqui."""
     ruta = _WF_SECCION.get(kind, "/peliculas")
     page = int(page or 1)
-    if ruta == "/ultimos" and page > 1:
-        ruta = "/peliculas"
     if page > 1:
         ruta += "?pagina=%d" % page
     items = _wf_items(_W.tarjetas(_wf_pide(ruta)))
@@ -3270,7 +3274,7 @@ def detail(url):
             else _W.diferido(a["cid"], a["tabla"])
         s, e = a.get("temporada") or 0, a.get("episodio") or 0
         es_cap = bool(s or e) and d["tipo"] != "pelicula"
-        downloads.append({"label": ("%dx%02d" % (s, e)) if es_cap
+        downloads.append({"label": _W.etiqueta_ep(s, e, a.get("episodio_fin") or 0) if es_cap
                           else (a.get("etiqueta") or d["calidad"] or "Descargar"),
                           "season": s if es_cap else None, "episode": e if es_cap else None,
                           "quality": a.get("calidad") or d["calidad"], "torrent_url": tu,
@@ -3331,11 +3335,14 @@ def episodios_serie(url, titulo=""):
                 continue
             _wf_recuerda(a)
             q = d.get("calidad") or a.get("calidad") or ""
-            k = (s, e)
+            fin = a.get("episodio_fin") or 0
+            k = (s, e, fin)
             if k not in mejor or _W.rango(q) > _W.rango(mejor[k]["quality"]):
-                mejor[k] = {"label": "%dx%02d" % (s, e), "season": s, "episode": e,
+                mejor[k] = {"label": _W.etiqueta_ep(s, e, fin), "season": s, "episode": e,
                             "quality": q, "url": a["url"], "content_id": a["url"],
                             "src": "wf"}
+                if fin:
+                    mejor[k]["episode_end"] = fin
     eps = [mejor[k] for k in sorted(mejor)]
     _LOG("episodios_serie %r: %d fichas -> %d capitulos" % (base, len(fichas), len(eps)))
     return {"title": base, "episodes": eps}

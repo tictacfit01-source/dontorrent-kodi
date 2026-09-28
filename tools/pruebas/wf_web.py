@@ -372,6 +372,48 @@ try:
 except RuntimeError as ex:
     comprueba("una URL de la web vieja: error claro, sin pedirla", "vieja" in str(ex), ex)
 
+print("\n=== 4) Cuando WolfMax retoca su marcado (28-09) y los packs ===")
+# Dos dias despues de estrenar web añadio un atributo a cada archivo de las
+# tarjetas y el lector dejo de ver TODOS: series sin capitulos, sin calidades.
+# Aqui, esa tarjeta tal cual y otra con los atributos en otro orden y de mas.
+HOY = '''<article class="wolf-card"><a class="wolf-card-poster" href="/serie/zryh84" tabindex="-1"><img src="x" data-original="/caratulas/series/VGVk/Ted.jpg" alt="t"></a>
+<div class="wolf-card-content"><h3 class="wolf-card-title"><a class="wolf-card-main" href="/serie/zryh84" aria-label="Ver ficha">Ted Lasso - 1ª Temporada [720p].</a></h3></div>
+<ul class="wolf-card-files" aria-label="Archivos">
+ <li class="wolf-card-file" data-wolf-episode-id="749378"><a class="wolf-card-format" href="/serie/episodio/2s42pf"><strong>Episodio 1x10 -</strong><span>HDTV-720p</span></a>
+   <span class="wolf-card-size">1,31 GB</span><button type="button" class="protected-download wolf-card-download" data-content-id="749378" data-tabla="series"><span>Descargar</span></button></li>
+ <li data-x="1" class="wolf-card-file nueva"><a href="/serie/episodio/2ap2ud" data-y="2" class="otra wolf-card-format"><strong>Episodio 1x06 al 1x09.</strong><span>HDTV-720p</span></a>
+   <span class="wolf-card-size">3,13 GB</span><button data-tabla="series" type="button" data-content-id="749083" class="protected-download">Descargar</button></li>
+</ul></article>'''
+th = W.tarjetas(HOY)
+comprueba("con el atributo nuevo y con todo en otro orden, se leen los dos archivos",
+          len(th) == 1 and [(a["cid"], a["tabla"], a["calidad"]) for a in th[0]["archivos"]]
+          == [("749378", "series", "720p"), ("749083", "series", "720p")], th)
+comprueba("el pack se sabe pack: del 1x06 al 1x09",
+          [(a["temporada"], a["episodio"], a["episodio_fin"]) for a in th[0]["archivos"]] == [(1, 10, 0), (1, 6, 9)],
+          [(a["etiqueta"], a["episodio_fin"]) for a in th[0]["archivos"]])
+comprueba("rotulos: el capitulo suelto como siempre y el pack como lo escribe WolfMax",
+          W.etiqueta_ep(1, 10) == "1x10" and W.etiqueta_ep(1, 6, 9) == "1x06 al 1x09"
+          and W.episodio_fin("1x09 al 2x01") == 0 and W.episodio_fin("1x00 (PILOTO)") == 0)
+roto = HOY.replace("wolf-card-format", "wolf-cambiado")
+comprueba("si vuelve a cambiar y no se lee ningun archivo, se nota (para el registro)",
+          W.sin_archivos_raro(roto, W.tarjetas(roto)) and not W.sin_archivos_raro(HOY, th))
+PAGINAS["https://wolfmax4k.com/serie/zrdqqp"] = ficha_temporada("Ted Lasso - 1ª Temporada [720p]", "HDTV-720p", [
+    fila("749001", "/serie/episodio/zrfbxt", "1x01 al 1x03.", "HDTV-720p"),
+    fila("749004", "/serie/episodio/zrgx6x", "1x04 -", "HDTV-720p")])
+PAGINAS["/buscar?q=Ted%20Lasso"] = BUSQUEDA_TED.replace("</main>", tarjeta_serie(
+    "zrdqqp", "Ted Lasso - 1ª Temporada [720p]", "1x04", "HDTV-720p", "749004") + "</main>")
+r3 = S.episodios_serie("https://wolfmax4k.com/serie/5ecqn5")
+labs = [e["label"] for e in r3["episodes"] if e["season"] == 1]
+comprueba("la serie completa rotula el pack y no se come el suelto",
+          "1x01 al 1x03" in labs and "1x04" in labs
+          and [e.get("episode_end") for e in r3["episodes"] if e["label"] == "1x01 al 1x03"] == [3], labs)
+
+del PEDIDAS[:]
+PAGINAS["/peliculas"] = TARJETA_PELI
+lt = S.latest("movie", 1)
+comprueba("lo ultimo en pelis sale de /peliculas (en /ultimos casi todo son series)",
+          PEDIDAS == ["/peliculas"] and [x["quality"] for x in lt] == ["1080p", "4K", "DVDRip"], (PEDIDAS, lt))
+
 print("\n---- VEREDICTO ----")
 if fallos:
     print("%d comprobaciones MAL" % fallos)

@@ -123,6 +123,33 @@ def episodio(s):
     return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
 
+# PACKS: WolfMax publica a veces varios capitulos en un solo torrent
+# ("1x01 al 1x03", 3,5 GB). Rotulados "1x01" a secas, la temporada parecia
+# tener huecos (Ted Lasso T1: 1x01, 1x04, 1x05, 1x06, 1x10) y al darle se
+# bajaban cuatro capitulos creyendo que era uno.
+_EPR_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*[xX\u00d7]\s*(\d{1,3})\s*(?:al|a|-|\u2013|y)\s*"
+    r"(?:(\d{1,2})\s*[xX\u00d7]\s*)?(\d{1,3})(?!\d)", re.I)
+
+
+def episodio_fin(s):
+    """El ULTIMO capitulo de un pack ("1x06 al 1x09" -> 9); 0 si es uno solo."""
+    m = _EPR_RE.search(s or "")
+    if not m:
+        return 0
+    if m.group(3) and int(m.group(3)) != int(m.group(1)):
+        return 0
+    fin = int(m.group(4))
+    return fin if fin > int(m.group(2)) else 0
+
+
+def etiqueta_ep(temp, cap, fin=0):
+    """"4x01", o "1x06 al 1x09" si es un pack (como lo escribe WolfMax)."""
+    if fin and fin > cap:
+        return "%dx%02d al %dx%02d" % (temp, cap, temp, fin)
+    return "%dx%02d" % (temp, cap)
+
+
 def temporada(titulo):
     """4 de "Ted Lasso - 4a Temporada [4k]"; 0 si no lo dice."""
     for rx in (_TEMP_RE, _TEMP_RE2):
@@ -143,20 +170,63 @@ def titulo_base(t):
 
 
 # --- paginas -----------------------------------------------------------------
-_ART_RE = re.compile(r'<article class="wolf-card[^"]*">(.*?)</article>', re.S)
-_MAIN_RE = re.compile(r'class="wolf-card-main"\s+href="([^"]+)"[^>]*>(.*?)</a>', re.S)
-_FILE_RE = re.compile(r'<li class="wolf-card-file">(.*?)</li>', re.S)
-_FMT_RE = re.compile(r'class="wolf-card-format"\s+href="([^"]+)"[^>]*>(.*?)</a>', re.S)
-_BTN_RE = re.compile(r'data-content-id="(\d+)"\s+data-tabla="([a-z_]+)"', re.I)
-_ORIG_RE = re.compile(r'data-original="([^"]+)"')
-_SIZE_RE = re.compile(r'class="wolf-card-size">([^<]+)<')
+# Leer POR CLASE y por nombre de atributo, nunca por la forma exacta de la
+# etiqueta. El 28-09, dos dias despues de estrenar web, WolfMax añadio un
+# atributo a cada archivo de las tarjetas (<li class="wolf-card-file"
+# data-wolf-episode-id="...">) y el lector, que buscaba la etiqueta tal cual,
+# dejo de ver TODOS los archivos de busquedas y listados: las series llegaban
+# sin capitulos (una tarjeta vacia por calidad) y /ultimos sin calidades. Sin
+# un solo error: la web seguia contestando 200.
+_ATR_RE = re.compile(r'([a-zA-Z_:][-\w:.]*)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
+
+
+def _atributos(etiqueta):
+    """Los atributos de una etiqueta de apertura, en cualquier orden."""
+    return dict((k.lower(), _html.unescape(v if v or not w else w))
+                for k, v, w in _ATR_RE.findall(etiqueta or ""))
+
+
+def _clases(atr):
+    return (atr.get("class") or "").split()
+
+
+def _bloques(html, etiqueta, clase=None, hasta=None):
+    """[(atributos, dentro)] de cada <etiqueta ...> con esa clase (entre
+    otras) hasta su cierre (o hasta `hasta`). Para etiquetas que no se anidan
+    consigo mismas (article, li, a, button, h1, p, section...)."""
+    fin = hasta or ("</%s>" % etiqueta)
+    out = []
+    for m in re.finditer(r"<%s\b([^>]*)>" % etiqueta, html or "", re.I):
+        atr = _atributos(m.group(1))
+        if clase and clase not in _clases(atr):
+            continue
+        j = (html or "").find(fin, m.end())
+        out.append((atr, html[m.end():j] if j >= 0 else html[m.end():]))
+    return out
+
+
+def _uno(html, etiqueta, clase=None):
+    b = _bloques(html, etiqueta, clase)
+    return b[0] if b else ({}, "")
+
+
+def _boton(html):
+    """(content-id, tabla) del boton de descarga protegido, o (None, None)."""
+    for m in re.finditer(r"<button\b([^>]*)>", html or "", re.I):
+        atr = _atributos(m.group(1))
+        cid = re.sub(r"\D", "", atr.get("data-content-id") or "")
+        tabla = re.sub(r"[^a-z_]", "", (atr.get("data-tabla") or "").lower())
+        if cid and tabla:
+            return cid, tabla
+    return None, None
 
 
 def _archivo(url, etiqueta, formato, tamano, cid, tabla):
     s, e = episodio(etiqueta)
     return {"url": url, "etiqueta": etiqueta, "formato": formato,
             "calidad": calidad(formato), "tamano": tamano, "cid": cid,
-            "tabla": tabla, "temporada": s, "episodio": e}
+            "tabla": tabla, "temporada": s, "episodio": e,
+            "episodio_fin": episodio_fin(etiqueta) if (s or e) else 0}
 
 
 def tarjetas(html):
@@ -164,41 +234,45 @@ def tarjetas(html):
     trae (la busqueda: la peli con todas sus versiones, la temporada con su
     ultimo capitulo)."""
     out = []
-    for a in _ART_RE.findall(html or ""):
-        m = _MAIN_RE.search(a)
-        if not m:
-            continue
-        url = absoluta(m.group(1))
+    for _atr_a, a in _bloques(html, "article", "wolf-card"):
+        atr_m, dentro_m = _uno(a, "a", "wolf-card-main")
+        url = absoluta(atr_m.get("href") or "")
         tipo, _id = ruta(url)
         if not tipo:
             continue
-        titulo = texto(m.group(2))
-        mo = _ORIG_RE.search(a)
-        meta = re.search(r'class="wolf-card-meta">(.*?)</p>', a, re.S)
-        spans = [texto(x) for x in re.findall(r"<span>(.*?)</span>", meta.group(1), re.S)] if meta else []
+        titulo = texto(dentro_m)
+        imgs = [_atributos(x) for x in re.findall(r"<img\b([^>]*)>", a, re.I)]
+        orig = next((x.get("data-original") for x in imgs if x.get("data-original")), "")
+        _am, meta = _uno(a, "p", "wolf-card-meta")
+        spans = [texto(x) for x in re.findall(r"<span\b[^>]*>(.*?)</span>", meta, re.S)]
         anio = next((int(x) for x in spans if re.fullmatch(r"(19|20)\d\d", x)), 0)
         archivos = []
-        for f in _FILE_RE.findall(a):
-            fm = _FMT_RE.search(f)
-            bm = _BTN_RE.search(f)
-            if not fm or not bm:
+        for _atr_f, f in _bloques(a, "li", "wolf-card-file"):
+            atr_fm, dentro = _uno(f, "a", "wolf-card-format")
+            cid, tabla = _boton(f)
+            if not atr_fm.get("href") or not cid:
                 continue
-            dentro = fm.group(2)
-            fuerte = re.search(r"<strong>(.*?)</strong>", dentro, re.S)
-            span = re.search(r"<span>(.*?)</span>", dentro, re.S)
+            fuerte = re.search(r"<strong\b[^>]*>(.*?)</strong>", dentro, re.S)
+            span = re.search(r"<span\b[^>]*>(.*?)</span>", dentro, re.S)
             etiqueta = texto(fuerte.group(1)) if fuerte else texto(dentro)
             formato = texto(span.group(1)) if span else etiqueta
-            sz = _SIZE_RE.search(f)
-            archivos.append(_archivo(absoluta(fm.group(1)), etiqueta, formato,
-                                     texto(sz.group(1)) if sz else "",
-                                     bm.group(1), bm.group(2)))
+            _asz, sz = _uno(f, "span", "wolf-card-size")
+            archivos.append(_archivo(absoluta(atr_fm["href"]), etiqueta, formato,
+                                     texto(sz), cid, tabla))
         out.append({"url": url, "tipo": tipo, "titulo": titulo,
                     "base": titulo_base(titulo), "temporada": temporada(titulo),
                     "calidad": calidad(" ".join(re.findall(r"\[([^\]]*)\]", titulo))),
-                    "thumb": absoluta(mo.group(1)) if mo else "",
+                    "thumb": absoluta(orig) if orig else "",
                     "anio": anio, "generos": [x for x in spans if not x.isdigit()],
                     "archivos": archivos})
     return out
+
+
+def sin_archivos_raro(html, tarjetas_leidas):
+    """True si la pagina TRAE archivos y el lector no ha visto ninguno: el
+    marcado ha vuelto a cambiar (para decirlo en el registro, no callarlo)."""
+    return "wolf-card-file" in (html or "") and bool(tarjetas_leidas) and \
+        not any(t.get("archivos") for t in tarjetas_leidas)
 
 
 def paginas(html):
@@ -207,58 +281,63 @@ def paginas(html):
     return (int(m.group(1)), int(m.group(2))) if m else (1, 1)
 
 
-_FILA_RE = re.compile(r'<div id="archivo-(\d+)" class="wolf-episode[^"]*">(.*?)</button>', re.S)
-
-
 def ficha(html, url=""):
     """Todo lo de una ficha: peli (una version), temporada de serie,
     documental o capitulo suelto. Los archivos, con su content-id y tabla."""
     h = html or ""
     tipo, _id = ruta(url)
-    h1 = re.search(r"<h1\b[^>]*>(.*?)</h1>", h, re.S)
+    _a1, h1 = _uno(h, "h1")
     nombre_ep = ""
     titulo = ""
     if h1:
-        dentro = h1.group(1)
-        ne = re.search(r'<span class="wolf-episode-name">(.*?)</span>', dentro, re.S)
+        atr_ne, ne = _uno(h1, "span", "wolf-episode-name")
         if ne:
-            nombre_ep = texto(ne.group(1))
-            dentro = dentro.replace(ne.group(0), "")
-        titulo = texto(dentro)
-    ceja = re.search(r'text-wolf-accent">(.*?)</p>', h, re.S)
-    ceja = texto(ceja.group(1)) if ceja else ""
+            nombre_ep = texto(ne)
+            h1 = re.sub(r"<span\b[^>]*wolf-episode-name[^>]*>.*?</span>", " ", h1, flags=re.S)
+        titulo = texto(h1)
+    ceja = next((texto(d) for atr, d in _bloques(h, "p") if "text-wolf-accent" in _clases(atr)), "")
     anio = re.search(r"\?anyo=(\d{4})", h)
-    generos = [texto(g) for g in re.findall(r'\?genero=[^"]+">(.*?)</a>', h, re.S)]
-    sin = re.search(r'id="wolf-synopsis">(.*?)</div>', h, re.S)
-    arte = re.search(r'class="wolf-detail-art"[^>]*data-original="([^"]+)"', h) or \
-        re.search(r'data-original="([^"]+)"[^>]*class="wolf-detail-art"', h)
-    tempo = re.search(r'class="wolf-season-link"\s+href="([^"]+)"', h) or \
-        re.search(r'wolf-episode-breadcrumb.*?href="/series?"[^>]*>.*?href="([^"]+)"', h, re.S)
+    generos = [texto(g) for g in re.findall(r'\?genero=[^"]+"[^>]*>(.*?)</a>', h, re.S)]
+    sin = re.search(r'id="wolf-synopsis"[^>]*>(.*?)</div>', h, re.S)
+    arte = ""
+    for m in re.finditer(r"<img\b([^>]*)>", h, re.I):
+        atr = _atributos(m.group(1))
+        if "wolf-detail-art" in _clases(atr) and atr.get("data-original"):
+            arte = atr["data-original"]
+            break
+    atr_t, _t = _uno(h, "a", "wolf-season-link")
+    tempo = atr_t.get("href") or ""
+    if not tempo:
+        _ab, miga = _uno(h, "nav", "wolf-episode-breadcrumb")
+        enl = [x for x in re.findall(r'href="([^"]+)"', miga) if ruta(x)[0] in ("serie", "documental")]
+        tempo = enl[0] if enl else ""
     archivos = []
-    for cid, fila in _FILA_RE.findall(h):
-        a = re.search(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', fila, re.S)
-        fmt = re.search(r'class="wolf-episode-format">([^<]*)', fila)
-        sz = re.search(r'class="wolf-episode-size"[^>]*>([^<]+)<', fila)
-        bm = _BTN_RE.search(fila)
-        if not a or not bm:
+    for m in re.finditer(r"<div\b([^>]*)>", h, re.I):
+        atr = _atributos(m.group(1))
+        if "wolf-episode" not in _clases(atr):
             continue
-        archivos.append(_archivo(absoluta(a.group(1)), texto(a.group(2)),
-                                 texto(fmt.group(1)) if fmt else "",
-                                 texto(sz.group(1)) if sz else "",
-                                 bm.group(1), bm.group(2)))
+        j = h.find("</button>", m.end())
+        fila = h[m.end():j] if j >= 0 else ""
+        enl = re.search(r'<a\b([^>]*)>(.*?)</a>', fila, re.S)
+        cid, tabla = _boton(fila + "</button>" if fila else "")
+        href = _atributos(enl.group(1)).get("href") if enl else ""
+        if not href or not cid:
+            continue
+        fmt = re.search(r'wolf-episode-format[^>]*>([^<]*)', fila)
+        _az, sz = _uno(fila, "span", "wolf-episode-size")
+        archivos.append(_archivo(absoluta(href), texto(enl.group(2)),
+                                 texto(fmt.group(1)) if fmt else "", texto(sz), cid, tabla))
     if not archivos:
-        panel = re.search(r'<section class="wolf-file-panel"(.*?)</section>', h, re.S)
-        if panel:
-            p = panel.group(1)
+        _ap, p = _uno(h, "section", "wolf-file-panel")
+        if p:
             dd = dict((texto(k).lower(), texto(v)) for k, v in
-                      re.findall(r"<dt>(.*?)</dt>\s*<dd>(.*?)</dd>", p, re.S))
-            bm = _BTN_RE.search(p)
-            if bm:
+                      re.findall(r"<dt\b[^>]*>(.*?)</dt>\s*<dd\b[^>]*>(.*?)</dd>", p, re.S))
+            cid, tabla = _boton(p)
+            if cid:
                 fmt = dd.get("calidad", "")
                 tam = next((v for k, v in dd.items() if k.startswith("tama")), "")
                 archivos.append(_archivo(absoluta(url) if url else "",
-                                         nombre_ep or fmt, fmt, tam,
-                                         bm.group(1), bm.group(2)))
+                                         nombre_ep or fmt, fmt, tam, cid, tabla))
     cal = calidad(ceja.split("·")[-1]) if "·" in ceja else ""
     cal = cal or calidad(" ".join(re.findall(r"\[([^\]]*)\]", titulo)))
     if not cal and archivos:
@@ -268,8 +347,8 @@ def ficha(html, url=""):
             "episodio": nombre_ep, "calidad": cal,
             "anio": int(anio.group(1)) if anio else 0, "generos": generos,
             "sinopsis": texto(sin.group(1)) if sin else "",
-            "thumb": absoluta(arte.group(1)) if arte else "",
-            "temporada_url": absoluta(tempo.group(1)) if tempo else "",
+            "thumb": absoluta(arte) if arte else "",
+            "temporada_url": absoluta(tempo) if tempo else "",
             "archivos": archivos}
 
 
