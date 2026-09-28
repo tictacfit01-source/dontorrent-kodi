@@ -213,12 +213,15 @@ try:
     # web nueva los enlaces de capitulo sin el nombre de la serie
     r3 = (A._kbstatus_load, A._box_live, A._live_boxes)
     ESTADO = {"111111": {"ts": time.time(), "v": "2.9.76"},
-              "222222": {"ts": time.time(), "v": "2.9.77"},
+              "222222": {"ts": time.time(), "v": "2.9.78"},
               "333333": {"ts": time.time(), "v": "2.9.80"}}
     A._kbstatus_load = lambda: ESTADO
     A._box_live = lambda c: c in ESTADO
     A._live_boxes = lambda *a, **k: ["111111", "222222", "333333"]
     try:
+        ESTADO["444444"] = {"ts": time.time(), "v": "2.9.77"}
+        comprueba("ni a una en 2.9.77 (su lector no ve los archivos desde el 28-09)",
+                  A._box_wf("444444") == "222222", A._box_wf("444444"))
         comprueba("un trabajo de WolfMax NO va a una caja en 2.9.76, aunque sea la suya",
                   A._box_wf("111111") == "222222", A._box_wf("111111"))
         comprueba("la suya, si esta al dia", A._box_wf("333333") == "333333")
@@ -380,6 +383,84 @@ try:
         comprueba("/catdiag ensena el vigia", set(js.get("vigia") or {}) >= {"wf", "et", "dx"}, js.get("vigia"))
     finally:
         (A._box_wf, A._box_for, A._kb_enqueue, A._catjob_wait, A._dx_search_items, A._fuentes_caidas) = r8
+
+    print("\n=== 11) Dune de 1984 no es la de 2021 (dtbl54) ===")
+    # WolfMax manda el año APARTE del titulo; TMDB se buscaba solo por "Dune",
+    # casaba con la de 2021, se le ponia su año y al juntar versiones las de
+    # 2021 desaparecian: "WolfMax 4K" de la ficha de 2021 era la de 1984
+    PEDIDAS_TMDB = []
+
+    class Resp(object):
+        status_code = 200
+
+        def __init__(self, res):
+            self._r = res
+
+        def json(self):
+            return {"results": self._r}
+
+    P84 = {"id": 841, "title": "Dune", "release_date": "1984-12-14", "popularity": 20,
+           "vote_average": 6.2, "poster_path": "/d84.jpg"}
+    P21 = {"id": 438631, "title": "Dune", "release_date": "2021-09-15", "popularity": 300,
+           "vote_average": 7.8, "poster_path": "/d21.jpg"}
+
+    def tmdb_falso(url, params=None, timeout=None):
+        PEDIDAS_TMDB.append(dict(params or {}))
+        if (params or {}).get("year") == "1984":
+            return Resp([P84])
+        if (params or {}).get("year") == "2021":
+            return Resp([P21])
+        return Resp([P21, P84])
+
+    r9 = (A._TMDB_SESS.get, A._tmdb_is_down)
+    A._TMDB_SESS.get = tmdb_falso
+    A._tmdb_is_down = lambda: False
+    A._CAT_TMDB_CACHE.clear()
+    try:
+        its = [caja("Dune", N + "/pelicula/dgtkej", "4K", "movie", 1984),
+               caja("Dune", N + "/pelicula/d8k2pt", "4K", "movie", 2021)]
+        A._cat_enrich(its)
+        comprueba("cada Dune con SU año y SU ficha de TMDB",
+                  [(x.get("year"), x.get("tmdb_id")) for x in its] == [("1984", 841), ("2021", 438631)],
+                  [(x.get("year"), x.get("tmdb_id")) for x in its])
+        c = A._wf_colapsa(its)
+        comprueba("...y al juntar versiones siguen siendo DOS (la de 2021 no desaparece)",
+                  sorted(x["url"][-6:] for x in c) == ["d8k2pt", "dgtkej"], [x["url"] for x in c])
+        dt = {"title": "Dune (1984)", "kind": "movie", "source": "dt", "content_id": "123", "tabla": "peliculas"}
+        A._cat_enrich([dt])
+        comprueba("DonTorrent como siempre: el año del titulo manda", dt.get("tmdb_id") == 841, dt)
+        sin = {"title": "Dune", "kind": "movie", "source": "et", "url": "https://www.elitetorrent.com/p/1", "year": 1999}
+        A._cat_enrich([sin])
+        comprueba("otras fuentes: el año aparte no se usa (solo WolfMax lo da fiable)",
+                  not PEDIDAS_TMDB[-1].get("year"), PEDIDAS_TMDB[-1])
+    finally:
+        A._TMDB_SESS.get, A._tmdb_is_down = r9
+        A._CAT_TMDB_CACHE.clear()
+    comprueba("una serie de WolfMax sin capitulos (ficha de temporada vacia) se reconoce",
+              A._wf_serie_vacia(caja("Ted Lasso", N + "/serie/zryh84", "4K"))
+              and not A._wf_serie_vacia(dict(caja("Ted Lasso", N + "/serie/episodio/aa1", "4K"), eps=[{"label": "1x01"}]))
+              and not A._wf_serie_vacia(caja("Dune", N + "/pelicula/aa2", "4K", "movie")))
+    GUARDADO = []
+    r10 = (A._box_wf, A._kb_enqueue, A._catjob_wait_any, A._catbox_get, A._catbox_put, A._fc_caido, A._fc_atajo)
+    A._box_wf = lambda code, excluir=(), minimo=None: "222222"
+    A._kb_enqueue = lambda b, ev: None
+    A._catbox_get = lambda k: None
+    A._catbox_put = lambda k, v: GUARDADO.append(k)
+    A._fc_caido = lambda s: False
+    A._fc_atajo = lambda s: False
+    try:
+        A._catjob_wait_any = lambda jobs, espera, *a, **k: {"items": [
+            caja("Ted Lasso - 1ª Temporada", N + "/serie/zryh84", "", "serie")]}
+        cli.get("/catetbox?code=222222&op=search&srcs=wf&q=ted%20lasso")
+        comprueba("...y esa respuesta no se guarda 10 min para todos", not GUARDADO, GUARDADO)
+        A._catjob_wait_any = lambda jobs, espera, *a, **k: {"items": ted}
+        cli.get("/catetbox?code=222222&op=search&srcs=wf&q=ted%20lasso")
+        comprueba("una buena, si", len(GUARDADO) == 1, GUARDADO)
+    finally:
+        (A._box_wf, A._kb_enqueue, A._catjob_wait_any, A._catbox_get, A._catbox_put, A._fc_caido, A._fc_atajo) = r10
+    comprueba("las imagenes de fondo aguantan parentesis y comillas (caratulas de EliteTorrent)",
+              "function cssUrl(" in A._CAT_PAGE and "background-image:url('+" not in A._CAT_PAGE
+              and "esc(cssUrl(poster))" in A._CAT_PAGE and "esc(cssUrl(bd))" in A._CAT_PAGE)
 
     comprueba("la web lo explica (limite o captcha) con 'Buscar en otras fuentes'",
               "function limiteDlg(" in A._CAT_PAGE and "d.error)limiteDlg(" in A._CAT_PAGE

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl53"
+BUILD = "dtbl54"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3213,7 +3213,10 @@ def _box_for(code):
 # de la web nueva los enlaces de capitulo sin el nombre de la serie, y la
 # busqueda enseñaba tarjetas sueltas "4x01", "4x02"... (visto por el dueño el
 # 27-09 buscando "el dorado"). Los trabajos de WolfMax, solo a cajas al dia.
-_WF_ADDON_MIN = (2, 9, 77)
+# 2.9.78 y no 2.9.77: el 28-09 WolfMax retoco su marcado y el lector de la
+# 2.9.77 ya no ve los archivos (series sin capitulos, una tarjeta por calidad);
+# las cajas que quedaban en 2.9.77 seguian contestando busquedas (dtbl54).
+_WF_ADDON_MIN = (2, 9, 78)
 
 
 def _box_wf_ok(code, minimo=None):
@@ -4447,11 +4450,19 @@ def _saga_context(title):
     return ""
 
 
-def _cat_tmdb(title, kind="movie"):
-    """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria + breaker."""
+def _cat_tmdb(title, kind="movie", anio=None):
+    """Poster/año/nota de TMDB. kind='movie'|'tv'. Cache en memoria + breaker.
+
+    `anio`: el año que da la FUENTE aparte del titulo (WolfMax lo manda asi).
+    Sin el, "Dune" de 1984 casaba con la de 2021 (la mas famosa), se quedaba
+    con su año y su ficha, y al juntar versiones por titulo+calidad+año las de
+    2021 desaparecian: "WolfMax 4K" en la ficha de 2021 era la de 1984 (dtbl54).
+    El año del titulo ("Dune (1984)", DonTorrent) sigue mandando si esta."""
     clean = _cat_clean_title(title)
     ym = _re_dt.search(r"\b(19|20)\d{2}\b", title)
     year = ym.group(0) if ym else None
+    if not year and anio and _re_dt.fullmatch(r"(19|20)\d{2}", str(anio).strip()):
+        year = str(anio).strip()
     clean = _re_dt.sub(r"\b(19|20)\d{2}\b", "", clean)
     clean = _re_dt.sub(r"\s+", " ", clean).strip(" -.:")
     ckey = (kind, clean.lower(), year or "")
@@ -5348,7 +5359,9 @@ def _cat_enrich(items, limit=120):
                 it["poster"] = it.get("thumb")
             return it
         meta = _cat_tmdb(it["title"],
-                         "tv" if it.get("kind") == "serie" else "movie")
+                         "tv" if it.get("kind") == "serie" else "movie",
+                         # el de la FUENTE, si lo da aparte y fiable (WolfMax)
+                         it.get("year") if it.get("source") == "wf" else None)
         poster, year, rating = meta.get("poster"), meta.get("year"), meta.get("rating")
         if (not poster) or (rating is None):
             # TMDB no respondio (banea la IP de Render). En vez de DEGRADAR a la
@@ -7658,9 +7671,22 @@ def _catetbox_impl(sin_caja=False):
     # (TTL corto): "WolfMax no tiene esta peli" es un dato estable y ahorra 24s
     # de espera la proxima vez que alguien la busque.
     items = _wf_completa_partidas(_une_series_partidas(_wf_colapsa(items)))
-    _catbox_put(ckey, items)
+    # Una respuesta de WolfMax con series SIN capitulos (fichas de temporada
+    # vacias) es de una caja que no lee bien su web: se ensena, pero no se
+    # guarda 10 min para todo el mundo (la siguiente busqueda va a otra caja).
+    if not any(_wf_serie_vacia(it) for it in items):
+        _catbox_put(ckey, items)
     _wfidx_learn(_wf_crudo)   # el CRUDO (ver arriba): la proxima vez va en 10ms
     return jsonify({"items": _posters_norm(_anio_fuera(items))})
+
+
+def _wf_serie_vacia(it):
+    """Serie de WolfMax cuya URL es una FICHA DE TEMPORADA y no trae capitulos:
+    lo que devuelve una caja cuyo lector no ve los archivos (dtbl54)."""
+    u = (it or {}).get("url") or ""
+    return (it or {}).get("source") == "wf" and (it or {}).get("kind") == "serie" \
+        and not (it or {}).get("eps") and _wf_url_nueva(u) and "/serie/episodio/" not in u \
+        and "/documental/episodio/" not in u
 
 
 def _catetboxresolve_impl():
@@ -11919,7 +11945,6 @@ function isSeen(id){return seen.indexOf(String(id))>=0}
 function toggleSeen(id){id=String(id);var i=seen.indexOf(id);if(i>=0)seen.splice(i,1);else seen.unshift(id);saveSeen()}
 function kindLabel(k){return k==='serie'?'Serie':(k==='doc'?'Documental':'Película')}
 function fk(x){return x.kind+':'+x.content_id}
-function isFav(x){return favs.some(function(f){return fk(f)===fk(x)})}
 // Los capítulos que ya venían con la tarjeta se guardan CON el favorito: si no,
 // abrirlo desde Mi lista obliga a pedirlos otra vez por red (29s medidos, al
 // borde de lo que espera la web -> "nunca carga"). Recortados a lo justo.
@@ -11932,25 +11957,53 @@ function slimAlts(a){return (a||[]).slice(0,4).map(function(z){
          poster:z.poster,rating:z.rating,eps:slimEps(z.eps)}})}
 // Copia guardable de un item (lo mismo que guardaba toggleFav).
 function favCopia(x,ls){return {lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),temps:x.temps,ls:ls}}
-function favBuscar(x){for(var i=0;i<favs.length;i++)if(fk(favs[i])===fk(x))return favs[i];return null}
+// LA IDENTIDAD de un guardado no es solo su fuente principal: la tarjeta
+// cambia de principal cuando llega una version mejor (DonTorrent 720p ->
+// WolfMax 4K) y en la ficha al tocar otro chip. Con `fk` a secas un titulo
+// guardado salia como NO guardado y se podia guardar DOS veces (dtbl54).
+// Cuentan la principal y sus versiones de "Tambien en", de los dos lados.
+function favIds(x){var o=[];if(!x)return o;
+ [x].concat(x.alts||[]).forEach(function(a){
+  if(a&&a.content_id)o.push((a.kind||x.kind)+':'+a.content_id)});
+ return o}
+// Con AÑO distinto no son el mismo aunque compartan una version: una fusion
+// sin año pudo colar el "Dune" de 1984 entre las del de 2021, y mover uno no
+// puede llevarse por delante el otro.
+function favMismo(f,ids,x){
+ if(f&&x&&f.year&&x.year&&String(f.year).trim()!==String(x.year).trim())return false;
+ var fi=favIds(f);
+ for(var k=0;k<fi.length;k++)if(ids.indexOf(fi[k])>=0)return true;return false}
+// Todos los guardados de ese titulo (normalmente uno; dos si se guardo dos
+// veces antes de dtbl54). El exacto, primero.
+function favTodos(x){if(!x)return [];var ids=favIds(x),k0=fk(x);
+ var ex=favs.filter(function(f){return fk(f)===k0});
+ return ex.concat(ids.length?favs.filter(function(f){return fk(f)!==k0&&favMismo(f,ids,x)}):[])}
+function favBuscar(x){return favTodos(x)[0]||null}
+function isFav(x){return !!favBuscar(x)}
 function favEnLista(x,id){var f=favBuscar(x);return !!f&&lstDe(f).indexOf(id)>=0}
 // Guardar en una lista = MOVER a esa lista. Un titulo esta en UNA lista y solo
 // una: si estaba en "Mi lista" y lo mandas a "Pendiente", desaparece de "Mi
 // lista" en el acto (es como lo quiere el dueno, y es lo que uno espera).
+// Si estaba guardado dos veces, se queda uno.
 function favAdd(x,id){
- var f=favBuscar(x);
- if(!f){favs.unshift(favCopia(x,[id]))}
+ var t=favTodos(x),f=t[0];
+ if(!f){f=favCopia(x,[id]);favs.unshift(f)}
  else{f.ls=[id];f.lts=Date.now();}
- delOlvida('f',fk(x));          // guardarlo otra vez anula su borrado
+ t.slice(1).forEach(function(z){delMarca('f',fk(z))});
+ if(t.length>1)favs=favs.filter(function(z){return t.indexOf(z)<1});
+ delOlvida('f',fk(f));          // guardarlo otra vez anula su borrado
  saveFavs();mlPushSoon();}
 // Quitar de UNA lista; si no queda en ninguna, deja de estar guardado.
 function favQuitar(x,id){
- var f=favBuscar(x);if(!f)return;
- var a=lstDe(f).filter(function(z){return z!==id});
- if(a.length){f.ls=a;f.lts=Date.now()}else{favs=favs.filter(function(z){return fk(z)!==fk(x)});delMarca('f',fk(x))}
+ var t=favTodos(x);if(!t.length)return;
+ t.forEach(function(f){
+  var a=lstDe(f).filter(function(z){return z!==id});
+  if(a.length){f.ls=a;f.lts=Date.now()}
+  else{favs=favs.filter(function(z){return z!==f});delMarca('f',fk(f))}});
  saveFavs();mlPushSoon();}
-function favQuitarTodo(x){favs=favs.filter(function(z){return fk(z)!==fk(x)});delMarca('f',fk(x));saveFavs();mlPushSoon();}
-function toggleFav(x){if(isFav(x)){favs=favs.filter(function(f){return fk(f)!==fk(x)});delMarca('f',fk(x))}else{delOlvida('f',fk(x));favs.unshift({lts:Date.now(),kind:x.kind,content_id:x.content_id,tabla:x.tabla,path:x.path,title:x.title,poster:x.poster,year:x.year,rating:x.rating,source:x.source,url:x.url,quality:x.quality,overview:x.overview,backdrop:x.backdrop,genres:x.genres,tmdb_id:x.tmdb_id,trailer:x.trailer,runtime:x.runtime,eps:slimEps(x.eps),epsAlt:slimEps(x.epsAlt),alts:slimAlts(x.alts),temps:x.temps})}saveFavs();mlPushSoon()}
+function favQuitarTodo(x){var t=favTodos(x);if(!t.length)return;
+ favs=favs.filter(function(z){return t.indexOf(z)<0});
+ t.forEach(function(f){delMarca('f',fk(f))});saveFavs();mlPushSoon();}
 // --- Sincronizacion de la lista de deseados (espejo en el relay, ligado al
 // codigo). El movil es la COPIA MAESTRA: al cargar hacemos UNION (nunca borra ->
 // imposible perder la lista). Cero peticiones a fuentes -> cero baneo. ---
@@ -11973,7 +12026,12 @@ function mlSync(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6)ret
   if(changed){saveFavs();lstSave();if(CURVIEW==='lista')renderFavs()}
   mlPush();
  }).catch(function(){})}
-function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+// Una imagen de fondo que aguanta CUALQUIER URL: entre comillas y sin nada que
+// las cierre. Sin comillas, una URL con parentesis -- las caratulas de
+// EliteTorrent, ".../dune-parte-dos-(poster442).jpg" -- no se pintaba: la ficha
+// de la serie salia sin poster ni fondo (dtbl54). En un atributo HTML: esc(cssUrl(u)).
+function cssUrl(u){return 'url("'+String(u||'').replace(/["\\\n\r]/g,function(c){return encodeURIComponent(c)})+'")'}
 function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
 // ---- Mis Kodis: varios codigos guardados con nombre (Salon, Tablet, PC...) ----
 // El codigo ACTIVO sigue en localStorage 'mw_code' y en el input oculto #code, asi
@@ -12757,7 +12815,7 @@ function renderHist(){
  var SL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax'};
  el.className='';
  el.innerHTML=hist.map(function(h,i){
-  var ph=h.poster?(' style="background-image:url('+esc(h.poster)+')"'):'';
+  var ph=h.poster?(' style="background-image:'+esc(cssUrl(h.poster))+'"'):'';
   return '<div class="hitem"><div class="hp'+(h.poster?'':' np')+'"'+ph+'></div>'+
    '<div class="hm"><div class="ht">'+esc(h.t)+'</div>'+
    '<div class="hs"><span class="hsrc '+(h.src||'dt')+'">'+esc(SL[h.src]||'?')+'</span>'+
@@ -13409,7 +13467,7 @@ function pickAlt(clave){
 function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);return}
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
- var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage='url("'+x.poster+'")';pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
+ var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage=cssUrl(x.poster);pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  ZPOSTER=x.poster||'';
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;
  renderAlts(x);$('sh-fav').textContent=favLabel(x);$('sh-rar').textContent='';
@@ -13453,7 +13511,7 @@ function closeSheet(){mwBack('sheet')}
 // (backdrop + generos + duracion + sinopsis + trailer). Reentrante: se vuelve a
 // llamar cuando enrichItem/catmeta rellenan datos -> rerender suave.
 function shEnrich(x){
- var hb=x.backdrop||x.poster||'';$('sh-hero').style.backgroundImage=hb?('url("'+hb+'")'):'';
+ var hb=x.backdrop||x.poster||'';$('sh-hero').style.backgroundImage=hb?cssUrl(hb):'';
  var gh=(x.genres||[]).map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
  if(x.runtime){var hh=Math.floor(x.runtime/60),mm=x.runtime%60,rt=(hh?hh+'h ':'')+(mm?mm+'m':'');if(rt)gh+='<span class="runt">'+rt+'</span>';}
  $('sh-genres').innerHTML=gh;
@@ -13477,8 +13535,8 @@ function enrichItem(x,cb){
 }
 // Si el item es un favorito, copia los campos enriquecidos al guardado y persiste
 // (localStorage + sync con el relay) -> "Mi lista" se enriquece sola y para siempre.
-function persistFavMeta(x){var i=-1;for(var j=0;j<favs.length;j++){if(fk(favs[j])===fk(x)){i=j;break;}}
- if(i<0)return;var f=favs[i];   // copia (idempotente; f puede SER x si se abrio desde la lista)
+function persistFavMeta(x){var f=favBuscar(x);
+ if(!f)return;   // copia (idempotente; f puede SER x si se abrio desde la lista)
  ['overview','backdrop','genres','tmdb_id','trailer','runtime'].forEach(function(k){if(x[k]!=null)f[k]=x[k];});
  saveFavs();mlPushSoon();
 }
@@ -13758,14 +13816,14 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
  var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
  var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});
- var ph=poster?(' style="background-image:url('+poster+')"'):'';
+ var ph=poster?(' style="background-image:'+esc(cssUrl(poster))+'"'):'';
  // Hero enriquecido (igual estilo que la ficha de peli): backdrop + portada
  // (con zoom) + genero + sinopsis. Degrada elegante si el item no trae datos.
  ZPOSTER=poster||'';TRK='';
  var bd=x.backdrop||d.backdrop||poster||'';
  var genh=(x.genres||d.genres||[]).map(function(g){return '<span class="gtag">'+esc(g)+'</span>'}).join('');
  var ovw=x.overview||d.overview||'';
- var h='<div class="ovhero"'+(bd?(' style="background-image:url('+bd+')"'):'')+'><div class="grad"></div>'+
+ var h='<div class="ovhero"'+(bd?(' style="background-image:'+esc(cssUrl(bd))+'"'):'')+'><div class="grad"></div>'+
    '<div class="ovhero-row"><div class="ovposter"'+ph+' onclick="zoomPoster()"></div>'+
    '<div class="ovhero-txt"><div class="ovh-t">'+esc(d.title||x.title)+'</div>'+
    '<div class="ovh-y">'+esc(star({year:d.year||x.year,rating:d.rating}))+'</div>'+

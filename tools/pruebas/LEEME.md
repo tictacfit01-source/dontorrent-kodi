@@ -155,7 +155,15 @@ la búsqueda de WolfMax va a la caja (el índice se rehace y daría resultados a
 medias); un enlace viejo se dice al momento; el trabajo de capítulos lleva el
 título para que la caja busque la serie si la URL es vieja.
 
-Para pasarlas todas de una vez:
+**`listas.js`** (29-09-2026, dtbl54) — Mis listas con el código REAL de la web.
+Un título guardado se reconoce por CUALQUIERA de sus versiones: la tarjeta
+cambia de fuente principal cuando llega una mejor (DonTorrent 720p → WolfMax
+4K) y en la ficha al tocar otro chip, y antes salía como «no guardado» y se
+podía guardar dos veces. Mover o quitar arrastra las copias duplicadas que ya
+hubiera; con año distinto (el «Dune» de 1984 y el de 2021) nunca se tocan.
+
+Para pasarlas todas de una vez (con el Python que tiene bs4: el 3.13 de
+`AppData/Local/Programs/Python/Python313`; el `python` del PATH es un 3.11 sin él):
 
 ```bash
 cd "C:/Users/israe/Desktop/Projects/Nueva App Kodi" && rm -rf render_relay/__pycache__
