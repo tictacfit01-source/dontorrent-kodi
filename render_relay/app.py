@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl50"
+BUILD = "dtbl51"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7673,7 +7673,13 @@ def _catetboxresolve_impl():
     _kb_enqueue(box, {"c": "etjob", "job": job, "op": "resolve",
                       "src": src, "url": url})
     res = _catjob_wait(job, 18.0)
-    return jsonify({"link": (res or {}).get("link", "") or ""})
+    out = {"link": (res or {}).get("link", "") or ""}
+    # por que no hay enlace, si la caja lo sabe (WolfMax: limite/captcha, 2.9.79)
+    if not out["link"] and (res or {}).get("error") in ("limite", "captcha"):
+        out["error"] = res["error"]
+        if res.get("minutos"):
+            out["minutos"] = int(res["minutos"])
+    return jsonify(out)
 
 
 @app.get("/catboxrar")
@@ -13274,6 +13280,7 @@ function play(){if(!sel)return;
   fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}
    else if(d&&d.vieja){webViejaDlg(d.vieja,sel.title)}                      // dtbl49
+   else if(d&&d.error){limiteDlg(sel.source,d,sel.title)}                     // dtbl51
    else if(d&&d.fuente_caida){fuenteCaidaDlg(d.fuente_caida,sel.title)}     // dtbl40
    else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
@@ -13300,6 +13307,14 @@ function webViejaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
  mwConfirm(n+' ha cambiado su web',
   'Este enlace es de su web antigua y ya no funciona. Búscalo otra vez y sale con el enlace nuevo.',
   'Buscar «'+q+'»',function(){buscaOtras(q)});}
+// WolfMax da cada torrent por un boton con limite (60 por hora, y todas las
+// cajas cuentan como una) y a veces pide un captcha. Antes: "No se pudo
+// obtener el enlace", sin saber si era la tele, la red o que (dtbl51).
+function limiteDlg(src,d,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
+ var txt=d.error==='captcha'
+  ?'Ahora mismo pide una verificación que no se puede hacer desde la tele. Suele pasarse sola en un rato. Mientras, puedes buscarlo en las otras fuentes.'
+  :'Ha llegado a su límite de descargas por hora'+(d.minutos?(' y pide esperar unos '+d.minutos+' min'):'')+'. No es tu tele. Mientras, puedes buscarlo en las otras fuentes.';
+ mwConfirm(n+' no da el torrent ahora',txt,'Buscar en otras fuentes',function(){buscaOtras(q)});}
 function fuenteCaidaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
  mwConfirm(n+' está caído',
   'Su web no responde ahora mismo: es un fallo de su servidor, no de tu tele. Suele volver sola en unas horas. Mientras, puedes buscarlo en las otras fuentes.',
@@ -13591,6 +13606,7 @@ function playEp(id){var e=EPS[id];if(!e)return;
    .then(function(r){return r.json()}).then(function(d){
     if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2,q:e.quality}))closeOv();}
     else if(d&&d.vieja)webViejaDlg(d.vieja,SHOW||_t2);                       // dtbl49
+    else if(d&&d.error)limiteDlg(e.src,d,SHOW||_t2);                          // dtbl51
     else if(d&&d.fuente_caida)fuenteCaidaDlg(d.fuente_caida,_t2);            // dtbl40
     else toast('No se pudo obtener el enlace de ese capítulo');
    }).catch(function(){toast('No se pudo obtener el enlace de ese capítulo')});

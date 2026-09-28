@@ -241,6 +241,27 @@ try:
                   [x["title"] for x in js.get("items") or []] == ["La ruta hacia El Dorado"], js.get("items"))
     finally:
         (A._catbox_get,) = r4
+
+    print("\n=== 8) Por que WolfMax no da el torrent, dicho (dtbl51) ===")
+    r5 = (A._box_wf, A._kb_enqueue, A._catjob_wait)
+    A._box_wf = lambda code, excluir=(): "222222"
+    A._kb_enqueue = lambda b, ev: None
+    try:
+        A._catjob_wait = lambda job, espera: {"link": "", "error": "limite", "minutos": 42}
+        js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
+        comprueba("el limite de WolfMax llega a la web con sus minutos",
+                  js == {"link": "", "error": "limite", "minutos": 42}, js)
+        A._catjob_wait = lambda job, espera: {"link": "https://wolfmax4k.com/torrents/x.torrent"}
+        js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
+        comprueba("con enlace, como siempre", js == {"link": "https://wolfmax4k.com/torrents/x.torrent"}, js)
+        A._catjob_wait = lambda job, espera: {"link": "", "error": "cualquier-cosa"}
+        js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
+        comprueba("un motivo que no se conoce no se inventa", js == {"link": ""}, js)
+    finally:
+        A._box_wf, A._kb_enqueue, A._catjob_wait = r5
+    comprueba("la web lo explica (limite o captcha) con 'Buscar en otras fuentes'",
+              "function limiteDlg(" in A._CAT_PAGE and "d.error)limiteDlg(" in A._CAT_PAGE
+              and "d.error){limiteDlg(" in A._CAT_PAGE)
 finally:
     for f in FICHEROS:
         try:
