@@ -161,6 +161,25 @@ cambia de fuente principal cuando llega una mejor (DonTorrent 720p → WolfMax
 4K) y en la ficha al tocar otro chip, y antes salía como «no guardado» y se
 podía guardar dos veces. Mover o quitar arrastra las copias duplicadas que ya
 hubiera; con año distinto (el «Dune» de 1984 y el de 2021) nunca se tocan.
+También por lo que no cambia: su ficha de TMDB y título+año (el enlace de una
+serie de WolfMax es el de su ÚLTIMO capítulo y cambia cada semana).
+
+**`jserr.py`** (29-09-2026, dtbl55) — el avisador de errores de JavaScript. Un
+fallo en el móvil de otro no se ve desde aquí; la web manda mensaje, línea y
+versión a `/jserr` y `/catdiag` lo enseña agrupado (`jserr`), con la línea de
+`app.py` donde está. Comprueba que no se guarda nada de quién (ni IP), que una
+IP no puede llenarlo, y con Node el script tal cual se sirve: los cortes de red
+y el «Script error.» no se mandan, cada error una vez, cinco por carga.
+
+**Packs de WolfMax** (dtbl55 + caja 2.9.81; en `wf_relay.py` §12, `fusion.js`,
+`wf_web.py` y `salud_cajas.py` §3) — «1x01 al 1x03» es UN torrent con tres
+capítulos. La búsqueda lo rotulaba «1x01» y la ficha entero: el mismo archivo
+salía en dos filas. Ahora una fila por archivo (gana el pack) en la web y en
+la lista guardada del relay, que además se cura al leerla.
+
+**`codigo_nuevo.py` §4** (dtbl55) — con la tele apagada, la orden se encola
+igual pero la web ya no dice «En la tele»: `/kb/send` y `/kb/now` dicen si la
+tele tiene latido. Recién desplegado (latidos aún vacíos) no se afirma nada.
 
 Para pasarlas todas de una vez (con el Python que tiene bs4: el 3.13 de
 `AppData/Local/Programs/Python/Python313`; el `python` del PATH es un 3.11 sin él):

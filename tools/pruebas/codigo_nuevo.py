@@ -162,6 +162,31 @@ try:
             st, js = envia(malo)
             comprueba("%r -> %d (%s)" % (malo, esperado, js.get("error")), st == esperado,
                       (st, js))
+
+        print("\n=== 4) El relay: ¿esta la tele conectada? (dtbl55) ===")
+
+        def pon(code):
+            r = cli.post("/kb/send", json={"code": code, "cmd": "play_ref", "a": "pl",
+                                           "u": "magnet:?xt=urn:btih:" + "a" * 40, "t": "Prueba"},
+                         headers={"X-Forwarded-For": "10.9.8.8"})
+            return r.get_json() or {}
+
+        comprueba("recien desplegado (latidos aun vacios) no se afirma que este apagada",
+                  pon("100001").get("tele") is True)
+        A._KB_ARRANQUE -= 1000                       # el relay lleva rato encendido
+        js = pon("300003")
+        comprueba("tele con latido: se manda y dice que esta", js.get("ok") and js.get("tele") is True, js)
+        js = pon("100001")
+        comprueba("tele sin latido: se encola igual, pero dice que NO esta",
+                  js.get("ok") and js.get("tele") is False, js)
+        cola = (json.load(open(A._KB_FILE)).get("100001") or {}).get("ev") or []
+        comprueba("...y la orden espera en su cola", any(e.get("c") == "play_ref" for e in cola), cola)
+        comprueba("el mando lo sabe: /kb/now de la apagada",
+                  cli.get("/kb/now?code=100001").get_json() == {"np": None, "tele": False})
+        comprueba("...y de la encendida", (cli.get("/kb/now?code=300003").get_json() or {}).get("tele") is True)
+        with open(A._KB_STATUS_FILE, "w") as fh:
+            fh.write("{roto")
+        comprueba("sin poder leer los latidos, no se asusta a nadie", pon("300003").get("tele") is True)
     finally:
         for f in FICH:
             try:

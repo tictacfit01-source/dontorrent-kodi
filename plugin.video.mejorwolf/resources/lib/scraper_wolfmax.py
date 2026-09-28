@@ -116,9 +116,14 @@ def _items(tarjetas):
         if t.get("tipo") in ("serie", "documental") and con_caps:
             for a in con_caps:
                 _recuerda(a)
-                caps.append(dict(comun, title="%s %dx%02d" % (base, a["temporada"], a["episodio"]),
-                                 kind="tvshow", url=a["url"],
-                                 quality=t.get("calidad") or a.get("calidad") or ""))
+                cap = dict(comun, title="%s %dx%02d" % (base, a["temporada"], a["episodio"]),
+                           kind="tvshow", url=a["url"],
+                           quality=t.get("calidad") or a.get("calidad") or "")
+                # PACK ("1x06 al 1x09"): el relay lo rotula entero (2.9.81);
+                # sin esto salia "1x06" y la temporada parecia tener huecos
+                if (a.get("episodio_fin") or 0) > (a.get("episodio") or 0):
+                    cap["episode_end"] = a["episodio_fin"]
+                caps.append(cap)
             continue
         archivos = t.get("archivos") or []
         if not archivos:

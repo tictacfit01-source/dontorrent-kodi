@@ -352,6 +352,8 @@ def _src_item_compact(it, src):
            "quality": it.get("quality") or "", "tabla": src}
     if it.get("year"):
         out["year"] = it["year"]    # la web nueva de WolfMax lo trae (2.9.77)
+    if it.get("episode_end"):
+        out["episode_end"] = it["episode_end"]   # pack de WolfMax (2.9.81)
     return out
 
 

@@ -408,6 +408,14 @@ comprueba("la serie completa rotula el pack y no se come el suelto",
           "1x01 al 1x03" in labs and "1x04" in labs
           and [e.get("episode_end") for e in r3["episodes"] if e["label"] == "1x01 al 1x03"] == [3], labs)
 
+pk = S._items(W.tarjetas(tarjeta_serie("2ap2ud", "Ted Lasso - 1ª Temporada [720p].", "1x06 al 1x09",
+                                       "HDTV-720p", "749083")))
+comprueba("la busqueda dice donde acaba un pack (2.9.81: antes salia '1x06' a secas)",
+          [(x["title"], x.get("episode_end")) for x in pk] == [("Ted Lasso 1x06", 9)], pk)
+pk = S._items(W.tarjetas(tarjeta_serie("2s42pf", "Ted Lasso - 1ª Temporada [720p].", "1x10",
+                                       "HDTV-720p", "749378")))
+comprueba("...y un capitulo suelto no lleva fin", "episode_end" not in pk[0], pk)
+
 del PEDIDAS[:]
 PAGINAS["/peliculas"] = TARJETA_PELI
 lt = S.latest("movie", 1)

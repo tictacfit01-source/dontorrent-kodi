@@ -465,6 +465,43 @@ try:
     comprueba("la web lo explica (limite o captcha) con 'Buscar en otras fuentes'",
               "function limiteDlg(" in A._CAT_PAGE and "d.error)limiteDlg(" in A._CAT_PAGE
               and "d.error){limiteDlg(" in A._CAT_PAGE)
+
+    print("\n=== 12) Packs de WolfMax: un archivo, una fila (dtbl55) ===")
+    E = N + "/serie/episodio/"
+    g = A._cat_group_episodes([
+        dict(caja("Ted Lasso 1x06", E + "2ap2ud", "720p", "tvshow"), episode_end=9),
+        caja("Ted Lasso 1x04", E + "zrgx6x", "720p", "tvshow"),
+        dict(caja("Ted Lasso 1x10", E + "2s42pf", "720p", "tvshow"), episode_end="x")])
+    labs = [e["label"] for e in (g[0].get("eps") or [])] if g else []
+    comprueba("la busqueda rotula el pack entero si la caja dice donde acaba (2.9.81)",
+              "1x06 al 1x09" in labs and "1x04" in labs and "1x10" in labs, labs)
+    comprueba("...con su fin", any(e.get("episode_end") == 9 for e in g[0]["eps"]), g[0]["eps"])
+    viejo = [{"label": "1x01", "season": 1, "episode": 1, "url": E + "zrfbxt", "src": "wf"},
+             {"label": "1x04", "season": 1, "episode": 4, "url": E + "zrgx6x", "src": "wf"}]
+    nuevo = [{"label": "1x01 al 1x03", "season": 1, "episode": 1, "episode_end": 3,
+              "url": E + "zrfbxt", "src": "wf"}]
+    labs = [e["label"] for e in A._eps_un_archivo(viejo + nuevo)]
+    comprueba("dos filas del mismo archivo -> una, la del pack", labs == ["1x01 al 1x03", "1x04"], labs)
+    comprueba("de otra fuente no se juntan por url",
+              len(A._eps_un_archivo([{"label": "2x01", "url": "https://et/x", "src": "et"},
+                                     {"label": "2x02", "url": "https://et/x", "src": "et"}])) == 2)
+    try:
+        os.remove(A._EPSC_FILE)
+    except Exception:
+        pass
+    su = N + "/serie/zrdqqp"
+    A._epsc_put("wf", su, "Ted Lasso", viejo)
+    A._epsc_put("wf", su, "Ted Lasso", nuevo)
+    labs = [e["label"] for e in A._epsc_limpia((A._epsc_get("wf", su) or {}).get("eps"))]
+    comprueba("la lista guardada: lo nuevo sustituye al rotulo viejo del mismo archivo",
+              labs == ["1x01 al 1x03", "1x04"], labs)
+    # lo que YA estaba guardado mal (antes de dtbl55) se cura al leerlo
+    A._epsc_put("wf", su + "b", "Ted Lasso", viejo)
+    d0 = A._epsc_load()
+    d0[A._epsc_clave("wf", su + "b")]["eps"].append(dict(nuevo[0], _ts=time.time()))
+    labs = [e["label"] for e in A._epsc_limpia((A._epsc_get("wf", su + "b") or {}).get("eps"))]
+    comprueba("...y lo guardado mal de antes se cura al leerlo", labs.count("1x01") == 0
+              and "1x01 al 1x03" in labs, labs)
 finally:
     for f in FICHEROS:
         try:

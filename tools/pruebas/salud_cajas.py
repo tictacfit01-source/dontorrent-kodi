@@ -132,6 +132,13 @@ try:
     comprueba("_do_etjob lo añade antes de subir el resultado",
               "_salud_en(out, t_ini)" in trozo
               and trozo.index("_salud_en(out, t_ini)") < trozo.index("rkb.push_etjob(out)"))
+
+    print("\n=== 3) Lo que la caja sube de cada tarjeta (2.9.81) ===")
+    c = service._src_item_compact({"title": "Ted Lasso 1x06", "kind": "tvshow", "url": "u",
+                                   "quality": "720p", "episode_end": 9}, "wf")
+    comprueba("el fin de un pack de WolfMax llega al relay", c.get("episode_end") == 9, c)
+    c = service._src_item_compact({"title": "Dune", "kind": "movie", "url": "u"}, "wf")
+    comprueba("...y lo demas no lleva ese campo", "episode_end" not in c, c)
 finally:
     import shutil
     shutil.rmtree(PERFIL, ignore_errors=True)

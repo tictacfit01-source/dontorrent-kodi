@@ -106,6 +106,27 @@ comprueba('con año distinto son dos titulos: guardar la de 1984 no se lleva la 
 favQuitarTodo(wf84);
 comprueba('...ni quitarla', favs.length === 1 && isFav(dune21), favs.map(fk));
 
+console.log('\n=== 6) Lo que no cambia: TMDB y titulo+año ===');
+// la tarjeta de una serie de WolfMax lleva el enlace de su ULTIMO capitulo
+favs = [];
+favAdd({ kind: 'serie', source: 'wf', quality: '4K', title: 'Ted Lasso', year: '2020',
+  content_id: 'https://wolfmax4k.com/serie/episodio/aaa111' }, 'def');
+const semanaQueViene = { kind: 'serie', source: 'wf', quality: '4K', title: 'Ted Lasso', year: '2020',
+  content_id: 'https://wolfmax4k.com/serie/episodio/bbb222' };
+comprueba('una serie de WolfMax sigue guardada cuando sale un capitulo nuevo', isFav(semanaQueViene));
+comprueba('con tildes y signos distintos tambien',
+  isFav({ kind: 'serie', source: 'dt', title: 'TED LASSO!', year: 2020, content_id: 'dt:x' }));
+comprueba('otra serie con el mismo nombre y otro año, no',
+  !isFav({ kind: 'serie', source: 'dt', title: 'Ted Lasso', year: '2031', content_id: 'dt:y' }));
+comprueba('sin año no se casa por el nombre',
+  !isFav({ kind: 'serie', source: 'dt', title: 'Ted Lasso', content_id: 'dt:z' }));
+comprueba('una peli con el mismo nombre y año que la serie, no',
+  !isFav({ kind: 'movie', source: 'dt', title: 'Ted Lasso', year: '2020', content_id: 'dt:w' }));
+favs = [];
+favAdd({ kind: 'movie', source: 'dt', quality: '1080p', title: 'Dune: Parte Dos', year: '2024', tmdb_id: 693134, content_id: 'dt:d2' }, 'def');
+comprueba('por su ficha de TMDB aunque cada fuente la titule a su manera',
+  isFav({ kind: 'movie', source: 'wf', quality: '4K', title: 'Dune Parte 2 (Dune: Part Two)', year: '2024', tmdb_id: 693134, content_id: 'https://wolfmax4k.com/pelicula/q9' }));
+
 console.log('\n---- VEREDICTO ----');
 if (fallos) { console.log(fallos + ' comprobaciones MAL'); process.exit(1); }
 console.log('TODO OK: un guardado se reconoce por cualquiera de sus versiones');

@@ -209,6 +209,32 @@ mergeResults('inicio', g, [
 comprueba('un titulo que ES un numero ("1917") sigue funcionando', LISTS.inicio.length === 1,
   LISTS.inicio.length + '');
 
+console.log('\n=== Packs de WolfMax: un archivo, una fila (dtbl55) ===');
+const W = 'https://wolfmax4k.com/serie/episodio/';
+// la busqueda lo rotula con su primer capitulo; la ficha, entero
+const deBusqueda = [
+  { label: '1x01', season: 1, episode: 1, url: W + 'zrfbxt', src: 'wf' },
+  { label: '1x04', season: 1, episode: 4, url: W + 'zrgx6x', src: 'wf' }];
+const deFicha = [
+  { label: '1x01 al 1x03', season: 1, episode: 1, episode_end: 3, url: W + 'zrfbxt', src: 'wf' },
+  { label: '1x04', season: 1, episode: 4, url: W + 'zrgx6x', src: 'wf' },
+  { label: '1x06 al 1x09', season: 1, episode: 6, episode_end: 9, url: W + '2ap2ud', src: 'wf' }];
+let u = mergeEps(deBusqueda, deFicha);
+comprueba('el pack sale UNA vez, con su rango', u.map(e => e.label).join(',') === '1x01 al 1x03,1x04,1x06 al 1x09',
+  u.map(e => e.label));
+u = mergeEps(deFicha, deBusqueda);
+comprueba('...llegue antes quien llegue', u.map(e => e.label).join(',') === '1x01 al 1x03,1x04,1x06 al 1x09',
+  u.map(e => e.label));
+// DonTorrent no tiene url por capitulo: su fusion por etiqueta no cambia
+u = mergeEps([{ label: '1x01', season: 1, episode: 1, content_id: 'd1', src: 'dt' },
+  { label: '1x02', season: 1, episode: 2, content_id: 'd2', src: 'dt' }],
+[{ label: '1x01', season: 1, episode: 1, url: W + 'zz', src: 'wf' }]);
+comprueba('DonTorrent + WolfMax siguen fundiendose por etiqueta', u.length === 2 && u[0].src === 'dt',
+  u.map(e => e.src + ' ' + e.label));
+u = mergeEps([{ label: '2x01', season: 2, episode: 1, url: 'https://elitetorrent.com/s', src: 'et' },
+  { label: '2x02', season: 2, episode: 2, url: 'https://elitetorrent.com/s', src: 'et' }], []);
+comprueba('dos capitulos de otra fuente con la misma url NO se juntan', u.length === 2, u.length);
+
 console.log('\n---- VEREDICTO ----');
 if (fallos) { console.log(fallos + ' comprobaciones MAL'); process.exit(1); }
 console.log('TODO OK: la fusion no pierde nada y gana la mejor version');

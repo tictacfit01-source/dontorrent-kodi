@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl54"
+BUILD = "dtbl55"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3856,7 +3856,136 @@ def kb_send():
     # perderse o ejecutarse duplicada (la misma race que describe _FileLock).
     _kb_enqueue(code, ev)
     _kb_phone_seen(code)
-    return jsonify({"ok": True, "via": via} if via else {"ok": True})
+    # `tele`: si esa tele tiene latido. La orden se encola igual (la caja la
+    # recoge al conectarse, hasta _KB_TTL), pero la web ya no dice "En la tele"
+    # con la tele apagada y deja el mando en "Preparando..." para siempre.
+    res = {"ok": True, "tele": _tele_conectada(code)}
+    if via:
+        res["via"] = via
+    return jsonify(res)
+
+
+_KB_ARRANQUE = _t.time()
+
+# --- Errores de JavaScript de la web (dtbl55) -------------------------------
+_JSERR_FILE = "/tmp/mw_jserr.json"
+_JSERR_MAX = 40
+_JSERR_IP = {}          # por worker: ip -> [inicio de la ventana, cuantos]
+
+
+def _ua_familia(ua):
+    """"android/chrome", "ios/safari"...: lo justo para saber DONDE falla."""
+    ua = (ua or "").lower()
+    so = ("ios" if ("iphone" in ua or "ipad" in ua) else "android" if "android" in ua
+          else "windows" if "windows" in ua else "mac" if "mac os" in ua
+          else "linux" if "linux" in ua else "otro")
+    nav = ("samsung" if "samsungbrowser" in ua else "firefox" if ("firefox" in ua or "fxios" in ua)
+           else "edge" if "edg/" in ua else "chrome" if ("chrome" in ua or "crios" in ua)
+           else "safari" if "safari" in ua else "otro")
+    return so + "/" + nav
+
+
+@app.post("/jserr")
+def jserr():
+    """Un error de JavaScript de la web en el movil de alguien. Se guarda
+    AGRUPADO (mensaje + linea: cuantas veces, cuando, en que navegadores) y sin
+    nada de quien: ni IP, ni codigo, ni que estaba viendo. Lo ensena /catdiag."""
+    ip = (request.headers.get("X-Forwarded-For", "")
+          or request.remote_addr or "?").split(",")[-1].strip()
+    now = _t.time()
+    v = _JSERR_IP.get(ip)
+    if not v or now - v[0] > 600:
+        v = [now, 0]
+    v[1] += 1
+    _JSERR_IP[ip] = v
+    if len(_JSERR_IP) > 500:
+        _JSERR_IP.clear()
+    if v[1] > 20:
+        return ("", 204)
+    try:
+        body = _json.loads(request.get_data(as_text=True)[:2000] or "{}")
+        m = str(body.get("m") or "")[:200].strip()
+        ln = int(body.get("l") or 0)
+        col = int(body.get("c") or 0)
+        b = re.sub(r"[^a-z0-9]", "", str(body.get("b") or "").lower())[:12]
+    except Exception:
+        return ("", 204)
+    if not m:
+        return ("", 204)
+    fam = _ua_familia(request.headers.get("User-Agent"))
+    k = "%s|%d" % (m, ln)
+    try:
+        with _FileLock(_JSERR_FILE):
+            try:
+                with open(_JSERR_FILE, "r", encoding="utf-8") as f:
+                    d = _json.load(f) or {}
+            except Exception:
+                d = {}
+            e = d.get(k) or {"m": m, "l": ln, "c": col, "b": b, "n": 0, "p": now, "ua": {}}
+            e["n"] = int(e.get("n") or 0) + 1
+            e["u"] = now
+            e["b"] = b or e.get("b") or ""
+            ua = e.get("ua") or {}
+            ua[fam] = int(ua.get(fam) or 0) + 1
+            e["ua"] = dict(sorted(ua.items(), key=lambda kv: -kv[1])[:6])
+            d[k] = e
+            if len(d) > _JSERR_MAX:
+                for kk in sorted(d, key=lambda kk: d[kk].get("u") or 0)[:len(d) - _JSERR_MAX]:
+                    d.pop(kk, None)
+            tmp = "%s.%d.tmp" % (_JSERR_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _JSERR_FILE)
+    except Exception:
+        pass
+    return ("", 204)
+
+
+def _jserr_resumen():
+    """Para /catdiag: lo mas reciente primero, con la linea de app.py donde
+    esta (la linea que da el navegador es la de la PAGINA)."""
+    try:
+        with open(_JSERR_FILE, "r", encoding="utf-8") as f:
+            d = _json.load(f) or {}
+    except Exception:
+        d = {}
+    if not d:
+        return {"total": 0, "lista": []}
+    base = 0
+    try:
+        with open(os.path.abspath(__file__), "r", encoding="utf-8") as f:
+            for i, linea in enumerate(f, 1):
+                if linea.startswith('_CAT_PAGE = r"""'):
+                    base = i
+                    break
+    except Exception:
+        pass
+    now = _t.time()
+    lista = []
+    for e in sorted(d.values(), key=lambda e: -(e.get("u") or 0))[:15]:
+        lista.append({"m": e.get("m"), "n": e.get("n"), "linea": e.get("l"),
+                      "app_py": (base + int(e.get("l") or 0) - 1) if (base and e.get("l")) else None,
+                      "build": e.get("b"), "ua": e.get("ua"),
+                      "hace_min": int((now - float(e.get("u") or now)) / 60)})
+    return {"total": sum(int(e.get("n") or 0) for e in d.values()), "lista": lista}
+
+
+def _tele_conectada(code):
+    """Latido de esa tele en los ultimos 90 s: el mismo criterio que /kb/status
+    y que el punto verde del selector de teles. Sin poder saberlo, True (no se
+    asusta a nadie con un "tu tele esta apagada" que no es verdad): tras un
+    despliegue /tmp empieza vacio y las teles tardan hasta 30 s en dar latido,
+    y un fichero ilegible se ve igual que "ninguna tele"."""
+    try:
+        if _t.time() - _KB_ARRANQUE < 90:
+            return True
+        d = _kbstatus_load()
+        if not d:
+            return True
+        ent = d.get(code) or {}
+        return (_t.time() - float(ent.get("ts", 0) or 0)) < 90
+    except Exception:
+        return True
 
 
 @app.get("/kb/poll")
@@ -3949,7 +4078,8 @@ def kb_now_get():
     entry = d.get(code) or {}
     if entry and (_t.time() - entry.get("ts", 0)) < _KB_NOW_TTL:
         return jsonify({"np": entry.get("np")})
-    return jsonify({"np": None})
+    # nada sonando: ¿esta la tele siquiera conectada? (el mando lo dice)
+    return jsonify({"np": None, "tele": _tele_conectada(code)})
 
 
 @app.post("/kb/status")
@@ -6029,6 +6159,14 @@ def _cat_group_episodes(items):
               "url": it.get("url") or it.get("content_id") or "",
               "content_id": it.get("url") or it.get("content_id") or "",
               "src": src}
+        # PACK de WolfMax ("1x06 al 1x09"): la caja 2.9.81 manda donde acaba
+        try:
+            fin = int(it.get("episode_end") or 0)
+        except Exception:
+            fin = 0
+        if fin > se[1]:
+            ep["label"] = "%dx%02d al %dx%02d" % (se[0], se[1], se[0], fin)
+            ep["episode_end"] = fin
         if not ep["quality"] and src == "wf":
             ep["quality"] = _wf_quality_from_url(ep["url"])
         card = byk.get(k)
@@ -7953,8 +8091,35 @@ def _epsc_load():
 
 
 def _epsc_limpia(eps):
-    return [{k: v for k, v in e.items() if k != "_ts"}
-            for e in (eps or []) if isinstance(e, dict)]
+    return _eps_un_archivo([{k: v for k, v in e.items() if k != "_ts"}
+                            for e in (eps or []) if isinstance(e, dict)])
+
+
+def _eps_un_archivo(eps):
+    """UN ARCHIVO, UNA FILA (dtbl55). WolfMax publica packs ("1x01 al 1x03",
+    un torrent de 3,5 GB) y la busqueda y las cajas viejas los rotulaban con su
+    primer capitulo, "1x01". Sumando por etiqueta, el mismo archivo acababa en
+    DOS filas ("1x01" y "1x01 al 1x03"). Si dos capitulos de WolfMax apuntan a
+    la MISMA url, se queda el que dice mas: el pack. Solo WolfMax: sus urls son
+    una por archivo; de otras fuentes no se puede asegurar."""
+    out, idx = [], {}
+    for e in eps or []:
+        if not isinstance(e, dict):
+            continue
+        u = str(e.get("url") or e.get("content_id") or "")
+        wf = e.get("src") == "wf" or "/episodio/" in u and _wf_url_nueva(u)
+        if wf and u in idx:
+            i = idx[u]
+            try:
+                if int(e.get("episode_end") or 0) > int(out[i].get("episode_end") or 0):
+                    out[i] = e
+            except Exception:
+                pass
+            continue
+        if wf and u:
+            idx[u] = len(out)
+        out.append(e)
+    return out
 
 
 def _epsc_get(src, url):
@@ -7989,6 +8154,12 @@ def _epsc_put(src, url, titulo, eps):
                 if isinstance(e, dict) and e.get("label") and \
                         (now - float(e.get("_ts") or viejo.get("ts") or now)) < _EPSC_OLVIDO:
                     por[e["label"]] = e
+            # lo que trae la caja AHORA manda sobre lo viejo del mismo archivo
+            # aunque la etiqueta haya cambiado ("1x01" -> "1x01 al 1x03")
+            urls = {str(e.get("url") or "") for e in eps
+                    if isinstance(e, dict) and e.get("url")}
+            por = {k: v for k, v in por.items()
+                   if not (v.get("url") and str(v.get("url")) in urls)}
             for e in eps:
                 if isinstance(e, dict) and e.get("label"):
                     ne = dict(e)
@@ -10843,6 +11014,11 @@ def catdiag():
                      "proxima_s": max(0, int(_DX_DESC["proxima"] - now))},
         "trace": dict(_DX_TRACE),
     }
+    # los errores de JavaScript que la web ha visto en los moviles (dtbl55)
+    try:
+        out["jserr"] = _jserr_resumen()
+    except Exception:
+        out["jserr"] = {}
     # el vigia de las fuentes (dtbl53); ?vigia=ya lo hace mirar AHORA
     try:
         out["vigia"] = _vigia_ronda() if request.args.get("vigia") == "ya" else _vigia_lee()
@@ -11886,6 +12062,27 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 </div>
 <div class="toast" id="toast"></div>
 <script>
+// AVISADOR DE ERRORES (dtbl55). Un fallo de JavaScript en el movil de otro no
+// se ve desde aqui: la web se queda a medias y nadie lo cuenta. Se manda SOLO
+// el mensaje, la linea y la version (nada de codigos, titulos ni direcciones);
+// cinco por carga como mucho y cada uno una vez. Los cortes de red no cuentan:
+// no son fallos de la web.
+(function(){var n=0,visto={},B='__MW_BUILD__';
+ function manda(m,l,c){try{
+  m=String(m||'').slice(0,200);if(!m||n>=5)return;
+  if(/^Script error\.?$/i.test(m))return;               // de otro dominio: no dice nada
+  if(/Failed to fetch|NetworkError|Load failed|network|abort|cancel/i.test(m))return;
+  var k=m+'|'+(l|0);if(visto[k])return;visto[k]=1;n++;
+  var b=JSON.stringify({m:m,l:l|0,c:c|0,b:B});
+  if(navigator.sendBeacon&&navigator.sendBeacon('/jserr',b))return;
+  fetch('/jserr',{method:'POST',body:b,keepalive:true}).catch(function(){});
+ }catch(e){}}
+ window.addEventListener('error',function(ev){
+  if(ev&&ev.message)manda(ev.message,ev.lineno,ev.colno)});
+ window.addEventListener('unhandledrejection',function(ev){var r=ev&&ev.reason;
+  if(r&&r.name&&/^(TypeError|ReferenceError|RangeError|SyntaxError)$/.test(r.name))
+   manda(r.name+': '+r.message,0,0)});
+})();
 var $=function(s){return document.getElementById(s)};
 var SVG_PLAY='<svg width="30" height="30" viewBox="0 0 24 24"><path d="M8 6 L18 12 L8 18 Z" fill="currentColor"/></svg>';
 var SVG_PAUSE='<svg width="28" height="28" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg>';
@@ -11950,7 +12147,7 @@ function fk(x){return x.kind+':'+x.content_id}
 // borde de lo que espera la web -> "nunca carga"). Recortados a lo justo.
 function slimEps(a){return (a||[]).slice(0,60).map(function(e){
  return {label:e.label,season:e.season,episode:e.episode,quality:e.quality,
-         url:e.url,content_id:e.content_id,link:e.link,src:e.src}})}
+         url:e.url,content_id:e.content_id,link:e.link,src:e.src,episode_end:e.episode_end}})}
 function slimAlts(a){return (a||[]).slice(0,4).map(function(z){
  return {source:z.source,quality:z.quality,url:z.url,content_id:z.content_id,
          tabla:z.tabla,path:z.path,kind:z.kind,title:z.title,year:z.year,
@@ -11962,9 +12159,18 @@ function favCopia(x,ls){return {lts:Date.now(),kind:x.kind,content_id:x.content_
 // WolfMax 4K) y en la ficha al tocar otro chip. Con `fk` a secas un titulo
 // guardado salia como NO guardado y se podia guardar DOS veces (dtbl54).
 // Cuentan la principal y sus versiones de "Tambien en", de los dos lados.
+function favNorm(s){s=String(s||'').toLowerCase();
+ try{s=s.normalize('NFD').replace(/[̀-ͯ]/g,'')}catch(e){}
+ return s.replace(/[^a-z0-9]+/g,' ').trim()}
 function favIds(x){var o=[];if(!x)return o;
  [x].concat(x.alts||[]).forEach(function(a){
   if(a&&a.content_id)o.push((a.kind||x.kind)+':'+a.content_id)});
+ // Y lo que NO cambia con la fuente ni con el tiempo: su ficha de TMDB y el
+ // titulo con su año. El enlace de una serie de WolfMax es el de su ULTIMO
+ // capitulo: cambia cada semana, y la serie guardada dejaba de reconocerse.
+ if(x.tmdb_id)o.push(x.kind+'|tmdb|'+x.tmdb_id);
+ var y=String(x.year||'').trim(),t=favNorm(x.title);
+ if(y&&t)o.push(x.kind+'|'+t+'|'+y);
  return o}
 // Con AÑO distinto no son el mismo aunque compartan una version: una fusion
 // sin año pudo colar el "Dune" de 1984 entre las del de 2021, y mover uno no
@@ -12032,7 +12238,7 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return
 // EliteTorrent, ".../dune-parte-dos-(poster442).jpg" -- no se pintaba: la ficha
 // de la serie salia sin poster ni fondo (dtbl54). En un atributo HTML: esc(cssUrl(u)).
 function cssUrl(u){return 'url("'+String(u||'').replace(/["\\\n\r]/g,function(c){return encodeURIComponent(c)})+'")'}
-function toast(t){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},2800)}
+function toast(t,ms){var e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},ms||2800)}
 // ---- Mis Kodis: varios codigos guardados con nombre (Salon, Tablet, PC...) ----
 // El codigo ACTIVO sigue en localStorage 'mw_code' y en el input oculto #code, asi
 // TODA la logica de siempre (play/lista/mando/mlSync) no cambia. Aqui solo gestionamos
@@ -12381,9 +12587,16 @@ var SRANK={dt:3,wf:2,dx:1,et:0};
 function srcScore(x){var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
  return q*10+(SRANK[x.source||'dt']||0);}
 // Une dos listas de capítulos sin repetir, en orden.
-function mergeEps(a,b){var by={},out=[];
+// UN ARCHIVO, UNA FILA (dtbl55): el pack de WolfMax "1x01 al 1x03" llega
+// rotulado "1x01" por la busqueda y entero por la ficha, con la MISMA url; se
+// queda el pack. Solo WolfMax (sus urls son una por archivo).
+function mergeEps(a,b){var by={},bu={},out=[];
  (a||[]).concat(b||[]).forEach(function(e){var kk=e.label||((e.season||0)+'x'+(e.episode||0));
-  if(!by[kk]){by[kk]=1;out.push(e)}});
+  var u=(e.src==='wf'&&e.url)?e.url:'';
+  if(u&&bu[u]!==undefined){var i=bu[u];
+   if((e.episode_end||0)>(out[i].episode_end||0)){out[i]=e;by[kk]=1}
+   return}
+  if(!by[kk]){by[kk]=1;if(u)bu[u]=out.length;out.push(e)}});
  out.sort(function(p,q){return ((p.season||0)-(q.season||0))||((p.episode||0)-(q.episode||0))});
  return out;}
 function upgrade(list,k,x,at,swapped){var i=at[k];if(i===undefined)return;
@@ -13602,8 +13815,12 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
  var hsnap=null;try{hsnap=histSnap(ref)}catch(e){}   // ver histSnap: `sel` cambia
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();
+    // Tele sin latido (apagada o Kodi cerrado): la orden espera en la cola y
+    // arranca al conectarse. Antes decia "En la tele" y el mando se quedaba
+    // en "Preparando..." sin fin (dtbl55).
+    if(d.tele===false)toast('📴 Tu tele no está conectada. Enciéndela y abre Kodi: empezará sola',5500);
     // DonTorrent caido y el relay lo ha mandado por magnet (ver /kb/send)
-    toast(d.via==='magnet'?'▶ En la tele · DonTorrent está caído: va directo por la red torrent':'▶ En la tele');
+    else toast(d.via==='magnet'?'▶ En la tele · DonTorrent está caído: va directo por la red torrent':'▶ En la tele');
     try{histPush(hsnap)}catch(e){};closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}
    else if(d&&d.error==='dt_caida'){dtCaidaDlg(ref.t)}
    else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
@@ -13940,7 +14157,9 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
    $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+(np.total?(' / '+fmt(np.total)):'');
    $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');
    $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
-  else{bar.classList.remove('on');var _fb2=$('fab');if(_fb2)_fb2.style.display='';if($('remote').classList.contains('on')){$('rm-t').textContent='Preparando en la tele…';$('rm-time').textContent='';$('rm-fin').textContent='';}}
+  else{bar.classList.remove('on');var _fb2=$('fab');if(_fb2)_fb2.style.display='';if($('remote').classList.contains('on')){var _off=d&&d.tele===false;
+   $('rm-t').textContent=_off?'📴 Tu tele no está conectada':'Preparando en la tele…';$('rm-time').textContent='';
+   $('rm-fin').textContent=!_off?'':((Date.now()-lastPlayTs<600000)?'Enciéndela y abre Kodi: lo que has mandado empezará solo.':'Enciéndela y abre Kodi para usar el mando.');}}
   // Sondeo AGIL (3s) solo si hay algo en marcha o el mando esta abierto (el usuario
   // espera ver arrancar). IDLE navegando el catalogo -> 12s: menos bateria, menos
   // datos y menos carga al relay gratis. Un play vuelve a 3s (cmd dispara pollNow).
@@ -13978,6 +14197,7 @@ document.addEventListener('visibilitychange',function(){
 window.addEventListener('online',function(){if(syncOn()&&!_syListo)syncBajar()});
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){})}
 </script></body></html>"""
+_CAT_PAGE = _CAT_PAGE.replace("__MW_BUILD__", BUILD)
 
 
 @app.get("/cat")
