@@ -2401,8 +2401,8 @@ def wf_rebuild_index():
     dlg = xbmcgui.Dialog()
     if not dlg.yesno(
             "MejorWolf",
-            "Descargar sitemaps y scrapear el catalogo completo.\n"
-            "Puede tardar entre 5-30 minutos.\nContinuar?"):
+            "Recorrer los listados de WolfMax (pelis, series y\n"
+            "documentales) para el índice A-Z. Tarda un minuto.\n¿Continuar?"):
         return
     progress = xbmcgui.DialogProgress()
     progress.create("MejorWolf", "Preparando reconstruccion...")

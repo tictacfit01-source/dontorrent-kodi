@@ -362,7 +362,7 @@ def _src_episodes(src, url, titulo=""):
     mod = _src_mod(src)
     if not mod or not (url or titulo):
         return {"title": "", "episodes": []}
-    if src == "wf" and hasattr(mod, "episodios_serie"):
+    if src == "wf":
         # La web NUEVA de WolfMax (2.9.77): una pagina por temporada y calidad,
         # con todos sus capitulos; se juntan todas y cada capitulo se queda con
         # la mejor calidad. Una URL de la web vieja (404) se busca por titulo.
@@ -388,170 +388,6 @@ def _src_episodes(src, url, titulo=""):
                             "episode": e or 0, "quality": dl.get("quality") or "",
                             "link": link, "content_id": link})
             return {"title": title, "episodes": eps}
-        if src == "wf":
-            import concurrent.futures as _cf
-            # El titulo (detail) y el slug de la serie son dos paginas
-            # distintas: se piden A LA VEZ para no encadenar esperas.
-            with _cf.ThreadPoolExecutor(max_workers=2) as _ex0:
-                _f_det = _ex0.submit(lambda: mod.detail(url) or {})
-                _f_slug = _ex0.submit(lambda: mod.serie_slug(url))
-                try:
-                    d0 = _f_det.result()
-                except Exception:
-                    d0 = {}
-                try:
-                    _slug = _f_slug.result()
-                except Exception:
-                    _slug = ""
-            t0 = (d0.get("title") or "")
-            base = ""
-            try:
-                base = mod._strip_show_markers(t0) or ""
-            except Exception:
-                base = ""
-            if not base:
-                base = t0.split(" - ")[0].strip() or t0
-            # LA VIA BUENA: las paginas de la serie dan TODAS las temporadas y
-            # todas las calidades en menos de un segundo. Si rinde, se acabo:
-            # ni indice (que puede tardar 40 s) ni pedir la ficha de cada
-            # capitulo (la web resuelve el enlace al pulsarlo, como ya hace con
-            # los capitulos que vienen de una busqueda).
-            _comp = []
-            if _slug:
-                try:
-                    _comp = mod.episodios_completos("", _slug) or []
-                except Exception as _e0:
-                    xbmc.log("[MejorWolf/service] wf completos: %s" % _e0,
-                             xbmc.LOGWARNING)
-            if len(_comp) >= 3:
-                for c in _comp:
-                    ss, ee = c.get("season") or 0, c.get("episode") or 0
-                    eps.append({"label": "%dx%02d" % (ss, ee),
-                                "season": ss, "episode": ee,
-                                "quality": c.get("quality") or "",
-                                "url": c.get("url"),
-                                "content_id": c.get("url"),
-                                "src": "wf"})
-                eps.sort(key=lambda x: (x["season"], x["episode"]))
-                xbmc.log("[MejorWolf/service] wf ficha rapida: %d caps" % len(eps),
-                         xbmc.LOGINFO)
-                return {"title": base, "episodes": eps}
-            # LA SERIE COMPLETA, JUNTANDO CALIDADES. WolfMax publica cada
-            # capitulo en varias y NINGUNA las tiene todas (medido en "La
-            # maldicion de Widows Bay": el 1x06 solo esta en 4K, y el 1x02 y el
-            # 1x07 no estan en 4K pero si en 1080p). Antes la lista salia del
-            # indice y quedaban huecos; ahora sale de las paginas de la serie,
-            # que renderizan TODOS sus capitulos, y cada uno se queda con la
-            # mejor calidad que exista.
-            # LAS DOS VIAS, QUE NINGUNA BASTA SOLA (medido):
-            #   paginas de la serie -> todas las CALIDADES, solo lo reciente
-            #     ("Widows Bay" entera: el 1x02 y el 1x07 solo estan en 1080p)
-            #   indice/catalogo     -> el HISTORICO, solo la calidad rastreada
-            #     ("Silo": sin esto se quedaba en 10 capitulos de 18)
-            # OJO: las dos vias dan la MISMA pagina con distinta grafia (una
-            # con "www." y otra sin el), asi que se comparan normalizadas o se
-            # pide cada capitulo dos veces.
-            _clave = getattr(mod, "_wf_url_clave", lambda z: (z or "").lower())
-            calidad_de = {}
-            vistas = set()
-            urls = []
-
-            def _anade(u, q=""):
-                if not u:
-                    return
-                k = _clave(u)
-                if k in vistas:
-                    if q and not calidad_de.get(k):
-                        calidad_de[k] = q
-                    return
-                vistas.add(k)
-                urls.append(u)
-                if q:
-                    calidad_de[k] = q
-
-            _anade(url)
-            try:
-                for c in (mod.episodios_completos(url) or []):
-                    _anade(c.get("url"), c.get("quality") or "")
-            except Exception as ex1:
-                xbmc.log("[MejorWolf/service] wf completos: %s" % ex1,
-                         xbmc.LOGWARNING)
-            try:
-                for it in (mod.search(base) or []):
-                    _anade(it.get("url"))
-            except Exception as ex2:
-                xbmc.log("[MejorWolf/service] wf eps search: %s" % ex2,
-                         xbmc.LOGWARNING)
-            urls = urls[:70]          # una serie larga entera, por las dos vias
-
-            _WFQR = {"4K": 4, "1080p": 3, "720p": 2, "480p": 1}
-
-            def _wfrank(q):
-                return _WFQR.get(q or "", 0)
-
-            def _wfq(u):
-                # Solo el SEGMENTO de la ruta: buscar "720" en todo el path
-                # colaba con los ids (/online/172021 daba "720p") y, como la
-                # calidad decide que version se queda, podia ganar la peor.
-                u = (u or "").lower().split("://", 1)[-1]
-                trozos = [t for t in u.split("/") if t][1:2]
-                seg = trozos[0] if trozos else ""
-                if "4k" in seg or "2160" in seg:
-                    return "4K"
-                if "1080" in seg:
-                    return "1080p"
-                if "720" in seg or seg.endswith("-hd"):
-                    return "720p"
-                if "480" in seg:
-                    return "480p"
-                return ""
-
-            def _wfone(u):
-                try:
-                    dd = mod.detail(u) or {}
-                    tt = dd.get("title") or ""
-                    ss, ee = mod._parse_season_episode(tt)
-                    dls = dd.get("downloads") or dd.get("links") or []
-                    lk = (dls[0].get("torrent_url") or dls[0].get("magnet")
-                          if dls else "") or ""
-                    return (ss, ee, lk, tt, u)
-                except Exception:
-                    return None
-            # PRESUPUESTO POR TIEMPO, no por numero de fichas: el navegador
-            # corta a los 26 s y el relay reparte el trabajo a otras casas si la
-            # primera tarda. Mejor media lista a tiempo que la lista entera
-            # cuando ya no la espera nadie.
-            _tope = time.time() + 8.0
-            with _cf.ThreadPoolExecutor(max_workers=6) as _ex:
-                _futs = [_ex.submit(_wfone, u) for u in urls]
-                for _f in _futs:
-                    if time.time() > _tope:
-                        _f.cancel()
-                        continue
-                    try:
-                        r = _f.result(timeout=max(0.1, _tope - time.time()))
-                    except Exception:
-                        continue
-                    if not r:
-                        continue
-                    ss, ee, lk, tt, u = r
-                    if not lk:
-                        continue
-                    label = ("%dx%02d" % (ss, ee)) if (ss and ee) else (
-                        (tt or "Episodio")[:40])
-                    q = calidad_de.get(_clave(u)) or _wfq(u)
-                    nuevo = {"label": label, "season": ss or 0,
-                             "episode": ee or 0, "quality": q,
-                             "link": lk, "content_id": lk}
-                    # Repetido: gana la MEJOR CALIDAD, no el primero que llegue
-                    # (venian de dos vias y en hilos: era una loteria).
-                    viejo = next((x for x in eps if x["label"] == label), None)
-                    if viejo is None:
-                        eps.append(nuevo)
-                    elif _wfrank(q) > _wfrank(viejo.get("quality")):
-                        eps[eps.index(viejo)] = nuevo
-            eps.sort(key=lambda x: (x["season"], x["episode"]))
-            return {"title": base, "episodes": eps}
         if src == "et":
             results, info = mod.detail(url)
             title = (info or {}).get("title") or ""
@@ -590,17 +426,9 @@ def _src_resolve(src, url):
             d = mod.detail(url)
             dls = (d or {}).get("downloads") or []
             return (dls[0].get("torrent_url") if dls else "") or ""
-        if src == "wf" and hasattr(mod, "torrent_de"):
+        if src == "wf":
             # web nueva (2.9.77): el .torrent de esa version o ese capitulo
             return mod.torrent_de(url) or ""
-        if src == "wf":
-            d = mod.detail(url)
-            if isinstance(d, dict):
-                dls = d.get("downloads") or d.get("links") or []
-                if dls:
-                    return (dls[0].get("torrent_url")
-                            or dls[0].get("magnet") or "") or ""
-                return d.get("magnet") or d.get("torrent_url") or ""
     except Exception as e:
         xbmc.log("[MejorWolf/service] resolve %s err: %s" % (src, e),
                  xbmc.LOGWARNING)
@@ -735,7 +563,8 @@ def _do_etjob(ev):
                         if op == "search":
                             items = mod.search(q) if q else []
                         else:
-                            items = mod.latest("movie", 1)
+                            items = mod.latest(ev.get("kind") or "movie",
+                                               int(ev.get("page") or 1))
                             if isinstance(items, tuple):
                                 items = items[0]
                     except Exception as e:

@@ -311,8 +311,8 @@ def pide_falso(ruta, timeout=20):
     return PAGINAS[ruta]
 
 
-S._wf_pide = pide_falso
-S._wf_post_json = post_bueno
+S._pide = pide_falso
+S._post_json = post_bueno
 IX._cache = None
 viejo_idx = os.path.join(PERFIL, "wf_index.json")
 with open(viejo_idx, "w", encoding="utf-8") as f:
@@ -413,6 +413,21 @@ PAGINAS["/peliculas"] = TARJETA_PELI
 lt = S.latest("movie", 1)
 comprueba("lo ultimo en pelis sale de /peliculas (en /ultimos casi todo son series)",
           PEDIDAS == ["/peliculas"] and [x["quality"] for x in lt] == ["1080p", "4K", "DVDRip"], (PEDIDAS, lt))
+
+print("\n=== 5) El menu propio de Kodi (2.9.80) ===")
+se = S.search_and_expand("ted lasso")
+comprueba("series de Kodi: las temporadas agrupadas (en 2.9.77 llegaba una lista y "
+          "el menu decia 'No se encontraron capitulos')",
+          isinstance(se, dict) and se.get("title") == "Ted Lasso" and sorted(se.get("seasons") or {}) == [1, 2, 4]
+          and all(c.get("url") and c.get("episode") is not None for t in se["seasons"].values() for c in t),
+          se if not isinstance(se, dict) else sorted(se.get("seasons") or {}))
+DOCU = '''<article class="wolf-card"><a class="wolf-card-main" href="/documental/dd0001">Un documental suelto.</a>
+<ul class="wolf-card-files"><li class="wolf-card-file" data-x="1"><a class="wolf-card-format" href="/documental/episodio/dd0002"><strong>Documental Completo - HDTV720p</strong></a>
+<button class="protected-download" data-content-id="9001" data-tabla="documentales">Descargar</button></li></ul></article>'''
+PAGINAS["/documentales"] = DOCU + BUSQUEDA_TED
+docs = S.latest("documentary", 1)
+comprueba("documentales: tambien los de un solo archivo (no solo los de capitulos)",
+          "Un documental suelto" in [x["title"] for x in docs], [x["title"] for x in docs][:4])
 
 print("\n---- VEREDICTO ----")
 if fallos:
