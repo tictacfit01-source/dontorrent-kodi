@@ -171,6 +171,18 @@ def _extract_quality(text):
 
 # ── Listados ─────────────────────────────────────────────────────────────
 
+def _marca_calidad(nodo):
+    """La calidad de la tarjeta/ficha: EliteTorrent pone DOS "span.marca" y la
+    primera es la BANDERA del idioma (una imagen, sin texto). Se tomaba solo
+    esa, y todas sus pelis salian sin calidad (visto el 28-09: "Dune: Parte
+    dos" es 720p y llegaba en blanco). La primera marca CON texto."""
+    for q in nodo.select("span.marca i"):
+        t = q.get_text().strip()
+        if t and any(c.isalnum() for c in t):      # "---" no es una calidad
+            return t
+    return ""
+
+
 def _parse_listing(soup, page_url):
     """Extrae items de una pagina de listado de EliteTorrent.
 
@@ -199,10 +211,7 @@ def _parse_listing(soup, page_url):
             thumb = img["src"] if img else ""
 
         # Calidad (badge)
-        quality_el = li.select_one("span.marca i")
-        quality = quality_el.get_text().strip() if quality_el else ""
-        if not quality:
-            quality = _extract_quality(title)
+        quality = _marca_calidad(li) or _extract_quality(title)
 
         # Tamaño
         size_el = li.select_one("span.dig1") or li.select_one("div.voto1 span")
@@ -333,8 +342,7 @@ def detail(url):
 
             quality = _extract_quality(label)
             if not quality:
-                quality_el = soup.select_one("span.marca i")
-                quality = quality_el.get_text().strip() if quality_el else ""
+                quality = _marca_calidad(soup)
 
             if link.startswith("magnet:"):
                 results.append({

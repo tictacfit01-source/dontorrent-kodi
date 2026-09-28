@@ -791,7 +791,24 @@ def _do_etjob(ev):
                 out["items"] = allit[:60]
             elif op == "resolve":
                 src = (ev.get("src") or "et").strip()
-                out["link"] = _src_resolve(src, (ev.get("url") or "").strip())
+                if src == "wf" and hasattr(_src_mod("wf"), "torrent_de"):
+                    # WolfMax (2.9.79): si no da el torrent, se dice POR QUE (su
+                    # limite de 60/hora o un captcha), no un "no se pudo" mudo
+                    try:
+                        out["link"] = _src_mod("wf").torrent_de(
+                            (ev.get("url") or "").strip()) or ""
+                    except Exception as _er:
+                        out["link"] = ""
+                        _nom = type(_er).__name__
+                        if _nom == "Limite":
+                            out["error"] = "limite"
+                            out["minutos"] = int(getattr(_er, "minutos", 60) or 60)
+                        elif _nom == "Captcha":
+                            out["error"] = "captcha"
+                        xbmc.log("[MejorWolf/service] resolve wf: %s" % _er,
+                                 xbmc.LOGWARNING)
+                else:
+                    out["link"] = _src_resolve(src, (ev.get("url") or "").strip())
             elif op == "rarcheck":
                 m = _src_meta((ev.get("src") or "").strip(),
                               (ev.get("url") or "").strip())
