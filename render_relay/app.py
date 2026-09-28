@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl51"
+BUILD = "dtbl52"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3216,20 +3216,21 @@ def _box_for(code):
 _WF_ADDON_MIN = (2, 9, 77)
 
 
-def _box_wf_ok(code):
+def _box_wf_ok(code, minimo=None):
     try:
-        return _ver_tupla((_kbstatus_load().get(code) or {}).get("v")) >= _WF_ADDON_MIN
+        return _ver_tupla((_kbstatus_load().get(code) or {}).get("v")) >= (minimo or _WF_ADDON_MIN)
     except Exception:
         return False
 
 
-def _box_wf(code, excluir=()):
+def _box_wf(code, excluir=(), minimo=None):
     """Caja para un trabajo de WOLFMAX: la suya si esta viva y al dia; si no,
     otra viva al dia; None si no hay ninguna (mejor nada que basura)."""
-    if len(code or "") == 6 and code not in excluir and _box_live(code) and _box_wf_ok(code):
+    if len(code or "") == 6 and code not in excluir and _box_live(code) \
+            and _box_wf_ok(code, minimo):
         return code
     for b in _live_boxes():
-        if b not in excluir and _box_wf_ok(b):
+        if b not in excluir and _box_wf_ok(b, minimo):
             return b
     return None
 
@@ -10299,7 +10300,140 @@ def _zip_largo(a, b):
         yield (a[i] if i < len(a) else None, b[i] if i < len(b) else None)
 
 
+# --- LO ULTIMO DE WOLFMAX, DE WOLFMAX (dtbl52) ----------------------------------
+# El Inicio sacaba lo de WolfMax del INDICE, ordenado por el numero de la URL.
+# Con la web nueva los ids son letras y numeros al azar ("7vwh4v"): ese orden ya
+# no significaba nada, y el indice solo tiene lo que se ha buscado estos dias
+# (asi salio "El Dorado" de 1966 en Estrenos: alguien lo busco). Ahora una caja
+# trae lo ultimo de WolfMax -- /peliculas (3 paginas) y /series -- como mucho
+# cada 30 min y SOLO cuando alguien abre el Inicio (con todo apagado, nada).
+# Estrenos: solo pelis de este año o del anterior. Si aun no hay nada (recien
+# desplegado), el indice de siempre, y la portada se guarda poco rato.
+_WFULT_FILE = "/tmp/mw_wf_ultimos.json"
+_WFULT = {}                  # clase ("movie"/"tvshow") -> {"items": [...], "ts": t}
+_WFULT_VUELO = {}            # clase -> desde cuando hay una peticion en marcha
+_WFULT_CADA = 30 * 60
+_WFULT_PAGINAS = {"movie": (1, 2, 3), "tvshow": (1, 2)}
+_WFULT_MIN = {"movie": None, "tvshow": (2, 9, 80)}    # "kind" en op=latest: 2.9.80
+_WF_RANGO = {"4K": 9, "1080p": 8, "BDRemux": 8, "720p": 6, "BluRay": 6,
+             "MicroHD": 5, "WEB-DL": 5, "480p": 4, "HDTV": 3, "HDRip": 3,
+             "WEBRip": 3, "DVDRip": 2, "DVD": 2}
+
+
+def _wfult_lee(clase):
+    e = _WFULT.get(clase)
+    if not e:
+        try:
+            with open(_WFULT_FILE, "r", encoding="utf-8") as f:
+                for k, v in (_json.load(f) or {}).items():
+                    if isinstance(v, dict) and k not in _WFULT:
+                        _WFULT[k] = v
+        except Exception:
+            pass
+        e = _WFULT.get(clase)
+    return e or {}
+
+
+def _wfult_guarda():
+    try:
+        tmp = "%s.%d.tmp" % (_WFULT_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(_WFULT, f)
+        os.replace(tmp, _WFULT_FILE)
+    except Exception:
+        pass
+
+
+def _wfult_trae(clase):
+    """Una caja trae lo ultimo de WolfMax de esa clase. Lista de items."""
+    box = _box_wf("", minimo=_WFULT_MIN.get(clase))
+    if not box:
+        return []
+    items = []
+    for pag in _WFULT_PAGINAS.get(clase, (1,)):
+        j = "wl" + os.urandom(5).hex()
+        _kb_enqueue(box, {"c": "etjob", "job": j, "op": "latest", "srcs": "wf",
+                          "kind": clase, "page": pag})
+        res = _catjob_wait(j, 30.0)
+        its = [x for x in ((res or {}).get("items") or [])
+               if (x or {}).get("source") == "wf" and _wf_url_nueva(x.get("url"))
+               and ((x.get("kind") == "serie") == (clase == "tvshow"))]
+        if not its:
+            break
+        items += its
+    return items
+
+
+def _wfult_refresca(clase, forzar=False):
+    """Por detras: como mucho cada 30 min y una a la vez por clase."""
+    now = _t.time()
+    if not forzar and (now - float(_wfult_lee(clase).get("ts") or 0)) < _WFULT_CADA:
+        return
+    if (now - _WFULT_VUELO.get(clase, 0.0)) < 150:
+        return
+    _WFULT_VUELO[clase] = now
+
+    def _ir():
+        try:
+            items = _wfult_trae(clase)
+            if items:
+                _WFULT[clase] = {"items": items, "ts": _t.time()}
+                _wfult_guarda()
+                _wfidx_learn(items)
+        except Exception:
+            pass
+        finally:
+            _WFULT_VUELO[clase] = 0.0
+    try:
+        _thr.Thread(target=_ir, daemon=True).start()
+    except Exception:
+        _WFULT_VUELO[clase] = 0.0
+
+
+def _wfult_tarjetas(kind):
+    """Las tarjetas del Inicio desde lo ultimo de WolfMax, o None si aun no hay."""
+    clase = "tvshow" if kind == "series" else "movie"
+    e = _wfult_lee(clase)
+    _wfult_refresca(clase)
+    crudos = e.get("items") or []
+    if not crudos:
+        return None
+    items = []
+    for x in crudos:
+        it = dict(x)
+        it["thumb"] = _img_cdn(it.get("thumb") or "")
+        disp, ql = _cat_clean_quality(it.get("title", ""))
+        it["title"] = disp
+        it["quality"] = it.get("quality") or ql
+        items.append(it)
+    if kind == "estrenos":
+        # "Estrenos" es de ESTE año o del anterior: WolfMax sube tambien clasicos
+        _anio = _t.localtime().tm_year
+        items = [it for it in items if int(it.get("year") or 0) >= _anio - 1]
+    items = _wf_colapsa(_cat_group_episodes(items))
+    # una tarjeta por titulo (+año), la MEJOR version: el 4K manda
+    mejor, orden = {}, []
+    for it in items:
+        k = (_wf_norm(it.get("title") or ""), it.get("year") or "")
+        if not k[0]:
+            continue
+        if k not in mejor:
+            mejor[k] = it
+            orden.append(k)
+        elif _WF_RANGO.get(it.get("quality") or "", 1) > \
+                _WF_RANGO.get(mejor[k].get("quality") or "", 1):
+            mejor[k] = it
+    return [mejor[k] for k in orden]
+
+
 def _wf_home_items(kind, limit=12, salto=0):
+    ult = _wfult_tarjetas(kind)
+    if ult is not None:
+        return ult[salto:salto + limit]
+    return _wf_home_items_indice(kind, limit, salto)
+
+
+def _wf_home_items_indice(kind, limit=12, salto=0):
     """Lo ultimo de WolfMax segun el indice local. Cero red, milisegundos.
 
     `salto` deja pasar las primeras N tarjetas ya vistas: es lo que permite que
@@ -10321,8 +10455,8 @@ def _wf_home_items(kind, limit=12, salto=0):
             continue
         if kind == "peliculas" and es_serie:
             continue
-        m = _re_dt.search(r"/(\d+)(?:/|$)", url)
-        orden.append((int(m.group(1)) if m else 0, url, e))
+        m = None if _wf_url_nueva(url) else _re_dt.search(r"/(\d+)(?:/|$)", url)
+        orden.append((int(m.group(1)) if m else len(orden), url, e))
     orden.sort(key=lambda x: -x[0])
     items = []
     for _id, url, e in orden[salto:salto + limit * 6]:  # margen: muchos repiten
@@ -10422,7 +10556,8 @@ def _home_mix(kind):
     # falta una fuente entera.
     # Media portada en gris tampoco se guarda media hora (ver arriba).
     _grises = sum(1 for _it in items if not _it.get("poster"))
-    _ok = bool(wf and dx) and _grises <= max(2, len(items) // 6)
+    _ok = bool(wf and dx) and _grises <= max(2, len(items) // 6) and \
+        bool(_wfult_lee("tvshow" if kind == "series" else "movie").get("items"))
     _CATMIX_CACHE[kind] = {"items": items, "ts": now,
                            "ttl": _CATMIX_TTL if _ok else 180}
     _catmix_save()
@@ -10575,6 +10710,11 @@ def catdiag():
                      "proxima_s": max(0, int(_DX_DESC["proxima"] - now))},
         "trace": dict(_DX_TRACE),
     }
+    # lo ultimo de WolfMax para el Inicio (dtbl52)
+    out["wf_ultimos"] = dict((c, {"n": len(_wfult_lee(c).get("items") or []),
+                                  "edad_s": int(now - float(_wfult_lee(c).get("ts") or 0))
+                                  if _wfult_lee(c).get("ts") else None})
+                             for c in ("movie", "tvshow"))
     # el cupo de descargas de WolfMax que se lleva lo de las semillas (dtbl49)
     out["wf_cupo"] = {"usadas_hora": len(_wf_cupo_lee()), "tope": _WF_CUPO_HORA}
     # 3) ¿Esta el box EMPUJANDO /catfeed? (segundos desde el ultimo empuje por kind)

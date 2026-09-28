@@ -259,6 +259,77 @@ try:
         comprueba("un motivo que no se conoce no se inventa", js == {"link": ""}, js)
     finally:
         A._box_wf, A._kb_enqueue, A._catjob_wait = r5
+    print("\n=== 9) El Inicio: lo ultimo de WolfMax, de WolfMax (dtbl52) ===")
+    # antes salia del indice ordenado por el NUMERO de la URL; con ids al azar
+    # ese orden no valia, y "El Dorado" de 1966 salio en Estrenos
+    FICHEROS.append(A._WFULT_FILE)
+    if os.path.exists(A._WFULT_FILE):
+        copia[A._WFULT_FILE] = A._WFULT_FILE + ".prueba_wf_bak"
+        shutil.copy(A._WFULT_FILE, copia[A._WFULT_FILE])
+        os.remove(A._WFULT_FILE)
+    A._WFULT.clear()
+    A._WFULT_VUELO.clear()
+    anio = time.localtime().tm_year
+    PEDIDO = []
+    PAG = {1: [caja("Letras robadas", N + "/pelicula/aa0001", "1080p", "movie", anio),
+               caja("Letras robadas", N + "/pelicula/aa0002", "4K", "movie", anio),
+               caja("El Dorado", N + "/pelicula/aa0003", "DVDRip", "movie", 1966)],
+           2: [caja("Poli malo", N + "/pelicula/aa0004", "720p", "movie", anio - 1),
+               caja("Ted Lasso 4x08", N + "/serie/episodio/aa0005", "4K")],
+           3: []}
+    r6 = (A._box_wf, A._kb_enqueue, A._catjob_wait, A._kbstatus_load)
+    A._box_wf = lambda code, excluir=(), minimo=None: "222222"
+    A._kb_enqueue = lambda b, ev: PEDIDO.append(dict(ev))
+    A._catjob_wait = lambda job, espera: {"items": PAG.get(PEDIDO[-1].get("page"), [])}
+    try:
+        its = A._wfult_trae("movie")
+        comprueba("una caja trae lo ultimo en pelis (paginas 1-3, hasta que se acaba), solo pelis",
+                  [ev.get("page") for ev in PEDIDO] == [1, 2, 3]
+                  and all(ev.get("kind") == "movie" and ev.get("op") == "latest" for ev in PEDIDO)
+                  and [x["title"] for x in its] == ["Letras robadas", "Letras robadas", "El Dorado", "Poli malo"],
+                  (PEDIDO, [x["title"] for x in its]))
+        A._WFULT["movie"] = {"items": its, "ts": time.time()}
+        est = A._wf_home_items("estrenos", 12)
+        comprueba("Estrenos: solo de este año o del anterior (fuera El Dorado de 1966)",
+                  [x["title"] for x in est] == ["Letras robadas", "Poli malo"], [x["title"] for x in est])
+        comprueba("...y de cada peli, la MEJOR version (el 4K manda)",
+                  est and est[0]["quality"] == "4K" and est[0]["url"].endswith("aa0002"), est[:1])
+        cine = A._wf_home_items("peliculas", 12)
+        comprueba("Cine: todas (tambien los clasicos)", [x["title"] for x in cine]
+                  == ["Letras robadas", "El Dorado", "Poli malo"], [x["title"] for x in cine])
+        comprueba("el scroll sigue por donde iba", [x["title"] for x in A._wf_home_items("peliculas", 2, 2)]
+                  == ["Poli malo"])
+        A._WFULT.clear()
+        A._WFULT_VUELO.clear()
+        try:
+            os.remove(A._WFULT_FILE)
+        except Exception:
+            pass
+        del PEDIDO[:]
+        A._WFIDX.clear()
+        A._WFIDX[N + "/pelicula/zz0001"] = {"t": "Vieja aprendida", "k": "movie", "q": "720p"}
+        A._WFIDX[N + "/pelicula/zz0002"] = {"t": "Recien aprendida", "k": "movie", "q": "4K"}
+        fb = A._wf_home_items("peliculas", 12)
+        comprueba("sin nada aun: el indice, lo ultimo aprendido primero, y se pide lo ultimo por detras",
+                  [x["title"] for x in fb] == ["Recien aprendida", "Vieja aprendida"]
+                  and A._WFULT_VUELO.get("movie"), ([x["title"] for x in fb], A._WFULT_VUELO))
+    finally:
+        A._box_wf, A._kb_enqueue, A._catjob_wait, A._kbstatus_load = r6
+    ESTADO2 = {"111111": {"ts": time.time(), "v": "2.9.79"}, "222222": {"ts": time.time(), "v": "2.9.80"}}
+    r7 = (A._kbstatus_load, A._box_live, A._live_boxes)
+    A._kbstatus_load = lambda: ESTADO2
+    A._box_live = lambda c: c in ESTADO2
+    A._live_boxes = lambda *a, **k: ["111111", "222222"]
+    try:
+        comprueba("las SERIES del Inicio solo a cajas con 2.9.80 (las de antes no entienden 'kind')",
+                  A._box_wf("", minimo=A._WFULT_MIN["tvshow"]) == "222222"
+                  and A._box_wf("", minimo=A._WFULT_MIN["movie"]) == "111111")
+    finally:
+        A._kbstatus_load, A._box_live, A._live_boxes = r7
+    js = cli.get("/catdiag").get_json()
+    comprueba("/catdiag ensena lo ultimo de WolfMax", "wf_ultimos" in js and "movie" in js["wf_ultimos"],
+              js.get("wf_ultimos"))
+
     comprueba("la web lo explica (limite o captcha) con 'Buscar en otras fuentes'",
               "function limiteDlg(" in A._CAT_PAGE and "d.error)limiteDlg(" in A._CAT_PAGE
               and "d.error){limiteDlg(" in A._CAT_PAGE)
