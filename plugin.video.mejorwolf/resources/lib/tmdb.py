@@ -36,8 +36,15 @@ _POS_TTL = 30 * 24 * 3600   # match positivo: 30 dias
 _NEG_TTL = 3600
 
 
+# v2 (2.9.84): el emparejamiento cambio (un estreno ya no pierde contra el
+# homonimo viejo con mas votos: ver _score). Lo guardado con el de antes no
+# vale -- "Brothers" seguia saliendo como la peli de 2009 desde la cache --, asi
+# que se descarta al cargar y se vuelve a preguntar.
+_CACHE_VER = "v2|"
+
+
 def _sig(kind, clean):
-    return f"{kind}|{(clean or '').lower()}"
+    return f"{_CACHE_VER}{kind}|{(clean or '').lower()}"
 
 
 def _cache_load():
@@ -48,6 +55,8 @@ def _cache_load():
             raw = json.load(f)
         now = time.time()
         for sig, ent in raw.items():
+            if not str(sig).startswith(_CACHE_VER):
+                continue        # emparejado con la regla de antes
             data = ent.get("d", {})
             ts = ent.get("t", 0)
             ttl = _POS_TTL if data else _NEG_TTL
@@ -274,11 +283,16 @@ def _score(result, preferred_kind, queries, year):
     # clavado: "X-MEN 2 - Wolverine's story" (2005, OCHO votos) le ganaba a
     # X-Men II (2003, 11.186 votos) solo porque su titulo era mas parecido.
     # Nadie busca eso; si de verdad es lo unico que hay, sigue saliendo.
-    if votes < 40:
+    # PERO nunca a un ESTRENO (de este año o del anterior: no ha tenido tiempo
+    # de juntar votos) ni a lo que la gente esta viendo (popularidad alta): la
+    # serie "Brothers" de 2026 (una semana, popularidad 65) perdia contra la
+    # pelicula de 2009 y el Inicio la ensenaba con su cartel (2.9.84).
+    y_res = (result.get("release_date") or result.get("first_air_date") or "")[:4]
+    reciente = y_res.isdigit() and int(y_res) >= time.localtime().tm_year - 1
+    if votes < 40 and not reciente and pop < 20:
         ghost_penalty -= 400.0
     # Bonus de año SOLO si ademas hay similitud decente (evita que "cualquier
     # cosa del año X" gane por la fecha).
-    y_res = (result.get("release_date") or result.get("first_air_date") or "")[:4]
     year_bonus = 150.0 if (year and y_res == year and sim >= 300) else 0.0
     kind_here = "movie" if "title" in result else "tv"
     kind_bonus = 120.0 if kind_here == preferred_kind else -120.0

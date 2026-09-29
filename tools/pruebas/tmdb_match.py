@@ -31,7 +31,51 @@ CASOS = [
     ("Matrix", "movie", 603, "la de 1999"),
     ("Dune", "movie", 438631, "la de Villeneuve, la que la gente busca hoy"),
     ("Silo", "tv", 125988, "la serie de Apple"),
+    ("Brothers", "tv", 250203,
+     "la serie de 2026 (McConaughey), no la PELICULA de 2009 (dtbl59)"),
 ]
+
+# Lo mismo, por el camino de la CAJA (tmdb.enrich, addon): es el que manda en
+# el Inicio (su meta va resuelto con la ficha de DonTorrent). Busca en series Y
+# en peliculas y puntua; hasta la 2.9.84 castigaba con -400 a todo lo que
+# tuviera menos de 40 votos -- es decir, a los ESTRENOS.
+# (titulo tal cual lo da la ficha de DonTorrent, tipo, id que DEBE salir, por que)
+CASOS_CAJA = [
+    ("Brothers - 1\u00aa Temporada", "tv", 250203,
+     "serie de 2026 (una semana, 10 votos) y no la peli de 2009 (4.040 votos)"),
+    ("Historia de dos ciudades - 1\u00aa Temporada [1080p]", "tv", 301626,
+     "serie de 2026, no la peli de 1935"),
+    ("A la deriva - 1\u00aa Temporada [1080p]", "tv", 301389,
+     "serie de 2026, no la peli 'Adrift' de 2018"),
+    ("X-Men 2", "movie", 36658,
+     "la de 2003, no la entrada basura 'X-MEN 2 - Wolverine's story' (2005, 8 votos)"),
+    ("Toy Story", "movie", 862, "la de 1995"),
+    ("Arcane", "movie", 94605,
+     "la serie de Netflix aunque la fuente diga 'peli' (se mira en los dos lados)"),
+]
+
+
+def caja():
+    """tmdb.py de la caja con Kodi de mentira y una cache TEMPORAL."""
+    import tempfile
+    import types
+    perfil = tempfile.mkdtemp(prefix="mw_tmdb_")
+    xa = types.ModuleType("xbmcaddon")
+    xa.Addon = type("Addon", (), {
+        "__init__": lambda self, *a, **k: None,
+        "getSetting": lambda self, k: {"tmdb_enabled": "true"}.get(k, ""),
+        "getAddonInfo": lambda self, k: ""})
+    xv = types.ModuleType("xbmcvfs")
+    xv.translatePath = lambda q: perfil + os.sep
+    xb = types.ModuleType("xbmc")
+    xb.log = lambda *a, **k: None
+    xb.LOGINFO = xb.LOGWARNING = xb.LOGERROR = xb.LOGDEBUG = 0
+    for m in (xa, xv, xb):
+        sys.modules[m.__name__] = m
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "..", "plugin.video.mejorwolf"))
+    from resources.lib import tmdb as T      # noqa: E402
+    return T
 
 
 def main():
@@ -59,9 +103,26 @@ def main():
         if not ok:
             fallos.append((q, got, esperado))
         time.sleep(1.5)          # sin prisa: no hay que molestar a TMDB
+    print("\n--- por el camino de la caja (tmdb.enrich) ---")
+    T = caja()
+    for q, kind, esperado, porque in CASOS_CAJA:
+        try:
+            info = T.enrich(q, kind) or {}
+        except Exception as e:
+            print("  (sin red para %r: %s)" % (q, e))
+            continue
+        got = info.get("id")
+        ok = (got == esperado)
+        print("%s %-28s -> %-30s %s id=%-7s %s"
+              % ("ok  " if ok else "MAL ", repr(q[:26]), (info.get("title") or "")[:30],
+                 info.get("year") or "----", got,
+                 "" if ok else ("deberia ser " + str(esperado) + ": " + porque)))
+        if not ok:
+            fallos.append((q, got, esperado))
+        time.sleep(1.5)
     print()
     if fallos:
-        print("%d de %d MAL" % (len(fallos), len(CASOS)))
+        print("%d de %d MAL" % (len(fallos), len(CASOS) + len(CASOS_CAJA)))
         return 1
     print("TODOS OK: cada titulo se engancha a su pelicula")
     return 0

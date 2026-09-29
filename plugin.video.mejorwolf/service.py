@@ -1305,6 +1305,10 @@ def _enrich_pending(base, kind, resp, html="", budget=None):
              "title": info.get("title")}
         if info.get("id"):
             m["tmdb_id"] = info["id"]
+        # version del emparejamiento: desde la 2.9.84 un estreno ya no pierde
+        # contra el homonimo viejo con mas votos; el relay rehace las series
+        # que le mando una caja anterior (dtbl59)
+        m["mv"] = 2
         if ficha.get("title"):
             # El titulo TAL CUAL lo publica DonTorrent en su ficha: es la web
             # ORIGINAL (norma §0, la app es su espejo), asi que el relay lo

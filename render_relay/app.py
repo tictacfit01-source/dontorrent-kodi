@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl58"
+BUILD = "dtbl59"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -5524,7 +5524,7 @@ def _cat_enrich(items, limit=120):
         # por que significar nada en dx/et/wf.
         _dtm = (enr_idx.get(str(it.get("content_id"))) or {}
                 if it.get("source") == "dt" else {})
-        if _dtm.get("dtok") and _cat_apply_meta(it, _dtm):
+        if _meta_fiable(_dtm, it.get("kind")) and _cat_apply_meta(it, _dtm):
             if not it.get("poster"):
                 it["poster"] = it.get("thumb")
             return it
@@ -9644,7 +9644,33 @@ _CAT_ENRICH_KEYS = ("poster", "year", "rating", "overview",
                     # la ficha —titulo real y, si habia homonimos, desempatados
                     # por director— asi que MANDA sobre cualquier match que el
                     # relay saque por su cuenta de TMDB, y no hay que re-pedirlo.
-                    "dt_title", "dt_year", "dtok")
+                    "dt_title", "dt_year", "dtok",
+                    # addon 2.9.84+: version del emparejamiento con TMDB (ver
+                    # _meta_rango). Sin ella, una SERIE es de antes y no manda.
+                    "mv")
+
+
+def _meta_rango(m):
+    """Cuanto vale el meta que manda una caja: 2 = resuelto con la ficha de
+    DonTorrent Y con el emparejamiento de la 2.9.84, 1 = con la ficha (`dtok`)
+    pero el de antes, 0 = a ciegas."""
+    m = m or {}
+    if not m.get("dtok"):
+        return 0
+    try:
+        return 2 if int(m.get("mv") or 0) >= 2 else 1
+    except Exception:
+        return 1
+
+
+def _meta_fiable(m, kind):
+    """El meta de la caja MANDA sobre lo que saque el relay de TMDB. Las SERIES,
+    solo con el emparejamiento nuevo (dtbl59): con el de antes una serie recien
+    estrenada perdia contra la PELICULA homonima con mas votos ("Brothers" 2026
+    -> "Hermanos" 2009, "Historia de dos ciudades" 2026 -> la de 1935), y el
+    relay, que busca las series COMO series, si acierta."""
+    r = _meta_rango(m)
+    return r >= 2 or (r == 1 and kind != "serie")
 
 
 def _cat_enrich_load():
@@ -9672,7 +9698,7 @@ def _cat_enrich_store(meta):
             # que pone el cartel del homonimo mas famoso. Con 7 cajas en el
             # sistema y actualizaciones escalonadas, sin esto una caja vieja
             # desharia en su siguiente vuelta lo que arreglo una nueva.
-            if (d.get(str(cid)) or {}).get("dtok") and not m.get("dtok"):
+            if _meta_rango(d.get(str(cid))) > _meta_rango(m):
                 continue
             d[str(cid)] = {k: m[k] for k in _CAT_ENRICH_KEYS if m.get(k) is not None}
             n += 1
@@ -10154,7 +10180,8 @@ def catfeed():
     for it in raw:
         cid = it.get("content_id")
         sm = seed_idx.get(cid) or enr_idx.get(str(cid))
-        _ok = _cat_apply_meta(it, sm)
+        _viejo = it.get("kind") == "serie" and _meta_rango(sm) == 1
+        _ok = False if _viejo else _cat_apply_meta(it, sm)
         # Se pide enrich al box si falta el POSTER o si el meta guardado aun no
         # esta resuelto contra la FICHA de DonTorrent. Sin lo segundo nada de lo
         # que solo publica la ficha llegaria jamas: los metas viejos (cache
@@ -10163,7 +10190,7 @@ def catfeed():
         # la marca deja de pedirse— y la marca depende de LO QUE SEPA el box:
         # a uno antiguo se le sigue pidiendo solo hasta que manda `title`, que
         # es todo lo que puede dar (si no, se le pediria en cada vuelta).
-        _done = ((sm or {}).get("dtok")
+        _done = (_meta_fiable(sm, it.get("kind"))
                  or (not box_ficha and (sm or {}).get("title")))
         if (not _ok) or not _done:
             if not it.get("poster"):
@@ -10219,7 +10246,8 @@ def catfeed():
                     # director): MANDA siempre sobre lo que el relay saque de
                     # TMDB a ciegas, que es justo lo que ponia el cartel de la
                     # peli equivocada ('La odisea' -> la de Nolan).
-                    if _m.get("dtok") or "image.tmdb.org" not in (it.get("poster") or ""):
+                    if _meta_fiable(_m, it.get("kind")) or \
+                            "image.tmdb.org" not in (it.get("poster") or ""):
                         _cat_apply_meta(it, _m)
                 r2 = {"items": en, "ts": _t.time()}
                 _CATBROWSE_CACHE[_key] = r2
@@ -10276,8 +10304,10 @@ def catenrich():
                 cid = str(it.get("content_id"))
                 m = meta.get(cid)
                 sd = stored.get(cid) or {}
-                if sd.get("dtok") and not (m or {}).get("dtok"):
+                if _meta_rango(sd) > _meta_rango(m):
                     m = sd
+                if it.get("kind") == "serie" and _meta_rango(m) == 1:
+                    continue        # serie con el emparejamiento de antes (dtbl59)
                 if _cat_apply_meta(it, m):
                     applied += 1
             _CATBROWSE_CACHE[key] = rec
@@ -13553,9 +13583,12 @@ function cardHTML(x,list,i){
  // La temporada ya no va en el titulo (una serie es UNA tarjeta), asi que se
  // dice aqui: "T2" cuando lo unico que hay es una temporada que no es la
  // primera, o "4 temporadas" cuando estan varias dentro.
- var _tp=(x.temps&&x.temps.length)||0,_ts='';
+ // Temporadas DISTINTAS: DonTorrent publica la misma temporada en HDTV y en
+ // 720p, y "Neagley" (una temporada) salia como "2 temporadas" (dtbl59).
+ var _tn=[];(x.temps||[]).forEach(function(t){var n=+(t&&t.n)||0;if(_tn.indexOf(n)<0)_tn.push(n)});
+ var _tp=_tn.length,_ts='';
  if(_tp>1)_ts=' · '+_tp+' temporadas';
- else if(_tp===1&&x.temps[0].n>1)_ts=' · T'+x.temps[0].n;
+ else if(_tp===1&&_tn[0]>1)_ts=' · T'+_tn[0];
  var kt='<div class="kindtag">'+kindLabel(x.kind)+(_nc?(' · '+_nc+' cap.'):_ts)+'</div>';
  var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';

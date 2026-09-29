@@ -164,6 +164,16 @@ hubiera; con año distinto (el «Dune» de 1984 y el de 2021) nunca se tocan.
 También por lo que no cambia: su ficha de TMDB y título+año (el enlace de una
 serie de WolfMax es el de su ÚLTIMO capítulo y cambia cada semana).
 
+**`series_tmdb.py`** (29-09-2026, dtbl59 + caja 2.9.84) — una serie del Inicio
+con la ficha de la PELÍCULA homónima («Brothers» 2026 con el cartel de
+«Hermanos» 2009). La caja castigaba a lo que tuviera menos de 40 votos, o sea a
+los estrenos, y el relay se fiaba para siempre de lo que ella mandaba. Aquí: el
+meta de una caja anterior no manda en una serie (el relay la busca como serie y
+se la vuelve a pedir a las cajas), el de la 2.9.84 (`mv` 2) sí y no lo pisa uno
+viejo, y la tarjeta cuenta temporadas DISTINTAS (HDTV y 720p de la misma no son
+«2 temporadas»). Los emparejamientos de verdad contra TMDB, en `tmdb_match.py`
+(ahora también por el camino de la caja).
+
 **`jserr.py`** (29-09-2026, dtbl55) — el avisador de errores de JavaScript. Un
 fallo en el móvil de otro no se ve desde aquí; la web manda mensaje, línea y
 versión a `/jserr` y `/catdiag` lo enseña agrupado (`jserr`), con la línea de
