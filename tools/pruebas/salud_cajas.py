@@ -139,6 +139,32 @@ try:
     comprueba("el fin de un pack de WolfMax llega al relay", c.get("episode_end") == 9, c)
     c = service._src_item_compact({"title": "Dune", "kind": "movie", "url": "u"}, "wf")
     comprueba("...y lo demas no lleva ese campo", "episode_end" not in c, c)
+
+    print("\n=== 4) Ponerse al dia sola (2.9.83) ===")
+    PEDIDO = []
+    SUENA = [False]
+    viejo = (service.xbmc.executebuiltin, service.xbmc.Player, service._addon_version)
+    service.xbmc.executebuiltin = lambda c: PEDIDO.append(c)
+    service.xbmc.Player = type("P", (), {"isPlaying": lambda self: SUENA[0]})
+    service._addon_version = lambda: "2.9.82"
+    try:
+        t0 = 1000000.0
+        service._ACT["ult"] = t0
+        comprueba("recien arrancada no mira (Kodi ya lo hace al arrancar)",
+                  not service._ponte_al_dia(None, t0 + 60) and not PEDIDO)
+        comprueba("el relay ve la 2.9.83: a los 10 min, mira",
+                  not service._ponte_al_dia("2.9.83", t0 + 300)
+                  and service._ponte_al_dia("2.9.83", t0 + 601) and PEDIDO == ["UpdateAddonRepos"], PEDIDO)
+        comprueba("...y no vuelve a los 5 min", not service._ponte_al_dia("2.9.83", t0 + 901))
+        comprueba("si es la suya o una vieja, solo cada 30 min",
+                  not service._ponte_al_dia("2.9.82", t0 + 601 + 1700)
+                  and service._ponte_al_dia("2.9.81", t0 + 601 + 1801) and len(PEDIDO) == 2, PEDIDO)
+        SUENA[0] = True
+        comprueba("NUNCA en mitad de una peli", not service._ponte_al_dia("2.9.99", t0 + 99999) and len(PEDIDO) == 2)
+        SUENA[0] = False
+        comprueba("una version rara no rompe nada", service._ponte_al_dia("xyz", t0 + 99999) in (True, False))
+    finally:
+        service.xbmc.executebuiltin, service.xbmc.Player, service._addon_version = viejo
 finally:
     import shutil
     shutil.rmtree(PERFIL, ignore_errors=True)

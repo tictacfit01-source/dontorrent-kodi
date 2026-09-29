@@ -849,6 +849,47 @@ def _addon_version():
         return ""
 
 
+# --- Ponerse al dia sola (2.9.83) ---------------------------------------------
+# Kodi mira el repositorio cada muchas horas: la noche del 29-09 WolfMax cambio
+# su web, el arreglo (2.9.82) estaba publicado y las teles siempre encendidas
+# seguian sin WolfMax. Ahora, sin estar reproduciendo, se le pide a Kodi que
+# mire (UpdateAddonRepos) cada 30 min, y a los 10 si el relay ya ha visto una
+# caja con una version mas nueva que esta. Instalar lo instala Kodi, como
+# siempre (si el dueño lo tiene en "solo avisar", solo avisa).
+_ACT = {"ult": time.time()}     # al arrancar Kodi ya mira el solo
+_ACT_CADA = 1800
+_ACT_PRONTO = 600
+
+
+def _ver_t(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:3])
+
+
+def _ponte_al_dia(ultima=None, ahora=None):
+    """True si ha pedido a Kodi que mire las actualizaciones."""
+    ahora = ahora or time.time()
+    try:
+        nueva = bool(ultima) and _ver_t(ultima) > _ver_t(_addon_version())
+    except Exception:
+        nueva = False
+    hueco = ahora - _ACT["ult"]
+    if not ((nueva and hueco >= _ACT_PRONTO) or hueco >= _ACT_CADA):
+        return False
+    try:
+        if xbmc.Player().isPlaying():
+            return False            # nunca en mitad de una peli
+    except Exception:
+        pass
+    _ACT["ult"] = ahora
+    try:
+        xbmc.executebuiltin("UpdateAddonRepos")
+        xbmc.log("[MejorWolf/service] mirando actualizaciones%s"
+                 % ((" (el relay ya ve la %s)" % ultima) if nueva else ""), xbmc.LOGINFO)
+    except Exception:
+        return False
+    return True
+
+
 def _codigo_nuevo(nuevo):
     """El movil pide cambiar el codigo de esta tele (Mis Kodis -> 'Cambiar
     codigo'), p.ej. porque el viejo se ha visto donde no debia (22-09-2026: los
@@ -1395,8 +1436,9 @@ def main():
         if now - last_beat >= HEARTBEAT_GAP:
             last_beat = now
             try:
-                rkb.push_status(_addon_ver, _read_continue_push(),
-                                _playback_diag())
+                r = rkb.push_status(_addon_ver, _read_continue_push(),
+                                    _playback_diag())
+                _ponte_al_dia((r or {}).get("ultima"))
             except Exception:
                 pass
 

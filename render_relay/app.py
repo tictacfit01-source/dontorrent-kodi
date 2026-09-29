@@ -3080,6 +3080,33 @@ def _ver_ultima(d=None):
         return ""
 
 
+_VER_MAX_FILE = "/tmp/mw_ver_max.json"
+
+
+def _ver_mas_nueva(v=""):
+    """La version mas nueva que ha latido en 48 h (aunque esa caja se haya
+    apagado despues): se la dice a cada caja en su latido y la que vaya por
+    detras le pide a Kodi que mire el repositorio ya (2.9.83, dtbl56)."""
+    now = _t.time()
+    try:
+        with open(_VER_MAX_FILE, "r", encoding="utf-8") as f:
+            d = _json.load(f) or {}
+    except Exception:
+        d = {}
+    if now - float(d.get("ts") or 0) > 48 * 3600:
+        d = {}
+    if v and _ver_tupla(v) > _ver_tupla(d.get("v")):
+        d = {"v": str(v)[:16], "ts": now}
+        try:
+            tmp = "%s.%d.tmp" % (_VER_MAX_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _VER_MAX_FILE)
+        except Exception:
+            pass
+    return d.get("v") or ""
+
+
 def _live_boxes(max_age=90, al_dia=False):
     """Codes de TODAS las cajas con latido reciente, de más reciente a menos.
 
@@ -4121,7 +4148,13 @@ def kb_status_push():
         }
     d[code] = entry
     _kbstatus_save(d)
-    return jsonify({"ok": True})
+    # la version mas nueva que ha latido: la caja que vaya por detras pide a
+    # Kodi que mire el repositorio (2.9.83). Las de antes ignoran la clave.
+    try:
+        ultima = _ver_mas_nueva(entry["v"])
+    except Exception:
+        ultima = ""
+    return jsonify({"ok": True, "ultima": ultima} if ultima else {"ok": True})
 
 
 @app.get("/kb/status")

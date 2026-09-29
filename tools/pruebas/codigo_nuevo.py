@@ -132,7 +132,7 @@ try:
     print("\n=== 3) El relay: /kb/send ===")
     sys.path.insert(0, os.path.abspath(os.path.join(AQUI, "..", "..", "render_relay")))
     import app as A                                  # noqa: E402
-    FICH = [A._KB_FILE, A._KB_STATUS_FILE]
+    FICH = [A._KB_FILE, A._KB_STATUS_FILE, A._VER_MAX_FILE]
     os.makedirs("/tmp", exist_ok=True)
     copia = {}
     for f in FICH:
@@ -187,6 +187,25 @@ try:
         with open(A._KB_STATUS_FILE, "w") as fh:
             fh.write("{roto")
         comprueba("sin poder leer los latidos, no se asusta a nadie", pon("300003").get("tele") is True)
+
+        print("\n=== 5) La version mas nueva, en cada latido (2.9.83) ===")
+        try:
+            os.remove(A._VER_MAX_FILE)
+        except Exception:
+            pass
+
+        def late(code, v):
+            return cli.post("/kb/status", json={"code": code, "v": v}).get_json() or {}
+        comprueba("la primera caja: su version", late("400004", "2.9.81").get("ultima") == "2.9.81")
+        comprueba("llega una mas nueva: esa", late("500005", "2.9.82").get("ultima") == "2.9.82")
+        comprueba("a la que va por detras se le dice la nueva", late("400004", "2.9.81").get("ultima") == "2.9.82")
+        with open(A._KB_STATUS_FILE, "w") as fh:
+            json.dump({}, fh)          # la nueva se apaga
+        comprueba("...aunque la nueva se haya apagado", late("400004", "2.9.81").get("ultima") == "2.9.82")
+        d0 = json.load(open(A._VER_MAX_FILE))
+        d0["ts"] -= 49 * 3600
+        json.dump(d0, open(A._VER_MAX_FILE, "w"))
+        comprueba("pasadas 48 h se olvida", late("400004", "2.9.81").get("ultima") == "2.9.81")
     finally:
         for f in FICH:
             try:
