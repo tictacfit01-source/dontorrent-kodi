@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl55"
+BUILD = "dtbl56"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3216,12 +3216,19 @@ def _box_for(code):
 # 2.9.78 y no 2.9.77: el 28-09 WolfMax retoco su marcado y el lector de la
 # 2.9.77 ya no ve los archivos (series sin capitulos, una tarjeta por calidad);
 # las cajas que quedaban en 2.9.77 seguian contestando busquedas (dtbl54).
-_WF_ADDON_MIN = (2, 9, 78)
+# 2.9.82 (dtbl56): la madrugada del 29-09 WolfMax cambio el id numerico de cada
+# archivo por un CODIGO ("2tzkkn") y su API ya no acepta el id; y enlacito pide
+# un campo nuevo. Una caja anterior no ve archivos ni saca torrents: busquedas
+# sin calidad, series sin capitulos y nada que reproducir. Mejor ninguna.
+_WF_ADDON_MIN = (2, 9, 82)
 
 
 def _box_wf_ok(code, minimo=None):
     try:
-        return _ver_tupla((_kbstatus_load().get(code) or {}).get("v")) >= (minimo or _WF_ADDON_MIN)
+        # el MAYOR de los dos: un minimo propio mas bajo (las series del Inicio
+        # piden 2.9.80) no puede saltarse el de todo WolfMax
+        return _ver_tupla((_kbstatus_load().get(code) or {}).get("v")) >= \
+            max(minimo or _WF_ADDON_MIN, _WF_ADDON_MIN)
     except Exception:
         return False
 

@@ -211,13 +211,31 @@ def _uno(html, etiqueta, clase=None):
 
 
 def _boton(html):
-    """(content-id, tabla) del boton de descarga protegido, o (None, None)."""
+    """(clave, tabla) del boton de descarga protegido, o (None, None). La clave
+    es el CODIGO del archivo ("2tzkkn", data-content-code: WolfMax cambio a
+    codigos la madrugada del 29-09 y su API ya no acepta el id) o, con el
+    marcado de antes, el id numerico (data-content-id)."""
     for m in re.finditer(r"<button\b([^>]*)>", html or "", re.I):
         atr = _atributos(m.group(1))
-        cid = re.sub(r"\D", "", atr.get("data-content-id") or "")
+        cid = re.sub(r"[^A-Za-z0-9]", "", atr.get("data-content-code") or "") \
+            or re.sub(r"\D", "", atr.get("data-content-id") or "")
         tabla = re.sub(r"[^a-z_]", "", (atr.get("data-tabla") or "").lower())
         if cid and tabla:
             return cid, tabla
+    return None, None
+
+
+_TABLA_DE = {"pelicula": "peliculas", "episodio": "series", "episodio_doc": "documentales"}
+
+
+def _clave_de_url(url):
+    """PLAN C: el codigo de un archivo es el de su propio enlace
+    (/serie/episodio/2tzkkn <-> data-content-code="2tzkkn": comprobado el
+    29-09 en 44 de 44). Si el boton vuelve a cambiar, se sigue pudiendo."""
+    tipo, _id = ruta(url)
+    m = _RUTA_RE.match((url or "").strip())
+    if tipo in _TABLA_DE and m:
+        return m.group(2), _TABLA_DE[tipo]
     return None, None
 
 
@@ -250,6 +268,8 @@ def tarjetas(html):
         for _atr_f, f in _bloques(a, "li", "wolf-card-file"):
             atr_fm, dentro = _uno(f, "a", "wolf-card-format")
             cid, tabla = _boton(f)
+            if not cid and atr_fm.get("href"):
+                cid, tabla = _clave_de_url(absoluta(atr_fm["href"]))
             if not atr_fm.get("href") or not cid:
                 continue
             fuerte = re.search(r"<strong\b[^>]*>(.*?)</strong>", dentro, re.S)
@@ -321,6 +341,8 @@ def ficha(html, url=""):
         enl = re.search(r'<a\b([^>]*)>(.*?)</a>', fila, re.S)
         cid, tabla = _boton(fila + "</button>" if fila else "")
         href = _atributos(enl.group(1)).get("href") if enl else ""
+        if not cid and href:
+            cid, tabla = _clave_de_url(absoluta(href))
         if not href or not cid:
             continue
         fmt = re.search(r'wolf-episode-format[^>]*>([^<]*)', fila)
@@ -333,6 +355,8 @@ def ficha(html, url=""):
             dd = dict((texto(k).lower(), texto(v)) for k, v in
                       re.findall(r"<dt\b[^>]*>(.*?)</dt>\s*<dd\b[^>]*>(.*?)</dd>", p, re.S))
             cid, tabla = _boton(p)
+            if not cid and url:
+                cid, tabla = _clave_de_url(absoluta(url))
             if cid:
                 fmt = dd.get("calidad", "")
                 tam = next((v for k, v in dd.items() if k.startswith("tama")), "")
@@ -402,10 +426,19 @@ def torrent(post_json, cid, tabla, referer=""):
     cab = {"Content-Type": "application/json", "Origin": BASE,
            "Referer": absoluta(referer) if referer else BASE + "/",
            "X-Requested-With": "XMLHttpRequest"}
-    st, g = post_json(API_DESCARGAS, {"action": "generate",
-                                      "content_id": int(cid), "tabla": tabla}, cab)
-    g = g if isinstance(g, dict) else {}
-    _mira_limite(st, g)
+    # El reto se pide con el CODIGO del archivo ({"code": "2tzkkn"}, desde el
+    # 29-09; con el id contesta 400 "Parametros invalidos"). Un id numerico de
+    # antes prueba primero como id, por si WolfMax diera marcha atras.
+    cuerpos = [{"action": "generate", "code": str(cid), "tabla": tabla}]
+    if str(cid).isdigit():
+        cuerpos.insert(0, {"action": "generate", "content_id": int(cid), "tabla": tabla})
+    st, g = 0, {}
+    for cuerpo in cuerpos:
+        st, g = post_json(API_DESCARGAS, cuerpo, cab)
+        g = g if isinstance(g, dict) else {}
+        _mira_limite(st, g)
+        if g.get("success") and g.get("challenge"):
+            break
     if not g.get("success") or not g.get("challenge"):
         raise RuntimeError("WolfMax: sin reto (%s %s)" % (st, g.get("error") or ""))
     reto = g["challenge"]
@@ -443,7 +476,7 @@ def diferido(cid, tabla):
 
 
 def es_diferido(u):
-    return bool(re.match(r"^wf2:[a-z_]+:\d+$", (u or "").strip()))
+    return bool(re.match(r"^wf2:[a-z_]+:[A-Za-z0-9]+$", (u or "").strip()))
 
 
 def de_diferido(u):

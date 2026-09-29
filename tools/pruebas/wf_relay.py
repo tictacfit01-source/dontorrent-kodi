@@ -213,8 +213,8 @@ try:
     # web nueva los enlaces de capitulo sin el nombre de la serie
     r3 = (A._kbstatus_load, A._box_live, A._live_boxes)
     ESTADO = {"111111": {"ts": time.time(), "v": "2.9.76"},
-              "222222": {"ts": time.time(), "v": "2.9.78"},
-              "333333": {"ts": time.time(), "v": "2.9.80"}}
+              "222222": {"ts": time.time(), "v": "2.9.82"},
+              "333333": {"ts": time.time(), "v": "2.9.83"}}
     A._kbstatus_load = lambda: ESTADO
     A._box_live = lambda c: c in ESTADO
     A._live_boxes = lambda *a, **k: ["111111", "222222", "333333"]
@@ -222,6 +222,11 @@ try:
         ESTADO["444444"] = {"ts": time.time(), "v": "2.9.77"}
         comprueba("ni a una en 2.9.77 (su lector no ve los archivos desde el 28-09)",
                   A._box_wf("444444") == "222222", A._box_wf("444444"))
+        ESTADO["555555"] = {"ts": time.time(), "v": "2.9.81"}
+        comprueba("ni a una en 2.9.81 (el 29-09 WolfMax paso a codigos y su API ya no acepta el id)",
+                  A._box_wf("555555") == "222222", A._box_wf("555555"))
+        comprueba("un minimo propio mas bajo (series del Inicio: 2.9.80) no salta el de WolfMax",
+                  A._box_wf("555555", minimo=(2, 9, 80)) == "222222", A._box_wf("555555", minimo=(2, 9, 80)))
         comprueba("un trabajo de WolfMax NO va a una caja en 2.9.76, aunque sea la suya",
                   A._box_wf("111111") == "222222", A._box_wf("111111"))
         comprueba("la suya, si esta al dia", A._box_wf("333333") == "333333")
@@ -318,15 +323,17 @@ try:
                   and A._WFULT_VUELO.get("movie"), ([x["title"] for x in fb], A._WFULT_VUELO))
     finally:
         A._box_wf, A._kb_enqueue, A._catjob_wait, A._kbstatus_load = r6
-    ESTADO2 = {"111111": {"ts": time.time(), "v": "2.9.79"}, "222222": {"ts": time.time(), "v": "2.9.80"}}
+    ESTADO2 = {"111111": {"ts": time.time(), "v": "2.9.81"}, "222222": {"ts": time.time(), "v": "2.9.82"}}
     r7 = (A._kbstatus_load, A._box_live, A._live_boxes)
     A._kbstatus_load = lambda: ESTADO2
     A._box_live = lambda c: c in ESTADO2
     A._live_boxes = lambda *a, **k: ["111111", "222222"]
     try:
-        comprueba("las SERIES del Inicio solo a cajas con 2.9.80 (las de antes no entienden 'kind')",
+        comprueba("lo ultimo de WolfMax (pelis y series) solo a cajas al dia (dtbl56: 2.9.82)",
                   A._box_wf("", minimo=A._WFULT_MIN["tvshow"]) == "222222"
-                  and A._box_wf("", minimo=A._WFULT_MIN["movie"]) == "111111")
+                  and A._box_wf("", minimo=A._WFULT_MIN["movie"]) == "222222")
+        ESTADO2["222222"]["v"] = "2.9.81"
+        comprueba("...y si no hay ninguna, ninguna", A._box_wf("", minimo=A._WFULT_MIN["tvshow"]) is None)
     finally:
         A._kbstatus_load, A._box_live, A._live_boxes = r7
     js = cli.get("/catdiag").get_json()

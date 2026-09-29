@@ -437,6 +437,95 @@ docs = S.latest("documentary", 1)
 comprueba("documentales: tambien los de un solo archivo (no solo los de capitulos)",
           "Un documental suelto" in [x["title"] for x in docs], [x["title"] for x in docs][:4])
 
+print("\n=== 6) WolfMax pasa a CODIGOS (29-09, madrugada; caja 2.9.82) ===")
+# la tarjeta TAL CUAL la sirvio WolfMax a las 01:40: el boton ya no lleva
+# data-content-id sino data-content-code, y su API rechaza el id (400)
+CODIGOS = '''<article class="wolf-card">
+ <a class="wolf-card-poster" href="/serie/zryh84" tabindex="-1" aria-hidden="true"><img src="x" data-original="/caratulas/series/VGVk/Ted%20Lasso-%5BWolfMax4K%5D.jpg" alt="Ted Lasso - 1ª Temporada"></a>
+ <div class="wolf-card-content"><h3 class="wolf-card-title"><a class="wolf-card-main" href="/serie/zryh84" aria-label="Ver ficha: Ted Lasso - 1ª Temporada">Ted Lasso - 1ª Temporada</a></h3>
+ <p class="wolf-card-date">Última subida <time datetime="2020-10-19">19/10/2020</time></p></div>
+ <ul class="wolf-card-files" aria-label="Archivos de Ted Lasso - 1ª Temporada">
+  <li class="wolf-card-file" data-wolf-episode-id="749395">
+   <a class="wolf-card-format" href="/serie/episodio/2tzkkn"><strong>Episodio 1x10 -</strong><span>HDTV</span></a>
+   <span class="wolf-card-size">380,17 MB</span><button type="button" class="protected-download wolf-card-download" data-content-code="2tzkkn" data-tabla="series" aria-label="Descargar Ted Lasso - 1ª Temporada: 1x10 -"><span>Descargar</span></button></li>
+  <li class="wolf-card-file" data-wolf-episode-id="749114">
+   <a class="wolf-card-format" href="/serie/episodio/2ca9yd"><strong>Episodio 1x06 al 1x09.</strong><span>HDTV</span></a>
+   <span class="wolf-card-size">1,43 GB</span><button type="button" class="protected-download wolf-card-download" data-content-code="2ca9yd" data-tabla="series"><span>Descargar</span></button></li>
+ </ul>
+ <details class="wolf-card-more" data-wolf-episodes="/api/episodios?type=serie&amp;id=748763&amp;after=749114&amp;calidad="><summary>Ver los 3 episodios restantes</summary>
+ <ul class="wolf-card-files-extra"><li class="wolf-episode-list-status"><a href="/serie/zryh84">Ver todos los episodios en la ficha</a></li></ul></details>
+</article>'''
+tc = W.tarjetas(CODIGOS)
+comprueba("la busqueda lee los archivos con su CODIGO (antes: 0 archivos, todo sin calidad ni capitulos)",
+          [(a["etiqueta"], a["cid"], a["tabla"], a["episodio_fin"]) for a in tc[0]["archivos"]]
+          == [("Episodio 1x10 -", "2tzkkn", "series", 0), ("Episodio 1x06 al 1x09.", "2ca9yd", "series", 9)],
+          tc[0]["archivos"] if tc else tc)
+comprueba("...y el enlace de 'ver mas episodios' no se toma por un archivo", len(tc[0]["archivos"]) == 2)
+fc = W.ficha(ficha_temporada("Ted Lasso - 1ª Temporada [720p]", "HDTV-720p", [
+    fila("749001", "/serie/episodio/zrfbxt", "1x01 al 1x03.", "HDTV-720p")]).replace(
+    'data-content-id="749001"', 'data-content-code="zrfbxt"'), "https://wolfmax4k.com/serie/zrdqqp")
+comprueba("la ficha de temporada tambien", [(a["cid"], a["episodio_fin"]) for a in fc["archivos"]] == [("zrfbxt", 3)],
+          fc["archivos"])
+sin_boton = CODIGOS.replace('data-content-code="2tzkkn" ', "").replace('data-content-code="2ca9yd" ', "")
+comprueba("plan C: si el boton vuelve a cambiar, el codigo sale del enlace del archivo",
+          [a["cid"] for a in W.tarjetas(sin_boton)[0]["archivos"]] == ["2tzkkn", "2ca9yd"])
+
+API = []
+
+
+def post_codigos(url, cuerpo, cab):
+    """La API de hoy: 'code' si, 'content_id' -> 400."""
+    API.append(dict(cuerpo))
+    if cuerpo["action"] == "generate":
+        if "content_id" in cuerpo or cuerpo.get("code") not in ("2tzkkn", "2ca9yd", "zrfbxt"):
+            return 400, {"success": False, "error": "Parámetros inválidos"}
+        return 200, {"success": True, "challenge": "abc123"}
+    return post_bueno(url, cuerpo, cab)
+
+
+W._TORRENTS.clear()
+u6 = W.torrent(post_codigos, "2tzkkn", "series")
+comprueba("el torrent se pide con el codigo: un solo intento",
+          u6.endswith(".torrent") and [c for c in API if c["action"] == "generate"]
+          == [{"action": "generate", "code": "2tzkkn", "tabla": "series"}], API)
+del API[:]
+try:
+    W.torrent(post_codigos, "749395", "series")
+    comprueba("un id numerico de antes: no hay reto", False)
+except RuntimeError:
+    comprueba("un id numerico de antes prueba como id y como codigo, y lo dice (no se cuelga)",
+              [list(c)[1] for c in API] == ["content_id", "code"], API)
+comprueba("los enlaces diferidos llevan el codigo",
+          W.es_diferido(W.diferido("2tzkkn", "series")) and W.de_diferido("wf2:series:2tzkkn") == ("2tzkkn", "series"))
+# un enlace diferido guardado ANTES (id numerico): se saca el codigo de la ficha
+PAGINAS["https://wolfmax4k.com/serie/episodio/2tzkkn"] = EPISODIO.replace(
+    'data-content-id="806087"', 'data-content-code="2tzkkn"')
+S._post_json = post_codigos
+S._CID.clear()
+W._TORRENTS.clear()
+del API[:]
+u7 = S.resolver_diferido("wf2:series:806087", "https://wolfmax4k.com/serie/episodio/2tzkkn")
+comprueba("un diferido viejo con la url del capitulo: sale con el codigo",
+          u7.endswith(".torrent") and {"action": "generate", "code": "2tzkkn", "tabla": "series"} in API, API)
+S._CID["https://wolfmax4k.com/serie/episodio/2tzkkn"] = ("806087", "series", "4K")   # recordado de antes
+W._TORRENTS.clear()
+del API[:]
+u8 = S.torrent_de("https://wolfmax4k.com/serie/episodio/2tzkkn")
+comprueba("una clave recordada que ya no vale: se vuelve a la ficha",
+          u8.endswith(".torrent") and API[-2] == {"action": "generate", "code": "2tzkkn", "tabla": "series"}, API)
+S._post_json = post_bueno
+from resources.lib import enlacito as EN                   # noqa: E402
+FORM = '''<body onload="document.getElementById('GoP22').submit()">
+    <form action="https://enlacito.com/#VTJGc2" id="GoP22" method="POST">
+        <input type="hidden" name="linkser" value="jbysznk4x.pbz">
+        <input type="hidden" name="flow" value="d23fe7630b4745765307031317a1c440785e587943b0c48c">
+        <noscript><button type="submit">Continuar</button></noscript>'''
+comprueba("enlacito: se mandan TODOS los campos ocultos (desde el 29-09 lleva 'flow'; sin el, 400)",
+          EN._campos_ocultos(FORM) == {"linkser": "jbysznk4x.pbz",
+                                       "flow": "d23fe7630b4745765307031317a1c440785e587943b0c48c"}
+          and EN._campos_ocultos('<input value="x" name="a" type="hidden"><input name="b" type="text" value="y">')
+          == {"a": "x"} and EN._campos_ocultos("") == {})
+
 print("\n---- VEREDICTO ----")
 if fallos:
     print("%d comprobaciones MAL" % fallos)

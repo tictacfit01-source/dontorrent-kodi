@@ -66,6 +66,21 @@ def is_enlacito_url(url):
     return "enlacito.com" in u
 
 
+def _campos_ocultos(html):
+    """{name: value} of the hidden inputs of the step-1 form (any attribute
+    order). Empty if the page has none."""
+    out = {}
+    for m in re.finditer(r"<input\b([^>]*)>", html or "", re.I):
+        atr = m.group(1)
+        if not re.search(r"""type\s*=\s*["']?hidden""", atr, re.I):
+            continue
+        n = re.search(r"""name\s*=\s*["']([^"']+)["']""", atr, re.I)
+        v = re.search(r"""value\s*=\s*["']([^"']*)["']""", atr, re.I)
+        if n:
+            out[n.group(1)] = v.group(1) if v else ""
+    return out
+
+
 def resolve(enlacito_url, referer="https://wolfmax4k.com/"):
     """Resolve an enlacito s.php?i=... URL to the real torrent URL.
 
@@ -78,18 +93,24 @@ def resolve(enlacito_url, referer="https://wolfmax4k.com/"):
     sess = hs.make_session()
 
     # Step 1: hit /s.php?i=... so the server sets PHPSESSID / PHPINFO.
+    campos = {}
     try:
-        hs.get(sess, enlacito_url, headers={"Referer": referer}, timeout=25)
+        r1 = hs.get(sess, enlacito_url, headers={"Referer": referer}, timeout=25)
+        campos = _campos_ocultos(r1.text or "")
     except Exception as e:
         _LOG(f"step1 error: {e.__class__.__name__}: {e}")
         # Continue anyway; some reverse-proxy setups still accept the POST.
 
-    # Step 2: POST / with linkser, carrying cookies from step 1.
+    # Step 2: POST / with EVERY hidden field of step 1's form, carrying its
+    # cookies. Since 29-09-2026 the form also has a per-visit `flow` token and
+    # a POST with linkser alone gets 400; sending whatever the form has
+    # survives the next field they add.
+    campos.setdefault("linkser", _LINKSER)
     try:
         r = hs.post(
             sess,
             "https://enlacito.com/",
-            data={"linkser": _LINKSER},
+            data=campos,
             headers={
                 "Referer":     enlacito_url,
                 "Origin":      "https://enlacito.com",

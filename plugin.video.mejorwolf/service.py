@@ -657,7 +657,8 @@ def _do_etjob(ev):
                 if lk.startswith("wf2:"):
                     # enlace diferido de la web nueva de WolfMax (2.9.77)
                     try:
-                        lk = _src_mod("wf").resolver_diferido(lk) or ""
+                        lk = _src_mod("wf").resolver_diferido(
+                            lk, (ev.get("url") or "").strip()) or ""
                     except Exception as _e0:
                         xbmc.log("[MejorWolf/service] wf2: %s" % _e0, xbmc.LOGWARNING)
                         lk = ""

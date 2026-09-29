@@ -206,8 +206,19 @@ def latest(kind="movie", page=1):
 
 
 def resolver_diferido(link, referer=""):
-    """"wf2:<tabla>:<id>" -> URL del .torrent (la prueba de trabajo, ahora)."""
+    """"wf2:<tabla>:<clave>" -> URL del .torrent (la prueba de trabajo, ahora).
+    Un enlace de antes del 29-09 lleva el id NUMERICO, que la API ya no
+    acepta: si se sabe la ficha del archivo, se saca de ahi su codigo."""
     cid, tabla = _W.de_diferido(link)
+    r = _W.absoluta(referer) if referer else ""
+    if str(cid).isdigit() and r and _W.es_nueva(r) and \
+            ("/episodio/" in r or "/pelicula/" in r):
+        try:
+            return torrent_de(r)
+        except (_W.Limite, _W.Captcha):
+            raise
+        except Exception:
+            pass
     return _W.torrent(_post_json, cid, tabla, referer)
 
 
@@ -216,7 +227,12 @@ def torrent_de(url):
     u = _W.absoluta(url)
     e = _CID.get(u)
     if e:
-        return _W.torrent(_post_json, e[0], e[1], u)
+        try:
+            return _W.torrent(_post_json, e[0], e[1], u)
+        except (_W.Limite, _W.Captcha):
+            raise
+        except Exception:
+            _CID.pop(u, None)       # clave caducada (el id de antes del 29-09): a la ficha
     d = _W.ficha(_pide(u), u)
     if len(d["archivos"]) != 1:
         raise RuntimeError("WolfMax: %s no es un archivo suelto" % u)
