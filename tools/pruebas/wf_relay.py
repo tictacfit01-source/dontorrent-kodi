@@ -507,6 +507,9 @@ try:
     d0 = A._epsc_load()
     d0[A._epsc_clave("wf", su + "b")]["eps"].append(dict(nuevo[0], _ts=time.time()))
     labs = [e["label"] for e in A._epsc_limpia((A._epsc_get("wf", su + "b") or {}).get("eps"))]
+    comprueba("sin ninguna caja al dia (off) la web pinta 'WolfMax —' y no reintenta 95 s (dtbl58)",
+              "timeout:!!(d&&(d.timeout||d.off)),off:!!(d&&d.off)" in A._CAT_PAGE
+              and "!(r&&r.off)&&wfRe<2" in A._CAT_PAGE)
     comprueba("...y lo guardado mal de antes se cura al leerlo", labs.count("1x01") == 0
               and "1x01 al 1x03" in labs, labs)
 finally:

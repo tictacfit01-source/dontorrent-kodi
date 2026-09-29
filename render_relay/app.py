@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl57"
+BUILD = "dtbl58"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -12879,8 +12879,9 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
     // DOS reintentos, no uno: un titulo que ninguna caja tiene indexado le
     // cuesta ~88s de rastreo y el primer reintento (35s) llegaba demasiado
     // pronto. Al segundo (95s) ya esta en el indice y contesta en milisegundos.
-    // con WolfMax caido no hay nada que esperar: ni reintentos (dtbl40)
-    if(!(r&&r.got)&&!(r&&r.caida)&&wfRe<2){wfRe++;
+    // con WolfMax caido no hay nada que esperar: ni reintentos (dtbl40); ni
+    // sin ninguna caja que sepa leerlo (off: dtbl57), que no aparece en 95 s
+    if(!(r&&r.got)&&!(r&&r.caida)&&!(r&&r.off)&&wfRe<2){wfRe++;
      progSet('wf',0);                       // sigue buscando, no es un cero
      if(more)paint();
      setTimeout(function(){if(seq===_searchSeq)wfPide()},wfRe===1?35000:60000);
@@ -13006,7 +13007,7 @@ function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replac
  fetch(u,_c?{signal:_c.signal}:{}).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);
   // `caida`: alguna de las fuentes pedidas esta caida segun el relay (dtbl40)
   var cai=((d&&d.caidas)||[]),caida=(srcs||'').split(',').some(function(s){return cai.indexOf(s)>=0});
-  if(cb)cb({timeout:!!(d&&d.timeout),added:LISTS[list].length-b,got:got,caida:caida})}).catch(function(){if(cb)cb({})})}
+  if(cb)cb({timeout:!!(d&&(d.timeout||d.off)),off:!!(d&&d.off),added:LISTS[list].length-b,got:got,caida:caida})}).catch(function(){if(cb)cb({})})}
 // Un favorito guardado ANTES de que las tarjetas trajeran capitulos no los
 // tiene. La primera vez que se abren por red, se los quedamos -> la proxima vez
 // abre al instante. (Sin esto habria que quitarlo y volver a añadirlo a mano.)
