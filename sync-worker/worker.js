@@ -205,11 +205,14 @@ export default {
     }
 
     // --- Otras copias del relay, con nombre FIJO --------------------------
-    // Lo mismo que /wfidx para lo que tampoco puede vivir en /tmp. Hoy solo
+    // Lo mismo que /wfidx para lo que tampoco puede vivir en /tmp:
     // "semillas": el infohash de cada pelicula que ya se ha visto (conseguirlo
-    // es bajar su .torrent, que es lo que mas banea la IP) y su ultimo conteo.
+    // es bajar su .torrent, que es lo que mas banea la IP) y su ultimo conteo;
+    // "enriq": la ficha (cartel HD, año, nota, titulo con tildes) que las cajas
+    // resolvieron para cada titulo del Inicio -- sin ella, tras cada despliegue
+    // el Inicio salia unos minutos sin tildes ni carteles (03-10-2026).
     // Lista cerrada de nombres: esto no es un almacen para cualquiera.
-    const kvm = path.match(/^\/kv\/(semillas)$/);
+    const kvm = path.match(/^\/kv\/(semillas|enriq)$/);
     if (kvm) {
       const clave = "kv:" + kvm[1];
       await ensureKV(env);

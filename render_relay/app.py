@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl64"
+BUILD = "dtbl65"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -9771,7 +9771,169 @@ def _cat_enrich_store(meta):
             os.replace(tmp, _CAT_ENRICH_FILE)
         except Exception:
             pass
+    if n:
+        _ENRIQ_NUBE["cambios"] += n
+        _enriq_nube_sube()
     return n
+
+
+# --- Copia de las fichas del Inicio fuera de /tmp (dtbl65) ------------------
+# Lo que las CAJAS resolvieron para cada titulo (cartel HD, año, nota, titulo
+# con tildes, sinopsis) vivia solo en /tmp: tras cada despliegue el Inicio salia
+# unos minutos sin tildes ("Un mundo frgil"), con carteles pequeños y sin fichas,
+# hasta que las cajas lo volvian a mandar. Va al worker mw-sync, como las
+# semillas: se LEE antes de escribir y se sube la UNION (nunca pisa la copia
+# buena con un /tmp a medias), y un meta de mas rango nunca lo pisa uno de menos.
+_ENRIQ_SYNC = "https://mw-sync.israeldm93.workers.dev/kv/enriq"
+_ENRIQ_NUBE = {"subida_ts": 0.0, "vuelo": 0.0, "cambios": 0, "subidas": 0,
+               "fallos": 0, "bajadas": 0, "recuperadas": 0, "bytes": 0}
+_ENRIQ_TOPE_GZ = 900 * 1024          # el worker admite 1 MB (en base64)
+
+
+def _enriq_valida(d):
+    """Solo entradas con forma de meta: {cid: {poster de TMDB, ...}}."""
+    out = {}
+    for k, m in (d or {}).items():
+        if isinstance(m, dict) and "image.tmdb.org" in str(m.get("poster") or ""):
+            out[str(k)[:40]] = {kk: m[kk] for kk in _CAT_ENRICH_KEYS
+                                if m.get(kk) is not None}
+    return out
+
+
+def _enriq_nube_lee():
+    """La copia, validada. None si NO se pudo leer (que no es lo mismo que
+    vacia: con None no se sube nada)."""
+    try:
+        import base64
+        import gzip
+        txt, st = _get_con_tope(_ENRIQ_SYNC, 10.0)
+        if st != 200 or not txt:
+            return None
+        gz = (_json.loads(txt) or {}).get("gz")
+        if not gz:
+            return {}
+        sobre = _json.loads(gzip.decompress(base64.b64decode(gz)).decode("utf-8")) or {}
+        return _enriq_valida(sobre.get("m") or {})
+    except Exception:
+        return None
+
+
+def _enriq_funde_local(remoto):
+    """Lo de la copia que aqui no este (o este con menos rango), a /tmp."""
+    if not remoto:
+        return 0
+    n = 0
+    with _FileLock(_CAT_ENRICH_FILE):
+        d = _cat_enrich_load()
+        for cid, m in remoto.items():
+            if cid in d and _meta_rango(d[cid]) >= _meta_rango(m):
+                continue
+            d[cid] = m
+            n += 1
+        if n:
+            if len(d) > _CAT_ENRICH_MAX:
+                for k in list(d.keys())[:-_CAT_ENRICH_MAX]:
+                    d.pop(k, None)
+            try:
+                tmp = _CAT_ENRICH_FILE + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    _json.dump(d, f)
+                os.replace(tmp, _CAT_ENRICH_FILE)
+            except Exception:
+                return 0
+    return n
+
+
+def _enriq_empaqueta(d):
+    """gzip+base64 de `d`; si no cabe, las mas RECIENTES que quepan (el orden
+    del fichero es el de llegada). Devuelve (gz, cuantas)."""
+    import base64
+    import gzip
+    items = list(d.items())
+    while items:
+        gz = base64.b64encode(gzip.compress(_json.dumps(
+            {"v": 1, "m": dict(items)}).encode("utf-8"), 6)).decode("ascii")
+        if len(gz) <= _ENRIQ_TOPE_GZ:
+            return gz, len(items)
+        items = items[len(items) // 5:]       # fuera el 20 % mas viejo
+    return "", 0
+
+
+def _enriq_sube_hilo():
+    try:
+        remoto = _enriq_nube_lee()
+        if remoto is None:
+            _ENRIQ_NUBE["fallos"] += 1
+            return
+        _ENRIQ_NUBE["recuperadas"] += _enriq_funde_local(remoto)
+        union = dict(remoto)
+        for cid, m in _enriq_valida(_cat_enrich_load()).items():
+            if cid not in union or _meta_rango(m) >= _meta_rango(union[cid]):
+                union.pop(cid, None)
+                union[cid] = m                 # al final: lo mas reciente
+        if not union:
+            return
+        gz, n = _enriq_empaqueta(union)
+        if gz and _post_con_tope(_ENRIQ_SYNC, {"gz": gz}, 15.0) == 200:
+            _ENRIQ_NUBE["subidas"] += 1
+            _ENRIQ_NUBE["bytes"] = len(gz)
+        else:
+            _ENRIQ_NUBE["fallos"] += 1
+    except Exception:
+        _ENRIQ_NUBE["fallos"] += 1
+    finally:
+        _ENRIQ_NUBE["vuelo"] = 0.0
+
+
+def _enriq_nube_sube(forzar=False):
+    """Como mucho cada 10 min, solo si hubo cambios, en segundo plano y con
+    tope (un requests a pelo contra Cloudflare puede colgar el hilo)."""
+    try:
+        if (not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1") and not forzar:
+            return 0
+        ahora = _t.time()
+        if not forzar and ((ahora - _ENRIQ_NUBE["subida_ts"]) < 600
+                           or _ENRIQ_NUBE["cambios"] <= 0):
+            return 0
+        if _ENRIQ_NUBE["vuelo"] and (ahora - _ENRIQ_NUBE["vuelo"]) < 120:
+            return 0
+        _ENRIQ_NUBE["subida_ts"] = ahora
+        _ENRIQ_NUBE["vuelo"] = ahora
+        _ENRIQ_NUBE["cambios"] = 0
+        _thr.Thread(target=_enriq_sube_hilo, daemon=True).start()
+        return 1
+    except Exception:
+        _ENRIQ_NUBE["vuelo"] = 0.0
+        return 0
+
+
+def _enriq_nube_baja():
+    """Al arrancar: lo de la copia, a /tmp (funde; nunca pisa algo mejor)."""
+    got = _enriq_nube_lee()
+    if got is None:
+        return 0
+    _ENRIQ_NUBE["bajadas"] += 1
+    n = _enriq_funde_local(got)
+    _ENRIQ_NUBE["recuperadas"] += n
+    return n
+
+
+def _enriq_arranca():
+    if os.environ.get("MW_SIN_NUBE") == "1":      # las pruebas en local
+        return
+
+    def _ir():
+        try:
+            _t.sleep(4)
+            n = _enriq_nube_baja()
+            if n:
+                print("[enriq] recuperadas %d fichas de la copia" % n, flush=True)
+        except Exception:
+            pass
+    try:
+        _thr.Thread(target=_ir, daemon=True).start()
+    except Exception:
+        pass
 
 
 def _dt_title_fix(cur, dt_title, serie=False):
@@ -11150,6 +11312,8 @@ def catdiag():
                      "proxima_s": max(0, int(_DX_DESC["proxima"] - now))},
         "trace": dict(_DX_TRACE),
     }
+    # la copia de las fichas del Inicio (dtbl65)
+    out["enriq_nube"] = dict(_ENRIQ_NUBE)
     # los errores de JavaScript que la web ha visto en los moviles (dtbl55)
     try:
         out["jserr"] = _jserr_resumen()
@@ -15416,6 +15580,7 @@ def _arranque_worker():
     _start_keepalive()          # cada worker el suyo (antes: uno, en el padre)
     _wfidx_arranca()            # solo baja si el indice esta vacio
     _semillas_arranca()         # funde, nunca pisa: repetirlo no hace dano
+    _enriq_arranca()            # las fichas del Inicio (dtbl65): idem
 
 
 if __name__ == "__main__":
