@@ -321,6 +321,9 @@ try:
         comprueba("sin nada aun: el indice, lo ultimo aprendido primero, y se pide lo ultimo por detras",
                   [x["title"] for x in fb] == ["Recien aprendida", "Vieja aprendida"]
                   and A._WFULT_VUELO.get("movie"), ([x["title"] for x in fb], A._WFULT_VUELO))
+        comprueba("...pero NUNCA en Estrenos: el indice no sabe el año (salian Matrix y El Padrino) (dtbl64)",
+                  A._wf_home_items_indice("estrenos", 12) == []
+                  and A._wf_home_items_indice("peliculas", 12) != [], A._wf_home_items_indice("estrenos", 12))
     finally:
         A._box_wf, A._kb_enqueue, A._catjob_wait, A._kbstatus_load = r6
     ESTADO2 = {"111111": {"ts": time.time(), "v": "2.9.81"}, "222222": {"ts": time.time(), "v": "2.9.82"}}

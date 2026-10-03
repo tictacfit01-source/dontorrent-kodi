@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl63"
+BUILD = "dtbl64"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -9553,6 +9553,13 @@ def _apr_bucle():
                 pausa = _apr_ronda()
                 if _vigia_toca():
                     _vigia_ronda()          # el vigia de las fuentes (dtbl53)
+                # Tras un despliegue (/tmp vacio) lo ultimo de WolfMax no
+                # esta: se pide ya, sin esperar a que alguien abra el Inicio y
+                # le salga el plan B (dtbl64). Solo si esta VACIO: el refresco
+                # normal sigue siendo cuando alguien mira.
+                for _c in ("movie", "tvshow"):
+                    if not (_wfult_lee(_c).get("items")):
+                        _wfult_refresca(_c)
         except Exception:
             pausa = 120.0
         # A trozos, renovando el turno: con una pausa de 300 s el turno
@@ -10864,7 +10871,14 @@ def _wf_home_items_indice(kind, limit=12, salto=0):
 
     `salto` deja pasar las primeras N tarjetas ya vistas: es lo que permite que
     el scroll infinito del Inicio siga dando contenido cuando DonTorrent no
-    tiene mas paginas que ofrecer."""
+    tiene mas paginas que ofrecer.
+
+    NUNCA para Estrenos: el indice no sabe el año (es lo ultimo que se ha
+    BUSCADO, no lo ultimo que se ha publicado). Tras un despliegue, Estrenos
+    enseñaba "Matrix" (1999) y "El Padrino" porque alguien las acababa de
+    buscar (dtbl64). Mejor ningun WolfMax unos minutos que eso."""
+    if kind == "estrenos":
+        return []
     idx = _wfidx_load()
     if not idx:
         return []
