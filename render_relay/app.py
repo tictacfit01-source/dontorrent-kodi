@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl61"
+BUILD = "dtbl62"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -6778,6 +6778,7 @@ def catsearch():
                     # SOLO si de verdad es su pagina de resultados: un reto
                     # anti-bots o un error que trajera la caja no es un "0".
                     _r["box_ok"] = bool(r) or _dt_es_resultados(h)
+                    _r["t_caja"] = _t.time()
                     if r:
                         _dtq_put(q, r)   # aunque la peticion ya haya respondido
                     if _r["box_ok"]:
@@ -6803,6 +6804,11 @@ def catsearch():
                 pass
         _ths = [_th.Thread(target=f, daemon=True)
                 for f in (_w_dt, _w_box, _w_et, _w_dx)]
+        # DESGLOSE de tiempos (dtbl62): cuanto tarda cada tramo, en la propia
+        # respuesta ("t", segundos). Sin el, "la busqueda tarda 6 s" no dice
+        # DONDE; con el se ve si es la caja, DivxTotal o el ultimo recurso.
+        _tm0 = _t.time()
+        _tm = {}
         for t in _ths:
             t.start()
         # Devolvemos EN CUANTO DonTorrent-directo (Anubis caliente ~7s) o el box
@@ -6846,6 +6852,7 @@ def catsearch():
         # pasada anterior y quedo en _DTQ), casi no hay que esperar a nadie.
         _ready.wait(min(1.5 if _late_hits else (4.0 if _cache_hits else 8.0),
                         _rem()))
+        _tm["espera"] = round(_t.time() - _tm0, 2)
         _ths[2].join(min(0.4, _rem()))          # ET (off) -> instantaneo
         # DX: si DT/box trajeron algo, respiro corto (1.5s) para fusionar lo que ya
         # este; si terminaron SIN resultados (el wait salio al instante por el
@@ -6854,6 +6861,9 @@ def catsearch():
         # DX: el front lo pide APARTE (/catdxsearch) y lo fusiona al llegar, asi
         # que aqui solo se recoge lo que ya este; no se le espera.
         _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 3.0, _rem()))  # DX
+        _tm["dx"] = round(_t.time() - _tm0, 2)
+        if _r.get("t_caja"):
+            _tm["caja"] = round(_r["t_caja"] - _tm0, 2)
         dt_items = _r["dt"] or _r["box"]        # el box se parsea igual que DT
         # Ningun camino a DonTorrent vivo (Render baneado Y el ISP del box
         # tumbando el POST de /buscar) -> lo que ya teniamos cacheado (calculado
@@ -6908,9 +6918,11 @@ def catsearch():
                     dt_items = r2
                     break
             if not dt_items:
+                _tm["fin"] = round(_t.time() - _tm0, 2)
                 return jsonify(_con_caida({"items": [],
                                            "partial": not (_r["dt"] or _r["box"]
-                                                           or _r.get("box_ok"))}))
+                                                           or _r.get("box_ok")),
+                                           "t": _tm}))
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
         # Enrich (poster/AÑO/genero TMDB) ACOTADO al deadline total: con TMDB
         # lento/frio podia añadir ~5s y pasarse del tope. Si no le da tiempo,
@@ -6987,7 +6999,8 @@ def catsearch():
                     _CATSEARCH_CACHE.pop(old, None)
                 except Exception:
                     _CATSEARCH_CACHE.clear()
-        return jsonify(_con_caida({"items": items, "partial": _parcial}))
+        _tm["fin"] = round(_t.time() - _tm0, 2)
+        return jsonify(_con_caida({"items": items, "partial": _parcial, "t": _tm}))
     finally:
         # SIEMPRE liberamos el single-flight (aunque haya excepcion) -> nunca deja
         # una query "bloqueada" para siempre, y despierta a los que esperan.
