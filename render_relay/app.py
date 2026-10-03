@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl65"
+BUILD = "dtbl66"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -11607,7 +11607,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .devbtn #devname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .devbtn .devcar{opacity:.55;font-size:11px;flex:none}
 .devsheet-h{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 6px;font-size:17px;font-weight:800}
-.devsheet-x{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--sub);width:34px;height:34px;border-radius:50%;font-size:15px;cursor:pointer;flex:none}
+.devsheet-x{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--sub);width:34px;height:34px;border-radius:50%;font-size:15px;cursor:pointer;flex:none;position:relative}
+/* ZONA DE TOQUE: pequeños a la vista, de 44-48 px al dedo (dtbl66) */
+.devsheet-x::after,.card .fav::after{content:'';position:absolute;inset:-6px;border-radius:50%}
 .devsub{color:var(--sub);font-size:12.5px;padding:0 18px 8px;margin-top:-2px}
 .devlist{padding:6px 14px 4px}
 .devempty{color:var(--sub);text-align:center;font-size:14px;padding:14px 8px 18px;line-height:1.6}
@@ -11761,7 +11763,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .rm-close{position:fixed;right:18px;bottom:calc(18px + env(safe-area-inset-bottom));z-index:40;border:1px solid var(--stroke);background:rgba(14,19,32,.95);backdrop-filter:blur(8px);color:var(--txt);font-size:15px;font-weight:700;padding:13px 20px;border-radius:999px;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.5)}
 .rm-close:active{transform:scale(.95)}
 .ovbar{display:flex;align-items:center;gap:10px;padding:14px;position:sticky;top:0;background:rgba(6,7,12,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--stroke)}
-.ovback{border:0;background:transparent;color:var(--blue2);font-size:16px;font-weight:600;cursor:pointer}
+.ovback{border:0;background:transparent;color:var(--blue2);font-size:16px;font-weight:600;cursor:pointer;
+ /* "‹ Volver" se toca a cada rato y el texto mide 20 px de alto: 44 px de zona
+    de toque con margen negativo, sin mover nada de la barra (dtbl66) */
+ padding:12px 22px 12px 20px;margin:-12px -16px -12px -14px;min-height:44px}
 .ovt{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #ov-body{padding:14px}
 .ovhead{display:flex;gap:14px;margin-bottom:16px}

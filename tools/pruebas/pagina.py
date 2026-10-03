@@ -82,6 +82,13 @@ try:
         tams = [int(x) for r in reglas for x in re.findall(r"font-size:(\d+)px", r)]
         comprueba("casilla %s con letra de 16 px o mas (con menos el iPhone hace zoom)" % sel.replace("\\", ""),
                   bool(tams) and min(tams) >= 16, tams)
+    m = re.search(r"\.ovback\{[^}]*\}", P)
+    comprueba("'‹ Volver' de las fichas con 44 px de zona de toque (el texto mide 20)",
+              bool(m) and "min-height:44px" in m.group(0) and "margin:-12px" in m.group(0),
+              m.group(0)[-90:] if m else None)
+    comprueba("el corazon de las tarjetas y la X de cerrar, con margen invisible",
+              ".card .fav::after{content:'';position:absolute;inset:-6px" in P
+              or ".devsheet-x::after,.card .fav::after{content:'';position:absolute;inset:-6px" in P)
     comprueba("añadir Kodi: 'Siguiente' en el nombre y 'Listo' en el codigo, que guarda",
               'id="devn"' in P and 'enterkeyhint="next"' in P and 'enterkeyhint="done"' in P
               and "c.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addDev()}})" in P)
