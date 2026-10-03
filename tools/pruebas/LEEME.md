@@ -164,6 +164,13 @@ hubiera; con año distinto (el «Dune» de 1984 y el de 2021) nunca se tocan.
 También por lo que no cambia: su ficha de TMDB y título+año (el enlace de una
 serie de WolfMax es el de su ÚLTIMO capítulo y cambia cada semana).
 
+**`enriq_nube.py`** (03-10-2026, dtbl65) — las fichas del Inicio (cartel HD,
+año, nota, título con tildes) que resuelven las cajas, con copia en el worker
+`mw-sync` (`/kv/enriq`): antes se perdían en cada despliegue. Con un worker de
+mentira: se lee antes de escribir y se sube la unión (un /tmp a medias no pisa
+la copia), el rango manda, sin poder leer no se sube nada, al arrancar se
+recupera, y si no cabe van las más recientes.
+
 **`busqueda_vacia.py`** (03-10-2026, dtbl61) — cuando DonTorrent NO tiene el
 título. La caja traía en ~1 s su página «Se han encontrado 0 resultados», pero
 el relay seguía esperando al intento directo desde Render (baneado) y lo daba
