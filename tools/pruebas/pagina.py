@@ -71,6 +71,20 @@ try:
         cuerpo = r.get_data(as_text=True)
         comprueba("GET %s -> 200 con su pagina" % ruta,
                   r.status_code == 200 and "<script" in cuerpo, r.status_code)
+
+    print("\n=== 3) Lo que se toca con el dedo (dtbl60) ===")
+    P = A._CAT_PAGE
+    m = re.search(r"\.toast\{[^}]*\}", P)
+    comprueba("el aviso oculto NO se traga los toques (estaba encima de las casillas de 'añadir Kodi')",
+              bool(m) and "pointer-events:none" in m.group(0), m.group(0)[-80:] if m else None)
+    for sel in (r"\.devin\{", r"\.mwd-in\{", r"\.search input\{", r"\.jump input\{"):
+        reglas = re.findall(sel + r"[^}]*\}", P)
+        tams = [int(x) for r in reglas for x in re.findall(r"font-size:(\d+)px", r)]
+        comprueba("casilla %s con letra de 16 px o mas (con menos el iPhone hace zoom)" % sel.replace("\\", ""),
+                  bool(tams) and min(tams) >= 16, tams)
+    comprueba("añadir Kodi: 'Siguiente' en el nombre y 'Listo' en el codigo, que guarda",
+              'id="devn"' in P and 'enterkeyhint="next"' in P and 'enterkeyhint="done"' in P
+              and "c.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addDev()}})" in P)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl59"
+BUILD = "dtbl60"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -11394,8 +11394,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .deved,.devdel,.devkey{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
 .deved:active,.devkey:active{background:rgba(255,255,255,.14)}
 .devdel:active{background:rgba(255,69,58,.18)}
-.devadd{padding:8px 14px 20px;display:flex;flex-direction:column;gap:9px}
-.devin{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:12px;color:var(--txt);padding:13px 14px;font-size:15px;outline:0;box-sizing:border-box}
+.devadd{padding:8px 14px calc(20px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:9px}
+.devin{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--stroke);border-radius:12px;color:var(--txt);padding:13px 14px;font-size:16px;font-family:inherit;outline:0;box-sizing:border-box;transition:border-color .15s}
+/* 16 px: con menos el iPhone hace zoom al entrar; y el borde azul dice "estas dentro" */
+.devin:focus{border-color:var(--blue)}
 .devin::placeholder{color:var(--sub)}
 .devin.devc{letter-spacing:3px;text-align:center;font-variant-numeric:tabular-nums}
 .devsave{border:0;border-radius:12px;padding:14px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue));cursor:pointer}
@@ -11425,7 +11427,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .search input{flex:1 1 0;min-width:0;background:var(--card);border:1px solid var(--stroke);border-radius:14px;color:var(--txt);font-size:16px;padding:13px 14px;outline:0}
 .search button{flex:0 0 auto;border:0;border-radius:14px;padding:0 16px;font-weight:700;color:#fff;background:linear-gradient(145deg,var(--blue2),var(--blue));white-space:nowrap}
 @media(max-width:360px){.search button{padding:0 13px;font-size:14px}
- .search input{font-size:15px;padding:12px}}
+ .search input{font-size:16px;padding:12px}}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
 /* Entrada suave: la cuadricula aparecia de golpe. Solo las 12 primeras llevan
    retardo (las de abajo ya entran con el scroll). */
@@ -11570,7 +11572,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .np-t{flex:1;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .np-pp{border:0;background:var(--blue);color:#fff;width:40px;height:40px;border-radius:50%;cursor:pointer;flex:none;display:flex;align-items:center;justify-content:center;padding:0;line-height:0}
 .np-pp svg{display:block}
-.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:47;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%}
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:#0e1320;border:1px solid var(--stroke);color:var(--txt);padding:12px 18px;border-radius:14px;font-size:14px;opacity:0;transition:.25s;z-index:47;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:90%;
+ /* Transparente NO es ausente: oculto seguia encima de todo (capa 47) y se
+    tragaba los toques en el centro de las casillas de "añadir Kodi" (dtbl60) */
+ pointer-events:none}
 .toast.on{opacity:1;transform:translateX(-50%)}
 .spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r .7s linear infinite;vertical-align:-3px}
 @keyframes r{to{transform:rotate(360deg)}}
@@ -12124,8 +12129,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   </div>
   <div class="devlist" id="devlist"></div>
   <div class="devadd">
-   <input id="devn" class="devin" placeholder="Nombre (Salón, Tablet, PC…)" maxlength="24" autocomplete="off">
-   <input id="devc" class="devin devc" inputmode="numeric" maxlength="6" placeholder="código de 6 cifras" autocomplete="off">
+   <input id="devn" class="devin" placeholder="Nombre (Salón, Tablet, PC…)" maxlength="24" autocomplete="off" autocapitalize="words" enterkeyhint="next">
+   <input id="devc" class="devin devc" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="código de 6 cifras" autocomplete="off" enterkeyhint="done">
    <button class="devsave" onclick="addDev()">Guardar Kodi</button>
   </div>
  </div>
@@ -12415,6 +12420,7 @@ function addDev(){var n=($('devn').value||'').trim();var c=($('devc').value||'')
  if(!found)d.push({name:n,code:c});
  delOlvida('d',c);
  saveDevs(d);$('devn').value='';$('devc').value='';
+ try{document.activeElement.blur()}catch(e){}       // guardado: fuera el teclado
  setActiveCode(c);renderDevs();toast(found?'Kodi actualizado ✓':'Kodi guardado ✓')}
 function delDev(c){
  mwConfirm('¿Quitar este Kodi?',syncOn()
@@ -14247,6 +14253,13 @@ function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toas
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
  if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
 $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
+// Añadir un Kodi con el teclado del movil: "Siguiente" pasa al codigo y "Listo"
+// guarda (antes habia que cerrar el teclado y buscar el boton). El codigo, solo
+// cifras: lo pegado con espacios o guiones ("123 456") se limpia al vuelo.
+(function(){var n=$('devn'),c=$('devc');if(!n||!c)return;
+ n.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();c.focus()}});
+ c.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addDev()}});
+ c.addEventListener('input',function(){var v=c.value.replace(/\D/g,'').slice(0,6);if(v!==c.value)c.value=v});})();
 (function(){try{var p=new URLSearchParams(location.search);var pl=p.get('play');var t=p.get('t')||'';var op=p.get('open');
  if(op==='serie'){openCard({kind:'serie',source:p.get('src')||'dt',path:p.get('path')||'',url:p.get('url')||'',title:t,poster:p.get('ps')||'',year:p.get('yr')||''});}
  else if(op==='peli'){openCard({kind:'movie',source:p.get('src')||'dt',content_id:p.get('ci')||'',tabla:p.get('tb')||'peliculas',url:p.get('url')||'',quality:p.get('q')||'',title:t,poster:p.get('ps')||'',year:p.get('yr')||''});}
