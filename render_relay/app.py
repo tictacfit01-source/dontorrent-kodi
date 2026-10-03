@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl60"
+BUILD = "dtbl61"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4802,6 +4802,16 @@ def _dt_es_mantenimiento(html):
         r"/(?:pelicula|serie|documental)/\d+", html)
 
 
+_DT_RESULTADOS_RE = re.compile(r"Se\s+han\s+encontrado\s*(?:<[^>]{0,20}>\s*)*\d+", re.I)
+
+
+def _dt_es_resultados(html):
+    """¿Es la pagina de RESULTADOS del buscador de DonTorrent ("Se han
+    encontrado <b>0</b> resultados")? Con ella, "no lo tiene" es una respuesta
+    y no un fallo (dtbl60)."""
+    return bool(html) and bool(_DT_RESULTADOS_RE.search(html))
+
+
 def _dt_html_bueno(r):
     """Para esperar a las cajas: vale un resultado con HTML de verdad. Si lo que
     trae es la pagina de mantenimiento, no vale -- y de paso se apunta que
@@ -6759,8 +6769,18 @@ def catsearch():
                             break
                 if h:
                     _r["box"] = r
+                    # La caja ha traido la pagina de resultados de DonTorrent: ES
+                    # la respuesta, con fichas o sin ellas ("Se han encontrado 0
+                    # resultados" es un dato, no un fallo). No se espera mas al
+                    # intento directo desde Render, que con la IP baneada tarda en
+                    # rendirse: una busqueda sin resultados costaba 7 s y salia
+                    # "parcial", con su reintento (dtbl60).
+                    # SOLO si de verdad es su pagina de resultados: un reto
+                    # anti-bots o un error que trajera la caja no es un "0".
+                    _r["box_ok"] = bool(r) or _dt_es_resultados(h)
                     if r:
                         _dtq_put(q, r)   # aunque la peticion ya haya respondido
+                    if _r["box_ok"]:
                         _ready.set()
             except Exception:
                 pass
@@ -6863,9 +6883,14 @@ def catsearch():
                 if _fdl - _t.time() <= 2.0:
                     break
                 try:   # DT-directo ACOTADO al presupuesto (Anubis frio no lo revienta)
-                    _b = min(3.5, _fdl - _t.time())
-                    r2 = _cat_parse_items(
-                        _bounded(lambda a=_alt: _cat_dt_html(a), _b, "") or "") or []
+                    # ...salvo que la caja ya haya contestado en esta misma
+                    # busqueda: entonces se le pregunta a ella (~1 s) y no al
+                    # camino directo, que hoy se come sus 3,5 s para nada.
+                    r2 = []
+                    if not _r.get("box_ok"):
+                        _b = min(3.5, _fdl - _t.time())
+                        r2 = _cat_parse_items(
+                            _bounded(lambda a=_alt: _cat_dt_html(a), _b, "") or "") or []
                 except Exception:
                     r2 = []
                 _fr = _fdl - _t.time()
@@ -6884,7 +6909,8 @@ def catsearch():
                     break
             if not dt_items:
                 return jsonify(_con_caida({"items": [],
-                                           "partial": not (_r["dt"] or _r["box"])}))
+                                           "partial": not (_r["dt"] or _r["box"]
+                                                           or _r.get("box_ok"))}))
         merged = _cat_merge(_cat_merge(dt_items, et_items), dx_items)
         # Enrich (poster/AÑO/genero TMDB) ACOTADO al deadline total: con TMDB
         # lento/frio podia añadir ~5s y pasarse del tope. Si no le da tiempo,
@@ -6917,14 +6943,18 @@ def catsearch():
         # ¿Falta el buscador de DonTorrent? Entonces esto es PARCIAL: el front
         # volvera a preguntar en unos segundos y para entonces el hilo de la caja
         # habra dejado su resultado en _DTQ.
-        _parcial = not (_r["dt"] or _r["box"])
+        _parcial = not (_r["dt"] or _r["box"] or _r.get("box_ok"))
         # Y tampoco es definitiva si DonTorrent -la fuente principal, la que mas
         # catalogo tiene- no ha aportado NI UN titulo. Pasaba de verdad: el
         # dueno busco "x men" con su Kodi encendido, DonTorrent no trajo nada
         # (su buscador va por POST y el ISP lo tumba a ratos) y esa respuesta
         # coja -sin la X-Men original- se quedo cacheada DIEZ MINUTOS para todo
         # el mundo. Marcandola parcial caduca en 150 s y se completa sola.
-        if not any((it or {}).get("source") == "dt" for it in (items or [])):
+        # (Salvo que DonTorrent haya CONTESTADO que no lo tiene: la caja trajo su
+        # pagina de resultados con 0 fichas. Eso es definitivo y la web es su
+        # espejo -- "Robot salvaje" salia parcial y se recalculaba cada 150 s.)
+        if not any((it or {}).get("source") == "dt" for it in (items or [])) \
+                and not _r.get("box_ok"):
             _parcial = True
         # sin poster = el enrich no cupo -> tampoco es una respuesta "definitiva"
         if enr and not all(it.get("poster") for it in enr):

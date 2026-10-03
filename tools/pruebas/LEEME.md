@@ -164,6 +164,13 @@ hubiera; con año distinto (el «Dune» de 1984 y el de 2021) nunca se tocan.
 También por lo que no cambia: su ficha de TMDB y título+año (el enlace de una
 serie de WolfMax es el de su ÚLTIMO capítulo y cambia cada semana).
 
+**`busqueda_vacia.py`** (03-10-2026, dtbl61) — cuando DonTorrent NO tiene el
+título. La caja traía en ~1 s su página «Se han encontrado 0 resultados», pero
+el relay seguía esperando al intento directo desde Render (baneado) y lo daba
+por «parcial»: 7 s y reintento. Ahora «0 resultados» de su página es una
+respuesta (solo esa página: un reto anti-bots no cuenta), y el título original
+de TMDB se le pide a la caja, no al camino muerto.
+
 **`series_tmdb.py`** (29-09-2026, dtbl59 + caja 2.9.84) — una serie del Inicio
 con la ficha de la PELÍCULA homónima («Brothers» 2026 con el cartel de
 «Hermanos» 2009). La caja castigaba a lo que tuviera menos de 40 votos, o sea a
