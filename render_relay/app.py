@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl62"
+BUILD = "dtbl63"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -5735,7 +5735,10 @@ def _dt_variantes(q):
     Solo se usan cuando la primera busqueda vuelve VACIA."""
     q = (q or "").strip()
     out = []
-    if " " in q:
+    # Todo con guiones, solo en titulos CORTOS ("x men", "spider man", "wall e"):
+    # nadie publica "la-sociedad-de-la-nieve", y probarlo costaba otro viaje a
+    # la caja (~3 s) en cada busqueda larga sin resultados (dtbl63).
+    if " " in q and len(q.split()) <= 3:
         out.append(q.replace(" ", "-"))
     if "-" in q:
         out.append(q.replace("-", " "))
@@ -6724,6 +6727,12 @@ def catsearch():
                     return j
                 _okh = _dt_html_bueno     # su pagina de mantenimiento no vale
                 _jobs = [_ask(box)]
+                # La VARIANTE ("x men" -> "x-men"), A LA VEZ que la literal: si
+                # la literal vuelve vacia, su respuesta ya esta (o casi) y no se
+                # paga otro viaje a la caja, que sin movil delante sondea cada
+                # 1,2 s (medido: 5-6 s una busqueda sin resultados) (dtbl63).
+                _vs0 = _dt_variantes(q)
+                _jv = {_vs0[0]: _ask(box, _vs0[0])} if _vs0 else {}
                 # HEDGE: si la caja elegida no ha traído el HTML en 6s, se lo
                 # pedimos TAMBIEN a otra caja viva y nos quedamos con la primera
                 # que llegue. El buscador de DonTorrent depende de que ESA caja
@@ -6762,7 +6771,7 @@ def catsearch():
                         _vt = _dt_variante_tmdb(q)
                         _vs = [_vt] if _vt else []
                     for _alt in _vs:
-                        _j3 = _ask(box, _alt)
+                        _j3 = _jv.get(_alt) or _ask(box, _alt)   # la ya lanzada
                         _h3 = (_catjob_wait_any([_j3], 8.0, _okh) or {}).get("html") or ""
                         r = _cat_parse_items(_h3) if _h3 else []
                         if r:

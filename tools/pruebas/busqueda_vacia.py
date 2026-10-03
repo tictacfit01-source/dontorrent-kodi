@@ -49,7 +49,10 @@ DX = {"title": "Robot salvaje", "source": "dx", "kind": "movie", "content_id": "
 comprueba("su pagina de resultados se reconoce (tambien con 0)", A._dt_es_resultados(CERO))
 comprueba("un reto anti-bots o nada, no", not A._dt_es_resultados(RETO) and not A._dt_es_resultados(""))
 
-DIRECTO, CAJA = [], []
+DIRECTO, CAJA, ORDEN = [], [], []
+comprueba("la variante con guiones, solo en titulos cortos ('x men' -> 'x-men')",
+          A._dt_variantes("x men") == ["x-men"] and A._dt_variantes("spider man") == ["spider-man"]
+          and A._dt_variantes("la sociedad de la nieve") == [], A._dt_variantes("la sociedad de la nieve"))
 
 
 def directo_colgado(q):
@@ -62,14 +65,20 @@ def prueba(pagina, dx, q):
     """Una /catsearch con la caja trayendo `pagina` y DivxTotal `dx`."""
     del DIRECTO[:]
     del CAJA[:]
+    del ORDEN[:]
     A._CATSEARCH_CACHE.clear()
     A._cat_dt_html = directo_colgado
     A._dx_search_items = lambda q, proxy=False: [dict(x) for x in dx]
 
     def encola(box, ev):
         CAJA.append(ev.get("q"))
+        ORDEN.append("pide " + str(ev.get("q")))
+
+    def espera(jobs, secs, ok=None, corta=None):
+        ORDEN.append("espera")
+        return {"html": pagina}
     A._kb_enqueue = encola
-    A._catjob_wait_any = lambda jobs, espera, ok=None, corta=None: {"html": pagina}
+    A._catjob_wait_any = espera
     A._catjob_wait = lambda job, espera: {"html": pagina}
     t0 = time.time()
     js = A.app.test_client().get("/catsearch?q=%s&code=111111" % q.replace(" ", "%20")).get_json()
@@ -105,6 +114,9 @@ try:
     comprueba("...y se guarda como definitiva (no caduca a los 150 s)",
               (A._CATSEARCH_CACHE.get(next(iter(A._CATSEARCH_CACHE), "")) or {}).get("ttl") is None,
               A._CATSEARCH_CACHE)
+
+    comprueba("la variante 'robot-salvaje' sale A LA VEZ que la literal (antes, otro viaje despues)",
+              ORDEN[:3] == ["pide robot salvaje", "pide robot-salvaje", "espera"], ORDEN)
 
     print("\n=== 2) Nadie lo tiene: el titulo original, a la CAJA ===")
     js, t = prueba(CERO, [], "robot salvaje")
