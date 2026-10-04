@@ -258,22 +258,25 @@ try:
         (A._catbox_get,) = r4
 
     print("\n=== 8) Por que WolfMax no da el torrent, dicho (dtbl51) ===")
-    r5 = (A._box_wf, A._kb_enqueue, A._catjob_wait)
+    r5 = (A._box_wf, A._kb_enqueue, A._catjob_wait_any)
     A._box_wf = lambda code, excluir=(), minimo=None: "222222"
     A._kb_enqueue = lambda b, ev: None
+    A._RESUELTO.clear()
     try:
-        A._catjob_wait = lambda job, espera: {"link": "", "error": "limite", "minutos": 42}
+        A._catjob_wait_any = lambda jobs, espera, ok=None, corta=None: {"link": "", "error": "limite", "minutos": 42}
         js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
         comprueba("el limite de WolfMax llega a la web con sus minutos",
                   js == {"link": "", "error": "limite", "minutos": 42}, js)
-        A._catjob_wait = lambda job, espera: {"link": "https://wolfmax4k.com/torrents/x.torrent"}
+        A._catjob_wait_any = lambda jobs, espera, ok=None, corta=None: {"link": "https://wolfmax4k.com/torrents/x.torrent"}
         js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
         comprueba("con enlace, como siempre", js == {"link": "https://wolfmax4k.com/torrents/x.torrent"}, js)
-        A._catjob_wait = lambda job, espera: {"link": "", "error": "cualquier-cosa"}
+        A._RESUELTO.clear()
+        A._catjob_wait_any = lambda jobs, espera, ok=None, corta=None: {"link": "", "error": "cualquier-cosa"}
         js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
         comprueba("un motivo que no se conoce no se inventa", js == {"link": ""}, js)
     finally:
-        A._box_wf, A._kb_enqueue, A._catjob_wait = r5
+        A._box_wf, A._kb_enqueue, A._catjob_wait_any = r5
+        A._RESUELTO.clear()
     print("\n=== 9) El Inicio: lo ultimo de WolfMax, de WolfMax (dtbl52) ===")
     # antes salia del indice ordenado por el NUMERO de la URL; con ids al azar
     # ese orden no valia, y "El Dorado" de 1966 salio en Estrenos
@@ -367,6 +370,8 @@ try:
             "et": [dict(x, quality="") for x in BUENO["et"]]}
     ESCENA = {"v": BUENO}
     r8 = (A._box_wf, A._box_for, A._kb_enqueue, A._catjob_wait, A._dx_search_items, A._fuentes_caidas)
+    r8b = A._vigia_enlace
+    A._vigia_enlace = lambda src, items: "ok"     # el paso del enlace lo prueba resolver.py
     ULT = []
     A._box_wf = lambda code, excluir=(), minimo=None: "222222"
     A._box_for = lambda code: "222222"
@@ -400,6 +405,7 @@ try:
         comprueba("/catdiag ensena el vigia", set(js.get("vigia") or {}) >= {"wf", "et", "dx"}, js.get("vigia"))
     finally:
         (A._box_wf, A._box_for, A._kb_enqueue, A._catjob_wait, A._dx_search_items, A._fuentes_caidas) = r8
+        A._vigia_enlace = r8b
 
     print("\n=== 11) Dune de 1984 no es la de 2021 (dtbl54) ===")
     # WolfMax manda el año APARTE del titulo; TMDB se buscaba solo por "Dune",

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl67"
+BUILD = "dtbl68"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7924,28 +7924,98 @@ def _wf_serie_vacia(it):
         and "/documental/episodio/" not in u
 
 
+# --- Sacar el enlace de un capitulo/peli de ET o WolfMax (dtbl68) ------------
+# El 04-10 WolfMax cambio su prueba de trabajo y TODOS los capitulos nuevos
+# fallaban; nadie lo vio hasta que lo dijo Israel: el vigia solo miraba
+# busquedas. Ahora este paso se cuenta (/catdiag -> resolver), lo prueba el
+# vigia, recuerda lo resuelto (repetir es instantaneo y no gasta el cupo de
+# WolfMax) y, si la caja no lo saca, se lo pide a otra.
+_RESUELTO = {}                                   # (src, url) -> (enlace, ts)
+_RESUELTO_TTL = {"wf": 1800, "et": 6 * 3600}     # enlacito: 30 min; magnet: 6 h
+_RESUELVE_N = {}
+
+
+def _resuelve_cuenta(src, que):
+    d = _RESUELVE_N.setdefault(src, {"ok": 0, "vacio": 0, "limite": 0, "cache": 0,
+                                     "otra_caja": 0, "ult_ok": 0, "ult_fallo": 0})
+    d[que] = d.get(que, 0) + 1
+    if que in ("ok", "cache"):
+        d["ult_ok"] = int(_t.time())
+    elif que in ("vacio", "limite"):
+        d["ult_fallo"] = int(_t.time())
+
+
+def _resuelve_caja(code, src, excluir=()):
+    if src == "wf":
+        # una caja que sepa la prueba de trabajo de hoy; si no hay ninguna, la
+        # de siempre (quiza tenga ese enlace guardado de antes) (dtbl67)
+        return _box_wf(code, excluir=excluir, minimo=_WF_TORRENT_MIN) or \
+            _box_wf(code, excluir=excluir)
+    b = _box_for(code)
+    if b and b not in excluir:
+        return b
+    return next((x for x in _live_boxes(al_dia=True) if x not in excluir), None)
+
+
+def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
+    """{"link": enlace} o {"link": "", "error": "limite"|"captcha", ...}."""
+    k = (src, url)
+    now = _t.time()
+    if cache:
+        e = _RESUELTO.get(k)
+        if e and (now - e[1]) < _RESUELTO_TTL.get(src, 600):
+            _resuelve_cuenta(src, "cache")
+            return {"link": e[0], "cache": True}
+    box = _resuelve_caja(code, src)
+    if not box:
+        return {"link": ""}
+
+    def _pide(b):
+        j = "et" + os.urandom(5).hex()
+        _kb_enqueue(b, {"c": "etjob", "job": j, "op": "resolve", "src": src, "url": url})
+        return j
+
+    def _bueno(r):
+        return bool((r or {}).get("link")) or (r or {}).get("error") in ("limite", "captcha")
+    jobs = [_pide(box)]
+    res = _catjob_wait_any(jobs, min(10.0, espera), _bueno)
+    if not _bueno(res):
+        # la caja no lo ha sacado (o no contesta): OTRA, con lo que quede
+        b2 = _resuelve_caja(code, src, excluir=(box,))
+        if b2 and b2 != box:
+            _resuelve_cuenta(src, "otra_caja")
+            jobs.append(_pide(b2))
+            res2 = _catjob_wait_any(jobs, max(0.0, espera - (_t.time() - now)), _bueno)
+            if _bueno(res2) or res is None:
+                res = res2
+    out = {"link": (res or {}).get("link", "") or ""}
+    if out["link"]:
+        _resuelve_cuenta(src, "ok")
+        _RESUELTO[k] = (out["link"], _t.time())
+        if len(_RESUELTO) > 3000:
+            for kk in sorted(_RESUELTO, key=lambda kk: _RESUELTO[kk][1])[:1000]:
+                _RESUELTO.pop(kk, None)
+    elif (res or {}).get("error") in ("limite", "captcha"):
+        # por que no hay enlace, si la caja lo sabe (WolfMax: limite/captcha, 2.9.79)
+        _resuelve_cuenta(src, "limite")
+        out["error"] = res["error"]
+        if res.get("minutos"):
+            out["minutos"] = int(res["minutos"])
+    else:
+        _resuelve_cuenta(src, "vacio")
+    return out
+
+
 def _catetboxresolve_impl():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     url = (request.args.get("url") or "").strip()
     src = (request.args.get("src") or "et").strip()
-    # WolfMax: a una caja que sepa su prueba de trabajo de hoy; si no hay
-    # ninguna, a la de siempre (quiza tenga ese enlace guardado de antes)
-    if src == "wf":
-        box = _box_wf(code, minimo=_WF_TORRENT_MIN) or _box_wf(code)   # dtbl67
-    else:
-        box = _box_for(code)   # dtbl50
-    if not box or not url.lower().startswith("http"):
+    if not url.lower().startswith("http"):
         return jsonify({"link": ""}), 400
-    job = "et" + os.urandom(5).hex()
-    _kb_enqueue(box, {"c": "etjob", "job": job, "op": "resolve",
-                      "src": src, "url": url})
-    res = _catjob_wait(job, 18.0)
-    out = {"link": (res or {}).get("link", "") or ""}
-    # por que no hay enlace, si la caja lo sabe (WolfMax: limite/captcha, 2.9.79)
-    if not out["link"] and (res or {}).get("error") in ("limite", "captcha"):
-        out["error"] = res["error"]
-        if res.get("minutos"):
-            out["minutos"] = int(res["minutos"])
+    out = _resuelve_enlace(code, src, url)
+    if not out.get("link") and not out.get("error") and not _resuelve_caja(code, src):
+        return jsonify({"link": ""}), 400
+    out.pop("cache", None)
     return jsonify(out)
 
 
@@ -9514,6 +9584,31 @@ def _vigia_busca(src):
     return [x for x in (res.get("items") or []) if (x or {}).get("source") == src], ""
 
 
+_VIGIA_ARCHIVO_RE = re.compile(r"/(?:pelicula|serie/episodio|documental/episodio)/[a-z0-9]+/?$", re.I)
+
+
+def _vigia_enlace(src, items):
+    """Prueba el paso que usa la gente al dar a reproducir: sacar el enlace de
+    UN archivo de los que salieron. "ok", "fallo", o None si no se pudo probar
+    (sin cupo de WolfMax, sin archivo que probar). dtbl68."""
+    if src == "wf":
+        urls = [x.get("url") for x in items if _VIGIA_ARCHIVO_RE.search(x.get("url") or "")]
+        if not urls or not _wf_cupo_toma():
+            return None
+    elif src == "et":
+        urls = [x.get("url") for x in items if (x.get("url") or "").startswith("http")]
+        if not urls:
+            return None
+    else:
+        return None
+    r = _resuelve_enlace("", src, urls[0], espera=25.0, cache=False)
+    if r.get("link"):
+        return "ok"
+    if r.get("error") in ("limite", "captcha"):
+        return None          # su limite o su captcha: no es que este roto
+    return "fallo"
+
+
 def _vigia_ronda():
     """Una mirada a cada fuente. Se guarda en /tmp (lo lee /catdiag)."""
     out = _vigia_lee()
@@ -9527,6 +9622,13 @@ def _vigia_ronda():
                 items, por = _vigia_busca(src)
                 juicio = _vigia_juzga(src, items) if items is not None else \
                     {"n": 0, "problemas": [por]}
+                if items:
+                    en = _vigia_enlace(src, items)
+                    if en:
+                        juicio["enlace"] = en
+                        if en == "fallo":
+                            juicio["problemas"].append(
+                                "no da el enlace para reproducir (fallaria cada capitulo)")
         except Exception as e:
             juicio = {"n": 0, "problemas": ["error %s" % type(e).__name__]}
         ok = not juicio["problemas"]
@@ -11325,6 +11427,8 @@ def catdiag():
                      "proxima_s": max(0, int(_DX_DESC["proxima"] - now))},
         "trace": dict(_DX_TRACE),
     }
+    # sacar enlaces para reproducir: aciertos, fallos, de memoria (dtbl68)
+    out["resolver"] = {k: dict(v) for k, v in _RESUELVE_N.items()}
     # la copia de las fichas del Inicio (dtbl65)
     out["enriq_nube"] = dict(_ENRIQ_NUBE)
     # los errores de JavaScript que la web ha visto en los moviles (dtbl55)
