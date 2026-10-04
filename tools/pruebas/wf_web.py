@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -525,6 +526,48 @@ comprueba("enlacito: se mandan TODOS los campos ocultos (desde el 29-09 lleva 'f
                                        "flow": "d23fe7630b4745765307031317a1c440785e587943b0c48c"}
           and EN._campos_ocultos('<input value="x" name="a" type="hidden"><input name="b" type="text" value="y">')
           == {"a": "x"} and EN._campos_ocultos("") == {})
+
+print("\n=== 7) La prueba de trabajo v2 (04-10; caja 2.9.85) ===")
+# WolfMax cambio su download.js: 8 rondas, una lista de "nonces", y no se puede
+# validar antes de 2 s. Con la v1 contestaba 400 "Parametros invalidos" en
+# CADA capitulo nuevo (los que salian eran los que ya estaban guardados).
+POW = {"version": 2, "difficulty": 3, "rounds": 8, "min_duration_ms": 600}
+V2 = {"t_reto": 0.0, "pendiente": 1, "llamadas": []}
+
+
+def post_v2(url, cuerpo, cab):
+    V2["llamadas"].append(dict(cuerpo))
+    if cuerpo["action"] == "generate":
+        V2["t_reto"] = time.time()
+        return 200, {"success": True, "challenge": "rt42", "pow": dict(POW)}
+    if "nonce" in cuerpo or not isinstance(cuerpo.get("nonces"), list):
+        return 400, {"success": False, "error": "Parámetros inválidos"}
+    ns = cuerpo["nonces"]
+    bien = len(ns) == POW["rounds"] and all(
+        hashlib.sha256(("rt42:%d:%d" % (c, n)).encode()).hexdigest().startswith("000")
+        for c, n in enumerate(ns))
+    if not bien:
+        return 400, {"success": False, "error": "prueba incorrecta"}
+    if time.time() - V2["t_reto"] < POW["min_duration_ms"] / 1000.0:
+        return 400, {"success": False, "error": "demasiado rapido"}
+    if V2["pendiente"]:
+        V2["pendiente"] -= 1
+        return 202, {"status": "pow_pending", "retry_after_ms": 300}
+    return 200, {"success": True, "external": False,
+                 "download_url": "/torrents/series/Ted_Lasso_1_10_HDTV_720p.torrent"}
+
+
+W._TORRENTS.clear()
+t0 = time.time()
+u9 = W.torrent(post_v2, "2s42pf", "series")
+comprueba("v2: las 8 rondas, sin validar antes del minimo y esperando el 'aun no' -> el .torrent",
+          u9 == "https://wolfmax4k.com/torrents/series/Ted_Lasso_1_10_HDTV_720p.torrent", (u9, V2["llamadas"][-1]))
+comprueba("...en un tiempo razonable (%.1f s)" % (time.time() - t0), time.time() - t0 < 5)
+comprueba("la prueba v2 es la de su download.js: el PRIMER n de cada ronda",
+          W.prueba_de_trabajo_v2("rt42", POW)[:1] == [next(n for n in range(100000) if hashlib.sha256(
+              ("rt42:0:%d" % n).encode()).hexdigest().startswith("000"))])
+comprueba("sin 'pow' en la respuesta, la v1 de siempre (por si WolfMax diera marcha atras)",
+          W._TORRENTS.clear() is None and W.torrent(post_bueno, "x1", "peliculas").endswith(".torrent"))
 
 print("\n---- VEREDICTO ----")
 if fallos:

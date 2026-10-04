@@ -358,7 +358,7 @@ try:
     A._kb_enqueue = lambda b, ev: ENCOLADO.append((b, ev.get("srcs")))
     A._catjob_wait_any = lambda jobs, espera: {"items": []}
     A._box_for = lambda code: "111111"
-    A._box_wf = lambda code, excluir=(): "111111"     # caja al dia (dtbl50)
+    A._box_wf = lambda code, excluir=(), minimo=None: "111111"     # caja al dia (dtbl50)
     A._wf_idx_search = lambda q, limit=40: []
     A._wfidx_ask_box = lambda: None
     A._live_boxes = lambda *a, **k: ["111111"]

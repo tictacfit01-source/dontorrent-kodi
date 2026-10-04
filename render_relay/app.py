@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl66"
+BUILD = "dtbl67"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3248,6 +3248,11 @@ def _box_for(code):
 # un campo nuevo. Una caja anterior no ve archivos ni saca torrents: busquedas
 # sin calidad, series sin capitulos y nada que reproducir. Mejor ninguna.
 _WF_ADDON_MIN = (2, 9, 82)
+# Para PEDIR UN TORRENT a WolfMax, 2.9.85 (dtbl67): el 04-10 cambio su prueba de
+# trabajo (v2: 8 rondas y 2 s minimo) y una caja anterior se lleva un 400 en
+# cada capitulo. Leer su web si sabe; sacar el enlace, no. Va a una caja nueva
+# si la hay: el enlace que saca vale para cualquier tele.
+_WF_TORRENT_MIN = (2, 9, 85)
 
 
 def _box_wf_ok(code, minimo=None):
@@ -7923,7 +7928,12 @@ def _catetboxresolve_impl():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     url = (request.args.get("url") or "").strip()
     src = (request.args.get("src") or "et").strip()
-    box = _box_wf(code) if src == "wf" else _box_for(code)   # dtbl50
+    # WolfMax: a una caja que sepa su prueba de trabajo de hoy; si no hay
+    # ninguna, a la de siempre (quiza tenga ese enlace guardado de antes)
+    if src == "wf":
+        box = _box_wf(code, minimo=_WF_TORRENT_MIN) or _box_wf(code)   # dtbl67
+    else:
+        box = _box_for(code)   # dtbl50
     if not box or not url.lower().startswith("http"):
         return jsonify({"link": ""}), 400
     job = "et" + os.urandom(5).hex()
@@ -8728,7 +8738,10 @@ def seeds_ep():
         elif src == "wf" and not (_wf_url_nueva(url) and _wf_cupo_toma()):
             pass        # web vieja (404) o sin cupo: sin semillas por ahora (dtbl49)
         else:
-            _sbox = _box_wf(code) if src == "wf" else _box_for(code)   # dtbl50
+            if src == "wf":
+                _sbox = _box_wf(code, minimo=_WF_TORRENT_MIN) or _box_wf(code)   # dtbl67
+            else:
+                _sbox = _box_for(code)   # dtbl50
             _ssem = _lend_acquire(_sbox) if (_sbox and _sbox != code) else None
             if _sbox and not (_sbox != code and _ssem is None):
                 try:
@@ -9324,7 +9337,7 @@ def _apr_dt(k):
 
 def _apr_wf(url):
     box = _apr_caja()
-    if not box or not _box_wf_ok(box):    # solo cajas que entienden la web nueva
+    if not box or not _box_wf_ok(box, _WF_TORRENT_MIN):   # que sepan sacar el torrent (dtbl67)
         return None
     sem = _lend_acquire(box)
     if sem is None:

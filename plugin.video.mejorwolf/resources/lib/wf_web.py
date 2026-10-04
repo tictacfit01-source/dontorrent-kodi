@@ -389,6 +389,26 @@ class Captcha(Exception):
     pass
 
 
+def prueba_de_trabajo_v2(reto, pow_):
+    """La de WolfMax desde el 04-10 (su download.js, computeProofOfWork): para
+    cada ronda c (0..rounds-1), el PRIMER n tal que sha256("reto:c:n") empieza
+    por `difficulty` ceros hexadecimales (3 = los 12 primeros bits a cero).
+    Devuelve la lista de los n, en orden de ronda."""
+    try:
+        ceros = "0" * max(1, int(pow_.get("difficulty") or 3))
+        rondas = max(1, min(64, int(pow_.get("rounds") or 1)))
+    except Exception:
+        ceros, rondas = "000", 8
+    out = []
+    for c in range(rondas):
+        base = "%s:%d:" % (reto, c)
+        n = 0
+        while not hashlib.sha256((base + str(n)).encode("utf-8")).hexdigest().startswith(ceros):
+            n += 1
+        out.append(n)
+    return out
+
+
 def prueba_de_trabajo(reto, ceros=3):
     """El nonce tal que sha256(reto + nonce) empieza por `ceros` ceros (lo que
     hace el navegador en download.js). Con 3 ceros son ~4.000 intentos."""
@@ -442,10 +462,36 @@ def torrent(post_json, cid, tabla, referer=""):
     if not g.get("success") or not g.get("challenge"):
         raise RuntimeError("WolfMax: sin reto (%s %s)" % (st, g.get("error") or ""))
     reto = g["challenge"]
-    nonce = prueba_de_trabajo(reto, 3)
-    st, v = post_json(API_DESCARGAS, {"action": "validate", "challenge": reto,
-                                      "nonce": nonce}, cab)
-    v = v if isinstance(v, dict) else {}
+    t_reto = time.time()
+    pow_ = g.get("pow") if isinstance(g.get("pow"), dict) else None
+    if pow_:
+        # PRUEBA DE TRABAJO v2 (04-10): varias rondas, una lista de "nonces", y
+        # no se puede validar antes de `min_duration_ms`. Con la v1 (un solo
+        # "nonce") WolfMax contesta 400 "Parametros invalidos".
+        cuerpo_v = {"action": "validate", "challenge": reto,
+                    "nonces": prueba_de_trabajo_v2(reto, pow_)}
+        try:
+            minimo = float(pow_.get("min_duration_ms") or 0) / 1000.0
+        except Exception:
+            minimo = 0.0
+        falta = minimo - (time.time() - t_reto)
+        if falta > 0:
+            time.sleep(min(falta, 5.0))
+    else:
+        cuerpo_v = {"action": "validate", "challenge": reto,
+                    "nonce": prueba_de_trabajo(reto, 3)}
+    v, st = {}, 0
+    for _i in range(4):
+        st, v = post_json(API_DESCARGAS, cuerpo_v, cab)
+        v = v if isinstance(v, dict) else {}
+        if v.get("status") != "pow_pending":
+            break
+        # "aun no": WolfMax dice cuanto esperar (como mucho 2 s)
+        try:
+            ms = int(v.get("retry_after_ms") or 0)
+        except Exception:
+            ms = 0
+        time.sleep(min(max(ms, 200), 2000) / 1000.0)
     _mira_limite(st, v)
     if v.get("status") == "captcha_required":
         raise Captcha("WolfMax pide captcha")

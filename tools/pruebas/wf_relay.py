@@ -139,7 +139,7 @@ try:
     A._kb_enqueue = lambda b, ev: ENCOLADO.append(dict(ev))
     A._catjob_wait_any = lambda jobs, espera, *a, **k: {"items": ted}
     A._box_for = lambda code: "111111"
-    A._box_wf = lambda code, excluir=(): "111111"       # una caja al dia (ver 7)
+    A._box_wf = lambda code, excluir=(), minimo=None: "111111"       # una caja al dia (ver 7)
     A._catbox_get = lambda k: None
     A._live_boxes = lambda *a, **k: ["111111"]
     A._fc_caido = lambda s: False
@@ -189,7 +189,7 @@ try:
     r2 = (A._kb_enqueue, A._box_for, A._catjob_wait, A._dxih_load, A._box_wf)
     A._kb_enqueue = lambda b, ev: ENC2.append(dict(ev))
     A._box_for = lambda code: "111111"
-    A._box_wf = lambda code, excluir=(): "111111"
+    A._box_wf = lambda code, excluir=(), minimo=None: "111111"
     A._catjob_wait = lambda job, espera: {"ih": "a" * 40}
     A._dxih_load = lambda: {}
     try:
@@ -217,7 +217,7 @@ try:
               "333333": {"ts": time.time(), "v": "2.9.83"}}
     A._kbstatus_load = lambda: ESTADO
     A._box_live = lambda c: c in ESTADO
-    A._live_boxes = lambda *a, **k: ["111111", "222222", "333333"]
+    A._live_boxes = lambda *a, **k: list(ESTADO)
     try:
         ESTADO["444444"] = {"ts": time.time(), "v": "2.9.77"}
         comprueba("ni a una en 2.9.77 (su lector no ve los archivos desde el 28-09)",
@@ -225,6 +225,13 @@ try:
         ESTADO["555555"] = {"ts": time.time(), "v": "2.9.81"}
         comprueba("ni a una en 2.9.81 (el 29-09 WolfMax paso a codigos y su API ya no acepta el id)",
                   A._box_wf("555555") == "222222", A._box_wf("555555"))
+        ESTADO["666666"] = {"ts": time.time(), "v": "2.9.85"}
+        comprueba("pedir un TORRENT de WolfMax, a una caja 2.9.85 (prueba de trabajo v2, 04-10)",
+                  A._box_wf("222222", minimo=A._WF_TORRENT_MIN) == "666666",
+                  A._box_wf("222222", minimo=A._WF_TORRENT_MIN))
+        ESTADO.pop("666666")
+        comprueba("...y sin ninguna, la de siempre (quiza tenga el enlace guardado)",
+                  (A._box_wf("222222", minimo=A._WF_TORRENT_MIN) or A._box_wf("222222")) == "222222")
         comprueba("un minimo propio mas bajo (series del Inicio: 2.9.80) no salta el de WolfMax",
                   A._box_wf("555555", minimo=(2, 9, 80)) == "222222", A._box_wf("555555", minimo=(2, 9, 80)))
         comprueba("un trabajo de WolfMax NO va a una caja en 2.9.76, aunque sea la suya",
@@ -252,7 +259,7 @@ try:
 
     print("\n=== 8) Por que WolfMax no da el torrent, dicho (dtbl51) ===")
     r5 = (A._box_wf, A._kb_enqueue, A._catjob_wait)
-    A._box_wf = lambda code, excluir=(): "222222"
+    A._box_wf = lambda code, excluir=(), minimo=None: "222222"
     A._kb_enqueue = lambda b, ev: None
     try:
         A._catjob_wait = lambda job, espera: {"link": "", "error": "limite", "minutos": 42}
