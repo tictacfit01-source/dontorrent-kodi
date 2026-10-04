@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl68"
+BUILD = "dtbl69"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -7933,6 +7933,52 @@ def _wf_serie_vacia(it):
 _RESUELTO = {}                                   # (src, url) -> (enlace, ts)
 _RESUELTO_TTL = {"wf": 1800, "et": 6 * 3600}     # enlacito: 30 min; magnet: 6 h
 _RESUELVE_N = {}
+# compartida entre los dos workers: si no, la segunda vez caia en el otro y se
+# volvia a pedir a una caja (medido: 1,2 s en vez de al momento)
+_RESUELTO_FILE = "/tmp/mw_resuelto.json"
+
+
+def _resuelto_lee(k):
+    e = _RESUELTO.get(k)
+    if e:
+        return e
+    try:
+        with open(_RESUELTO_FILE, "r", encoding="utf-8") as f:
+            d = _json.load(f) or {}
+        v = d.get("%s|%s" % k)
+        if isinstance(v, list) and len(v) == 2:
+            _RESUELTO[k] = (v[0], float(v[1]))
+            return _RESUELTO[k]
+    except Exception:
+        pass
+    return None
+
+
+def _resuelto_guarda(k, enlace):
+    now = _t.time()
+    _RESUELTO[k] = (enlace, now)
+    if len(_RESUELTO) > 3000:
+        for kk in sorted(_RESUELTO, key=lambda kk: _RESUELTO[kk][1])[:1000]:
+            _RESUELTO.pop(kk, None)
+    try:
+        with _FileLock(_RESUELTO_FILE):
+            try:
+                with open(_RESUELTO_FILE, "r", encoding="utf-8") as f:
+                    d = _json.load(f) or {}
+            except Exception:
+                d = {}
+            d = {kk: v for kk, v in d.items()
+                 if isinstance(v, list) and len(v) == 2 and (now - float(v[1])) < 6 * 3600}
+            d["%s|%s" % k] = [enlace, now]
+            if len(d) > 2000:
+                for kk in sorted(d, key=lambda kk: d[kk][1])[:len(d) - 2000]:
+                    d.pop(kk, None)
+            tmp = "%s.%d.tmp" % (_RESUELTO_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _RESUELTO_FILE)
+    except Exception:
+        pass
 
 
 def _resuelve_cuenta(src, que):
@@ -7962,7 +8008,7 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
     k = (src, url)
     now = _t.time()
     if cache:
-        e = _RESUELTO.get(k)
+        e = _resuelto_lee(k)
         if e and (now - e[1]) < _RESUELTO_TTL.get(src, 600):
             _resuelve_cuenta(src, "cache")
             return {"link": e[0], "cache": True}
@@ -7991,10 +8037,7 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
     out = {"link": (res or {}).get("link", "") or ""}
     if out["link"]:
         _resuelve_cuenta(src, "ok")
-        _RESUELTO[k] = (out["link"], _t.time())
-        if len(_RESUELTO) > 3000:
-            for kk in sorted(_RESUELTO, key=lambda kk: _RESUELTO[kk][1])[:1000]:
-                _RESUELTO.pop(kk, None)
+        _resuelto_guarda(k, out["link"])
     elif (res or {}).get("error") in ("limite", "captcha"):
         # por que no hay enlace, si la caja lo sabe (WolfMax: limite/captcha, 2.9.79)
         _resuelve_cuenta(src, "limite")

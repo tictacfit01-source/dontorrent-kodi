@@ -57,6 +57,21 @@ def espera(jobs, secs, ok=None, corta=None):
     return last
 
 
+import shutil
+os.makedirs("/tmp", exist_ok=True)
+COPIA_RES = None
+if os.path.exists(A._RESUELTO_FILE):
+    COPIA_RES = A._RESUELTO_FILE + ".prueba_bak"
+    shutil.copy(A._RESUELTO_FILE, COPIA_RES)
+    os.remove(A._RESUELTO_FILE)
+def olvida():
+    A._RESUELTO.clear()
+    try:
+        os.remove(A._RESUELTO_FILE)
+    except Exception:
+        pass
+
+
 viejos = {k: getattr(A, k) for k in ("_kb_enqueue", "_catjob_wait_any", "_box_wf", "_box_for",
                                      "_live_boxes", "_resuelve_enlace", "_vigia_busca",
                                      "_wf_cupo_toma", "_fuentes_caidas")}
@@ -68,7 +83,7 @@ A._box_for = lambda code: "caja1"
 A._live_boxes = lambda *a, **k: ["caja1", "caja2"]
 W = "https://wolfmax4k.com/serie/episodio/2anek9"
 try:
-    A._RESUELTO.clear()
+    olvida()
     A._RESUELVE_N.clear()
     print("\n=== 1) Lo resuelto se recuerda ===")
     RESPUESTA.update({"caja1": {"link": "https://enlacito.com/s.php?i=abc"}})
@@ -79,27 +94,31 @@ try:
     A._RESUELTO[("wf", W)] = (r1["link"], time.time() - 3600)
     A._resuelve_enlace("111111", "wf", W)
     comprueba("...pero no para siempre (WolfMax: 30 min)", len(PEDIDOS) == 2, PEDIDOS)
+    A._RESUELTO.clear()                     # como si fuera el OTRO worker
+    r3 = A._resuelve_enlace("111111", "wf", W)
+    comprueba("el otro worker tambien lo sabe (fichero compartido): sin pedirlo otra vez",
+              r3.get("cache") and len(PEDIDOS) == 2, (r3, PEDIDOS))
 
     print("\n=== 2) Si una caja no lo saca, OTRA ===")
-    A._RESUELTO.clear()
+    olvida()
     del PEDIDOS[:]
     RESPUESTA.update({"caja1": {"link": ""}, "caja2": {"link": "https://enlacito.com/s.php?i=def"}})
     r = A._resuelve_enlace("111111", "wf", W)
     comprueba("la caja 1 no pudo, la 2 si", r.get("link", "").endswith("def")
               and [b for b, u in PEDIDOS] == ["caja1", "caja2"], (r, PEDIDOS))
-    A._RESUELTO.clear()
+    olvida()
     del PEDIDOS[:]
     RESPUESTA.update({"caja1": {"link": "", "error": "limite", "minutos": 37}})
     r = A._resuelve_enlace("111111", "wf", W)
     comprueba("el LIMITE de WolfMax se dice con sus minutos y no se insiste con otra caja",
               r.get("error") == "limite" and r.get("minutos") == 37 and len(PEDIDOS) == 1, (r, PEDIDOS))
-    A._RESUELTO.clear()
+    olvida()
     RESPUESTA.update({"caja1": {"link": ""}, "caja2": {"link": ""}})
     r = A._resuelve_enlace("111111", "wf", W)
     comprueba("ninguna lo saca: vacio (la web lo dira)", r == {"link": ""}, r)
     n = A._RESUELVE_N["wf"]
     comprueba("y queda contado (aciertos, de memoria, limite, vacios, otra caja)",
-              n["ok"] >= 2 and n["cache"] == 1 and n["limite"] == 1 and n["vacio"] == 1 and n["otra_caja"] >= 2, n)
+              n["ok"] >= 2 and n["cache"] == 2 and n["limite"] == 1 and n["vacio"] == 1 and n["otra_caja"] >= 2, n)
     d = A.app.test_client().get("/catdiag").get_json() or {}
     comprueba("/catdiag -> resolver", "wf" in (d.get("resolver") or {}), list(d.get("resolver") or {}))
 
@@ -141,7 +160,14 @@ try:
 finally:
     for k, v in viejos.items():
         setattr(A, k, v)
-    A._RESUELTO.clear()
+    olvida()
+    try:
+        if COPIA_RES:
+            shutil.move(COPIA_RES, A._RESUELTO_FILE)
+        elif os.path.exists(A._RESUELTO_FILE):
+            os.remove(A._RESUELTO_FILE)
+    except Exception:
+        pass
 
 print("\n---- VEREDICTO ----")
 if fallos:

@@ -42,7 +42,7 @@ def comprueba(nombre, ok, detalle=""):
 
 
 os.makedirs("/tmp", exist_ok=True)
-FICHEROS = [A._WFIDX_FILE, A._EPSC_FILE]
+FICHEROS = [A._WFIDX_FILE, A._EPSC_FILE, A._RESUELTO_FILE]
 copia = {}
 for f in FICHEROS:
     if os.path.exists(f):
@@ -262,6 +262,7 @@ try:
     A._box_wf = lambda code, excluir=(), minimo=None: "222222"
     A._kb_enqueue = lambda b, ev: None
     A._RESUELTO.clear()
+    os.path.exists(A._RESUELTO_FILE) and os.remove(A._RESUELTO_FILE)
     try:
         A._catjob_wait_any = lambda jobs, espera, ok=None, corta=None: {"link": "", "error": "limite", "minutos": 42}
         js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
@@ -271,12 +272,14 @@ try:
         js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
         comprueba("con enlace, como siempre", js == {"link": "https://wolfmax4k.com/torrents/x.torrent"}, js)
         A._RESUELTO.clear()
+        os.path.exists(A._RESUELTO_FILE) and os.remove(A._RESUELTO_FILE)
         A._catjob_wait_any = lambda jobs, espera, ok=None, corta=None: {"link": "", "error": "cualquier-cosa"}
         js = cli.get("/catetboxresolve?code=222222&src=wf&url=" + N + "/pelicula/d8k2pt").get_json()
         comprueba("un motivo que no se conoce no se inventa", js == {"link": ""}, js)
     finally:
         A._box_wf, A._kb_enqueue, A._catjob_wait_any = r5
         A._RESUELTO.clear()
+        os.path.exists(A._RESUELTO_FILE) and os.remove(A._RESUELTO_FILE)
     print("\n=== 9) El Inicio: lo ultimo de WolfMax, de WolfMax (dtbl52) ===")
     # antes salia del indice ordenado por el NUMERO de la URL; con ids al azar
     # ese orden no valia, y "El Dorado" de 1966 salio en Estrenos
