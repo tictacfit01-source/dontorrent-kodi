@@ -636,6 +636,9 @@ def _do_etjob(ev):
                             out["minutos"] = int(getattr(_er, "minutos", 60) or 60)
                         elif _nom == "Captcha":
                             out["error"] = "captcha"
+                        elif _nom == "Verificacion":
+                            # 07-10: verificacion HUMANA en cada descarga (2.9.86)
+                            out["error"] = "verificacion"
                         xbmc.log("[MejorWolf/service] resolve wf: %s" % _er,
                                  xbmc.LOGWARNING)
                 else:

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl69"
+BUILD = "dtbl70"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4942,6 +4942,8 @@ def _con_caida(d):
     if c:
         d["caidas"] = c
         d["vivas"] = [s for s in _fuentes_vivas() if s not in c]
+    if _wf_verif_activa():
+        d["wf_verif"] = True                 # dtbl70
     return d
 
 
@@ -7930,6 +7932,46 @@ def _wf_serie_vacia(it):
 # busquedas. Ahora este paso se cuenta (/catdiag -> resolver), lo prueba el
 # vigia, recuerda lo resuelto (repetir es instantaneo y no gasta el cupo de
 # WolfMax) y, si la caja no lo saca, se lo pide a otra.
+# 07-10: WolfMax pide una verificacion HUMANA (Turnstile/hCaptcha) en cada
+# descarga. Eso no lo hace una tele (ni se intenta saltar): cuando una caja lo
+# cuenta, se apunta 30 min y mientras tanto se contesta AL MOMENTO, sin molestar
+# a ninguna caja ni gastar semillas en lo imposible. En cuanto un enlace de
+# WolfMax vuelve a salir, se olvida solo (dtbl70).
+_WF_VERIF_FILE = "/tmp/mw_wf_verif.json"
+_WF_VERIF_PAUSA = 1800
+
+
+def _wf_verif_lee():
+    try:
+        with open(_WF_VERIF_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _wf_verif_activa():
+    return (_t.time() - float(_wf_verif_lee().get("ts") or 0)) < _WF_VERIF_PAUSA
+
+
+def _wf_verif_apunta(si):
+    try:
+        if si:
+            d = _wf_verif_lee()
+            now = _t.time()
+            d = {"ts": now, "desde": d.get("desde") if (now - float(d.get("ts") or 0)) < 6 * 3600
+                 else now}
+        else:
+            if not os.path.exists(_WF_VERIF_FILE):
+                return
+            d = {}
+        tmp = "%s.%d.tmp" % (_WF_VERIF_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _WF_VERIF_FILE)
+    except Exception:
+        pass
+
+
 _RESUELTO = {}                                   # (src, url) -> (enlace, ts)
 _RESUELTO_TTL = {"wf": 1800, "et": 6 * 3600}     # enlacito: 30 min; magnet: 6 h
 _RESUELVE_N = {}
@@ -7983,11 +8025,12 @@ def _resuelto_guarda(k, enlace):
 
 def _resuelve_cuenta(src, que):
     d = _RESUELVE_N.setdefault(src, {"ok": 0, "vacio": 0, "limite": 0, "cache": 0,
-                                     "otra_caja": 0, "ult_ok": 0, "ult_fallo": 0})
+                                     "otra_caja": 0, "verificacion": 0,
+                                     "ult_ok": 0, "ult_fallo": 0})
     d[que] = d.get(que, 0) + 1
     if que in ("ok", "cache"):
         d["ult_ok"] = int(_t.time())
-    elif que in ("vacio", "limite"):
+    elif que in ("vacio", "limite", "verificacion"):
         d["ult_fallo"] = int(_t.time())
 
 
@@ -8007,6 +8050,9 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
     """{"link": enlace} o {"link": "", "error": "limite"|"captcha", ...}."""
     k = (src, url)
     now = _t.time()
+    if cache and src == "wf" and _wf_verif_activa():
+        _resuelve_cuenta(src, "verificacion")
+        return {"link": "", "error": "verificacion"}
     if cache:
         e = _resuelto_lee(k)
         if e and (now - e[1]) < _RESUELTO_TTL.get(src, 600):
@@ -8022,7 +8068,8 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
         return j
 
     def _bueno(r):
-        return bool((r or {}).get("link")) or (r or {}).get("error") in ("limite", "captcha")
+        return bool((r or {}).get("link")) or \
+            (r or {}).get("error") in ("limite", "captcha", "verificacion")
     jobs = [_pide(box)]
     res = _catjob_wait_any(jobs, min(10.0, espera), _bueno)
     if not _bueno(res):
@@ -8038,6 +8085,12 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
     if out["link"]:
         _resuelve_cuenta(src, "ok")
         _resuelto_guarda(k, out["link"])
+        if src == "wf":
+            _wf_verif_apunta(False)          # WolfMax vuelve a dar enlaces
+    elif (res or {}).get("error") == "verificacion" and src == "wf":
+        _resuelve_cuenta(src, "verificacion")
+        _wf_verif_apunta(True)
+        out["error"] = "verificacion"
     elif (res or {}).get("error") in ("limite", "captcha"):
         # por que no hay enlace, si la caja lo sabe (WolfMax: limite/captcha, 2.9.79)
         _resuelve_cuenta(src, "limite")
@@ -8848,7 +8901,7 @@ def seeds_ep():
         _c = _dih.get(url)
         if _c and len(_c.get("ih", "")) == 40 and (now - _c.get("ts", 0) < _DXIH_TTL):
             ih = _c["ih"]
-        elif src == "wf" and not (_wf_url_nueva(url) and _wf_cupo_toma()):
+        elif src == "wf" and (_wf_verif_activa() or not (_wf_url_nueva(url) and _wf_cupo_toma())):
             pass        # web vieja (404) o sin cupo: sin semillas por ahora (dtbl49)
         else:
             if src == "wf":
@@ -9449,6 +9502,8 @@ def _apr_dt(k):
 
 
 def _apr_wf(url):
+    if _wf_verif_activa():
+        return None          # WolfMax pide verificacion humana (dtbl70)
     box = _apr_caja()
     if not box or not _box_wf_ok(box, _WF_TORRENT_MIN):   # que sepan sacar el torrent (dtbl67)
         return None
@@ -9636,7 +9691,7 @@ def _vigia_enlace(src, items):
     (sin cupo de WolfMax, sin archivo que probar). dtbl68."""
     if src == "wf":
         urls = [x.get("url") for x in items if _VIGIA_ARCHIVO_RE.search(x.get("url") or "")]
-        if not urls or not _wf_cupo_toma():
+        if not urls or (not _wf_verif_activa() and not _wf_cupo_toma()):
             return None
     elif src == "et":
         urls = [x.get("url") for x in items if (x.get("url") or "").startswith("http")]
@@ -9647,6 +9702,8 @@ def _vigia_enlace(src, items):
     r = _resuelve_enlace("", src, urls[0], espera=25.0, cache=False)
     if r.get("link"):
         return "ok"
+    if r.get("error") == "verificacion":
+        return "verificacion"
     if r.get("error") in ("limite", "captcha"):
         return None          # su limite o su captcha: no es que este roto
     return "fallo"
@@ -9669,6 +9726,10 @@ def _vigia_ronda():
                     en = _vigia_enlace(src, items)
                     if en:
                         juicio["enlace"] = en
+                        if en == "verificacion":
+                            juicio["problemas"].append(
+                                "pide verificacion humana (captcha) en cada descarga: "
+                                "se puede buscar, no reproducir")
                         if en == "fallo":
                             juicio["problemas"].append(
                                 "no da el enlace para reproducir (fallaria cada capitulo)")
@@ -11472,6 +11533,7 @@ def catdiag():
     }
     # sacar enlaces para reproducir: aciertos, fallos, de memoria (dtbl68)
     out["resolver"] = {k: dict(v) for k, v in _RESUELVE_N.items()}
+    out["wf_verificacion"] = dict(_wf_verif_lee(), activa=_wf_verif_activa())   # dtbl70
     # la copia de las fichas del Inicio (dtbl65)
     out["enriq_nube"] = dict(_ENRIQ_NUBE)
     # los errores de JavaScript que la web ha visto en los moviles (dtbl55)
@@ -13055,7 +13117,13 @@ var QRANK={'4k':5,'2160p':5,'uhd':5,'1080p':4,'1080':4,'bdremux':4,'bluray':4,'b
 // de RAR, semillas y reproducción propia) > WolfMax (su 4K es el de mayor
 // bitrate que hay: capítulos de 9 GB) > DivxTotal > EliteTorrent.
 var SRANK={dt:3,wf:2,dx:1,et:0};
+// WolfMax con verificacion humana en cada descarga (dtbl70): no se puede
+// reproducir desde la tele, asi que si hay OTRA fuente esa manda en la tarjeta
+// (WolfMax se queda en "Tambien en"). Si WolfMax la quita, vuelve a ganar solo.
+var WFVERIF=0;
+function wfVerifDe(d){if(d&&d.wf_verif)WFVERIF=1}
 function srcScore(x){var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
+ if(WFVERIF&&(x.source||'dt')==='wf')return q*10-1000;
  return q*10+(SRANK[x.source||'dt']||0);}
 // Une dos listas de capítulos sin repetir, en orden.
 // UN ARCHIVO, UNA FILA (dtbl55): el pack de WolfMax "1x01 al 1x03" llega
@@ -13270,6 +13338,7 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
  function csTry(att){if(seq!==_searchSeq)return;wakeAtt=att;
   tfetch('/catsearch?q='+encodeURIComponent(q)+'&code='+cd,att===1?20000:16000).then(function(r){return r.json()}).then(function(d){
    if(seq!==_searchSeq)return;
+   wfVerifDe(d);
    // `retry`: otra búsqueda igual está en curso; NO es un fallo del servidor.
    if(d&&d.retry&&!(d.items&&d.items.length)&&att<6){
     setTimeout(function(){csTry(att+1)},2500);paint();return;}
@@ -13435,7 +13504,7 @@ function boxMerge(list,g,op,q,srcs,cb,seq,always){var cd=(code.value||'').replac
  var u='/catetbox?code='+cd+'&op='+op+'&srcs='+(srcs||'et,dx')+(q?('&q='+encodeURIComponent(q)):'');
  var _c=('AbortController'in window)?new AbortController():null;
  if(op==='search')sreqAdd(_c);   // las del INICIO no: no las cancela nadie
- fetch(u,_c?{signal:_c.signal}:{}).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);
+ fetch(u,_c?{signal:_c.signal}:{}).then(function(r){return r.json()}).then(function(d){if(seq!==_searchSeq){if(cb)cb({});return;}wfVerifDe(d);var b=LISTS[list].length;var got=((d&&d.items)||[]).length;mergeResults(list,g,(d&&d.items)||[]);
   // `caida`: alguna de las fuentes pedidas esta caida segun el relay (dtbl40)
   var cai=((d&&d.caidas)||[]),caida=(srcs||'').split(',').some(function(s){return cai.indexOf(s)>=0});
   if(cb)cb({timeout:!!(d&&(d.timeout||d.off)),off:!!(d&&d.off),added:LISTS[list].length-b,got:got,caida:caida})}).catch(function(){if(cb)cb({})})}
@@ -14313,6 +14382,10 @@ function webViejaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
 // cajas cuentan como una) y a veces pide un captcha. Antes: "No se pudo
 // obtener el enlace", sin saber si era la tele, la red o que (dtbl51).
 function limiteDlg(src,d,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
+ if(d.error==='verificacion'){WFVERIF=1;
+  mwConfirm(n+' pide verificar cada descarga',
+   'Desde el 7 de octubre WolfMax pide una verificación humana (un captcha) en cada descarga, y eso no se puede hacer desde la tele. Sus títulos se siguen viendo, pero para reproducir hay que buscarlo en otra fuente.',
+   'Buscar en otras fuentes',function(){buscaOtras(q)});return}
  var txt=d.error==='captcha'
   ?'Ahora mismo pide una verificación que no se puede hacer desde la tele. Suele pasarse sola en un rato. Mientras, puedes buscarlo en las otras fuentes.'
   :'Ha llegado a su límite de descargas por hora'+(d.minutos?(' y pide esperar unos '+d.minutos+' min'):'')+'. No es tu tele. Mientras, puedes buscarlo en las otras fuentes.';
@@ -14343,8 +14416,10 @@ function buscaOtras(t){t=String(t||'').trim();if(!t)return;
 // las que no se sabe nada no se afirma nada. Cada carga del Inicio lo repinta,
 // asi que se va solo cuando vuelven.
 function _listaY(a){return a.length<2?(a[0]||''):(a.slice(0,-1).join(', ')+' y '+a[a.length-1])}
-function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;
+function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);
  var c=((d&&d.caidas)||[]).slice();if(d&&d.dt_caida&&c.indexOf('dt')<0)c.unshift('dt');
+ var wv=!!(d&&d.wf_verif)&&c.indexOf('wf')<0;
+ if(!c.length&&wv){e.innerHTML='ℹ️ <b>WolfMax pide ahora verificar cada descarga</b> (un captcha): sus títulos se ven, pero para reproducir en la tele usa otra fuente.';e.classList.add('on');return}
  if(!c.length){e.classList.remove('on');e.innerHTML='';return}
  var nom=c.map(function(s){return PROGN[s]||s}),un=nom.length===1;
  var viv=((d&&d.vivas)||[]).filter(function(s){return c.indexOf(s)<0}).map(function(s){return PROGN[s]||s});

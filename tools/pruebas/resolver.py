@@ -122,6 +122,40 @@ try:
     d = A.app.test_client().get("/catdiag").get_json() or {}
     comprueba("/catdiag -> resolver", "wf" in (d.get("resolver") or {}), list(d.get("resolver") or {}))
 
+    print("\n=== 2b) WolfMax pide verificacion humana (dtbl70) ===")
+    olvida()
+    copia_v = None
+    if os.path.exists(A._WF_VERIF_FILE):
+        copia_v = A._WF_VERIF_FILE + ".prueba_bak"
+        shutil.move(A._WF_VERIF_FILE, copia_v)
+    try:
+        del PEDIDOS[:]
+        RESPUESTA.update({"caja1": {"link": "", "error": "verificacion"}})
+        r = A._resuelve_enlace("111111", "wf", W)
+        comprueba("una caja lo cuenta: se dice y no se insiste con otra caja",
+                  r.get("error") == "verificacion" and len(PEDIDOS) == 1, (r, PEDIDOS))
+        r = A._resuelve_enlace("111111", "wf", "https://wolfmax4k.com/serie/episodio/otro1")
+        comprueba("...y el siguiente capitulo, AL MOMENTO, sin molestar a ninguna caja",
+                  r.get("error") == "verificacion" and len(PEDIDOS) == 1, (r, PEDIDOS))
+        comprueba("cada respuesta lleva el aviso para la web (wf_verif)", A._con_caida({}).get("wf_verif") is True)
+        RESPUESTA.update({"caja1": {"link": "magnet:?xt=urn:btih:et1"}})
+        r = A._resuelve_enlace("111111", "et", "https://elitetorrent.com/x")
+        comprueba("EliteTorrent no se ve afectado: se le pregunta y da su magnet",
+                  r.get("link") == "magnet:?xt=urn:btih:et1", r)
+        RESPUESTA.update({"caja1": {"link": "", "error": "verificacion"}})
+        olvida()
+        RESPUESTA.update({"caja1": {"link": "https://wolfmax4k.com/torrents/series/x.torrent"}})
+        A._resuelve_enlace("", "wf", W, cache=False)         # lo que hace el vigia: mirar de verdad
+        comprueba("en cuanto WolfMax vuelve a dar un enlace, se olvida solo", not A._wf_verif_activa()
+                  and "wf_verif" not in A._con_caida({}))
+    finally:
+        try:
+            os.remove(A._WF_VERIF_FILE)
+        except Exception:
+            pass
+        if copia_v:
+            shutil.move(copia_v, A._WF_VERIF_FILE)
+
     print("\n=== 3) El vigia prueba este paso ===")
     import json
     import tempfile
@@ -148,6 +182,11 @@ try:
         v = A._vigia_ronda()
         comprueba("el limite de WolfMax no es una averia", v["wf"].get("enlace") is None
                   and not any("enlace" in p for p in v["wf"]["problemas"]), v.get("wf"))
+        A._resuelve_enlace = lambda code, src, url, espera=18.0, cache=True: {"link": "", "error": "verificacion"}
+        v = A._vigia_ronda()
+        comprueba("verificacion humana: el vigia la dice con su nombre",
+                  v["wf"].get("enlace") == "verificacion"
+                  and any("verificacion humana" in p for p in v["wf"]["problemas"]), v.get("wf"))
         A._resuelve_enlace = lambda code, src, url, espera=18.0, cache=True: {"link": "magnet:?xt=x"}
         v = A._vigia_ronda()
         comprueba("y si lo da, 'enlace: ok'", v["wf"].get("enlace") == "ok", v.get("wf"))

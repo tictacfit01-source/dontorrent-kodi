@@ -569,6 +569,56 @@ comprueba("la prueba v2 es la de su download.js: el PRIMER n de cada ronda",
 comprueba("sin 'pow' en la respuesta, la v1 de siempre (por si WolfMax diera marcha atras)",
           W._TORRENTS.clear() is None and W.torrent(post_bueno, "x1", "peliculas").endswith(".torrent"))
 
+print("\n=== 8) Verificacion humana en cada descarga (07-10; caja 2.9.86) ===")
+# La API de wolfmax4k.com contesta 403 "Abre la descarga desde la ficha" y su
+# pasarela (wolftorrent.com) pide un Turnstile de Cloudflare. No se salta: se dice.
+VF = {"llamadas": []}
+
+
+def post_verif(url, cuerpo, cab):
+    VF["llamadas"].append(url)
+    if url.startswith(W.BASE):
+        return 403, {"error": "Abre la descarga desde la ficha."}
+    return 200, {"success": True, "challenge": "c0ffee",
+                 "verification": {"provider": "turnstile", "sitekey": "0x4AAA", "action": "download"}}
+
+
+W._TORRENTS.clear()
+W._VERIF_HASTA[0] = 0.0
+try:
+    W.torrent(post_verif, "2tzkkn", "series")
+    comprueba("verificacion humana: se dice (no se inventa un torrent)", False)
+except W.Verificacion as ex:
+    comprueba("verificacion humana: se dice, con quien la pide (turnstile)", ex.proveedor == "turnstile", ex.proveedor)
+comprueba("...preguntando a su pasarela (wolftorrent.com) solo para saberlo",
+          VF["llamadas"] == [W.BASE + "/api/descargas", W.DESCARGAS_BASE + "/api/descargas"], VF["llamadas"])
+n = len(VF["llamadas"])
+try:
+    W.torrent(post_verif, "2ca9yd", "series")
+except W.Verificacion:
+    pass
+comprueba("...y durante 30 min ni se le pregunta (otro capitulo, al momento)", len(VF["llamadas"]) == n,
+          VF["llamadas"][n:])
+
+
+def post_pasarela_muda(url, cuerpo, cab):
+    if url.startswith(W.BASE):
+        return 403, {"error": "Abre la descarga desde la ficha."}
+    return 403, {}                        # el proxy no deja pasar a la pasarela
+
+
+W._VERIF_HASTA[0] = 0.0
+try:
+    W.torrent(post_pasarela_muda, "2tzkkn", "series")
+    comprueba("sin poder preguntar a la pasarela: tambien verificacion", False)
+except W.Verificacion as ex:
+    comprueba("sin poder preguntar a la pasarela, el 403 'desde la ficha' basta", ex.proveedor == "pasarela",
+              ex.proveedor)
+W._VERIF_HASTA[0] = 0.0
+W._TORRENTS.clear()
+comprueba("si WolfMax quita la verificacion, todo vuelve solo (la v2 de siempre)",
+          W.torrent(post_v2, "2s42pf", "series").endswith(".torrent"))
+
 print("\n---- VEREDICTO ----")
 if fallos:
     print("%d comprobaciones MAL" % fallos)

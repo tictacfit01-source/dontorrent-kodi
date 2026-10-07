@@ -1113,18 +1113,25 @@ def play(torrent_url, title=""):
                 progress.update(15, "MejorWolf", "Pidiendo el torrent a WolfMax...")
         except Exception:
             pass
+        _motivo = ""
         try:
             torrent_url = wf.resolver_diferido(torrent_url) or ""
         except Exception as e:
             xbmc.log(f"[MejorWolf] wf2: {e}", xbmc.LOGWARNING)
             torrent_url = ""
+            _motivo = type(e).__name__
         if not torrent_url:
             try:
                 if progress:
                     progress.close()
             except Exception:
                 pass
-            _error("WolfMax no ha dado el torrent ahora mismo. Inténtalo en un rato.")
+            if _motivo == "Verificacion":
+                _error("WolfMax pide ahora una verificación humana (un captcha) en cada "
+                       "descarga, y eso no se puede hacer desde la tele. Busca este "
+                       "título en otra fuente.")
+            else:
+                _error("WolfMax no ha dado el torrent ahora mismo. Inténtalo en un rato.")
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
             return
 

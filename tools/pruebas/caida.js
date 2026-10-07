@@ -27,6 +27,7 @@ const codigo = [
   saca('function slimEps(', '\nfunction slimAlts'),
   saca('function favLearnEps(', '\n// ===== HISTORIAL'),
   saca("var _COMPLETANDO='';", '\nvar OVSEASON='),
+  saca('var WFVERIF=0;', '\nfunction srcScore('),
 ].join('\n');
 
 // --- DOM y entorno de mentira -------------------------------------------------
@@ -159,6 +160,11 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
     $('dt-aviso').innerHTML);
   pintaCaidas({ items: [] });
   comprueba('sin caidas, fuera', !$('dt-aviso').classList.contains('on'));
+  pintaCaidas({ wf_verif: true });
+  comprueba('WolfMax con verificacion humana (dtbl70): se dice, sin decir que esta caido',
+    $('dt-aviso').classList.contains('on') && /verificar cada descarga/.test($('dt-aviso').innerHTML)
+    && !/caído/.test($('dt-aviso').innerHTML), $('dt-aviso').innerHTML);
+  pintaCaidas({ items: [] });
 
   console.log('\n=== 4c) Reproducir de una fuente caida (WolfMax) ===');
   DLGS.length = 0; LLAMADAS.length = 0;

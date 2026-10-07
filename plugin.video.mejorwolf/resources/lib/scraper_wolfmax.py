@@ -215,7 +215,7 @@ def resolver_diferido(link, referer=""):
             ("/episodio/" in r or "/pelicula/" in r):
         try:
             return torrent_de(r)
-        except (_W.Limite, _W.Captcha):
+        except (_W.Limite, _W.Captcha, _W.Verificacion):
             raise
         except Exception:
             pass
@@ -229,7 +229,7 @@ def torrent_de(url):
     if e:
         try:
             return _W.torrent(_post_json, e[0], e[1], u)
-        except (_W.Limite, _W.Captcha):
+        except (_W.Limite, _W.Captcha, _W.Verificacion):
             raise
         except Exception:
             _CID.pop(u, None)       # clave caducada (el id de antes del 29-09): a la ficha

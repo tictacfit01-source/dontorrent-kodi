@@ -389,6 +389,22 @@ class Captcha(Exception):
     pass
 
 
+class Verificacion(Exception):
+    """WolfMax pide una verificacion HUMANA (Cloudflare Turnstile o hCaptcha) en
+    CADA descarga (desde el 07-10, en su dominio de descargas wolftorrent.com).
+    Eso lo resuelve una persona en su navegador, no una tele: se dice tal cual y
+    no se intenta saltar."""
+
+    def __init__(self, proveedor=""):
+        Exception.__init__(self, "WolfMax pide verificacion humana (%s)" % (proveedor or "captcha"))
+        self.proveedor = proveedor or ""
+
+
+# El dominio de las descargas (07-10): la API de wolfmax4k.com contesta 403 "Abre
+# la descarga desde la ficha" y la ficha manda a wolftorrent.com/descarga/...
+DESCARGAS_BASE = "https://wolftorrent.com"
+
+
 def prueba_de_trabajo_v2(reto, pow_):
     """La de WolfMax desde el 04-10 (su download.js, computeProofOfWork): para
     cada ronda c (0..rounds-1), el PRIMER n tal que sha256("reto:c:n") empieza
@@ -426,6 +442,21 @@ def prueba_de_trabajo(reto, ceros=3):
 _TORRENTS = {}
 _TORRENTS_TTL = 12 * 3600
 _LIMITE_HASTA = [0.0]
+# Mientras WolfMax pida verificacion humana no se le pregunta en cada capitulo:
+# se dice al momento. Pasado el rato se vuelve a mirar (si la quita, todo vuelve
+# a funcionar solo).
+_VERIF_HASTA = [0.0, ""]
+_VERIF_PAUSA = 1800
+
+
+def _es_verificacion(st, g):
+    """El proveedor si la respuesta pide verificacion humana; "" si no."""
+    v = (g or {}).get("verification")
+    if isinstance(v, dict) and (v.get("provider") or v.get("sitekey")):
+        return str(v.get("provider") or "captcha")
+    if (g or {}).get("status") in ("turnstile_required",):
+        return "turnstile"
+    return ""
 _LOCK = threading.Lock()
 
 
@@ -443,6 +474,8 @@ def torrent(post_json, cid, tabla, referer=""):
             return e[0]
         if now < _LIMITE_HASTA[0]:
             raise Limite(max(1, int((_LIMITE_HASTA[0] - now) / 60)))
+        if now < _VERIF_HASTA[0]:
+            raise Verificacion(_VERIF_HASTA[1])
     cab = {"Content-Type": "application/json", "Origin": BASE,
            "Referer": absoluta(referer) if referer else BASE + "/",
            "X-Requested-With": "XMLHttpRequest"}
@@ -459,6 +492,32 @@ def torrent(post_json, cid, tabla, referer=""):
         _mira_limite(st, g)
         if g.get("success") and g.get("challenge"):
             break
+    # 07-10: las descargas se mudaron a su pasarela (wolftorrent.com) y esta pide
+    # una verificacion humana. Se pregunta alli SOLO para saberlo con certeza.
+    pasarela = st == 403 and "ficha" in str(g.get("error") or "").lower()
+    if pasarela:
+        tipo = {"peliculas": "pelicula", "series": "serie", "documentales": "documental"}.get(tabla, "serie")
+        cab2 = dict(cab, Origin=DESCARGAS_BASE,
+                    Referer="%s/descarga/%s/%s" % (DESCARGAS_BASE, tipo, cid))
+        try:
+            st2, g2 = post_json(DESCARGAS_BASE + "/api/descargas", cuerpos[-1], cab2)
+            g2 = g2 if isinstance(g2, dict) else {}
+        except Exception:
+            st2, g2 = 0, {}
+        if g2.get("success") and g2.get("challenge") and not _es_verificacion(st2, g2):
+            st, g = st2, g2            # la pasarela sin verificacion: se sigue
+        else:
+            prov = _es_verificacion(st2, g2) or "pasarela"
+            with _LOCK:
+                _VERIF_HASTA[0] = time.time() + _VERIF_PAUSA
+                _VERIF_HASTA[1] = prov
+            raise Verificacion(prov)
+    prov = _es_verificacion(st, g)
+    if prov:
+        with _LOCK:
+            _VERIF_HASTA[0] = time.time() + _VERIF_PAUSA
+            _VERIF_HASTA[1] = prov
+        raise Verificacion(prov)
     if not g.get("success") or not g.get("challenge"):
         raise RuntimeError("WolfMax: sin reto (%s %s)" % (st, g.get("error") or ""))
     reto = g["challenge"]
