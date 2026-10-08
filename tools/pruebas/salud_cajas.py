@@ -120,6 +120,10 @@ try:
     comprueba("EliteTorrent 200 -> vivas: et", con({"elitetorrent.com": 200}) == {"vivas": ["et"]})
     comprueba("las dos caidas", con({"wolfmax4k.com": 522, "elitetorrent.com": 521})
               == {"caidas": ["wf", "et"]})
+    comprueba("EliteTorrent 502 (el worker no saca respuesta: bucle de redirecciones, 08-10) -> caidas: et",
+              con({"elitetorrent.com": 502}) == {"caidas": ["et"]})
+    comprueba("...pero si en el mismo trabajo algo de ella contesto, viva",
+              con({"elitetorrent.com": 200, "wolfmax4k.com": 502}) == {"caidas": ["wf"], "vivas": ["et"]})
     comprueba("un reto (403) o un 404 no dicen nada",
               con({"wolfmax4k.com": 403, "elitetorrent.com": 404}) == {})
     comprueba("DonTorrent u otras webs no se cuentan aqui",

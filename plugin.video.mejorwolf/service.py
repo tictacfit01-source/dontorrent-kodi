@@ -304,7 +304,12 @@ def _poll_remote_kb():
 
 
 _FUENTE_HOSTS = {"wf": ("wolfmax4k.com",), "et": ("elitetorrent.com",)}
-_CODIGOS_CAIDA = (521, 522, 523, 524, 525, 526, 530)
+# 502 (2.9.88): nuestro worker de Cloudflare no consigue NINGUNA respuesta de
+# esa web. El 08-10 EliteTorrent se redirigia a si misma en bucle (301 a la
+# misma URL, para todo el mundo) y se veia como "0 resultados": ni aviso en la
+# web ni nada que dijera que era SU web. Si fuera un tropiezo, la caida
+# caduca sola en el relay y una caja vuelve a mirar a los 5 min.
+_CODIGOS_CAIDA = (502, 521, 522, 523, 524, 525, 526, 530)
 
 
 def _salud_en(out, t0):

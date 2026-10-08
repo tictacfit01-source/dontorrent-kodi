@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl72"
+BUILD = "dtbl73"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -9945,6 +9945,35 @@ def _vigia_ronda():
     return out
 
 
+_WFV_REPASO = [0.0]
+
+
+def _wf_verif_repasa():
+    """Mientras WolfMax pide verificacion humana, se vuelve a mirar ANTES de que
+    caduque la marca (a los 25 de sus 30 min). Sin esto, a la media hora el
+    aviso de la web se iba y las tarjetas de WolfMax volvian a mandar hasta que
+    alguien tropezaba con el captcha o pasaba el vigia (cada 3 h): parpadeaba.
+    Y si WolfMax la quita, se sabe sin esperar a que nadie lo intente. Un
+    trabajo de caja cada ~25 min y solo mientras dure (dtbl73)."""
+    ts = float(_wf_verif_lee().get("ts") or 0)
+    now = _t.time()
+    if not ts or not ((_WF_VERIF_PAUSA - 300) <= (now - ts) <= 3 * 3600):
+        return False
+    if (now - _WFV_REPASO[0]) < 300:
+        return False
+    _WFV_REPASO[0] = now
+    url = ""
+    for c in ("movie", "tvshow"):
+        url = next((x.get("url") for x in (_wfult_lee(c).get("items") or [])
+                    if _VIGIA_ARCHIVO_RE.search(x.get("url") or "")), "")
+        if url:
+            break
+    if not url:
+        return False
+    _resuelve_enlace("", "wf", url, espera=25.0, cache=False)
+    return True
+
+
 def _vigia_toca():
     """Cada 3 h, contando tambien lo que hizo el otro worker (fichero)."""
     ult = max(_VIGIA_T[0], max([float((v or {}).get("ts") or 0)
@@ -9965,6 +9994,7 @@ def _apr_bucle():
                 pausa = _apr_ronda()
                 if _vigia_toca():
                     _vigia_ronda()          # el vigia de las fuentes (dtbl53)
+                _wf_verif_repasa()          # la verificacion de WolfMax, al dia (dtbl73)
                 # Tras un despliegue (/tmp vacio) lo ultimo de WolfMax no
                 # esta: se pide ya, sin esperar a que alguien abra el Inicio y
                 # le salga el plan B (dtbl64). Solo si esta VACIO: el refresco

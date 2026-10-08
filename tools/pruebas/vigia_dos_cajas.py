@@ -177,6 +177,32 @@ try:
     js = A.app.test_client().get("/catdiag").get_json() or {}
     comprueba("/catdiag -> resolver los ensena sumados", (js.get("resolver") or {}).get("wf", {}).get("ok") == 3,
               js.get("resolver"))
+
+    print("\n=== 6) La verificacion de WolfMax se repasa antes de caducar (dtbl73) ===")
+    viejo_vf, viejo_res = A._WF_VERIF_FILE, A._resuelve_enlace
+    A._WF_VERIF_FILE = os.path.join(TMP, "wfverif.json")
+    PROBADAS = []
+    A._resuelve_enlace = lambda code, src, url, espera=18.0, cache=True: (
+        PROBADAS.append((src, url, cache)) or {"link": "", "error": "verificacion"})
+    A._WFULT["movie"] = {"items": [wf("Peli", "pv0001", year=2026)], "ts": time.time()}
+    try:
+        def marca(hace):
+            with open(A._WF_VERIF_FILE, "w", encoding="utf-8") as f:
+                json.dump({"ts": time.time() - hace, "desde": time.time() - hace}, f)
+            A._WFV_REPASO[0] = 0.0
+        comprueba("sin marca, nada que repasar", A._wf_verif_repasa() is False and not PROBADAS)
+        marca(10 * 60)
+        comprueba("con la marca reciente (10 min), tampoco", A._wf_verif_repasa() is False and not PROBADAS)
+        marca(26 * 60)
+        comprueba("a los 26 min, ANTES de que caduque: se vuelve a mirar de verdad (sin memoria)",
+                  A._wf_verif_repasa() is True and PROBADAS == [("wf", N + "/pelicula/pv0001", False)], PROBADAS)
+        comprueba("...y no otra vez enseguida", A._wf_verif_repasa() is False and len(PROBADAS) == 1)
+        marca(5 * 3600)
+        comprueba("con una marca de hace horas, ya lo dira el vigia", A._wf_verif_repasa() is False
+                  and len(PROBADAS) == 1)
+    finally:
+        A._WF_VERIF_FILE, A._resuelve_enlace = viejo_vf, viejo_res
+        A._WFULT.clear()
 finally:
     for k, v in viejos.items():
         setattr(A, k, v)
