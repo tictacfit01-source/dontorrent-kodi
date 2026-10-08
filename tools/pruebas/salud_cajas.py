@@ -165,6 +165,68 @@ try:
         comprueba("una version rara no rompe nada", service._ponte_al_dia("xyz", t0 + 99999) in (True, False))
     finally:
         service.xbmc.executebuiltin, service.xbmc.Player, service._addon_version = viejo
+
+    print("\n=== 5) Una sola fuente lenta no se corta a los 10 s (2.9.87) ===")
+    # El corte blando de 10 s ("ya solo falta la rezagada") con UNA fuente
+    # cortaba la unica que habia: una EliteTorrent de 12 s subia []. Reloj de
+    # mentira: cada sleep(0.2) del bucle avanza 0,2 s sin esperar de verdad.
+    import threading
+    import time as _real
+    from resources.lib import remote_kb as rkb
+
+    class _Reloj(object):
+        def __init__(self):
+            self.t = 1000.0
+            self.fin = False
+
+        def time(self):
+            return self.t
+
+        def sleep(self, s):
+            self.t += s
+            _real.sleep(0.0005)
+
+    SUBIDO = []
+
+    def lenta(tarda, n):
+        m = types.ModuleType("fuente_lenta")
+
+        def search(q):
+            r = RELOJ
+            fin = r.t + tarda
+            while r.t < fin and not r.fin:
+                _real.sleep(0.0005)
+            return [{"title": "Dune %d" % i, "kind": "movie", "url": "https://x/%d" % i}
+                    for i in range(n)]
+        m.search = search
+        return m
+
+    viejo = (service.time, service._src_mod, rkb.push_etjob)
+    try:
+        def trabajo(srcs, fuentes):
+            global RELOJ
+            RELOJ = _Reloj()
+            service.time = RELOJ
+            service._src_mod = lambda s: fuentes.get(s)
+            del SUBIDO[:]
+            listo = threading.Event()
+            rkb.push_etjob = lambda out: (SUBIDO.append(out), listo.set())
+            service._do_etjob({"op": "search", "srcs": srcs, "q": "dune", "job": "j1"})
+            listo.wait(20)
+            RELOJ.fin = True            # que la fuente atascada no siga girando
+            return (SUBIDO[0] if SUBIDO else {}), RELOJ.t - 1000.0
+
+        out, t = trabajo("et", {"et": lenta(12, 3)})
+        comprueba("EliteTorrent sola y lenta (12 s): llegan sus 3 resultados",
+                  len(out.get("items") or []) == 3 and 11.5 < t < 21.5, (len(out.get("items") or []), t))
+        out, t = trabajo("et", {"et": lenta(40, 3)})
+        comprueba("...y si se atasca, el tope duro de 21 s sigue ahi",
+                  out.get("items") == [] and 20.5 < t < 22, (out.get("items"), t))
+        out, t = trabajo("et,wf", {"et": lenta(0.5, 2), "wf": lenta(40, 5)})
+        comprueba("con varias, el corte blando sigue: a los 10 s no se espera a la rezagada",
+                  len(out.get("items") or []) == 2 and 9.5 < t < 11, (len(out.get("items") or []), t))
+    finally:
+        service.time, service._src_mod, rkb.push_etjob = viejo
 finally:
     import shutil
     shutil.rmtree(PERFIL, ignore_errors=True)

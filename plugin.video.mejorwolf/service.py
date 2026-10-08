@@ -606,7 +606,12 @@ def _do_etjob(ev):
                 while time.time() < _dl:
                     if not any(t.is_alive() for t in ths):
                         break                       # todas han terminado
-                    if time.time() >= _soft and len(res) >= len(srcs) - 1:
+                    # Solo con VARIAS fuentes (2.9.87): con una sola, len(srcs)-1
+                    # es 0 y se cortaba a los 10 s la unica que habia, subiendo
+                    # []. Y desde dtbk49 la web y el vigia piden cada fuente por
+                    # separado: una EliteTorrent de 12 s salia "0 resultados".
+                    if len(srcs) > 1 and time.time() >= _soft and \
+                            len(res) >= len(srcs) - 1:
                         break                       # solo falta la rezagada
                     time.sleep(0.2)
                 allit = []
