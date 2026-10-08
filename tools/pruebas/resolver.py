@@ -11,6 +11,7 @@ prueba este paso y lo dice si falla.
 """
 import os
 import sys
+import tempfile
 import time
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -155,6 +156,72 @@ try:
             pass
         if copia_v:
             shutil.move(copia_v, A._WF_VERIF_FILE)
+
+    print("\n=== 2c) De punta a punta: lo que dice la caja llega a la web (dtbl71) ===")
+    # 2) y 2b) simulaban la espera, y justo ahi estaba el fallo: /catjob/done
+    # guardaba unos campos fijos y TIRABA el "error" (el limite y el captcha desde
+    # la 2.9.79; la verificacion del 07-10). Aqui el resultado viaja como en
+    # produccion: la caja lo POSTea a /catjob/done y el relay lo recoge.
+    viejo_cj = A._CATJOB_FILE
+    A._CATJOB_FILE = tempfile.mktemp(prefix="mw_catjob_")
+    A._catjob_wait_any = viejos["_catjob_wait_any"]
+    cli = A.app.test_client()
+
+    def encola_real(box, ev):
+        PEDIDOS.append((box, ev.get("url")))
+        cuerpo = dict(RESPUESTA.get(box) or {}, job=ev.get("job"), op="resolve", code="000000")
+        cli.post("/catjob/done", json=cuerpo)
+
+    A._kb_enqueue = encola_real
+    copia_v2 = None
+    if os.path.exists(A._WF_VERIF_FILE):
+        copia_v2 = A._WF_VERIF_FILE + ".prueba_bak2"
+        shutil.move(A._WF_VERIF_FILE, copia_v2)
+    try:
+        olvida()
+        del PEDIDOS[:]
+        RESPUESTA.update({"caja1": {"link": "", "error": "verificacion"}})
+        r = A._resuelve_enlace("111111", "wf", W, espera=3.0)
+        comprueba("verificacion: la dice la caja y la web la recibe",
+                  r.get("error") == "verificacion" and len(PEDIDOS) == 1, (r, PEDIDOS))
+        A._wf_verif_apunta(False)
+        olvida()
+        del PEDIDOS[:]
+        RESPUESTA.update({"caja1": {"link": "", "error": "limite", "minutos": 37}})
+        r = A._resuelve_enlace("111111", "wf", W, espera=3.0)
+        comprueba("el limite de WolfMax llega con sus minutos",
+                  r.get("error") == "limite" and r.get("minutos") == 37, r)
+        olvida()
+        del PEDIDOS[:]
+        RESPUESTA.update({"caja1": {"link": "", "error": "<script>"},
+                          "caja2": {"link": "https://enlacito.com/s.php?i=zz"}})
+        r = A._resuelve_enlace("111111", "wf", W, espera=3.0)
+        comprueba("un error desconocido no se cuela (y se pide a otra caja)",
+                  r.get("link", "").endswith("zz") and "error" not in r
+                  and [b for b, u in PEDIDOS] == ["caja1", "caja2"], (r, PEDIDOS))
+        olvida()
+        RESPUESTA.update({"caja1": {"link": "magnet:?xt=urn:btih:pp"}})
+        r = A._resuelve_enlace("111111", "et", "https://elitetorrent.com/y", espera=3.0)
+        comprueba("y un enlace normal, igual que siempre", r.get("link") == "magnet:?xt=urn:btih:pp", r)
+    finally:
+        A._kb_enqueue = encola
+        A._catjob_wait_any = espera
+        for f in (A._CATJOB_FILE, A._CATJOB_FILE + ".tmp"):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        try:
+            os.rmdir(A._CATJOB_FILE + ".lockd")
+        except Exception:
+            pass
+        A._CATJOB_FILE = viejo_cj
+        try:
+            os.remove(A._WF_VERIF_FILE)
+        except Exception:
+            pass
+        if copia_v2:
+            shutil.move(copia_v2, A._WF_VERIF_FILE)
 
     print("\n=== 3) El vigia prueba este paso ===")
     import json

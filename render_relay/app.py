@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl70"
+BUILD = "dtbl71"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -8660,13 +8660,25 @@ def catjob_done():
     except Exception:
         pass
     now = _t.time()
+    # POR QUE la caja no saco el enlace (WolfMax: su limite de 60/h, un captcha o,
+    # desde el 07-10, verificacion humana en cada descarga). Las cajas lo mandan
+    # desde la 2.9.79, pero aqui solo se guardaban unos campos fijos y se perdia:
+    # la web veia un enlace vacio sin motivo y el vigia lo contaba como averia.
+    # dtbl71.
+    _err = str(body.get("error") or "")[:20]
+    try:
+        _min = max(0, min(600, int(body.get("minutos") or 0)))
+    except Exception:
+        _min = 0
     with _FileLock(_CATJOB_FILE):   # serializa con _catjob_wait (no perder el resultado)
         d = _catjob_load()
         d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
         d[job] = {"items": body.get("items"), "link": body.get("link"),
                   "rar": body.get("rar"), "quality": body.get("quality"),
                   "eps": body.get("eps"), "ih": body.get("ih"),
-                  "html": body.get("html"), "ts": now}
+                  "html": body.get("html"),
+                  "error": _err if _err in ("limite", "captcha", "verificacion") else None,
+                  "minutos": _min or None, "ts": now}
         _catjob_save(d)
     # AUNQUE YA NO LO ESPERE NADIE: al indice de WolfMax. Un titulo que la caja
     # no tenia indexado le cuesta ~88s de crawl (medido con "the last of us");
