@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl73"
+BUILD = "dtbl74"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14687,9 +14687,13 @@ function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);
  if(!c.length&&wv){e.innerHTML='ℹ️ <b>WolfMax pide ahora verificar cada descarga</b> (un captcha): sus títulos se ven, pero para reproducir en la tele usa otra fuente.';e.classList.add('on');return}
  if(!c.length){e.classList.remove('on');e.innerHTML='';return}
  var nom=c.map(function(s){return PROGN[s]||s}),un=nom.length===1;
- var viv=((d&&d.vivas)||[]).filter(function(s){return c.indexOf(s)<0}).map(function(s){return PROGN[s]||s});
+ // WolfMax con verificacion humana NO "funciona" para la tele: ni en la lista
+ // de las que van, y se dice aparte (08-10: con EliteTorrent caida, el aviso
+ // decia "DonTorrent, WolfMax y DivxTotal si funcionan")
+ var viv=((d&&d.vivas)||[]).filter(function(s){return c.indexOf(s)<0&&!(wv&&s==='wf')}).map(function(s){return PROGN[s]||s});
  e.innerHTML='⚠️ <b>'+_listaY(nom)+(un?' está caído':' están caídos')+' ahora mismo</b> — es un fallo de '+(un?'su web':'sus webs')+'. Sus títulos pueden no abrir'+
-  (viv.length?('; '+_listaY(viv)+(viv.length===1?' sí funciona':' sí funcionan')):'')+'.';
+  (viv.length?('; '+_listaY(viv)+(viv.length===1?' sí funciona':' sí funcionan')):'')+'.'+
+  (wv?'<br>ℹ️ <b>WolfMax pide ahora verificar cada descarga</b> (un captcha): para reproducir en la tele usa otra fuente.':'');
  e.classList.add('on');}
 function pintaDtAviso(dc){pintaCaidas(dc?{dt_caida:dc}:null)}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;

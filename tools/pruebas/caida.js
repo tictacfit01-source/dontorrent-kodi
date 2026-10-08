@@ -164,6 +164,11 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
   comprueba('WolfMax con verificacion humana (dtbl70): se dice, sin decir que esta caido',
     $('dt-aviso').classList.contains('on') && /verificar cada descarga/.test($('dt-aviso').innerHTML)
     && !/caído/.test($('dt-aviso').innerHTML), $('dt-aviso').innerHTML);
+  pintaCaidas({ caidas: ['et'], vivas: ['dt', 'wf', 'dx'], wf_verif: true });
+  const av3 = $('dt-aviso').innerHTML;
+  comprueba('EliteTorrent caida + WolfMax con verificacion (08-10): WolfMax NO "funciona", y se dice por que',
+    /EliteTorrent está caído/.test(av3) && /DonTorrent y DivxTotal sí funcionan/.test(av3)
+    && !/WolfMax[^<]*sí funciona/.test(av3) && /verificar cada descarga/.test(av3), av3);
   pintaCaidas({ items: [] });
 
   console.log('\n=== 4c) Reproducir de una fuente caida (WolfMax) ===');
