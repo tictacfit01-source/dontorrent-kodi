@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl71"
+BUILD = "dtbl72"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -2612,6 +2612,48 @@ def _dx_search_items(q, max_pages=5, proxy=False):
         _DX_SEM.release()
 
 
+# Una busqueda de la gente pedia DOS veces lo mismo a DivxTotal: /catsearch y
+# /catdxsearch, que el front lanza a la vez. Ademas de duplicar trabajo contra
+# una web que tarpitea a Render, las dos se comian los 2 huecos de _DX_SEM y una
+# TERCERA busqueda (otra persona, mismo worker) salia sin DivxTotal al instante.
+# Ahora la segunda espera a la primera, y lo encontrado vale 90 s (dtbl72).
+_DXQ_VUELO = {}     # q -> Event: busqueda de DivxTotal en marcha en ESTE worker
+_DXQ_MEMO = {}      # q -> (ts, items)
+_DXQ_LOCK = _thr.Lock()
+_DXQ_TTL = 90
+
+
+def _dx_busca_compartida(q, espera=8.0):
+    k = (q or "").strip().lower()
+    now = _t.time()
+    with _DXQ_LOCK:
+        m = _DXQ_MEMO.get(k)
+        if m and (now - m[0]) < _DXQ_TTL:
+            return [dict(x) for x in m[1]]
+        ev = _DXQ_VUELO.get(k)
+        duenio = ev is None
+        if duenio:
+            ev = _thr.Event()
+            _DXQ_VUELO[k] = ev
+    if not duenio:
+        ev.wait(espera)
+        m = _DXQ_MEMO.get(k)
+        return [dict(x) for x in m[1]] if m else []
+    try:
+        items = _dx_search_items(q) or []
+        if items:      # un vacio no se recuerda: puede ser el disyuntor o un tropiezo
+            with _DXQ_LOCK:
+                _DXQ_MEMO[k] = (_t.time(), [dict(x) for x in items])
+                if len(_DXQ_MEMO) > 64:
+                    for kk in sorted(_DXQ_MEMO, key=lambda z: _DXQ_MEMO[z][0])[:16]:
+                        _DXQ_MEMO.pop(kk, None)
+        return items
+    finally:
+        with _DXQ_LOCK:
+            _DXQ_VUELO.pop(k, None)
+        ev.set()
+
+
 _DX_TRACE = {}   # etapas/tiempos de la ULTIMA busqueda dx directa (ver /catdiag)
 
 
@@ -4432,7 +4474,17 @@ def _cat_clean_title(title):
     t = _re_dt.sub(r"\b(1080p|720p|480p|2160p|4k|bluray|blu-?ray|brrip|bdrip|"
                    r"web-?dl|webrip|hdtv|microhd|dvdrip|hdrip|x264|x265|hevc|"
                    r"dual|castellano|latino|vose?)\b.*", "", t, flags=_re_dt.I)
-    return t
+    # La EDICION no es parte del titulo: "Gladiator (El gladiador) Version
+    # extendida" preguntaba a TMDB por "Gladiator Version extendida" y salia
+    # sin cartel ni nota (la "(Edicion 10 Aniversario)" entre parentesis si
+    # casaba). Solo para la consulta: el titulo que se ve no cambia (dtbl72).
+    t2 = _re_dt.sub(r"\b(versi[oó]n\s+(extendida|del\s+director|sin\s+censura|"
+                    r"integra|íntegra|remasterizada)|montaje\s+del\s+director|"
+                    r"edici[oó]n\s+(especial|extendida|coleccionista|limitada|"
+                    r"definitiva|\d+\s*aniversario)|remasterizad[ao])\b.*",
+                    "", t, flags=_re_dt.I)
+    # (si no queda NADA, mejor el titulo entero que una consulta vacia)
+    return t2 if t2.strip(" -.:") else t
 
 
 # Breaker TMDB: TMDB tambien banea la IP de Render tras muchas llamadas (el enrich
@@ -5521,7 +5573,11 @@ def _enr_map(fn, items, tope_s):
     return len(hechos)
 
 
-def _cat_enrich(items, limit=120):
+def _cat_enrich(items, limit=120, vistos=None):
+    # `vistos` (un set, opcional): ahi quedan los id() de los items cuya
+    # respuesta es DEFINITIVA -- TMDB contesto (aunque fuera "no lo conozco") o
+    # la ficha de la caja ya lo decia. Un item sin cartel que NO esta ahi es que
+    # el enriquecimiento no llego a tiempo o TMDB estaba caido (dtbl72).
     # NO descartamos resultados: la busqueda debe volcar TODO lo que da la web
     # original (DonTorrent puede traer 49+ en "batman"). Enriquecemos con TMDB
     # (poster/nota) hasta `limit` en paralelo; el resto (rarisimo) se devuelve
@@ -5544,11 +5600,16 @@ def _cat_enrich(items, limit=120):
         if _meta_fiable(_dtm, it.get("kind")) and _cat_apply_meta(it, _dtm):
             if not it.get("poster"):
                 it["poster"] = it.get("thumb")
+            if vistos is not None:
+                vistos.add(id(it))
             return it
+        _caido = _tmdb_is_down()
         meta = _cat_tmdb(it["title"],
                          "tv" if it.get("kind") == "serie" else "movie",
                          # el de la FUENTE, si lo da aparte y fiable (WolfMax)
                          it.get("year") if it.get("source") == "wf" else None)
+        if vistos is not None and not _caido and not _tmdb_is_down():
+            vistos.add(id(it))           # TMDB contesto: lo que diga es definitivo
         poster, year, rating = meta.get("poster"), meta.get("year"), meta.get("rating")
         if (not poster) or (rating is None):
             # TMDB no respondio (banea la IP de Render). En vez de DEGRADAR a la
@@ -5742,6 +5803,17 @@ def _dt_variantes(q):
     Solo se usan cuando la primera busqueda vuelve VACIA."""
     q = (q or "").strip()
     out = []
+    # El NUMERO de la secuela: DonTorrent titula "Gladiator II" y quien busca
+    # "gladiator 2" no encontraba su 4K (y al reves, "Deadpool 2"). La primera,
+    # porque es la que se lanza a la vez que la literal (dtbl72).
+    _p = q.split()
+    if len(_p) >= 2:
+        _num = {v: k for k, v in _ROMANOS.items()}
+        _ult = _p[-1].lower()
+        if _ult in _num:
+            out.append(" ".join(_p[:-1] + [_num[_ult]]))
+        elif _ult in _ROMANOS:
+            out.append(" ".join(_p[:-1] + [_ROMANOS[_ult]]))
     # Todo con guiones, solo en titulos CORTOS ("x men", "spider man", "wall e"):
     # nadie publica "la-sociedad-de-la-nieve", y probarlo costaba otro viaje a
     # la caja (~3 s) en cada busqueda larga sin resultados (dtbl63).
@@ -6609,6 +6681,20 @@ def _dtq_get(q):
     return []
 
 
+def _dtq_desde(q):
+    """Cuando dejo la caja (o DonTorrent directo) su ultimo resultado de `q`;
+    0 si nada. Mira tambien el disco: lo pudo dejar el OTRO worker."""
+    k = (q or "").lower()
+    ts = float((_DTQ_CACHE.get(k) or {}).get("ts") or 0)
+    try:
+        e = _dtq_load().get(k) or {}
+        if e.get("items"):
+            ts = max(ts, float(e.get("ts") or 0))
+    except Exception:
+        pass
+    return ts
+
+
 def _dtq_put(q, items):
     if not items:
         return
@@ -6644,7 +6730,12 @@ def catsearch():
         cent = _catsearch_load().get(qkey)
         if cent:
             _CATSEARCH_CACHE[qkey] = cent
-    if cent and (now - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
+    # Una respuesta PARCIAL guardada no puede tapar lo que la caja trajo DESPUES:
+    # el front vuelve a preguntar a los 7 s justo para recogerlo, y le llegaba
+    # la misma respuesta parcial (guardada 150 s). Si la caja ya dejo algo mas
+    # nuevo en _DTQ, se recalcula -- con eso en mano es casi instantaneo (dtbl72).
+    if cent and (now - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL) and \
+            not (cent.get("parcial") and _dtq_desde(q) > float(cent["ts"])):
         return jsonify(_con_caida({"items": _al_servir(cent["items"]),
                                    "cached": True}))
     # --- Single-flight: si una busqueda IDENTICA ya se esta calculando en este
@@ -6665,12 +6756,14 @@ def catsearch():
         # fan-out). Cuando termine, servimos su cache.
         _ev.wait(8.0)
         cent = _CATSEARCH_CACHE.get(qkey) or _catsearch_load().get(qkey)
+        # (con el estado de las fuentes, como las demas: si no, el aviso de
+        # DonTorrent caido o de WolfMax con verificacion no llegaba por aqui)
         if cent and (_t.time() - cent["ts"]) < cent.get("ttl", _CATSEARCH_TTL):
-            return jsonify({"items": _al_servir(cent["items"]), "cached": True})
+            return jsonify(_con_caida({"items": _al_servir(cent["items"]), "cached": True}))
         if cent and cent.get("items"):
             # caducada pero utilizable: mejor lo de hace un rato que nada
-            return jsonify({"items": _al_servir(cent["items"]), "cached": True,
-                            "stale": True, "partial": True})
+            return jsonify(_con_caida({"items": _al_servir(cent["items"]), "cached": True,
+                                       "stale": True, "partial": True}))
         # El dueño aun no ha terminado. OJO: aqui se devolvia un 503 con el
         # cuerpo VACIO y eso REVIENTA el r.json() del navegador -> el front lo
         # tomaba por error de red y acababa pintando "Despertando el
@@ -6815,7 +6908,7 @@ def catsearch():
             # DivxTotal DIRECTO (sin code); LENTO desde Render (Cloudflare) -> ultimo
             # recurso, nunca bloquea la respuesta.
             try:
-                _r["dx"] = _dx_search_items(q) or []
+                _r["dx"] = _dx_busca_compartida(q) or []
             except Exception:
                 pass
         _ths = [_th.Thread(target=f, daemon=True)
@@ -6875,8 +6968,11 @@ def catsearch():
         # contador), DivxTotal es la unica fuente restante -> se le da su tiempo
         # real (reto Cloudflare ~3-6s), siempre acotado al deadline total.
         # DX: el front lo pide APARTE (/catdxsearch) y lo fusiona al llegar, asi
-        # que aqui solo se recoge lo que ya este; no se le espera.
-        _ths[3].join(min(1.5 if (_r["dt"] or _r["box"]) else 3.0, _rem()))  # DX
+        # que aqui solo se recoge lo que ya este; no se le espera. Con DonTorrent
+        # ya en mano, CERO: se esperaban 1,5 s que eran media busqueda (medido:
+        # "anora" 2,65 s, 1,5 de ellos esperando a DivxTotal) para algo que el
+        # front recibe igual por su lado y añade al final sin mover nada (dtbl72).
+        _ths[3].join(min(0.0 if (_r["dt"] or _r["box"]) else 3.0, _rem()))  # DX
         _tm["dx"] = round(_t.time() - _tm0, 2)
         if _r.get("t_caja"):
             _tm["caja"] = round(_r["t_caja"] - _tm0, 2)
@@ -6950,6 +7046,7 @@ def catsearch():
         # Si TODO viene ya enriquecido (es el caso de la cache del catalogo:
         # poster HD y nota ya resueltos), NO se toca TMDB — que ademas banea a
         # Render y es justo lo que hace lenta esta ruta.
+        _vis = set()
         if merged and all(it.get("poster") and it.get("rating") is not None
                           for it in merged):
             enr = merged
@@ -6958,7 +7055,7 @@ def catsearch():
             # items salen con su caratula propia -> mejor eso que 20s de rueda;
             # ademas la respuesta se cachea con TTL corto y la 2a pasada del
             # front los enriquece (para entonces la cache TMDB ya esta caliente).
-            enr = _bounded(lambda: _cat_enrich(merged),
+            enr = _bounded(lambda: _cat_enrich(merged, vistos=_vis),
                            max(1.5, min(5.0, _rem())), merged) or merged
         # Homonimos (Suspiria 1977 vs 2018): DT no da año en el listado y TMDB le da
         # el mismo a ambos -> el dedup los fundiria. Si hay choque de titulo, leemos
@@ -6984,8 +7081,12 @@ def catsearch():
         if not any((it or {}).get("source") == "dt" for it in (items or [])) \
                 and not _r.get("box_ok"):
             _parcial = True
-        # sin poster = el enrich no cupo -> tampoco es una respuesta "definitiva"
-        if enr and not all(it.get("poster") for it in enr):
+        # sin poster = el enrich no cupo -> tampoco es una respuesta "definitiva".
+        # Salvo que TMDB haya CONTESTADO que no lo conoce: eso no cambia en 7 s
+        # ("Gladiator ... Version extendida" dejaba TODA la busqueda parcial: 7 s
+        # mas de "Buscando en mas fuentes" y recalculo cada 150 s) (dtbl72).
+        _sin = [it for it in (enr or []) if not it.get("poster")]
+        if _sin and (_tmdb_is_down() or any(id(it) not in _vis for it in _sin)):
             _parcial = True
         if items:   # cachear SOLO resultados utiles (no cachear vacios -> reintentar)
             # Si una colision de homonimos quedo SIN resolver, TTL corto (90s) -> se
@@ -6998,6 +7099,7 @@ def catsearch():
                 rec["ttl"] = 150  # parcial -> caduca pronto y se completa solo
                                   # (45s era tan corto que recalculaba en cadena
                                   #  y disparaba el single-flight a todas horas)
+                rec["parcial"] = True   # ...y no tapa lo que llegue (dtbl72)
             _CATSEARCH_CACHE[qkey] = rec
             try:   # persistir a disco -> compartido entre workers (gthread=2 procesos)
                 disk = _catsearch_load()
@@ -7046,7 +7148,7 @@ def catdxsearch():
     if cent and (now - cent.get("ts", 0)) < cent.get("ttl", _CATSEARCH_TTL):
         _CATSEARCH_CACHE[qkey] = cent
         return jsonify({"items": _al_servir(cent["items"]), "cached": True})
-    items = _bounded(lambda: _dx_search_items(q), 8.0, []) or []
+    items = _bounded(lambda: _dx_busca_compartida(q), 8.0, []) or []
     if not items and _sapi_credits_ok() and qkey not in _DXBG:
         # FAILOVER anti-tarpit via ScraperAPI (IP residencial): Cloudflare
         # tarpitea el patron '/?s=' desde la IP de Render (la portada pasa, la
@@ -7653,6 +7755,15 @@ def _wfidx_learn(items):
                    "q": (it.get("quality") or "")[:12]}
             # una entrada POBRE no pisa a una buena (ver _wf_pobre)
             _ant = idx.get(u)
+            # ...y la CARATULA no se pierde: la de la tarjeta, o la que ya tenia.
+            # Sin esto, cada "lo ultimo" o busqueda que pasaba por aqui borraba
+            # la "i" que /wffeed habia guardado, y el scroll infinito del Inicio
+            # (que sale del indice) iba quedandose en gris (dtbl72).
+            _img = it.get("thumb") or it.get("image") or ""
+            if isinstance(_img, str) and _img.startswith("http"):
+                rec["i"] = _img[:220]
+            elif _ant and _ant.get("i"):
+                rec["i"] = _ant["i"]
             if _ant and _wf_pobre(u, rec["t"], rec["k"]) and \
                     not _wf_pobre(u, _ant.get("t"), _ant.get("k")):
                 continue
@@ -8032,6 +8143,43 @@ def _resuelve_cuenta(src, que):
         d["ult_ok"] = int(_t.time())
     elif que in ("vacio", "limite", "verificacion"):
         d["ult_fallo"] = int(_t.time())
+    # Cada worker cuenta lo SUYO, y /catdiag lo contestaba uno solo: la mitad de
+    # los contadores no se veia, segun quien atendiera (lo del vigia, en uno; lo
+    # de la gente, repartido). Cada uno lo deja en su fichero -- sin cerrojo, es
+    # solo suyo -- y /catdiag los suma (dtbl72).
+    try:
+        tmp = "%s.%d.json.tmp" % (_RESUELVE_N_BASE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(_RESUELVE_N, f)
+        os.replace(tmp, "%s.%d.json" % (_RESUELVE_N_BASE, os.getpid()))
+    except Exception:
+        pass
+
+
+_RESUELVE_N_BASE = "/tmp/mw_resuelve_n"
+
+
+def _resuelve_n_todos():
+    """Los contadores de los dos workers (y de los relevados), sumados."""
+    tot = {}
+    try:
+        import glob as _glob
+        for p in _glob.glob(_RESUELVE_N_BASE + ".*.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    d = _json.load(f) or {}
+            except Exception:
+                continue
+            for src, c in d.items():
+                t = tot.setdefault(src, {})
+                for k, v in (c or {}).items():
+                    if k.startswith("ult_"):
+                        t[k] = max(int(t.get(k) or 0), int(v or 0))
+                    else:
+                        t[k] = int(t.get(k) or 0) + int(v or 0)
+    except Exception:
+        pass
+    return tot or {k: dict(v) for k, v in _RESUELVE_N.items()}
 
 
 def _resuelve_caja(code, src, excluir=()):
@@ -9677,21 +9825,33 @@ def _vigia_juzga(src, items):
             "problemas": problemas}
 
 
-def _vigia_busca(src):
-    """(items, "") o (None, por que no)."""
+def _vigia_busca(src, excluir=()):
+    """(items, "", caja) o (None, por que no, caja). `excluir`: cajas que ya se
+    probaron en esta ronda (para pedirselo a OTRA)."""
     if src == "dx":
+        # DivxTotal devuelve [] AL INSTANTE con el disyuntor saltado: eso no es
+        # "0 resultados", es que no contesto hace un momento (dtbl72)
+        if _dx_is_down():
+            return None, "DivxTotal no contesta a Render (disyuntor)", None
         its = _bounded(lambda: _dx_search_items(_VIGIA_Q, max_pages=1), 25.0, None)
-        return (its, "") if its is not None else (None, "no contesto")
-    box = _box_wf("") if src == "wf" else _box_for("")
+        if its == [] and _dx_is_down():
+            return None, "DivxTotal no contesta a Render (disyuntor)", None
+        return (its, "", None) if its is not None else (None, "no contesto", None)
+    if src == "wf":
+        box = _box_wf("", excluir=excluir)
+    elif excluir:
+        box = next((b for b in _live_boxes(al_dia=True) if b not in excluir), None)
+    else:
+        box = _box_for("")
     if not box:
-        return None, "sin caja al dia"
+        return None, "sin caja al dia", None
     j = "vg" + os.urandom(5).hex()
     _kb_enqueue(box, {"c": "etjob", "job": j, "op": "search", "q": _VIGIA_Q,
                       "srcs": src})
     res = _catjob_wait(j, 30.0)
     if res is None:
-        return None, "la caja no contesto"
-    return [x for x in (res.get("items") or []) if (x or {}).get("source") == src], ""
+        return None, "la caja no contesto", box
+    return [x for x in (res.get("items") or []) if (x or {}).get("source") == src], "", box
 
 
 _VIGIA_ARCHIVO_RE = re.compile(r"/(?:pelicula|serie/episodio|documental/episodio)/[a-z0-9]+/?$", re.I)
@@ -9731,9 +9891,22 @@ def _vigia_ronda():
             if src in caidas:
                 juicio = {"n": 0, "problemas": ["caida (su web no responde)"], "caida": True}
             else:
-                items, por = _vigia_busca(src)
+                items, por, b1 = _vigia_busca(src)
+                # Una caja que no contesta o que trae casi nada puede ser cosa
+                # de SU casa (su ISP, una tele apagandose), no de la fuente. El
+                # camino de la gente ya prueba otra caja; el vigia no, y apuntaba
+                # un '-' sin mas. Antes de decir que va mal, OTRA caja (dtbl72).
+                _dos = False
+                if src in ("wf", "et") and b1 and (items is None or len(items) < 3):
+                    it2, por2, b2 = _vigia_busca(src, excluir=(b1,))
+                    if b2 and b2 != b1:
+                        _dos = True
+                        if it2 is not None and (items is None or len(it2) > len(items)):
+                            items, por = it2, por2
                 juicio = _vigia_juzga(src, items) if items is not None else \
                     {"n": 0, "problemas": [por]}
+                if _dos:
+                    juicio["cajas"] = 2
                 if items:
                     en = _vigia_enlace(src, items)
                     if en:
@@ -9752,6 +9925,14 @@ def _vigia_ronda():
         rec = dict(juicio, ok=ok, ts=now)
         if not ok:
             rec["mal_desde"] = antes.get("mal_desde") if antes.get("ok") is False else now
+        # El PORQUE del ultimo '-' se queda aunque la siguiente ronda vaya bien:
+        # sin el, de un "+-+++-++" no habia forma de saber que habia fallado
+        # (revision del 07-10) (dtbl72).
+        if not ok:
+            rec["ult_mal"] = {"ts": now, "problemas": list(juicio["problemas"]),
+                              "n": juicio.get("n", 0), "cajas": juicio.get("cajas", 1)}
+        elif antes.get("ult_mal"):
+            rec["ult_mal"] = antes["ult_mal"]
         rec["historia"] = ((antes.get("historia") or "") + ("+" if ok else "-"))[-8:]
         out[src] = rec
     try:
@@ -11138,6 +11319,7 @@ def _zip_largo(a, b):
 _WFULT_FILE = "/tmp/mw_wf_ultimos.json"
 _WFULT = {}                  # clase ("movie"/"tvshow") -> {"items": [...], "ts": t}
 _WFULT_VUELO = {}            # clase -> desde cuando hay una peticion en marcha
+_WFULT_DIAG = {}             # clase -> el ultimo intento: {ts, n, cajas, por} (dtbl72)
 _WFULT_CADA = 30 * 60
 _WFULT_PAGINAS = {"movie": (1, 2, 3), "tvshow": (1, 2)}
 _WFULT_MIN = {"movie": None, "tvshow": (2, 9, 80)}    # "kind" en op=latest: 2.9.80
@@ -11146,47 +11328,85 @@ _WF_RANGO = {"4K": 9, "1080p": 8, "BDRemux": 8, "720p": 6, "BluRay": 6,
              "WEBRip": 3, "DVDRip": 2, "DVD": 2}
 
 
+_WFULT_MT = [0.0]            # mtime del fichero la ultima vez que se leyo
+
+
+def _wfult_disco():
+    try:
+        with open(_WFULT_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
 def _wfult_lee(clase):
-    e = _WFULT.get(clase)
-    if not e:
-        try:
-            with open(_WFULT_FILE, "r", encoding="utf-8") as f:
-                for k, v in (_json.load(f) or {}).items():
-                    if isinstance(v, dict) and k not in _WFULT:
-                        _WFULT[k] = v
-        except Exception:
-            pass
-        e = _WFULT.get(clase)
-    return e or {}
+    # Cada worker tiene su copia en memoria; si el OTRO la renovo (fichero
+    # mas nuevo), se coge la suya en vez de seguir con la vieja (dtbl72).
+    try:
+        mt = os.path.getmtime(_WFULT_FILE)
+    except Exception:
+        mt = 0.0
+    if mt and (mt != _WFULT_MT[0] or not _WFULT.get(clase)):
+        _WFULT_MT[0] = mt
+        for k, v in _wfult_disco().items():
+            if isinstance(v, dict) and float(v.get("ts") or 0) > \
+                    float((_WFULT.get(k) or {}).get("ts") or 0):
+                _WFULT[k] = v
+    return _WFULT.get(clase) or {}
 
 
 def _wfult_guarda():
+    """A disco, FUNDIENDO con lo que haya: se escribia la memoria de este worker
+    tal cual y, si no tenia una clase, borraba la que el otro habia guardado."""
     try:
+        d = _wfult_disco()
+        for k, v in _WFULT.items():
+            if isinstance(v, dict) and float(v.get("ts") or 0) >= \
+                    float((d.get(k) or {}).get("ts") or 0):
+                d[k] = v
         tmp = "%s.%d.tmp" % (_WFULT_FILE, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(_WFULT, f)
+            _json.dump(d, f)
         os.replace(tmp, _WFULT_FILE)
     except Exception:
         pass
 
 
 def _wfult_trae(clase):
-    """Una caja trae lo ultimo de WolfMax de esa clase. Lista de items."""
-    box = _box_wf("", minimo=_WFULT_MIN.get(clase))
+    """Una caja trae lo ultimo de WolfMax de esa clase. Lista de items.
+
+    Si la primera no trae NI la primera pagina (no contesta, o su casa no llega
+    a WolfMax), se le pide a OTRA: era un solo camino y, con la misma caja
+    elegida siempre la primera, el Inicio podia quedarse horas con la foto
+    vieja sin que nada lo dijera (dtbl72). Lo que paso queda en _WFULT_DIAG."""
+    _min = _WFULT_MIN.get(clase)
+    box = _box_wf("", minimo=_min)
     if not box:
+        _WFULT_DIAG[clase] = {"ts": int(_t.time()), "n": 0, "por": "sin caja al dia"}
         return []
-    items = []
-    for pag in _WFULT_PAGINAS.get(clase, (1,)):
-        j = "wl" + os.urandom(5).hex()
-        _kb_enqueue(box, {"c": "etjob", "job": j, "op": "latest", "srcs": "wf",
-                          "kind": clase, "page": pag})
-        res = _catjob_wait(j, 30.0)
-        its = [x for x in ((res or {}).get("items") or [])
-               if (x or {}).get("source") == "wf" and _wf_url_nueva(x.get("url"))
-               and ((x.get("kind") == "serie") == (clase == "tvshow"))]
-        if not its:
+    items, probadas, por = [], [], ""
+    while box and len(probadas) < 2:
+        probadas.append(box)
+        for pag in _WFULT_PAGINAS.get(clase, (1,)):
+            j = "wl" + os.urandom(5).hex()
+            _kb_enqueue(box, {"c": "etjob", "job": j, "op": "latest", "srcs": "wf",
+                              "kind": clase, "page": pag})
+            res = _catjob_wait(j, 30.0)
+            if res is None and pag == 1:
+                por = "la caja no contesto"
+            its = [x for x in ((res or {}).get("items") or [])
+                   if (x or {}).get("source") == "wf" and _wf_url_nueva(x.get("url"))
+                   and ((x.get("kind") == "serie") == (clase == "tvshow"))]
+            if not its:
+                if pag == 1 and res is not None:
+                    por = "vacio"
+                break
+            items += its
+        if items:
             break
-        items += its
+        box = _box_wf("", excluir=tuple(probadas), minimo=_min)
+    _WFULT_DIAG[clase] = {"ts": int(_t.time()), "n": len(items), "cajas": len(probadas),
+                          "por": "" if items else (por or "vacio")}
     return items
 
 
@@ -11544,7 +11764,7 @@ def catdiag():
         "trace": dict(_DX_TRACE),
     }
     # sacar enlaces para reproducir: aciertos, fallos, de memoria (dtbl68)
-    out["resolver"] = {k: dict(v) for k, v in _RESUELVE_N.items()}
+    out["resolver"] = _resuelve_n_todos()     # los dos workers (dtbl72)
     out["wf_verificacion"] = dict(_wf_verif_lee(), activa=_wf_verif_activa())   # dtbl70
     # la copia de las fichas del Inicio (dtbl65)
     out["enriq_nube"] = dict(_ENRIQ_NUBE)
@@ -11561,7 +11781,10 @@ def catdiag():
     # lo ultimo de WolfMax para el Inicio (dtbl52)
     out["wf_ultimos"] = dict((c, {"n": len(_wfult_lee(c).get("items") or []),
                                   "edad_s": int(now - float(_wfult_lee(c).get("ts") or 0))
-                                  if _wfult_lee(c).get("ts") else None})
+                                  if _wfult_lee(c).get("ts") else None,
+                                  # el ultimo intento de traerlo, bueno o malo
+                                  # (de ESTE worker) (dtbl72)
+                                  "ult_intento": _WFULT_DIAG.get(c)})
                              for c in ("movie", "tvshow"))
     # el cupo de descargas de WolfMax que se lleva lo de las semillas (dtbl49)
     out["wf_cupo"] = {"usadas_hora": len(_wf_cupo_lee()), "tope": _WF_CUPO_HORA}

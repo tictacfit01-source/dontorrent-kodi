@@ -235,8 +235,8 @@ try:
             "url": "https://wolfmax4k.com/pelicula/d9db5r"}
     serie = {"title": "Ted Lasso 1x01", "source": "wf", "kind": "serie", "quality": "720p",
              "url": "https://wolfmax4k.com/serie/episodio/zrfbxt"}
-    A._vigia_busca = lambda src: ([dict(peli), dict(serie), dict(peli, url=peli["url"] + "x")], "") \
-        if src == "wf" else ([], "")
+    A._vigia_busca = lambda src, excluir=(): ([dict(peli), dict(serie), dict(peli, url=peli["url"] + "x")],
+                                              "", "caja1") if src == "wf" else ([], "", None)
     PROBADAS = []
     A._resuelve_enlace = lambda code, src, url, espera=18.0, cache=True: (
         PROBADAS.append((src, url, cache)) or {"link": ""})

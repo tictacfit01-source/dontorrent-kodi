@@ -67,6 +67,7 @@ def prueba(pagina, dx, q):
     del CAJA[:]
     del ORDEN[:]
     A._CATSEARCH_CACHE.clear()
+    A._DXQ_MEMO.clear()            # lo de DivxTotal se recuerda 90 s (dtbl72)
     A._cat_dt_html = directo_colgado
     A._dx_search_items = lambda q, proxy=False: [dict(x) for x in dx]
 
@@ -102,7 +103,7 @@ try:
     A._sapi_credits_ok = lambda: False
     A._tmdb_alt_titles = lambda q: ["The Wild Robot"]
     A._cat_disambiguate_years = lambda it, dl, box=None, cap=12: (it, True)
-    A._cat_enrich = lambda it, limit=None: it
+    A._cat_enrich = lambda it, limit=None, vistos=None: it
     A._catsearch_save = lambda d: None
     A._catsearch_load = lambda: {}
 

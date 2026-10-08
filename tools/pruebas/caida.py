@@ -423,7 +423,7 @@ try:
     A._sapi_credits_ok = lambda: False
     A._tmdb_alt_titles = lambda q: []
     A._cat_disambiguate_years = lambda it, dl, box=None, cap=12: (it, True)
-    A._cat_enrich = lambda it, limit=None: it
+    A._cat_enrich = lambda it, limit=None, vistos=None: it
     try:
         escribe(A._CATSEARCH_FILE, {})
         A._CATSEARCH_CACHE.clear()
