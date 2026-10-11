@@ -495,7 +495,7 @@ def _dt_meta(content_id, tabla):
         _DTQ_RE = _re.compile(
             rb"(4K|2160p|1080p|720p|HDRip|BluRay|BDRemux|BDRip|WEB-?DL|WEBRip|"
             rb"MicroHD|HDTV|DVDRip|Remux|UHD)", _re.I)
-    out = {"rar": False, "quality": "", "ih": ""}
+    out = {"rar": False, "quality": "", "ih": "", "n": "", "b": 0}
     try:
         from resources.lib import scraper_dontorrent as dt
         from resources.lib import torrent as tparse
@@ -520,6 +520,13 @@ def _dt_meta(content_id, tabla):
                 # info_hash -> el relay deriva los seeders por scrape UDP (lo unico
                 # que SI puede desde la IP de Render aunque DonTorrent la banee).
                 out["ih"] = tparse.info_hash_hex(data)
+            except Exception:
+                pass
+            try:
+                # nombre y tamaño del .torrent: con ellos el relay reconoce el
+                # MISMO torrent publicado en WolfMax y lo reproduce por magnet
+                # sin la verificacion de su web (2.9.90)
+                out["n"], out["b"] = tparse.nombre_y_tamano(data)
             except Exception:
                 pass
             if not out["quality"]:
@@ -724,6 +731,8 @@ def _do_etjob(ev):
                 out["rar"] = m["rar"]
                 out["quality"] = m["quality"]
                 out["ih"] = m.get("ih", "")
+                out["n"] = m.get("n", "")
+                out["b"] = m.get("b", 0)
             else:
                 return
             _salud_en(out, t_ini)        # WolfMax/EliteTorrent: caidas o vivas

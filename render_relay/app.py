@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl78"
+BUILD = "dtbl79"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -8435,7 +8435,7 @@ _WFIH_MAX_P = 6000           # torrents de los ZIP aun sin ficha
 _WFIH_TOPE_GZ = 900 * 1024   # el worker admite 1 MB (en base64)
 _WFIH_NUBE = {"subida_ts": 0.0, "vuelo": 0.0, "cambios": 0, "subidas": 0,
               "fallos": 0, "bajadas": 0, "recuperadas": 0, "bytes": 0}
-_WFIH_N = {"magnet": 0, "subidas": 0, "rechazos": 0, "emparejados": 0}
+_WFIH_N = {"magnet": 0, "subidas": 0, "rechazos": 0, "emparejados": 0, "cruce_dt": 0}
 _WFIH_IH = re.compile(r"^[0-9a-f]{40}$")
 _WFIH_MEM = {"mt": -1.0, "d": None}
 # Los publicos que sus .torrent ya traen (y los mismos con que se cuentan las
@@ -8840,9 +8840,161 @@ def _wfih_conocidos():
         for it in (_wfult_lee(c).get("items") or []):
             u = _wf_url_clave(it.get("url") or "")
             if u and it.get("size"):
-                out.append((u, {"t": it.get("title") or "", "q": it.get("quality") or "",
-                                "sz": it.get("size")}))
+                meta = {"t": it.get("title") or "", "q": it.get("quality") or "",
+                        "sz": it.get("size")}
+                if re.match(r"^(19|20)\d\d$", str(it.get("year") or "")):
+                    meta["y"] = str(it["year"])      # solo lo usa el cruce con DonTorrent
+                out.append((u, meta))
     return out
+
+
+# --- El MISMO torrent en DonTorrent (dtbl79) -----------------------------------
+# WolfMax republica muchos .torrent de DonTorrent TAL CUAL (misma huella: 59 de
+# 112 medidos el 12-10), y los de DonTorrent los aprende el aprendiz solo, por
+# las cajas. Si una ficha de WolfMax sin huella es, sin duda, el mismo archivo
+# que uno de esos, se ata con su huella (origen "dt") y se ve por magnet sin la
+# verificacion de su web. Solo PELICULAS (las que ya recorre el aprendiz).
+# Conservador: la regla del ZIP (_wf_casa) y ademas: tamaño exacto obligatorio,
+# el titulo del torrent sin palabras de mas (Alien != Alien: Romulus), la misma
+# resolucion y el mismo año cuando los dos lo dicen, nada de capitulos, y un
+# solo candidato en cada sentido (ni dos torrents para una ficha, ni dos fichas
+# para un torrent, ni otro de la reserva de los ZIP que tambien case). Nunca
+# pisa una huella ya atada ni ata una huella que ya es de otra ficha.
+_WF_ANIO_RE = re.compile(r"^(19|20)\d\d$")
+
+
+def _wf_resol(s):
+    """'2160', '1080', '720' o '' (no se sabe) de un nombre o una calidad."""
+    s = str(s or "").lower()
+    if re.search(r"2160|\b4k\b|\buhd\b", s):
+        return "2160"
+    if "1080" in s:
+        return "1080"
+    if "720" in s:
+        return "720"
+    return ""
+
+
+def _wf_anio(s):
+    m = re.search(r"[(\[]\s*((?:19|20)\d\d)\s*[)\]]", str(s or ""))
+    return m.group(1) if m else ""
+
+
+def _wf_titulo_de_nombre(nombre):
+    """Las palabras del TITULO de un nombre de torrent: lo de antes del primer
+    corchete, sin el año."""
+    n = str(nombre or "").split("[", 1)[0]
+    return tuple(x for x in _wf_tokens(n) if not _WF_ANIO_RE.match(x))
+
+
+def _wf_casa_estricta(nombre, b, meta):
+    """¿Es, SIN DUDA, el torrent (nombre, bytes) el de la ficha `meta`?"""
+    t = str((meta or {}).get("t") or "")
+    rangos = _wf_bytes_rangos((meta or {}).get("sz"))
+    if not t or not rangos or not any(lo <= int(b or 0) <= hi for lo, hi in rangos):
+        return False                          # sin tamaño exacto, nada
+    if _wf_cap(t) or _wf_cap(nombre):
+        return False                          # capitulos: fuera de este cruce
+    if not _wf_casa(nombre, b, meta):
+        return False                          # la regla de siempre
+    base = set(x for x in _wf_tokens(t) if not _WF_ANIO_RE.match(x))
+    tn = _wf_titulo_de_nombre(nombre)
+    if not tn or sum(1 for x in tn if x in base) < -(-len(tn) * 3 // 4):
+        return False                          # el torrent es de otro titulo mas largo
+    ra = _wf_resol((meta or {}).get("q")) or _wf_resol(t)
+    rb = _wf_resol(nombre)
+    if ra and rb and ra != rb:
+        return False                          # otra version (4K frente a 1080p)
+    ya = str((meta or {}).get("y") or "") or _wf_anio(t)
+    yb = _wf_anio(nombre)
+    if ya and yb and ya != yb:
+        return False                          # otro año: otra pelicula
+    return True
+
+
+def _wf_sin_huella():
+    """Las fichas de PELICULA de WolfMax con tamaño y aun sin huella."""
+    h = _wfih_actual()["h"]
+    return [(u, m) for u, m in _wfih_conocidos()
+            if u not in h and "/pelicula/" in u and not _wf_cap(m.get("t"))]
+
+
+def _wf_cruce_falta(titulo, libres):
+    """¿Hay una ficha libre de WolfMax con ESE titulo? (para no pedir a las
+    cajas el nombre y el tamaño de torrents que no van a casar con nada)"""
+    a = set(x for x in _wf_tokens(titulo) if not _WF_ANIO_RE.match(x))
+    if not a:
+        return False
+    for _u, m in libres:
+        b = set(x for x in _wf_tokens(m.get("t")) if not _WF_ANIO_RE.match(x))
+        if b and len(a & b) >= -(-len(a) * 3 // 4) and len(a & b) >= -(-len(b) * 3 // 4):
+            return True
+    return False
+
+
+def _wf_cruce_dt():
+    """Ata las fichas de WolfMax sin huella que son, sin duda, el mismo archivo
+    que un torrent de DonTorrent ya aprendido. Idempotente. Devuelve cuantas."""
+    import bisect
+    dtp = _dtpacked_load()
+    cand = []                                  # (bytes, ih, nombre), por tamaño
+    for k, e in dtp.items():
+        if not (isinstance(e, dict) and str(k).startswith("peliculas:")) or e.get("p"):
+            continue                           # solo peliculas, y nada en RAR
+        ih = str(e.get("ih") or "").lower()
+        n, b = e.get("n"), e.get("b")
+        if _WFIH_IH.match(ih) and isinstance(n, str) and n and isinstance(b, int) and b > 0:
+            cand.append((b, ih, n))
+    libres = _wf_sin_huella()
+    if not cand or not libres:
+        return 0
+    cand.sort()
+    tams = [c[0] for c in cand]
+    actual = _wfih_actual()
+    reserva = sorted((int(e.get("b") or 0), ih, e) for ih, e in actual["p"].items())
+    tams_r = [r[0] for r in reserva]
+
+    def _en_rango(lista, tams_l, meta):
+        for lo, hi in _wf_bytes_rangos(meta.get("sz")):
+            for x in lista[bisect.bisect_left(tams_l, lo):bisect.bisect_right(tams_l, hi)]:
+                yield x
+    por_ficha, por_ih = {}, {}
+    for u, m in libres:
+        for b, ih, n in _en_rango(cand, tams, m):
+            if _wf_casa_estricta(n, b, m):
+                por_ficha.setdefault(u, {})[ih] = (n, b)
+                por_ih.setdefault(ih, set()).add(u)
+    metas = dict(libres)
+    atar = []
+    for u, ihs in por_ficha.items():
+        if len(ihs) != 1:
+            continue                           # dos torrents para una ficha: duda
+        ih, (n, b) = next(iter(ihs.items()))
+        if len(por_ih.get(ih, ())) != 1:
+            continue                           # un torrent para dos fichas: duda
+        otro = any(rih != ih and (_wf_casa_estricta(e.get("n") or "", e.get("b"), metas[u])
+                                  or _wf_casa_estricta(e.get("f") or "", e.get("b"), metas[u]))
+                   for _b, rih, e in _en_rango(reserva, tams_r, metas[u]))
+        if otro:
+            continue                           # otro de los ZIP tambien casa: duda
+        atar.append((u, ih, n, b))
+    if not atar:
+        return 0
+
+    def _f(d):
+        ya = set(e.get("ih") for e in d["h"].values())
+        c = 0
+        for u, ih, n, b in atar:
+            if d["h"].get(u) or ih in ya:
+                continue                       # nunca pisa ni duplica
+            d["h"][u] = {"ih": ih, "n": n[:160], "b": int(b), "o": "dt", "ts": int(_t.time())}
+            d["p"].pop(ih, None)
+            ya.add(ih)
+            c += 1
+        return c
+    c = _wfih_cambia(_f)
+    _WFIH_N["cruce_dt"] += c
+    return c
 
 
 def _wfih_de_zip(torrents, nombre_zip="", es_zip=True):
@@ -10569,6 +10721,7 @@ _APR_FILE = "/tmp/mw_aprende.json"        # quien lleva el turno (pid, ts)
 _APR = {"turno": False, "rondas": 0, "dt": 0, "dx": 0, "wf": 0, "fallos": 0,
         "pendientes": -1, "ultimo": "", "ult_ts": 0, "refrescos": 0}
 _APR_NEG = {}                    # clave -> (ts, segundos que no se reintenta)
+_WF_CRUCE_T = [0.0]               # ultima vuelta del cruce WolfMax-DonTorrent (dtbl79)
 _APR_T_DT = [0.0]                # ultimo PoW de DonTorrent pedido a una caja
 _APR_T_REF = [0.0]               # ultimo refresco de conteos del Inicio
 _APR_PAUSA = 45.0
@@ -10679,6 +10832,7 @@ def _apr_pendientes(items, now):
     dih = _dxih_load()
     out, vistos, ihs_viejos = [], set(), []
     sd = None
+    libres = None                       # fichas de WolfMax sin huella (dtbl79)
     for it in items:
         src, k = _apr_clave(it)
         if not src or k in vistos:
@@ -10689,6 +10843,17 @@ def _apr_pendientes(items, now):
             e = dtp.get(k) or {}
             if e.get("ih") and (now - e.get("ts", 0)) < _DTPACKED_TTL:
                 ih = e["ih"]
+                # (dtbl79) sabida pero sin nombre ni tamaño: se vuelve a pedir
+                # SOLO si hay una ficha de WolfMax de ese titulo sin huella, y
+                # no a cada vuelta si la caja aun no los sabe dar (2.9.90)
+                if not e.get("b") and k.startswith("peliculas:") and not e.get("p"):
+                    neg = _APR_NEG.get("nb:" + k)
+                    if not (neg and (now - neg[0]) < neg[1]):
+                        if libres is None:
+                            libres = _wf_sin_huella()
+                        if libres and _wf_cruce_falta(it.get("title") or "", libres):
+                            out.append((src, k, it))
+                            continue
                 if e.get("s") is not None and (now - e.get("sts", 0)) < _SEEDS_TTL:
                     continue
         else:
@@ -10728,8 +10893,18 @@ def _apr_dt(k):
     if res is None:
         return {"timeout": True}
     ih = _re_dt.sub(r"[^a-f0-9]", "", str(res.get("ih") or "").lower())[:40]
-    return {"ih": ih, "p": bool(res.get("rar")),
-            "q": str(res.get("quality") or "")[:16]}
+    out = {"ih": ih, "p": bool(res.get("rar")),
+           "q": str(res.get("quality") or "")[:16]}
+    # nombre y bytes del .torrent (cajas 2.9.90+): para reconocer el MISMO
+    # torrent en WolfMax (dtbl79). Una caja anterior no los manda: no pasa nada.
+    n = res.get("n")
+    try:
+        b = int(res.get("b") or 0)
+    except (TypeError, ValueError):
+        b = 0
+    if isinstance(n, str) and n.strip() and 0 < b < 2 ** 50:
+        out["n"], out["b"] = n.strip()[:200], b
+    return out
 
 
 def _apr_wf(url):
@@ -10773,8 +10948,13 @@ def _apr_guarda(src, k, r, now):
         with _FileLock(_DTPACKED_FILE):
             d = _dtpacked_load()
             ent = d.get(k) or {}
+            if ent.get("ih") and ent.get("ih") != ih:
+                ent.pop("n", None)              # otro .torrent: su nombre ya no vale
+                ent.pop("b", None)
             ent.update({"ih": ih, "p": r.get("p", ent.get("p", False)),
                         "q": r.get("q") or ent.get("q", ""), "ts": now})
+            if r.get("n") and r.get("b"):
+                ent["n"], ent["b"] = r["n"], r["b"]   # (dtbl79) solo aqui, no en la copia
             if cuenta is not None:
                 ent["s"] = cuenta
                 ent["sts"] = now
@@ -10783,6 +10963,11 @@ def _apr_guarda(src, k, r, now):
                 for kk in sorted(d, key=lambda kk: d[kk].get("ts", 0))[:len(d) - 3000]:
                     d.pop(kk, None)
             _dtpacked_save(d)
+        if r.get("n") and r.get("b") and k.startswith("peliculas:"):
+            try:
+                _wf_cruce_dt()                   # ¿es el mismo de alguna ficha de WolfMax?
+            except Exception:
+                pass
     else:
         with _FileLock(_DXIH_FILE):
             d = _dxih_load()
@@ -10810,6 +10995,11 @@ def _apr_ronda():
         pass
     _bounded(_semillas_nube_sube, 25.0, 0)
     now = _t.time()
+    # (dtbl79) las fichas de WolfMax que van llegando, contra lo ya aprendido
+    # de DonTorrent: cada 10 min, sin pedir nada a nadie
+    if (now - _WF_CRUCE_T[0]) >= 600:
+        _WF_CRUCE_T[0] = now
+        _bounded(_wf_cruce_dt, 20.0, 0)
     pend, viejos = _apr_pendientes(_apr_items_inicio(), now)
     _APR["pendientes"] = len(pend)
     # Los conteos del Inicio, frescos para quien abra la app (un paquete UDP
@@ -10841,6 +11031,10 @@ def _apr_ronda():
         if len(str(r.get("ih") or "")) == 40:
             _apr_guarda(src, k, r, now)
             _APR[src] += 1
+            if src == "dt" and not r.get("b"):
+                # caja anterior a la 2.9.90: no sabe dar nombre y tamaño; no se
+                # le vuelve a pedir ese hasta dentro de 12 h (dtbl79)
+                _APR_NEG["nb:" + k] = (now, 12 * 3600)
         else:
             _APR["fallos"] += 1
             # que no conteste a tiempo no es lo mismo que "no hay .torrent"
@@ -12779,6 +12973,9 @@ def catdiag():
         out["semillas"] = {
             "dt_con_ih": sum(1 for v in _dtp.values()
                              if isinstance(v, dict) and v.get("ih")),
+            # con nombre y tamaño (cajas 2.9.90+): lo que puede cruzarse con WolfMax (dtbl79)
+            "dt_con_nombre": sum(1 for v in _dtp.values()
+                                 if isinstance(v, dict) and v.get("ih") and v.get("b")),
             "urls_con_ih": len(_dxih_load()),
             "conteos": len(_seeds_load()),
             "refresco": dict(_SREF),

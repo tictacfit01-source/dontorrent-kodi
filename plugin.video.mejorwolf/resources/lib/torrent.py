@@ -104,6 +104,29 @@ def info_hash_hex(data):
         return ""
 
 
+def nombre_y_tamano(data):
+    """(nombre, bytes en total) del .torrent, o ("", 0). El nombre es el de
+    `info` (`name.utf-8` si lo trae) y el tamaño, la suma de sus ficheros: con
+    los dos el relay reconoce el MISMO torrent publicado en WolfMax (2.9.90)."""
+    if not data or data[:1] != b"d":
+        return "", 0
+    try:
+        info = bdecode(data).get(b"info")
+    except Exception:
+        return "", 0
+    if not isinstance(info, dict):
+        return "", 0
+    nombre = info.get(b"name.utf-8") or info.get(b"name") or b""
+    files = info.get(b"files")
+    if isinstance(files, list) and files:
+        total = sum(f.get(b"length") for f in files
+                    if isinstance(f, dict) and isinstance(f.get(b"length"), int))
+    else:
+        total = info.get(b"length") if isinstance(info.get(b"length"), int) else 0
+    n = bytes(nombre).decode("utf-8", "replace") if isinstance(nombre, (bytes, bytearray)) else ""
+    return n[:200], max(0, int(total or 0))
+
+
 # ----------------------------------------------------- .torrent -> magnet
 
 def torrent_to_magnet(data):
