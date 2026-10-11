@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl76"
+BUILD = "dtbl77"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -2270,6 +2270,120 @@ def _get_con_tope(url, tope_s, headers=None, scraper=None, crudo=False,
                 pass
 
 
+# --- Las escrituras en mw-sync, FIRMADAS (dtbl77) -------------------------------
+# Las copias de mw-sync (/kv/*, /wfidx) solo aceptan escrituras firmadas: antes
+# cualquiera que leyera este repositorio PUBLICO podia pisarlas. Firma Ed25519:
+# el secreto (MW_KV_FIRMA) lo GENERA Render en su panel y no sale de alli; el
+# relay firma con el y solo publica su clave PUBLICA (/catdiag -> kv_firma), que
+# es lo que el worker guarda para comprobar. Ningun secreto viaja ni se ve.
+# Se firma "mw-kv-v1 \n segundos \n ruta \n sha256(cuerpo)": vale para ESA ruta,
+# ESE cuerpo y cinco minutos. Sin el secreto no se firma: el worker rechaza la
+# subida, aqui cuenta como fallo, /tmp sigue intacto y nada queda abierto.
+# Ed25519 segun el algoritmo de referencia del RFC 8032 (sin dependencias
+# nuevas); comprobado con sus vectores oficiales y en cruzado con WebCrypto.
+_KV_SYNC_BASE = "https://mw-sync.israeldm93.workers.dev/"
+_ED_P = 2 ** 255 - 19
+_ED_L = 2 ** 252 + 27742317777372353535851937790883648493
+_ED_D = -121665 * pow(121666, _ED_P - 2, _ED_P) % _ED_P
+_ED_I = pow(2, (_ED_P - 1) // 4, _ED_P)
+
+
+def _ed_suma(P, Q):
+    p = _ED_P
+    A, B = (P[1] - P[0]) * (Q[1] - Q[0]) % p, (P[1] + P[0]) * (Q[1] + Q[0]) % p
+    C, D = 2 * P[3] * Q[3] * _ED_D % p, 2 * P[2] * Q[2] % p
+    E, F, G, H = B - A, D - C, D + C, B + A
+    return (E * F % p, G * H % p, F * G % p, E * H % p)
+
+
+def _ed_por(s, P):
+    Q = (0, 1, 1, 0)
+    while s > 0:
+        if s & 1:
+            Q = _ed_suma(Q, P)
+        P = _ed_suma(P, P)
+        s >>= 1
+    return Q
+
+
+def _ed_x(y, signo):
+    p = _ED_P
+    x2 = (y * y - 1) * pow(_ED_D * y * y + 1, p - 2, p) % p
+    if x2 == 0:
+        return 0
+    x = pow(x2, (p + 3) // 8, p)
+    if (x * x - x2) % p:
+        x = x * _ED_I % p
+    if (x & 1) != signo:
+        x = p - x
+    return x
+
+
+_ED_GY = 4 * pow(5, _ED_P - 2, _ED_P) % _ED_P
+_ED_GX = _ed_x(_ED_GY, 0)
+_ED_G = (_ED_GX, _ED_GY, 1, _ED_GX * _ED_GY % _ED_P)
+
+
+def _ed_comprime(P):
+    zi = pow(P[2], _ED_P - 2, _ED_P)
+    x, y = P[0] * zi % _ED_P, P[1] * zi % _ED_P
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def _ed_expande(semilla):
+    h = _hl.sha512(semilla).digest()
+    a = int.from_bytes(h[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+    return a, h[32:]
+
+
+def _ed_publica(semilla):
+    return _ed_comprime(_ed_por(_ed_expande(semilla)[0], _ED_G))
+
+
+def _ed_firma(semilla, msg, publica=None):
+    a, prefijo = _ed_expande(semilla)
+    A = publica or _ed_comprime(_ed_por(a, _ED_G))
+    r = int.from_bytes(_hl.sha512(prefijo + msg).digest(), "little") % _ED_L
+    R = _ed_comprime(_ed_por(r, _ED_G))
+    h = int.from_bytes(_hl.sha512(R + A + msg).digest(), "little") % _ED_L
+    return R + int.to_bytes((r + h * a) % _ED_L, 32, "little")
+
+
+_KV_CLAVES = {"de": None, "semilla": b"", "pub": b""}
+
+
+def _kv_par():
+    """(semilla, publica) del secreto de Render, o (b"", b"") si no esta."""
+    s = (os.environ.get("MW_KV_FIRMA") or "").strip()
+    if len(s) < 16:
+        return b"", b""
+    if _KV_CLAVES["de"] != s:
+        sem = _hl.sha256(b"mw-kv-firma-v1\n" + s.encode("utf-8")).digest()
+        _KV_CLAVES.update(de=s, semilla=sem, pub=_ed_publica(sem))
+    return _KV_CLAVES["semilla"], _KV_CLAVES["pub"]
+
+
+def _kv_mensaje(ts, ruta, datos):
+    return ("mw-kv-v1\n%d\n%s\n%s" % (int(ts), ruta, _hl.sha256(datos).hexdigest())).encode("utf-8")
+
+
+def _kv_cabeceras(url, datos):
+    """La firma de una escritura en mw-sync (y a ninguna otra web)."""
+    url = str(url or "")
+    if not url.startswith(_KV_SYNC_BASE):
+        return {}
+    sem, pub = _kv_par()
+    if not sem:
+        return {}
+    from urllib.parse import urlparse as _up
+    ts = int(_t.time())
+    firma = _ed_firma(sem, _kv_mensaje(ts, _up(url).path.rstrip("/") or "/", datos), pub)
+    import base64 as _b64
+    return {"X-MW-Ts": str(ts), "X-MW-Firma": _b64.b64encode(firma).decode("ascii")}
+
+
 def _post_con_tope(url, cuerpo, tope_s):
     """POST (JSON) con tope de tiempo TOTAL de verdad, como _get_con_tope: un
     vigia cierra la sesion al agotarse. Devuelve el status (0 si fallo o se
@@ -2291,7 +2405,11 @@ def _post_con_tope(url, cuerpo, tope_s):
     vigia.daemon = True
     vigia.start()
     try:
-        r = sess.post(url, json=cuerpo,
+        # los bytes EXACTOS que se envian, que son los que se firman (dtbl77)
+        datos = _json.dumps(cuerpo).encode("utf-8")
+        cab = {"Content-Type": "application/json"}
+        cab.update(_kv_cabeceras(url, datos))
+        r = sess.post(url, data=datos, headers=cab,
                       timeout=(min(5.0, tope_s), max(1.0, tope_s)), stream=True)
         st = r.status_code
         _leer_con_tope(r, max(0.5, fin - _t.time()))     # drena y cierra
@@ -12569,6 +12687,15 @@ def catdiag():
     # sacar enlaces para reproducir: aciertos, fallos, de memoria (dtbl68)
     out["resolver"] = _resuelve_n_todos()     # los dos workers (dtbl72)
     out["wf_verificacion"] = dict(_wf_verif_lee(), activa=_wf_verif_activa())   # dtbl70
+    # ¿Firma este relay sus escrituras en mw-sync? Y su clave PUBLICA, que es la
+    # que se guarda en el worker (publica: no da para firmar nada) (dtbl77)
+    try:
+        import base64 as _b64
+        _pub = _kv_par()[1]
+        out["kv_firma"] = {"activa": bool(_pub),
+                           "publica": _b64.b64encode(_pub).decode("ascii") if _pub else ""}
+    except Exception:
+        out["kv_firma"] = {"activa": False, "error": True}
     # las huellas de WolfMax: atadas a su ficha, en reserva (ZIP), el ultimo ZIP
     # y de donde salieron (dtbl75)
     try:

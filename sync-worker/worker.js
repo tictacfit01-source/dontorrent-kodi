@@ -103,6 +103,45 @@ async function googleUser(credential, clientId) {
   return { sub: d.sub, name: d.name || "", email: d.email || "", picture: d.picture || "" };
 }
 
+// ===== Escrituras de las copias del relay: solo FIRMADAS ===================
+// /kv/* y /wfidx los escribe SOLO el relay. Antes cualquiera que leyera este
+// repositorio (es publico) podia pisarlos. Ahora cada escritura lleva una firma
+// Ed25519 del relay (cabeceras X-MW-Ts y X-MW-Firma) sobre
+// "mw-kv-v1\n<segundos>\n<ruta>\n<sha256 del cuerpo>": vale para ESA ruta, ESE
+// cuerpo y cinco minutos. Aqui solo se guarda la clave PUBLICA del relay
+// (KV_PUBLICA, que no es secreta y no da para firmar nada); el secreto lo genero
+// Render y no sale de alli. Sin KV_PUBLICA no entra NINGUNA escritura: mejor
+// fallar cerrado que quedar abierto. Leer sigue siendo libre.
+function deB64(s) {
+  try { return Uint8Array.from(atob(String(s || "")), (c) => c.charCodeAt(0)); }
+  catch (e) { return new Uint8Array(0); }
+}
+
+async function firmaOk(request, env, ruta, cuerpo) {
+  const pub = deB64(env && env.KV_PUBLICA);
+  if (pub.length !== 32) return false;
+  const ts = parseInt(request.headers.get("X-MW-Ts") || "", 10);
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > 300) return false;
+  const firma = deB64(request.headers.get("X-MW-Firma"));
+  if (firma.length !== 64) return false;
+  const h = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", cuerpo)))
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+  const msg = new TextEncoder().encode("mw-kv-v1\n" + ts + "\n" + ruta + "\n" + h);
+  try {
+    const k = await crypto.subtle.importKey("raw", pub, { name: "Ed25519" }, false, ["verify"]);
+    return await crypto.subtle.verify({ name: "Ed25519" }, k, firma, msg);
+  } catch (e) {
+    return false;
+  }
+}
+
+// El cuerpo de una escritura, solo si viene firmada; si no, null.
+async function cuerpoFirmado(request, env, ruta) {
+  const cuerpo = new Uint8Array(await request.arrayBuffer());
+  if (!(await firmaOk(request, env, ruta, cuerpo))) return null;
+  try { return JSON.parse(new TextDecoder().decode(cuerpo)); } catch (e) { return {}; }
+}
+
 // ===== Almacen ============================================================
 async function ensureKV(env) {
   await env.DB.prepare(
@@ -191,7 +230,8 @@ export default {
         return json({ ok: true, gz: row.v, ts: row.ts });
       }
       if (request.method === "POST") {
-        const body = await request.json().catch(() => null);
+        const body = await cuerpoFirmado(request, env, path);
+        if (body === null) return json({ ok: false, error: "no autorizado" }, 401);
         const gz = body && body.gz;
         if (typeof gz !== "string" || !gz) return json({ ok: false, error: "sin gz" }, 400);
         if (gz.length > 3 * 1024 * 1024) return json({ ok: false, error: "demasiado grande" }, 413);
@@ -226,7 +266,8 @@ export default {
         return json({ ok: true, gz: row.v, ts: row.ts });
       }
       if (request.method === "POST") {
-        const body = await request.json().catch(() => null);
+        const body = await cuerpoFirmado(request, env, path);
+        if (body === null) return json({ ok: false, error: "no autorizado" }, 401);
         const gz = body && body.gz;
         if (typeof gz !== "string" || !gz) return json({ ok: false, error: "sin gz" }, 400);
         if (gz.length > 1024 * 1024) return json({ ok: false, error: "demasiado grande" }, 413);
