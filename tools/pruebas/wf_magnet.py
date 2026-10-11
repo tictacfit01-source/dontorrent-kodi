@@ -93,6 +93,18 @@ A._box_wf = lambda code, excluir=(), minimo=None: next((b for b in ("caja1",) if
 A._box_for = lambda code: "caja1"
 A._live_boxes = lambda *a, **k: ["caja1"]
 cli = A.app.test_client()
+_post = cli.post
+
+
+def _post_con_huella(ruta, data=None, **kw):
+    """Desde dtbl78 /wfsube exige la sha256 del archivo: aqui se pone la buena
+    (las pruebas de la huella en si estan en compartir.py)."""
+    if ruta == "/wfsube" and isinstance(data, dict) and "f" in data and "sha" not in data:
+        data = dict(data, sha=hashlib.sha256(data["f"][0].getvalue()).hexdigest())
+    return _post(ruta, data=data, **kw)
+
+
+cli.post = _post_con_huella
 N = "https://wolfmax4k.com"
 try:
     print("\n=== 1) Leer un .torrent y un ZIP ===")

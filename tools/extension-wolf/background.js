@@ -76,8 +76,8 @@ async function pintaIcono() {
   await chrome.action.setBadgeBackgroundColor({ color: malos ? "#d93025" : "#1a73e8" });
 }
 
-async function huella(b) {
-  var h = await crypto.subtle.digest("SHA-1", b);
+async function huella(b, alg) {
+  var h = await crypto.subtle.digest(alg || "SHA-1", b);
   return Array.from(new Uint8Array(h)).map(function (x) { return ("0" + x.toString(16)).slice(-2); }).join("");
 }
 
@@ -148,6 +148,8 @@ async function intenta(id) {
     var fd = new FormData();
     fd.append("code", cfg.code);
     if (e.ref) fd.append("ref", e.ref);
+    // el relay la recalcula sobre lo que recibe: si no coincide, no lo guarda
+    fd.append("sha", await huella(b, "SHA-256"));
     fd.append("f", new Blob([b], { type: e.tipo === "zip" ? "application/zip" : "application/x-bittorrent" }),
               e.nombre);
     try {

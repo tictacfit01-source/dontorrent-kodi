@@ -28,7 +28,9 @@ const codigo = [
   saca('function favLearnEps(', '\n// ===== HISTORIAL'),
   saca("var _COMPLETANDO='';", '\nvar OVSEASON='),
   saca('var WFVERIF=0;', '\nfunction srcScore('),
-].join('\n');
+].join('\n')
+  // el tope de lo compartido, como lo sustituye el relay al servir la pagina (dtbl78)
+  .replace(/__MW_MAXB__/g, String(Number(/_COMPARTIR_MAX = (\d+) \* 1024 \* 1024/.exec(src)[1]) * 1024 * 1024));
 
 // --- DOM y entorno de mentira -------------------------------------------------
 function Elem() {

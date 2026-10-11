@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl77"
+BUILD = "dtbl78"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -337,12 +337,57 @@ _MANIFEST_JSON = """{
  "background_color":"#06070c","theme_color":"#06070c",
  "icons":[
   {"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}
- ]
+ ],
+ "share_target":{
+  "action":"/compartir","method":"POST","enctype":"multipart/form-data",
+  "params":{"title":"title","text":"text","url":"url",
+   "files":[{"name":"f","accept":[".torrent","application/x-bittorrent",
+    ".zip","application/zip","application/octet-stream"]}]}
+ }
 }"""
 
-_SW_JS = """var C='mw-shell-v17';
+# El tope de lo que se recibe compartido o elegido (dtbl78): el MISMO en el
+# service worker, en la pagina y en /wfsube. Un .torrent pesa KB y el ZIP del
+# dia unos 6 MB.
+_COMPARTIR_MAX = 15 * 1024 * 1024
+
+_SW_JS = """var C='mw-shell-v18';
+// Android "Compartir -> MejorWolf" (dtbl78): Chrome manda el archivo por POST a
+// /compartir. Se guarda AQUI, en el movil (no en el servidor), y se abre la app
+// con ?compartido=1: la pagina lo recoge, recupera para que titulo y que tele
+// era, y lo entrega. Va antes del filtro de GET.
+// Y apunta lo que RECIBIO de verdad (si vino archivo, bytes, su sha256, que
+// campos traia el formulario, el navegador) en /__compartido_diag: la pagina
+// comprueba con eso que le llega ENTERO, y si una version de Chrome no entrega
+// el archivo, queda dicho en vez de perderse en silencio.
+self.addEventListener('fetch',function(e){var req=e.request;
+ if(req.method!=='POST'||new URL(req.url).pathname!=='/compartir')return;
+ e.respondWith((async function(){
+  var ir=function(q){return Response.redirect(new URL('/?compartido='+q,self.location.href).href,303)};
+  var diag={ua:String((self.navigator&&self.navigator.userAgent)||'').slice(0,200),recibido:false,bytes:0,sha:'',campos:[],ts:Date.now()};
+  var guardaDiag=async function(){try{var c=await caches.open('mw-compartido');
+   await c.put('/__compartido_diag',new Response(JSON.stringify(diag),{headers:{'Content-Type':'application/json'}}))}catch(x){}};
+  // lo de un compartir anterior que no se recogiera, fuera: nunca se empareja
+  // un archivo viejo con el diagnostico de este
+  try{await (await caches.open('mw-compartido')).delete('/__compartido')}catch(x){}
+  try{var fd=await req.formData();
+   fd.forEach(function(v,k){if(diag.campos.length<8)diag.campos.push(String(k).slice(0,20)+(typeof v==='string'?'':':archivo'))});
+   var f=fd.get('f');
+   // el mismo tope que la pagina y /wfsube: algo enorme (un video compartido
+   // por error) se rechaza por su tamaño, sin leerlo en memoria
+   if(f&&f.size>__MW_MAXB__){diag.grande=true;diag.bytes=f.size;await guardaDiag();return ir('0')}
+   if(f&&f.size){var b=await f.arrayBuffer();
+    diag.recibido=true;diag.bytes=b.byteLength;
+    try{diag.sha=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',b))).map(function(x){return ('0'+x.toString(16)).slice(-2)}).join('')}catch(x){}
+    var c=await caches.open('mw-compartido');
+    await c.put('/__compartido',new Response(b,{headers:{'Content-Type':f.type||'application/octet-stream',
+     'X-Nombre':encodeURIComponent(f.name||''),'X-Ts':String(diag.ts)}}));
+    await guardaDiag();
+    return ir('1')}}catch(err){diag.error=String((err&&err.message)||err).slice(0,120)}
+  await guardaDiag();
+  return ir('0')})())});
 self.addEventListener('install',function(e){e.waitUntil(caches.open(C).then(function(c){return c.add('/').catch(function(){})}));self.skipWaiting()});
-self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.map(function(k){if(k!==C)return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});
+self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.map(function(k){if(k!==C&&k!=='mw-compartido')return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});
 // Navegacion: red con timeout de 4s -> si el relay va lento/caido, sirve la
 // shell CACHEADA al instante (la PWA NUNCA se queda en el splash). Solo cachea
 // respuestas OK (nunca un 502). La pagina, ya cargada, gestiona sus datos.
@@ -359,7 +404,121 @@ self.addEventListener('fetch',function(e){
   e.respondWith(caches.match(req).then(function(r){return r||fetch(req).then(function(rr){if(rr&&rr.ok){var cp=rr.clone();caches.open(C).then(function(c){c.put(req,cp)})}return rr})}));
  }
 });
-"""
+""".replace("__MW_MAXB__", str(_COMPARTIR_MAX))
+
+
+_COMPARTIR_DIAG_FILE = "/tmp/mw_compartir_diag.json"
+_COMPARTIR_DIAG_TTL = 72 * 3600       # se olvidan solos a los 3 dias
+_COMPARTIR_DIAG_BYTES = 2048          # un diagnostico de verdad ocupa ~300
+_COMPARTIR_VIAS = ("compartir", "selector")
+_COMPARTIR_RESULTADOS = ("recogido", "elegido", "sw_sin_archivo", "sin_service_worker", "sin_caches",
+                         "perdido_entre_sw_y_pagina", "incompleto", "alterado", "demasiado_grande",
+                         "caducado", "error_lectura")
+_COMPARTIR_CAMPOS = ("f", "title", "text", "url")
+
+
+def _compartir_diag_lee():
+    """Los diagnosticos que siguen vigentes (los de mas de 3 dias, fuera)."""
+    try:
+        with open(_COMPARTIR_DIAG_FILE, "r", encoding="utf-8") as f:
+            lista = _json.load(f) or []
+    except Exception:
+        return []
+    lim = _t.time() - _COMPARTIR_DIAG_TTL
+    return [r for r in lista if isinstance(r, dict) and (r.get("ts") or 0) > lim]
+
+
+def _compartir_diag_resumen():
+    """Lo que se enseña en /catdiag (que es publico): CUENTAS por navegador y
+    resultado, no los registros uno a uno."""
+    grupos = {}
+    for r in _compartir_diag_lee():
+        g0 = {"via": r.get("via"), "resultado": r.get("resultado"), "chrome": r.get("chrome"),
+              "sw_chrome": r.get("sw_chrome"), "sw_recibido": r.get("sw_recibido"),
+              "integro": r.get("integro"), "campos": ",".join(r.get("campos") or [])}
+        g = grupos.setdefault(tuple(g0.items()), dict(g0, n=0, ultimo=0))
+        g["n"] += 1
+        g["ultimo"] = max(g["ultimo"], int(r.get("ts") or 0))
+    return sorted(grupos.values(), key=lambda g: -g["ultimo"])
+
+
+@app.post("/compartir/diag")
+def compartir_diag():
+    """Lo que vio el movil al recibir algo compartido (dtbl78): version de
+    Chrome, si el service worker recibio archivo y cuantos bytes, si a la pagina
+    le llego ENTERO. Solo esos campos, validados uno a uno: ni archivos, ni
+    titulos, ni huellas, ni IPs. Solo lo manda una casa nuestra: trae el codigo
+    de su tele, que se comprueba y NO se guarda ni se devuelve. Caducan a los 3
+    dias, y /catdiag solo enseña cuentas."""
+    ip = (request.headers.get("X-Forwarded-For", "") or request.remote_addr or "?").split(",")[-1].strip()
+    if not _rate_ok("diag:" + ip):
+        return jsonify({"ok": False}), 429
+    # el tamaño, antes de leer nada
+    if request.content_length is None or request.content_length > _COMPARTIR_DIAG_BYTES:
+        return jsonify({"ok": False}), 413
+    b = request.get_json(silent=True)
+    if not isinstance(b, dict):
+        return jsonify({"ok": False}), 400
+    code = str(b.get("code") or "")
+    if not re.fullmatch(r"\d{6}", code):
+        return jsonify({"ok": False}), 401
+    if not _caja_conocida(code):
+        return jsonify({"ok": False}), 403
+
+    def _n(k):
+        v = b.get(k, 0)
+        if isinstance(v, bool) or not isinstance(v, int) or not (0 <= v <= 10 ** 10):
+            raise ValueError(k)
+        return v
+
+    def _b(k):
+        v = b.get(k)
+        if v is not None and not isinstance(v, bool):
+            raise ValueError(k)
+        return v
+
+    def _ver(k):
+        v = b.get(k) or ""
+        if not isinstance(v, str) or not re.fullmatch(r"\d{0,4}", v):
+            raise ValueError(k)
+        return v
+    try:
+        via, res, q = b.get("via"), b.get("resultado"), b.get("q") or ""
+        campos = b.get("campos") or []
+        if via not in _COMPARTIR_VIAS or res not in _COMPARTIR_RESULTADOS:
+            raise ValueError("via")
+        if q not in ("", "1", "0", "sinsw") or not isinstance(campos, list) or len(campos) > 8:
+            raise ValueError("q")
+        cs = []
+        for x in campos:
+            n = str(x).split(":")[0] if isinstance(x, str) else ""
+            cs.append((n if n in _COMPARTIR_CAMPOS else "otro") + (":archivo" if str(x).endswith(":archivo") else ""))
+        rec = {"ts": int(_t.time()), "via": via, "resultado": res, "q": q,
+               "chrome": _ver("chrome"), "sw_chrome": _ver("sw_chrome"),
+               "sw": _b("sw"), "sw_recibido": _b("sw_recibido"), "integro": _b("integro"),
+               "sw_bytes": _n("sw_bytes"), "pag_bytes": _n("pag_bytes"), "campos": cs}
+    except ValueError:
+        return jsonify({"ok": False}), 400
+    try:
+        with _FileLock(_COMPARTIR_DIAG_FILE):
+            lista = (_compartir_diag_lee() + [rec])[-30:]
+            tmp = "%s.%d.tmp" % (_COMPARTIR_DIAG_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(lista, f)
+            os.replace(tmp, _COMPARTIR_DIAG_FILE)
+    except Exception:
+        pass
+    return jsonify({"ok": True})
+
+
+@app.post("/compartir")
+def compartir_sin_sw():
+    """Lo compartido desde Android lo recoge el SERVICE WORKER en el movil. Si
+    llega aqui es que no estaba activo: no se guarda nada en el servidor (no
+    sabemos de quien es ni para que tele); se vuelve a la app, que lo explica y
+    ofrece el selector de Descargas (dtbl78)."""
+    return Response(status=303, headers={"Location": "/?compartido=sinsw",
+                                         "Cache-Control": "no-store"})
 
 
 @app.get("/manifest.webmanifest")
@@ -9070,7 +9229,7 @@ def wfmagnet():
 
 
 _WFSUBE_RL = {}                       # ip -> [cuando]
-_WFSUBE_MAX = 15 * 1024 * 1024       # el ZIP del dia: ~6 MB
+_WFSUBE_MAX = _COMPARTIR_MAX         # el ZIP del dia: ~6 MB (el mismo tope en el movil)
 
 
 @app.post("/wfsube")
@@ -9090,6 +9249,10 @@ def wfsube():
     if len(_WFSUBE_RL) > 500:
         for k in [k for k, v in _WFSUBE_RL.items() if not v or (now - v[-1]) > 600]:
             _WFSUBE_RL.pop(k, None)
+    # El tamaño, ANTES de leer el formulario (leerlo ya es recibirlo entero):
+    # el tope del archivo y holgura para el resto de campos (dtbl78)
+    if request.content_length is None or request.content_length > _WFSUBE_MAX + 65536:
+        return jsonify({"ok": False, "error": "Ese archivo es demasiado grande."}), 413
     # Solo una casa nuestra: el codigo de una tele que ha latido estos 60 dias
     # (la web lo tiene puesto; la extension, en sus opciones) (dtbl76)
     code = re.sub(r"\D", "", str(request.form.get("code") or ""))[:6]
@@ -9104,6 +9267,16 @@ def wfsube():
     data = f.read(_WFSUBE_MAX + 1)
     if len(data) > _WFSUBE_MAX:
         return jsonify({"ok": False, "error": "Ese archivo es demasiado grande."}), 413
+    # Su huella (sha256), OBLIGATORIA, calculada aqui sobre lo que de verdad ha
+    # llegado y comparada con la que dice quien lo manda: un archivo alterado
+    # por el camino no se guarda ni va a ninguna tele (dtbl78)
+    sha = str(request.form.get("sha") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        _WFIH_N["rechazos"] += 1
+        return jsonify({"ok": False, "error": "Falta la huella del archivo: vuelve a elegirlo."}), 400
+    if _hashmod.sha256(data).hexdigest() != sha:
+        _WFIH_N["rechazos"] += 1
+        return jsonify({"ok": False, "error": "El archivo ha llegado alterado: no se ha guardado nada."}), 400
     nombre = (f.filename or "")[:200]
     url = (request.form.get("url") or "").strip()
     # La extension no sabe de que ficha venia, pero Chrome si: la descarga sale
@@ -9133,6 +9306,12 @@ def wfsube():
             _WFIH_N["rechazos"] += 1
             return jsonify({"ok": False, "error": "Ese .torrent no parece de «%s»: es «%s»."
                             % (meta["t"][:60], inf["n"][:80])}), 409
+        # La CERTEZA de que es de esa ficha (dtbl78): la web solo lo manda a la
+        # tele sin preguntar con "exacta" (titulo + tamaño exacto); si no, pide
+        # confirmacion antes de reproducir nada.
+        certeza = "sin_comprobar"
+        if meta["t"]:
+            certeza = "exacta" if _wf_bytes_rangos(meta["sz"]) else "titulo"
         # sin titulo (la extension), al menos el TAMAÑO, si la ficha se conoce
         if not meta["t"]:
             sz = next((m.get("sz") for u, m in _wfih_conocidos() if u == _wf_url_clave(url)), "")
@@ -9140,15 +9319,18 @@ def wfsube():
                 _WFIH_N["rechazos"] += 1
                 return jsonify({"ok": False, "error": "Ese .torrent no casa con su ficha (%s, no %s)."
                                 % (inf["n"][:60], sz)}), 409
+            if sz:
+                certeza = "exacta"
         ya = (_wfih_de(url) or {}).get("ih") == inf["ih"]
         _wfih_apunta(url, inf["ih"], inf["n"], inf["b"], o="persona", pisa=True)
         _WFIH_N["subidas"] += 1
         return jsonify({"ok": True, "tipo": "torrent", "nombre": inf["n"][:120], "ya": ya,
-                        "url": _wf_url_clave(url), "link": _wf_magnet(inf, meta["t"])})
+                        "url": _wf_url_clave(url), "certeza": certeza,
+                        "link": _wf_magnet(inf, meta["t"])})
     # suelto, sin ficha (compartido desde el movil): a la reserva, y su magnet
     r = _wfih_de_zip([(nombre or inf["n"], inf)], nombre, es_zip=False)
     _WFIH_N["subidas"] += 1
-    return jsonify({"ok": True, "tipo": "torrent", "nombre": inf["n"][:120],
+    return jsonify({"ok": True, "tipo": "torrent", "nombre": inf["n"][:120], "certeza": "sin_ficha",
                     "emparejados": r.get("emparejados", 0), "link": _wf_magnet(inf, inf["n"])})
 
 
@@ -12687,6 +12869,12 @@ def catdiag():
     # sacar enlaces para reproducir: aciertos, fallos, de memoria (dtbl68)
     out["resolver"] = _resuelve_n_todos()     # los dos workers (dtbl72)
     out["wf_verificacion"] = dict(_wf_verif_lee(), activa=_wf_verif_activa())   # dtbl70
+    # Lo que vieron los moviles al recibir algo compartido (dtbl78): solo
+    # cuentas por navegador y resultado (esto es publico), de los ultimos 3 dias
+    try:
+        out["compartir"] = _compartir_diag_resumen()
+    except Exception:
+        out["compartir"] = []
     # ¿Firma este relay sus escrituras en mw-sync? Y su clave PUBLICA, que es la
     # que se guarda en el worker (publica: no da para firmar nada) (dtbl77)
     try:
@@ -13679,7 +13867,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div class="mwd-s">Consigue <b id="wfd-n"></b> en dos toques y lo mandamos a la tele. Queda guardado para toda la casa.</div>
   <div class="wfd-pasos">
    <button class="wfd-b pri" id="wfd-1" onclick="wfAbre()">1 · Abrir en WolfTorrent<small>Marca la casilla y el .torrent se descarga solo</small></button>
-   <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas (con la extensión de Chrome, no hace falta)</small></button>
+   <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas (o compártelo con MejorWolf desde la descarga)</small></button>
   </div>
   <div class="mwd-s" id="wfd-est" aria-live="polite"></div>
   <input type="file" id="wfd-f" style="display:none" onchange="wfSube(this)">
@@ -15563,13 +15751,20 @@ function play(){if(!sel)return;
    else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
  var _x=sel;seedGate(_x.content_id,_x.tabla||'peliculas',function(){if(sendPlay({a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title}))closeSheet()})}
-function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return false}
+// `cdF` (dtbl78): a ESA tele (la que se eligio al pedirlo), no a la que este
+// seleccionada ahora. `alOk(d)`: en vez del aviso "En la tele", quien llama dice
+// lo que de verdad sabe (el reparto de lo compartido espera a que Kodi lo confirme).
+function sendPlay(ref,cdF,alOk){var cd=(cdF||code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return false}
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
  if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
  toast('Enviando a la tele...');
  var hsnap=null;try{hsnap=histSnap(ref)}catch(e){}   // ver histSnap: `sel` cambia
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()}).then(function(d){if(d&&d.ok){lastPlayTs=Date.now();
+    // se pide OTRA reproduccion (por donde sea): lo que esperaba un archivo
+    // compartido ya no vale, y no arrancara nada por sorpresa (dtbl78)
+    try{wfFin()}catch(e){}
+    if(alOk){try{histPush(hsnap)}catch(e){};closeSheet();closeOv();alOk(d);return}
     // Tele sin latido (apagada o Kodi cerrado): la orden espera en la cola y
     // arranca al conectarse. Antes decia "En la tele" y el mando se quedaba
     // en "Preparando..." sin fin (dtbl55).
@@ -15578,7 +15773,7 @@ function sendPlay(ref){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==
     else toast(d.via==='magnet'?'▶ En la tele · DonTorrent está caído: va directo por la red torrent':'▶ En la tele');
     try{histPush(hsnap)}catch(e){};closeSheet();closeOv();openRemote();setTimeout(pollNow,1500)}
    else if(d&&d.error==='dt_caida'){dtCaidaDlg(ref.t)}
-   else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo enviar')});
+   else{toast('Error: '+((d&&d.error)||'?'));if(alOk)alOk(null,d)}}).catch(function(){toast('No se pudo enviar');if(alOk)alOk(null,null)});
  return true}
 // DonTorrent CAIDO (lo dice su propia web, ver _dt_caido en el relay). Nada de
 // "Error: ..." ni de mandar a la tele algo que va a fallar a los 60 s: se dice
@@ -15612,6 +15807,9 @@ function wfConsigueDlg(d,t){WFPIDE=WFPIDE||{};if(!WFPIDE.t)WFPIDE.t=t||'';WFPIDE
  // cerrarlo es "ya no lo quiero": se deja de esperar (nada arranca la tele por sorpresa)
  mwOpen('wfdlg',$('wfdlg').querySelector('.box'),function(){$('wfdlg').classList.remove('on');WFESP=null});}
 function wfAbre(){var u=WFPIDE&&WFPIDE.gw;if(!u)return;
+ // que titulo y que tele lo esperan: sobrevive a que Android cierre la app
+ // mientras la persona esta en WolfTorrent (dtbl78)
+ wfGuardaCtx(WFPIDE,code.value);
  var w=null;try{w=window.open(u,'_blank')}catch(e){}
  if(!w){location.href=u;return}
  wfEspera();}
@@ -15628,21 +15826,196 @@ function wfMira(){var s=WFESP;if(!s)return;clearTimeout(s.t);
    if(WFESP!==s)return;
    if(d&&d.link){WFESP=null;var e=$('wfd-est');if(e)e.textContent='';
     if($('wfdlg').classList.contains('on'))mwBack('wfdlg');
-    var tt=s.p.t||'';setTimeout(function(){sendPlay({a:'pl',u:d.link,t:tt})},220);return}
+    var tt=s.p.t||'',cd=((wfCtx()||{}).code||code.value||'');
+    setTimeout(function(){wfManda(d.link,tt,cd)},220);return}
    s.t=setTimeout(wfMira,2500)})
   .catch(function(){if(WFESP===s)s.t=setTimeout(wfMira,4000)})}
 try{document.addEventListener('visibilitychange',function(){if(!document.hidden&&WFESP)wfMira()})}catch(e){}
 function wfElige(){var f=$('wfd-f');f.value='';f.click()}
-function wfSube(inp){var fl=inp.files&&inp.files[0];if(!fl)return;var p=WFPIDE||{};
- var fd=new FormData();fd.append('f',fl,fl.name);
- ['url','t','q','sz'].forEach(function(k){fd.append(k,p[k]||'')});
- fd.append('code',(code.value||'').replace(/\D/g,''));
- WFESP=null;toast('Leyendo el .torrent…');
- fetch('/wfsube',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
-   if(d&&d.ok&&d.link){mwBack('wfdlg');var tt=p.t||d.nombre||'';
-    setTimeout(function(){sendPlay({a:'pl',u:d.link,t:tt})},220)}
-   else toast((d&&d.error)||'No se pudo leer ese archivo',6000)})
-  .catch(function(){toast('No se pudo subir el archivo')})}
+// "Ya lo tengo" (selector de Descargas): el mismo camino que lo compartido
+function wfSube(inp){var fl=inp.files&&inp.files[0];if(!fl)return;
+ var p=WFPIDE,ctx=(p&&p.url)?wfCtxValido({url:p.url,t:p.t,q:p.q,sz:p.sz,code:code.value,ts:Date.now()}):wfCtx();
+ try{wfDiag({via:'selector',chrome:wfChrome(typeof navigator!=='undefined'?navigator.userAgent:''),pag_bytes:fl.size||0,resultado:'elegido'},ctx)}catch(e){}
+ wfEntrega(fl,fl.name,ctx)}
+// ==== COMPARTIR (dtbl78) ====
+// Lo que llega al movil (Android "Compartir -> MejorWolf" o "Ya lo tengo"): se le
+// pone su contexto (que titulo y que tele lo esperaban), se entrega a /wfsube con
+// su huella y SOLO con certeza total va a la tele sin preguntar; con duda, se
+// pregunta; si no casa, no se manda. Nada dice "reproduciendo" hasta que Kodi
+// lo confirma.
+var WFCTX_K='mw_wfpend',WFCTX_VIDA=30*60e3;
+var WFMAXB=__MW_MAXB__;                 // el mismo tope que el service worker y /wfsube
+var WFHUERFANO=10*60e3;                 // lo compartido sin recoger, a los 10 min es huerfano
+function wfGuardaCtx(p,cd){var c=wfCtxValido({url:p&&p.url,t:p&&p.t,q:p&&p.q,sz:p&&p.sz,code:cd,ts:Date.now()});
+ if(!c)return;try{localStorage.setItem(WFCTX_K,JSON.stringify(c))}catch(e){}}
+// Solo un contexto con forma: ficha de WolfMax, tele de 6 cifras, textos acotados
+function wfCtxValido(c){if(!c||typeof c!=='object')return null;
+ var url=String(c.url||''),cd=String(c.code||'');
+ if(!/^https:\/\/(www\.)?(wolfmax4k|wolftorrent)\.com\/[^\s]{1,200}$/.test(url)||!/^\d{6}$/.test(cd))return null;
+ return {url:url,t:String(c.t||'').slice(0,160),q:String(c.q||'').slice(0,20),sz:String(c.sz||'').slice(0,20),
+  code:cd,ts:+c.ts||0}}
+// El contexto guardado, si tiene forma y no ha caducado (30 min de verdad, con
+// su propia hora; uno "del futuro" o roto tampoco vale, y se borra)
+function wfCtx(ahora){var c=null;
+ try{c=wfCtxValido(JSON.parse(localStorage.getItem(WFCTX_K)||'null'))}catch(e){c=null}
+ var t=(ahora||Date.now())-(c?c.ts:0);
+ if(c&&t>=0&&t<WFCTX_VIDA)return c;
+ try{localStorage.removeItem(WFCTX_K)}catch(e){}
+ return null}
+function wfFin(){try{localStorage.removeItem(WFCTX_K)}catch(e){}WFESP=null}
+// La decision, sin red ni pantalla (se prueba aparte). Sin preguntar SOLO si:
+// hay contexto, el archivo es exactamente el de la ficha (titulo + tamaño), la
+// tele es la que sigue elegida, esta conectada y no esta reproduciendo otra cosa.
+function wfDecide(st,d,ctx,est){d=d||{};
+ if(d.ok&&d.tipo==='zip')return {accion:'zip'};
+ if(!d.ok){if(st===409&&ctx)return {accion:'negar',texto:d.error||''};
+  return {accion:'error',texto:d.error||('No se pudo leer ese archivo'+(st?(' ('+st+').'):'.'))}}
+ if(!d.link)return {accion:'error',texto:'No ha llegado el enlace del archivo.'};
+ if(!ctx||d.certeza!=='exacta'||!est||!est.misma||!est.conectada||est.sonando)return {accion:'confirmar'};
+ return {accion:'enviar'}}
+// Como esta la tele de destino ahora mismo (null: no se sabe -> se pregunta)
+function wfEstado(cd){var sel=String(code.value||'').replace(/\D/g,'');
+ return fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(j){
+  if(!j)return null;var np=j.np;
+  return {misma:sel===cd,conectada:!!np||j.tele===true,sonando:(np&&np.title)||''}}).catch(function(){return null})}
+// Al servidor, con su huella: el servidor la calcula sobre lo que recibe y, si no
+// es la misma, no lo acepta. Sin huella (sin la API del movil) no se sube.
+function wfEntrega(blob,nombre,ctx,sha){
+ var cd=String((ctx&&ctx.code)||code.value||'').replace(/\D/g,'');
+ if(cd.length!==6){avisaCodigo();return Promise.resolve({accion:'sin_codigo'})}
+ WFESP=null;
+ if(!blob||!blob.size){wfFalla('El archivo ha llegado vacío.');return Promise.resolve({accion:'error'})}
+ if(blob.size>WFMAXB){wfFalla('Eso es demasiado grande para ser un .torrent o el ZIP del día.');return Promise.resolve({accion:'error'})}
+ toast('Leyendo el archivo…');
+ return (sha?Promise.resolve(sha):wfSha(blob)).then(function(h){
+  if(!h){wfFalla('No se ha podido comprobar el archivo en este móvil.');return {accion:'error'}}
+  var fd=new FormData();fd.append('f',blob,nombre||'archivo.torrent');fd.append('code',cd);fd.append('sha',h);
+  if(ctx)['url','t','q','sz'].forEach(function(k){fd.append(k,ctx[k]||'')});
+  return fetch('/wfsube',{method:'POST',body:fd})
+  .then(function(r){return r.json().catch(function(){return null}).then(function(d){return {st:r.status,d:d}})})
+  .then(function(x){var d=x.d||{};
+   return ((d.ok&&d.link&&d.tipo!=='zip')?wfEstado(cd):Promise.resolve(null)).then(function(est){
+   var dec=wfDecide(x.st,x.d,ctx,est),tele=devName(cd)||('la tele '+cd);
+   var tit=(ctx&&ctx.t)||d.nombre||nombre||'';
+   if(dec.accion==='zip'){WFZIP={dia:d.dia,n:d.n,emp:d.emparejados};
+    toast('📦 '+d.n+' torrents de WolfMax guardados: ya se pueden ver en la tele',6000);
+    try{if(ULTCAIDAS)pintaCaidas(ULTCAIDAS)}catch(e){};return dec}
+   if(dec.accion==='negar'){mwConfirm('No es «'+_tituloBase(tit)+'»',dec.texto+' No lo mando a la tele.','Entendido',function(){});return dec}
+   if(dec.accion==='error'){wfFalla(dec.texto);return dec}
+   if($('wfdlg')&&$('wfdlg').classList.contains('on'))mwBack('wfdlg');
+   if(dec.accion==='enviar'){setTimeout(function(){wfManda(d.link,tit,cd)},220);return dec}
+   // con duda: se pregunta, nombrando la tele y lo que haga falta saber
+   var txt='Has compartido «'+(d.nombre||nombre||'un archivo')+'». '+(ctx?('¿Es «'+tit+'»'+(ctx.q?(' ('+ctx.q+')'):'')+'?'):'No sé de qué título es: confírmalo tú.');
+   if(est&&!est.misma){var otra=String(code.value||'').replace(/\D/g,'');
+    txt+=' Lo pediste para '+tele+'; ahora tienes elegida '+(devName(otra)||('la tele '+otra))+'.'}
+   if(est&&est.sonando)txt+=' Ahora '+tele+' está reproduciendo «'+est.sonando+'».';
+   if(est&&!est.conectada)txt+=' '+tele+' no está conectada: abre Kodi en ella.';
+   setTimeout(function(){mwConfirm('¿Lo pongo en '+tele+'?',txt,'Sí, ponlo',function(){wfManda(d.link,tit,cd)})},220);
+   return dec})})})
+  .catch(function(){wfFalla('No se pudo subir el archivo (¿sin conexión?).');return {accion:'error'}})}
+// Cuando no llega o no se puede leer: dicho, y con el selector a mano.
+function wfFalla(texto){mwConfirm('No he podido recibir el archivo',
+ (texto||'')+' Puedes elegirlo tú en Descargas.','Elegir el archivo',function(){wfElige()})}
+// A la tele, y "reproduciendo" solo cuando Kodi lo dice (/kb/now). Si esa tele
+// no esta conectada, no se manda nada: se vuelve a preguntar.
+function wfManda(link,tit,cd){
+ return fetch('/kb/now?code='+cd).then(function(r){return r.json()}).catch(function(){return null}).then(function(a){
+  var tele=devName(cd)||'la tele';
+  if(a&&!a.np&&a.tele===false){
+   mwConfirm(tele+' no está conectada','Abre Kodi en esa tele y pulsa «Reintentar». No he mandado nada.','Reintentar',function(){wfManda(link,tit,cd)});
+   return}
+  var antes=(a&&a.np&&a.np.title)||'';
+  sendPlay({a:'pl',u:link,t:tit},cd,function(d){
+   if(!d)return;                        // el error ya lo ha dicho sendPlay
+   wfFin();
+   if(d.tele===false){toast('📴 '+tele+' no está conectada: la orden espera a que abras Kodi. Aún no se reproduce nada.',7000);return}
+   toast('Pedido a '+tele+'. Esperando a que Kodi empiece…',6000);
+   wfConfirmaKodi(cd,antes,Date.now()+120e3)})})}
+function wfConfirmaKodi(cd,antes,hasta){
+ return fetch('/kb/now?code='+cd).then(function(r){return r.json()}).catch(function(){return null}).then(function(j){
+  var np=j&&j.np,tele=devName(cd)||'la tele';
+  if(np&&np.title&&np.title!==antes){toast('▶ '+tele+' está reproduciendo «'+np.title+'»',6000);
+   // el mando maneja la tele ELEGIDA: solo se abre si es esta (si ahora hay
+   // otra elegida, no se toca: el aviso ya dice en cual suena)
+   if(String(code.value||'').replace(/\D/g,'')===cd){try{openRemote();setTimeout(pollNow,500)}catch(e){}}
+   return 'confirmado'}
+  if(Date.now()>hasta){toast(tele+' aún no ha confirmado que empiece. Mira la tele: si pone «Obteniendo torrent», espera.',8000);return 'sin_confirmar'}
+  return new Promise(function(ok){setTimeout(function(){ok(wfConfirmaKodi(cd,antes,hasta))},3000)})})}
+// Diagnostico de cada recepcion (dtbl78): que version de Chrome, si el service
+// worker recibio archivo y cuantos bytes, si a la pagina le llego ENTERO. Al
+// servidor solo van esos datos -- ni el archivo, ni el titulo, ni la huella --;
+// el codigo de la tele va solo para que el servidor sepa que es de una casa
+// nuestra, y no lo guarda.
+function wfChrome(ua){var m=/Chrome\/(\d+)/.exec(String(ua||''));return m?m[1]:''}
+function wfDiag(d,ctx){try{var cd=String((ctx&&ctx.code)||code.value||'').replace(/\D/g,'');
+ fetch('/compartir/diag',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify(Object.assign({code:cd},d)),keepalive:true}).catch(function(){})}catch(e){}}
+function wfSha(b){if(!(window.crypto&&crypto.subtle&&b&&b.arrayBuffer))return Promise.resolve('');
+ return b.arrayBuffer().then(function(a){return crypto.subtle.digest('SHA-256',a)}).then(function(h){
+  return Array.from(new Uint8Array(h)).map(function(x){return ('0'+x.toString(16)).slice(-2)}).join('')}).catch(function(){return ''})}
+// Lo compartido que nadie recogio (la app se cerro, fallo algo): fuera, pero solo
+// si es de hace mas de 10 min -- uno reciente puede estar recogiendolo otra
+// apertura de la app ahora mismo.
+function wfPurga(c,ahora){
+ function vieja(ts){return !ts||!(ahora-ts<WFHUERFANO)}
+ return Promise.all([
+  c.match('/__compartido').then(function(r){if(r&&vieja(+r.headers.get('X-Ts')))return c.delete('/__compartido')}),
+  c.match('/__compartido_diag').then(function(r){return r?r.json().catch(function(){return {}}):null}).then(function(sd){
+   if(sd&&vieja(+sd.ts))return c.delete('/__compartido_diag')})]).catch(function(){})}
+// Al abrir la app desde "Compartir": el archivo lo dejo el service worker en la
+// cache del movil. Se recoge, se comprueba que esta ENTERO (mismo tamaño y misma
+// sha256 que vio el service worker; sin las dos huellas no se da por bueno), se
+// borra de ahi y se entrega. Si no llega o no esta entero: error visible y el
+// selector a mano; nada se sube. Una sola recogida: la primera apertura que
+// retira el diagnostico se lo queda; otra apertura a la vez no hace nada.
+var WFREC=null;
+function wfRecoge(){if(!WFREC)WFREC=wfRecogeUna();return WFREC}
+function wfRecogeUna(){var q=null;try{q=new URLSearchParams(location.search).get('compartido')}catch(e){}
+ if(!q){
+  try{if(window.caches)return caches.open('mw-compartido').then(function(c){return wfPurga(c,Date.now())}).then(function(){return 'nada'},function(){return 'nada'})}catch(e){}
+  return Promise.resolve('nada')}
+ try{history.replaceState(null,'','/')}catch(e){}
+ var nav=wfChrome(typeof navigator!=='undefined'?navigator.userAgent:''),ctx=wfCtx();
+ var base={via:'compartir',chrome:nav,q:String(q).slice(0,8)};
+ if(q==='sinsw'){wfDiag(Object.assign(base,{sw:false,resultado:'sin_service_worker'}),ctx);
+  wfFalla('MejorWolf no estaba listo para recibirlo.');return Promise.resolve('fallo')}
+ if(!window.caches){wfDiag(Object.assign(base,{resultado:'sin_caches'}),ctx);wfFalla('Este navegador no deja recibir archivos.');return Promise.resolve('fallo')}
+ var cc=null;
+ return caches.open('mw-compartido').then(function(c){cc=c;
+  return c.match('/__compartido_diag').then(function(rd){return rd?rd.json().catch(function(){return {}}):null}).then(function(sd){
+   // sin diagnostico: o no llego, o ya lo esta recogiendo otra apertura (a ese
+   // archivo no se le toca; solo lo huerfano de hace rato)
+   if(!sd){wfDiag(Object.assign(base,{sw:true,resultado:'perdido_entre_sw_y_pagina'}),ctx);
+    return wfPurga(c,Date.now()).then(function(){wfFalla('El archivo compartido no ha llegado.');return 'fallo'})}
+   var diag=Object.assign(base,{sw:true,sw_chrome:wfChrome(sd.ua),sw_recibido:!!sd.recibido,sw_bytes:+sd.bytes||0,campos:sd.campos||[]});
+   // retirar el diagnostico es "me lo quedo": si otra apertura ya lo retiro, es suyo
+   return c.delete('/__compartido_diag').then(function(mio){
+    if(!mio)return 'otra';
+    var fuera=function(res,texto){wfDiag(Object.assign(diag,{resultado:res}),ctx);
+     return c.delete('/__compartido').then(function(){wfFalla(texto);return 'fallo'})};
+    if(!(Date.now()-(+sd.ts||0)<WFHUERFANO))return fuera('caducado','Lo compartido era de hace rato y ya no vale.');
+    if(sd.grande||(+sd.bytes||0)>WFMAXB)return fuera('demasiado_grande','Eso es demasiado grande para ser un .torrent o el ZIP del día.');
+    if(q!=='1'||!sd.recibido)return fuera('sw_sin_archivo','Android no le ha pasado el archivo a MejorWolf.');
+    return c.match('/__compartido').then(function(r){
+     if(!r)return fuera('perdido_entre_sw_y_pagina','El archivo compartido no ha llegado.');
+     var nom='';try{nom=decodeURIComponent(r.headers.get('X-Nombre')||'')}catch(e){}
+     return r.blob().then(function(b){return c.delete('/__compartido').then(function(){
+      if(!b||!b.size||b.size!==sd.bytes){diag.pag_bytes=(b&&b.size)||0;diag.integro=false;
+       wfDiag(Object.assign(diag,{resultado:'incompleto'}),ctx);
+       wfFalla('El archivo ha llegado incompleto ('+diag.pag_bytes+' de '+sd.bytes+' bytes).');return 'fallo'}
+      return wfSha(b).then(function(sha){
+       var entero=/^[0-9a-f]{64}$/.test(String(sd.sha||''))&&sha===sd.sha;
+       diag.pag_bytes=b.size;diag.integro=entero;
+       if(!entero){wfDiag(Object.assign(diag,{resultado:'alterado'}),ctx);
+        wfFalla('No he podido comprobar que el archivo haya llegado igual que salió.');return 'fallo'}
+       wfDiag(Object.assign(diag,{resultado:'recogido'}),ctx);
+       wfEntrega(b,nom||'archivo.torrent',ctx,sha);return 'recogido'})})})})})})})
+  .catch(function(){
+   // falle lo que falle, no se queda nada a medias en el movil
+   try{if(cc){cc.delete('/__compartido').catch(function(){});cc.delete('/__compartido_diag').catch(function(){})}}catch(e){}
+   wfDiag(Object.assign(base,{resultado:'error_lectura'}),ctx);wfFalla('No he podido leer el archivo compartido.');return 'fallo'})}
+setTimeout(function(){try{wfRecoge()}catch(e){}},600);
+// ==== FIN COMPARTIR ====
 function wfOtras(){var q=_tituloBase((WFPIDE&&WFPIDE.t)||'');mwBack('wfdlg');setTimeout(function(){buscaOtras(q)},220)}
 // El ZIP OFICIAL del dia: WolfMax junta cada mañana (07:00) todos los .torrent
 // del dia anterior. Una casilla y ~130 torrents que ya se ven por magnet.
@@ -15658,14 +16031,17 @@ function wfZipHTML(d){var z=WFZIP||(d&&d.wf_zip);
 function wfZipAbre(){var u='https://wolftorrent.com/torrents-del-dia',w=null;try{w=window.open(u,'_blank')}catch(e){}if(!w)location.href=u}
 function wfZipElige(){var f=$('wfz-f');f.value='';f.click()}
 function wfSubeZip(inp){var fl=inp.files&&inp.files[0];if(!fl)return;
- var fd=new FormData();fd.append('f',fl,fl.name);fd.append('code',(code.value||'').replace(/\D/g,''));
+ // el mismo tope y la misma huella que todo lo que se sube (dtbl78)
+ if(!fl.size||fl.size>WFMAXB){toast(fl.size?'Ese archivo es demasiado grande':'Ese archivo está vacío',6000);return}
  toast('Abriendo el ZIP…');
- fetch('/wfsube',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+ wfSha(fl).then(function(h){if(!h){toast('No se ha podido comprobar el archivo en este móvil',6000);return}
+ var fd=new FormData();fd.append('f',fl,fl.name);fd.append('code',(code.value||'').replace(/\D/g,''));fd.append('sha',h);
+ return fetch('/wfsube',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
    if(d&&d.ok&&d.tipo==='zip'){WFZIP={dia:d.dia,n:d.n,emp:d.emparejados};
     toast('📦 '+d.n+' torrents de WolfMax guardados: ya se pueden ver en la tele',6000);
     try{if(ULTCAIDAS)pintaCaidas(ULTCAIDAS)}catch(e){}}
    else if(d&&d.ok)toast('Guardado: '+(d.nombre||'el .torrent'),5000);
-   else toast((d&&d.error)||'No se pudo leer ese archivo',6000)})
+   else toast((d&&d.error)||'No se pudo leer ese archivo',6000)})})
   .catch(function(){toast('No se pudo subir el archivo')})}
 function fuenteCaidaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
  mwConfirm(n+' está caído',
@@ -16036,7 +16412,7 @@ document.addEventListener('visibilitychange',function(){
 window.addEventListener('online',function(){if(syncOn()&&!_syListo)syncBajar()});
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){})}
 </script></body></html>"""
-_CAT_PAGE = _CAT_PAGE.replace("__MW_BUILD__", BUILD)
+_CAT_PAGE = _CAT_PAGE.replace("__MW_BUILD__", BUILD).replace("__MW_MAXB__", str(_COMPARTIR_MAX))
 
 
 @app.get("/cat")

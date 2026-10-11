@@ -48,12 +48,13 @@ día, vale para todas las teles.
 |---|---|---|
 | `code` | obligatorio | código de 6 cifras de una tele que haya latido en los últimos 60 días |
 | `f` | obligatorio | el `.torrent` o el ZIP (≤ 15 MB). Se valida por dentro (bencode con `info`; ZIP con sus `.torrent`, topes anti-ZIP-trampa) |
+| `sha` | obligatorio | sha256 (hex) del archivo: el relay la recalcula sobre lo que recibe y, si no coincide, no guarda nada (400) |
 | `ref` | opcional | la página de la que salió la descarga (`https://wolftorrent.com/descarga/<pelicula\|serie\|documental>/<código>`): ata el torrent a SU ficha |
 | `url`, `t`, `q`, `sz` | opcionales | la ficha y lo que la web sabe de ella (título, calidad, tamaño), para comprobar que casa |
 
 Respuestas JSON (nunca un cuerpo vacío):
 `200 {ok, tipo:"torrent", nombre, url, ya, link}` · `200 {ok, tipo:"zip", n, dia, emparejados}` ·
-`400` no es un .torrent/ZIP · `401` falta el código · `403 {reintentar:true}` código no conocido aún ·
+`400` no es un .torrent/ZIP, o falta la huella o no coincide · `401` falta el código · `403 {reintentar:true}` código no conocido aún ·
 `409` no casa con su ficha · `413` demasiado grande · `429` demasiadas subidas (20 por IP cada 10 min).
 
 `GET /wfmagnet?url=&t=&sz=` → `{link}` si se conoce la huella (la usan la web y
