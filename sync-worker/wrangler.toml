@@ -17,3 +17,8 @@ database_id = "8543520f-9ac9-49c8-9f27-55e83522f63b"
 GOOGLE_CLIENT_ID = "839927719843-4pv0bo17vmqcfmdl35dbbds08t02c4ms.apps.googleusercontent.com"
 # APP_JWT_SECRET va como SECRETO (wrangler secret put APP_JWT_SECRET), nunca aqui:
 # este repositorio es PUBLICO.
+# Clave PUBLICA Ed25519 del relay (dtbl77): con ella se comprueba que cada
+# escritura en /kv/* y /wfidx la firmo el relay. Es publica (sale en /catdiag ->
+# kv_firma.publica) y no sirve para firmar nada; el secreto lo genero Render y no
+# sale de alli. Sin ella, el worker no acepta NINGUNA escritura.
+KV_PUBLICA = "VcIxpJMC7mNS8KebHlCoEawZ09hYToZC0FEEEj2wOZk="
