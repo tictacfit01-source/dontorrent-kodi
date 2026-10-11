@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl74"
+BUILD = "dtbl75"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4996,6 +4996,13 @@ def _con_caida(d):
         d["vivas"] = [s for s in _fuentes_vivas() if s not in c]
     if _wf_verif_activa():
         d["wf_verif"] = True                 # dtbl70
+        # el ZIP del dia: si ya lo trajo alguien, la web no lo vuelve a pedir
+        try:
+            z = _wfih_actual().get("zip") or {}
+            if z.get("dia"):
+                d["wf_zip"] = {"dia": z.get("dia"), "n": z.get("n", 0), "emp": z.get("emp", 0)}
+        except Exception:
+            pass
     return d
 
 
@@ -6291,6 +6298,9 @@ def _cat_group_episodes(items):
               "url": it.get("url") or it.get("content_id") or "",
               "content_id": it.get("url") or it.get("content_id") or "",
               "src": src}
+        # el tamaño (caja 2.9.89): con el se encuentra su torrent en el ZIP del dia
+        if it.get("size") and src == "wf":
+            ep["size"] = str(it["size"])[:20]
         # PACK de WolfMax ("1x06 al 1x09"): la caja 2.9.81 manda donde acaba
         try:
             fin = int(it.get("episode_end") or 0)
@@ -7585,8 +7595,9 @@ def _al_servir(items):
       - las caratulas salen todas al mismo tamano, que es lo que hace que la
         cuadricula se vea pareja;
       - el "(2026)" del final del titulo pasa a ser el año (ver _anio_fuera).
-    Es idempotente: pasar dos veces por aqui no cambia nada."""
-    return _posters_norm(_agrupa_temporadas(_anio_fuera(items)))
+    Es idempotente: pasar dos veces por aqui no cambia nada.
+      - lo de WolfMax que se puede ver por magnet lleva `mag` (dtbl75)."""
+    return _wf_marca_mag(_posters_norm(_agrupa_temporadas(_anio_fuera(items))))
 
 
 def _agrupa_temporadas(items):
@@ -8083,6 +8094,578 @@ def _wf_verif_apunta(si):
         pass
 
 
+# --- WOLFMAX SIN SALTARSE SU CAPTCHA (dtbl75) ---------------------------------
+# Desde el 07-10 WolfMax (que ahora se llama WolfTorrent) pide una verificacion
+# HUMANA en cada descarga. No se salta ni se automatiza. Pero:
+#  - un archivo cuya HUELLA (infohash) ya conocemos se reproduce por magnet desde
+#    la red BitTorrent, sin tocar su web: sus .torrent no son privados y se
+#    anuncian en los trackers publicos de siempre (medido con el de Spider-Man 4K);
+#  - una PERSONA puede bajar el .torrent en su web oficial (marca la casilla y se
+#    baja solo) o el ZIP diario con TODOS los del dia anterior, y subirlo aqui.
+#    Desde ese momento vale para toda la casa y para siempre: la huella no cambia.
+# Almacen PROPIO: sin el tope de 2000 compartido con DivxTotal ni los 30 dias de
+# _dxih (las del aprendiz se iban a perder entre el 26-10 y el 06-11), y con
+# copia en mw-sync (/kv/wfih).
+_WFIH_FILE = "/tmp/mw_wfih.json"
+_WFIH_SYNC = "https://mw-sync.israeldm93.workers.dev/kv/wfih"
+_WFIH_MAX_H = 15000          # huellas ya atadas a su ficha
+_WFIH_MAX_P = 6000           # torrents de los ZIP aun sin ficha
+_WFIH_TOPE_GZ = 900 * 1024   # el worker admite 1 MB (en base64)
+_WFIH_NUBE = {"subida_ts": 0.0, "vuelo": 0.0, "cambios": 0, "subidas": 0,
+              "fallos": 0, "bajadas": 0, "recuperadas": 0, "bytes": 0}
+_WFIH_N = {"magnet": 0, "subidas": 0, "rechazos": 0, "emparejados": 0}
+_WFIH_IH = re.compile(r"^[0-9a-f]{40}$")
+_WFIH_MEM = {"mt": -1.0, "d": None}
+# Los publicos que sus .torrent ya traen (y los mismos con que se cuentan las
+# semillas): con ellos el magnet encuentra el enjambre en segundos.
+_WF_TRACKERS = ("udp://tracker.opentrackr.org:1337/announce",
+                "udp://tracker.torrent.eu.org:451/announce",
+                "udp://open.stealth.si:80/announce",
+                "udp://exodus.desync.com:6969/announce",
+                "udp://explodie.org:6969/announce",
+                "http://tracker.opentrackr.org:1337/announce")
+_WF_URL_RE = re.compile(r"^https?://(?:www\.)?(?:wolfmax4k|wolftorrent)\.com(/[^?#]*)", re.I)
+_WF_PASARELA_RE = re.compile(
+    r"/(pelicula|serie|documental|animacion|telenovela)(?:/episodio)?/([a-z0-9]{4,16})$", re.I)
+
+
+def _wf_url_clave(u):
+    """La URL de una ficha de WolfMax siempre igual: con wolfmax4k.com (asi esta
+    guardada en todas partes) aunque llegue con wolftorrent.com. "" si no es."""
+    m = _WF_URL_RE.match((u or "").strip())
+    return ("https://wolfmax4k.com" + m.group(1).rstrip("/")) if m else ""
+
+
+def _wf_pasarela(url):
+    """La pagina OFICIAL donde una persona consigue ese .torrent (marca la
+    casilla de Cloudflare y el navegador lo baja solo). "" si no se sabe."""
+    m = _WF_PASARELA_RE.search(_wf_url_clave(url))
+    return ("https://wolftorrent.com/descarga/%s/%s" % (m.group(1).lower(), m.group(2))) if m else ""
+
+
+def _wfih_vacio():
+    return {"h": {}, "p": {}, "zip": {}}
+
+
+def _wfih_valida(d):
+    """Solo lo que tiene forma: h = {url: {ih,n,b,o,ts}}, p = {ih: {n,b,f,d,ts}}."""
+    out = _wfih_vacio()
+    for u, e in ((d or {}).get("h") or {}).items():
+        k = _wf_url_clave(u)
+        if k and isinstance(e, dict) and _WFIH_IH.match(str(e.get("ih") or "")):
+            out["h"][k] = {kk: e[kk] for kk in ("ih", "n", "b", "o", "ts") if kk in e}
+    for ih, e in ((d or {}).get("p") or {}).items():
+        if _WFIH_IH.match(str(ih)) and isinstance(e, dict):
+            out["p"][ih] = {kk: e[kk] for kk in ("n", "b", "f", "d", "ts") if kk in e}
+    z = (d or {}).get("zip")
+    if isinstance(z, dict):
+        out["zip"] = {kk: z[kk] for kk in ("dia", "n", "emp", "ts") if kk in z}
+    return out
+
+
+def _wfih_lee():
+    try:
+        with open(_WFIH_FILE, "r", encoding="utf-8") as f:
+            return _wfih_valida(_json.load(f) or {})
+    except Exception:
+        return _wfih_vacio()
+
+
+def _wfih_actual():
+    """Lo de disco, en memoria mientras no cambie (se mira en cada lista que se
+    sirve: tiene que costar nada). SOLO LECTURA: para escribir, _wfih_cambia."""
+    try:
+        mt = os.path.getmtime(_WFIH_FILE)
+    except Exception:
+        mt = 0.0
+    if _WFIH_MEM["d"] is None or mt != _WFIH_MEM["mt"]:
+        _WFIH_MEM["d"] = _wfih_lee()
+        _WFIH_MEM["mt"] = mt
+    return _WFIH_MEM["d"]
+
+
+def _wfih_guarda(d):
+    for clave, tope in (("h", _WFIH_MAX_H), ("p", _WFIH_MAX_P)):
+        if len(d[clave]) > tope:
+            d[clave] = dict(sorted(d[clave].items(),
+                                   key=lambda kv: -float(kv[1].get("ts") or 0))[:tope])
+    try:
+        tmp = "%s.%d.tmp" % (_WFIH_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _WFIH_FILE)
+    except Exception:
+        pass
+
+
+def _wfih_cambia(fn):
+    """Lee-modifica-escribe bajo cerrojo (dos workers). `fn(d)` devuelve cuantas
+    entradas cambio; si alguna, se guarda y se apunta para la copia."""
+    with _FileLock(_WFIH_FILE):
+        d = _wfih_lee()
+        n = fn(d) or 0
+        if n:
+            _wfih_guarda(d)
+    if n:
+        _WFIH_NUBE["cambios"] += n
+        _wfih_nube_sube()
+    return n
+
+
+def _wfih_apunta(url, ih, n="", b=0, o="persona", pisa=True):
+    """Ata una huella a su ficha. Lo que trae una persona de esa misma ficha
+    manda (`pisa`); lo emparejado de un ZIP o lo del aprendiz no pisa nada."""
+    k = _wf_url_clave(url)
+    ih = str(ih or "").lower()
+    if not k or not _WFIH_IH.match(ih):
+        return False
+
+    def _f(d):
+        ya = d["h"].get(k) or {}
+        if ya.get("ih") == ih or (ya.get("ih") and not pisa):
+            return 0
+        d["h"][k] = {"ih": ih, "n": str(n or "")[:160], "b": int(b or 0), "o": o,
+                     "ts": int(_t.time())}
+        d["p"].pop(ih, None)
+        return 1
+    _wfih_cambia(_f)
+    return True
+
+
+def _wfih_de(url):
+    k = _wf_url_clave(url)
+    e = _wfih_actual()["h"].get(k) if k else None
+    return e if e and _WFIH_IH.match(str(e.get("ih") or "")) else None
+
+
+def _wfih_migra():
+    """Lo que aprendio el aprendiz antes del captcha (en _dxih, con 30 dias de
+    vida y tope compartido), a su almacen propio. Funde: nunca pisa."""
+    dih = _dxih_load()
+
+    def _f(d):
+        n = 0
+        for u, e in dih.items():
+            k = _wf_url_clave(u)
+            ih = str((e or {}).get("ih") or "").lower()
+            if k and _WFIH_IH.match(ih) and k not in d["h"]:
+                d["h"][k] = {"ih": ih, "o": "aprendiz", "ts": int(float(e.get("ts") or 0) or _t.time())}
+                n += 1
+        return n
+    return _wfih_cambia(_f) if dih else 0
+
+
+def _wf_magnet(e, titulo=""):
+    ih = str((e or {}).get("ih") or "").lower()
+    if not _WFIH_IH.match(ih):
+        return ""
+    dn = (str(e.get("n") or "") or titulo or "")[:120]
+    return ("magnet:?xt=urn:btih:" + ih + (("&dn=" + _uq(dn, safe="")) if dn else "")
+            + "".join("&tr=" + _uq(t, safe="") for t in _WF_TRACKERS))
+
+
+def _wf_marca_mag(items):
+    """`mag: 1` en lo de WolfMax que se puede ver por magnet (la web no lo manda
+    al fondo de la tarjeta aunque WolfMax pida verificacion)."""
+    try:
+        h = _wfih_actual()["h"]
+        if not h:
+            return items
+        for it in items or []:
+            if (it or {}).get("source") == "wf":
+                if h.get(_wf_url_clave(it.get("url") or it.get("content_id") or "")):
+                    it["mag"] = 1
+                for e in it.get("eps") or []:
+                    if isinstance(e, dict) and h.get(_wf_url_clave(e.get("url") or "")):
+                        e["mag"] = 1
+    except Exception:
+        pass
+    return items
+
+
+# --- Leer lo que trae la persona: .torrent o el ZIP del dia --------------------
+def _bdec(d, i=0, prof=0):
+    """Un elemento bencode -> (valor, siguiente). Cadenas como bytes."""
+    if prof > 40:
+        raise ValueError("bencode demasiado anidado")
+    c = d[i:i + 1]
+    if c == b"i":
+        j = d.index(b"e", i)
+        return int(d[i + 1:j]), j + 1
+    if c == b"l" or c == b"d":
+        es_d, i, out = c == b"d", i + 1, ({} if c == b"d" else [])
+        while d[i:i + 1] != b"e":
+            if i >= len(d):
+                raise ValueError("bencode cortado")
+            if es_d:
+                k, i = _bdec(d, i, prof + 1)
+                v, i = _bdec(d, i, prof + 1)
+                out[k] = v
+            else:
+                v, i = _bdec(d, i, prof + 1)
+                out.append(v)
+        return out, i + 1
+    j = d.index(b":", i)
+    n = int(d[i:j])
+    if n < 0 or j + 1 + n > len(d):
+        raise ValueError("bencode cortado")
+    return d[j + 1:j + 1 + n], j + 1 + n
+
+
+def _torrent_lee(data):
+    """{ih, n, b, nf} de un .torrent, o None. La huella es el sha1 del dict
+    `info` TAL CUAL viene (el span exacto, no re-codificado)."""
+    try:
+        if not data or data[:1] != b"d":
+            return None
+        i, top, span = 1, {}, None
+        while data[i:i + 1] != b"e":
+            k, i = _bdec(data, i)
+            ini = i
+            v, i = _bdec(data, i)
+            top[k] = v
+            if k == b"info":
+                span = (ini, i)
+        info = top.get(b"info")
+        if not span or not isinstance(info, dict):
+            return None
+        nombre = info.get(b"name.utf-8") or info.get(b"name") or b""
+        fs = info.get(b"files")
+        if isinstance(fs, list) and fs:
+            total = sum(int(f.get(b"length") or 0) for f in fs if isinstance(f, dict))
+            nf = len(fs)
+        else:
+            total, nf = int(info.get(b"length") or 0), 1
+        if total <= 0:
+            return None
+        return {"ih": _hl.sha1(data[span[0]:span[1]]).hexdigest(),
+                "n": (nombre.decode("utf-8", "replace") if isinstance(nombre, bytes) else "")[:200],
+                "b": total, "nf": nf}
+    except Exception:
+        return None
+
+
+_WFZIP_MAX_ENTRADAS = 800
+_WFZIP_MAX_TORRENT = 4 * 1024 * 1024
+_WFZIP_MAX_TOTAL = 80 * 1024 * 1024
+
+
+def _zip_torrents(data):
+    """[(nombre_de_fichero, info)] de los .torrent de un ZIP, con topes contra
+    un ZIP trampa (nada se descomprime mas alla de lo que se lee)."""
+    import io
+    import zipfile
+    out, total = [], 0
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:
+        return None
+    for zi in zf.infolist()[:_WFZIP_MAX_ENTRADAS]:
+        nom = zi.filename.replace("\\", "/").split("/")[-1]
+        if zi.is_dir() or not nom.lower().endswith(".torrent"):
+            continue
+        try:
+            with zf.open(zi) as fh:
+                cont = fh.read(_WFZIP_MAX_TORRENT + 1)
+        except Exception:
+            continue
+        if len(cont) > _WFZIP_MAX_TORRENT:
+            continue
+        total += len(cont)
+        if total > _WFZIP_MAX_TOTAL:
+            break
+        inf = _torrent_lee(cont)
+        if inf:
+            out.append((nom[:200], inf))
+    return out
+
+
+# --- Emparejar un torrent con su ficha -----------------------------------------
+# El TAMAÑO es casi una huella: WolfMax lo escribe en GiB con dos decimales
+# ("26,59 GB" = 28.551.267.564 bytes, medido con Spider-Man 4K) y entre los
+# ~130 torrents de un dia no se repite. Ademas el titulo tiene que casar, el
+# capitulo tambien, y si hay duda, NO se empareja: una huella equivocada
+# reproduciria otra cosa en la tele de todos.
+_WF_RUIDO = set(("4k 2160p 1080p 720p 480p uhd hdr hdr10 dv dolby vision hdtv bluray "
+                 "blu ray bdrip brrip bdremux remux webrip web dl webdl hdrip microhd "
+                 "x264 x265 hevc h264 h265 esp spa castellano spanish latino dual vose "
+                 "subs wolftorrent wolfmax4k wolfmax com www mkv mp4 avi torrent the el la "
+                 "los las de del y temporada").split())
+
+
+from functools import lru_cache as _lru     # los mismos nombres se comparan mil veces
+
+
+@_lru(maxsize=4096)
+def _wf_tokens(s):
+    s = _wud.normalize("NFKD", str(s or "").lower())
+    s = "".join(c for c in s if not _wud.combining(c))
+    return tuple(t for t in re.split(r"[^a-z0-9]+", s) if t and t not in _WF_RUIDO)
+
+
+@_lru(maxsize=4096)
+def _wf_cap(s):
+    """(temporada, capitulo) de un titulo o nombre de archivo, o None."""
+    s = str(s or "").lower()
+    for rx in (r"\b(\d{1,2})x(\d{1,3})\b", r"\bs(\d{1,2})\s*e(\d{1,3})\b",
+               r"\bcap[\s._]*(\d{1,2})(\d{2})\b",
+               r"temporada\s*(\d{1,2})\D{1,30}?cap[ií]tulo\s*(\d{1,3})"):
+        m = re.search(rx, s)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
+@_lru(maxsize=2048)
+def _wf_bytes_rangos(txt):
+    """'26,59 GB' -> ((min, max), ...) en bytes, en binario (lo que usa WolfMax)
+    y en decimal por si algun dia cambia. () si no se entiende."""
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(TB|GB|MB|KB)\b", str(txt or ""), re.I)
+    if not m:
+        return ()
+    num = m.group(1).replace(",", ".")
+    v = float(num)
+    medio = 0.5 * 10 ** -(len(num.split(".")[1]) if "." in num else 0)
+    u = "KMGT".index(m.group(2)[0].upper()) + 1
+    return tuple((int((v - medio) * base ** u), int((v + medio) * base ** u) + 1)
+                 for base in (1024, 1000))
+
+
+def _wf_tam_casa(b, txt):
+    return any(lo <= int(b or 0) <= hi for lo, hi in _wf_bytes_rangos(txt))
+
+
+def _wf_casa(nombre, b, meta):
+    """¿Es este torrent (nombre interno o de fichero, bytes) el de la ficha
+    `meta` = {t: "Ted Lasso 1x05", q: "720p", sz: "1,31 GB"}?"""
+    t = str((meta or {}).get("t") or "")
+    if not t:
+        return False
+    # el tamaño, PRIMERO: es una comparacion de numeros y descarta casi todo
+    # (un ZIP son ~130 torrents contra ~250 fichas: tokenizar todo eran segundos)
+    sz = (meta or {}).get("sz")
+    rangos = _wf_bytes_rangos(sz)
+    if rangos and not any(lo <= int(b or 0) <= hi for lo, hi in rangos):
+        return False
+    cap_t = _wf_cap(t)
+    base = _wf_tokens(re.sub(r"\s+\d{1,2}x\d{1,3}\b.*$", "", t))
+    noms = _wf_tokens(nombre)
+    if not base or not noms:
+        return False
+    if sum(1 for x in base if x in noms) < max(1, -(-len(base) * 3 // 4)):
+        return False
+    cap_n = _wf_cap(nombre)
+    if cap_t and cap_n and cap_n != cap_t:
+        return False                          # otro capitulo
+    if not cap_t and cap_n:
+        return False                          # una peli no es un capitulo
+    if rangos:
+        return True                           # titulo + tamaño exacto: es el
+    if cap_t and cap_n != cap_t:
+        return False                          # sin tamaño, el capitulo tiene que leerse
+    # sin tamaño, al menos la calidad (si se sabe)
+    q = str((meta or {}).get("q") or "").lower()
+    nq = str(nombre or "").lower()
+    if q in ("4k", "2160p"):
+        return "2160" in nq or "4k" in nq
+    if q in ("1080p", "720p"):
+        return q[:-1] in nq
+    return True
+
+
+def _wfih_empareja(url, meta):
+    """Busca la ficha entre los torrents de los ZIP aun sin atar. Solo si sale
+    UNO; entonces queda atado para siempre."""
+    try:
+        if not _wf_url_clave(url) or not meta:
+            return None
+        p = _wfih_actual()["p"]
+        cand = [(ih, e) for ih, e in p.items()
+                if _wf_casa(e.get("n") or "", e.get("b"), meta)
+                or _wf_casa(e.get("f") or "", e.get("b"), meta)]
+        if len(cand) != 1:
+            return None
+        ih, e = cand[0]
+        _wfih_apunta(url, ih, e.get("n"), e.get("b"), o="zip", pisa=False)
+        _WFIH_N["emparejados"] += 1
+        return _wfih_de(url)
+    except Exception:
+        return None
+
+
+def _wfih_conocidos():
+    """Las fichas de WolfMax que sabemos con su tamaño (lo ultimo de WolfMax,
+    que traen las cajas desde la 2.9.89): [(url, meta)]."""
+    out = []
+    for c in ("movie", "tvshow"):
+        for it in (_wfult_lee(c).get("items") or []):
+            u = _wf_url_clave(it.get("url") or "")
+            if u and it.get("size"):
+                out.append((u, {"t": it.get("title") or "", "q": it.get("quality") or "",
+                                "sz": it.get("size")}))
+    return out
+
+
+def _wfih_de_zip(torrents, nombre_zip="", es_zip=True):
+    """Mete los torrents de un ZIP en la reserva y ata los que casen, sin dudas,
+    con una ficha conocida. Devuelve el resumen para la persona. Con
+    `es_zip=False` (un .torrent suelto) no toca el estado del ZIP del dia."""
+    ahora = int(_t.time())
+    m = re.search(r"(20\d\d-\d\d-\d\d)", nombre_zip or "")
+    dia = m.group(1) if m else _t.strftime("%Y-%m-%d", _t.localtime(ahora - 86400))
+    fichas = _wfih_conocidos()
+    atar = []
+    for fn, inf in torrents:
+        cand = [u for u, meta in fichas
+                if _wf_casa(inf["n"], inf["b"], meta) or _wf_casa(fn, inf["b"], meta)]
+        if len(cand) == 1:
+            atar.append((cand[0], fn, inf))
+    usadas = {}
+    for u, fn, inf in atar:
+        usadas[u] = usadas.get(u, 0) + 1
+    atar = [x for x in atar if usadas[x[0]] == 1]     # dos torrents, una ficha: duda
+
+    def _f(d):
+        n = 0
+        h_ih = set(e.get("ih") for e in d["h"].values())
+        for fn, inf in torrents:
+            if inf["ih"] not in h_ih and inf["ih"] not in d["p"]:
+                d["p"][inf["ih"]] = {"n": inf["n"], "b": inf["b"], "f": fn, "d": dia, "ts": ahora}
+                n += 1
+        for u, fn, inf in atar:
+            if not d["h"].get(u):
+                d["h"][u] = {"ih": inf["ih"], "n": inf["n"][:160], "b": inf["b"], "o": "zip",
+                             "ts": ahora}
+                d["p"].pop(inf["ih"], None)
+                n += 1
+        if es_zip:
+            d["zip"] = {"dia": dia, "n": len(torrents), "emp": len(atar), "ts": ahora}
+            n += 1
+        return n
+    _wfih_cambia(_f)
+    _WFIH_N["emparejados"] += len(atar)
+    return {"dia": dia, "n": len(torrents), "emparejados": len(atar)}
+
+
+# --- Copia de las huellas de WolfMax fuera de /tmp -----------------------------
+def _wfih_nube_lee():
+    """La copia, validada. None si NO se pudo leer (no es lo mismo que vacia)."""
+    try:
+        import base64
+        import gzip
+        txt, st = _get_con_tope(_WFIH_SYNC, 10.0)
+        if st != 200 or not txt:
+            return None
+        gz = (_json.loads(txt) or {}).get("gz")
+        if not gz:
+            return _wfih_vacio()
+        return _wfih_valida(_json.loads(gzip.decompress(base64.b64decode(gz)).decode("utf-8")))
+    except Exception:
+        return None
+
+
+def _wfih_funde(remoto):
+    """Lo de la copia que aqui no este, a /tmp (nunca pisa lo de aqui)."""
+    if not remoto:
+        return 0
+
+    def _f(d):
+        n = 0
+        for k, e in remoto["h"].items():
+            if k not in d["h"]:
+                d["h"][k] = e
+                n += 1
+        for ih, e in remoto["p"].items():
+            if ih not in d["p"]:
+                d["p"][ih] = e
+                n += 1
+        if remoto.get("zip") and float(remoto["zip"].get("ts") or 0) > float(d["zip"].get("ts") or 0):
+            d["zip"] = remoto["zip"]
+            n += 1
+        return n
+    with _FileLock(_WFIH_FILE):
+        d = _wfih_lee()
+        n = _f(d)
+        if n:
+            _wfih_guarda(d)
+    return n
+
+
+def _wfih_sube_hilo():
+    try:
+        remoto = _wfih_nube_lee()
+        if remoto is None:
+            _WFIH_NUBE["fallos"] += 1
+            return
+        _WFIH_NUBE["recuperadas"] += _wfih_funde(remoto)
+        d = _wfih_lee()                         # ya es la union
+        import base64
+        import gzip
+        while True:
+            gz = base64.b64encode(gzip.compress(_json.dumps(
+                {"v": 1, "h": d["h"], "p": d["p"], "zip": d["zip"]}).encode("utf-8"), 6)).decode("ascii")
+            if len(gz) <= _WFIH_TOPE_GZ or not d["p"]:
+                break
+            # no cabe: fuera la mitad mas vieja de la reserva (lo atado no se toca)
+            viejos = sorted(d["p"], key=lambda ih: float(d["p"][ih].get("ts") or 0))
+            for ih in viejos[:max(1, len(viejos) // 2)]:
+                d["p"].pop(ih, None)
+        if len(gz) <= _WFIH_TOPE_GZ and _post_con_tope(_WFIH_SYNC, {"gz": gz}, 15.0) == 200:
+            _WFIH_NUBE["subidas"] += 1
+            _WFIH_NUBE["bytes"] = len(gz)
+        else:
+            _WFIH_NUBE["fallos"] += 1
+    except Exception:
+        _WFIH_NUBE["fallos"] += 1
+    finally:
+        _WFIH_NUBE["vuelo"] = 0.0
+
+
+def _wfih_nube_sube(forzar=False):
+    """Como mucho cada 2 min (una huella nueva es oro: es una verificacion de
+    una persona), solo con cambios, en segundo plano y con tope."""
+    try:
+        if (not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1") and not forzar:
+            return 0
+        ahora = _t.time()
+        if not forzar and ((ahora - _WFIH_NUBE["subida_ts"]) < 120 or _WFIH_NUBE["cambios"] <= 0):
+            return 0
+        if _WFIH_NUBE["vuelo"] and (ahora - _WFIH_NUBE["vuelo"]) < 120:
+            return 0
+        _WFIH_NUBE["subida_ts"] = ahora
+        _WFIH_NUBE["vuelo"] = ahora
+        _WFIH_NUBE["cambios"] = 0
+        _thr.Thread(target=_wfih_sube_hilo, daemon=True).start()
+        return 1
+    except Exception:
+        _WFIH_NUBE["vuelo"] = 0.0
+        return 0
+
+
+def _wfih_arranca():
+    """Al arrancar: la copia a /tmp y, cuando las semillas ya se han recuperado,
+    lo que aprendio el aprendiz antes del captcha a su almacen propio."""
+    if os.environ.get("MW_SIN_NUBE") == "1":      # las pruebas en local
+        return
+
+    def _ir():
+        try:
+            _t.sleep(5)
+            got = _wfih_nube_lee()
+            if got is not None:
+                _WFIH_NUBE["bajadas"] += 1
+                _WFIH_NUBE["recuperadas"] += _wfih_funde(got)
+            _t.sleep(25)                       # (las semillas, en su hilo)
+            if _wfih_migra():
+                _wfih_nube_sube(forzar=True)
+        except Exception:
+            pass
+    try:
+        _thr.Thread(target=_ir, daemon=True).start()
+    except Exception:
+        pass
+
+
 _RESUELTO = {}                                   # (src, url) -> (enlace, ts)
 _RESUELTO_TTL = {"wf": 1800, "et": 6 * 3600}     # enlacito: 30 min; magnet: 6 h
 _RESUELVE_N = {}
@@ -8194,13 +8777,23 @@ def _resuelve_caja(code, src, excluir=()):
     return next((x for x in _live_boxes(al_dia=True) if x not in excluir), None)
 
 
-def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
-    """{"link": enlace} o {"link": "", "error": "limite"|"captcha", ...}."""
+def _resuelve_enlace(code, src, url, espera=18.0, cache=True, meta=None):
+    """{"link": enlace} o {"link": "", "error": "limite"|"captcha", ...}.
+    `meta` (lo que la web sabe de la tarjeta: t, q, sz) sirve para encontrar
+    su torrent entre los del ZIP del dia (dtbl75)."""
     k = (src, url)
     now = _t.time()
+    # WolfMax: si conocemos la huella, por magnet (no toca su web ni su captcha)
+    mag = None
+    if src == "wf":
+        mag = _wfih_de(url) or (_wfih_empareja(url, meta) if meta else None)
+        if mag and cache and _wf_verif_activa():
+            _resuelve_cuenta(src, "magnet")
+            _WFIH_N["magnet"] += 1
+            return {"link": _wf_magnet(mag, (meta or {}).get("t") or ""), "via": "magnet"}
     if cache and src == "wf" and _wf_verif_activa():
         _resuelve_cuenta(src, "verificacion")
-        return {"link": "", "error": "verificacion"}
+        return {"link": "", "error": "verificacion", "wolftorrent": _wf_pasarela(url)}
     if cache:
         e = _resuelto_lee(k)
         if e and (now - e[1]) < _RESUELTO_TTL.get(src, 600):
@@ -8208,6 +8801,8 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
             return {"link": e[0], "cache": True}
     box = _resuelve_caja(code, src)
     if not box:
+        if mag:
+            return {"link": _wf_magnet(mag, (meta or {}).get("t") or ""), "via": "magnet"}
         return {"link": ""}
 
     def _pide(b):
@@ -8239,6 +8834,7 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
         _resuelve_cuenta(src, "verificacion")
         _wf_verif_apunta(True)
         out["error"] = "verificacion"
+        out["wolftorrent"] = _wf_pasarela(url)
     elif (res or {}).get("error") in ("limite", "captcha"):
         # por que no hay enlace, si la caja lo sabe (WolfMax: limite/captcha, 2.9.79)
         _resuelve_cuenta(src, "limite")
@@ -8247,6 +8843,12 @@ def _resuelve_enlace(code, src, url, espera=18.0, cache=True):
             out["minutos"] = int(res["minutos"])
     else:
         _resuelve_cuenta(src, "vacio")
+    # Su web no lo da (verificacion, limite, caja muda), pero la huella si: a la
+    # gente, magnet. El vigia (cache=False) ve la verdad de su web igual.
+    if not out["link"] and mag and cache:
+        _resuelve_cuenta(src, "magnet")
+        _WFIH_N["magnet"] += 1
+        return {"link": _wf_magnet(mag, (meta or {}).get("t") or ""), "via": "magnet"}
     return out
 
 
@@ -8256,11 +8858,95 @@ def _catetboxresolve_impl():
     src = (request.args.get("src") or "et").strip()
     if not url.lower().startswith("http"):
         return jsonify({"link": ""}), 400
-    out = _resuelve_enlace(code, src, url)
+    # lo que la web sabe de la tarjeta: para encontrar su torrent en el ZIP (dtbl75)
+    meta = {"t": (request.args.get("t") or "").strip()[:160],
+            "q": (request.args.get("q") or "").strip()[:20],
+            "sz": (request.args.get("sz") or "").strip()[:20]}
+    out = _resuelve_enlace(code, src, url, meta=meta if meta["t"] else None)
     if not out.get("link") and not out.get("error") and not _resuelve_caja(code, src):
         return jsonify({"link": ""}), 400
     out.pop("cache", None)
     return jsonify(out)
+
+
+@app.get("/wfmagnet")
+def wfmagnet():
+    """El magnet de una ficha de WolfMax SI conocemos su huella; si no, vacio.
+    Lo pregunta la caja cuando navegan desde el propio Kodi (2.9.89). SOLO
+    mira lo que ya se sabe: nunca encarga nada a ninguna caja (si no, caja ->
+    relay -> caja podria encadenarse)."""
+    url = (request.args.get("url") or "").strip()
+    meta = {"t": (request.args.get("t") or "").strip()[:160],
+            "q": (request.args.get("q") or "").strip()[:20],
+            "sz": (request.args.get("sz") or "").strip()[:20]}
+    e = _wfih_de(url) or (_wfih_empareja(url, meta) if meta["t"] else None)
+    if not e:
+        return jsonify({"link": ""})
+    _resuelve_cuenta("wf", "magnet")
+    _WFIH_N["magnet"] += 1
+    return jsonify({"link": _wf_magnet(e, meta["t"]), "via": "magnet"})
+
+
+_WFSUBE_RL = {}                       # ip -> [cuando]
+_WFSUBE_MAX = 15 * 1024 * 1024       # el ZIP del dia: ~6 MB
+
+
+@app.post("/wfsube")
+def wfsube():
+    """Una PERSONA nos da el .torrent (o el ZIP del dia) que ella misma bajo de
+    la web de WolfMax pasando su verificacion (dtbl75). Se saca la huella y se
+    guarda para toda la casa; si viene de una ficha, se devuelve su magnet para
+    mandarlo a la tele. Nada de esto toca la web de WolfMax."""
+    ip = (request.headers.get("X-Forwarded-For", "")
+          or request.remote_addr or "?").split(",")[-1].strip()
+    now = _t.time()
+    q = [x for x in _WFSUBE_RL.get(ip, []) if (now - x) < 600]
+    if len(q) >= 20:
+        return jsonify({"ok": False, "error": "Demasiadas subidas seguidas: espera unos minutos."}), 429
+    q.append(now)
+    _WFSUBE_RL[ip] = q
+    if len(_WFSUBE_RL) > 500:
+        for k in [k for k, v in _WFSUBE_RL.items() if not v or (now - v[-1]) > 600]:
+            _WFSUBE_RL.pop(k, None)
+    f = request.files.get("f")
+    if f is None:
+        return jsonify({"ok": False, "error": "No ha llegado ningún archivo."}), 400
+    data = f.read(_WFSUBE_MAX + 1)
+    if len(data) > _WFSUBE_MAX:
+        return jsonify({"ok": False, "error": "Ese archivo es demasiado grande."}), 413
+    nombre = (f.filename or "")[:200]
+    url = (request.form.get("url") or "").strip()
+    meta = {"t": (request.form.get("t") or "").strip()[:160],
+            "q": (request.form.get("q") or "").strip()[:20],
+            "sz": (request.form.get("sz") or "").strip()[:20]}
+    if data[:2] == b"PK":
+        tors = _zip_torrents(data)
+        if not tors:
+            _WFIH_N["rechazos"] += 1
+            return jsonify({"ok": False, "error": "Ese ZIP no trae ningún .torrent."}), 400
+        r = _wfih_de_zip(tors, nombre)
+        _WFIH_N["subidas"] += 1
+        return jsonify(dict(r, ok=True, tipo="zip"))
+    inf = _torrent_lee(data)
+    if not inf:
+        _WFIH_N["rechazos"] += 1
+        return jsonify({"ok": False, "error": "Eso no es un archivo .torrent."}), 400
+    if url and _wf_url_clave(url):
+        # que sea de ESA ficha: una huella equivocada reproduciria otra cosa en
+        # la tele de todos (p. ej. si se elige otro .torrent de Descargas)
+        if meta["t"] and not (_wf_casa(inf["n"], inf["b"], meta) or _wf_casa(nombre, inf["b"], meta)):
+            _WFIH_N["rechazos"] += 1
+            return jsonify({"ok": False, "error": "Ese .torrent no parece de «%s»: es «%s»."
+                            % (meta["t"][:60], inf["n"][:80])}), 409
+        _wfih_apunta(url, inf["ih"], inf["n"], inf["b"], o="persona", pisa=True)
+        _WFIH_N["subidas"] += 1
+        return jsonify({"ok": True, "tipo": "torrent", "nombre": inf["n"][:120],
+                        "link": _wf_magnet(inf, meta["t"])})
+    # suelto, sin ficha (compartido desde el movil): a la reserva, y su magnet
+    r = _wfih_de_zip([(nombre or inf["n"], inf)], nombre, es_zip=False)
+    _WFIH_N["subidas"] += 1
+    return jsonify({"ok": True, "tipo": "torrent", "nombre": inf["n"][:120],
+                    "emparejados": r.get("emparejados", 0), "link": _wf_magnet(inf, inf["n"])})
 
 
 @app.get("/catboxrar")
@@ -9720,6 +10406,8 @@ def _apr_guarda(src, k, r, now):
                 for kk in sorted(d, key=lambda kk: d[kk].get("ts", 0))[:len(d) - 2000]:
                     d.pop(kk, None)
             _dxih_save(d)
+        if src == "wf":         # y a su almacen propio, que no caduca (dtbl75)
+            _wfih_apunta(k, ih, o="aprendiz", pisa=False)
     if cuenta is not None:
         _seeds_guarda({ih: cuenta}, now)
 
@@ -11796,6 +12484,18 @@ def catdiag():
     # sacar enlaces para reproducir: aciertos, fallos, de memoria (dtbl68)
     out["resolver"] = _resuelve_n_todos()     # los dos workers (dtbl72)
     out["wf_verificacion"] = dict(_wf_verif_lee(), activa=_wf_verif_activa())   # dtbl70
+    # las huellas de WolfMax: atadas a su ficha, en reserva (ZIP), el ultimo ZIP
+    # y de donde salieron (dtbl75)
+    try:
+        _wd = _wfih_actual()
+        _org = {}
+        for _e in _wd["h"].values():
+            _org[_e.get("o") or "?"] = _org.get(_e.get("o") or "?", 0) + 1
+        out["wfih"] = dict(_WFIH_N, atadas=len(_wd["h"]), reserva=len(_wd["p"]),
+                           origen=_org, zip=_wd.get("zip") or {},
+                           nube={k: v for k, v in _WFIH_NUBE.items() if k != "vuelo"})
+    except Exception:
+        out["wfih"] = {"error": True}
     # la copia de las fichas del Inicio (dtbl65)
     out["enriq_nube"] = dict(_ENRIQ_NUBE)
     # los errores de JavaScript que la web ha visto en los moviles (dtbl55)
@@ -12484,6 +13184,21 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .mwd-x{background:rgba(255,255,255,.08);color:var(--txt)}
 .mwd-ok{background:var(--blue);color:#fff;min-width:104px}
 .mwd-ok.peligro{background:#ff453a}
+/* WolfMax: la persona consigue el .torrent (dtbl75) */
+.wfd-pasos{display:flex;flex-direction:column;gap:9px;margin-top:14px}
+.wfd-b{display:flex;flex-direction:column;align-items:flex-start;gap:3px;width:100%;
+ text-align:left;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);
+ border-radius:14px;padding:12px 15px;font-size:15px;font-weight:700;cursor:pointer;
+ min-height:48px;font-family:inherit}
+.wfd-b small{font-size:12.5px;font-weight:500;color:var(--sub)}
+.wfd-b.pri{background:var(--blue);border-color:var(--blue);color:#fff}
+.wfd-b.pri small{color:rgba(255,255,255,.82)}
+.mwd-b.wfd-pie{justify-content:space-between;flex-wrap:wrap}
+.wfz{margin-top:8px;line-height:1.45}
+.wfz-r{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.wfz-b{border:1px solid rgba(255,214,10,.45);background:rgba(255,214,10,.12);color:inherit;
+ border-radius:12px;padding:10px 13px;font-size:13.5px;font-weight:700;cursor:pointer;
+ min-height:44px;font-family:inherit}
 /* Seleccion multiple en Mis listas (dejar pulsado) */
 .selbar{display:none;align-items:center;justify-content:space-between;gap:10px;
  margin-bottom:10px;padding:9px 11px;border-radius:14px;background:rgba(10,132,255,.14);
@@ -12746,6 +13461,22 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   </div>
  </div>
 </div>
+<div class="sheet mwd" id="wfdlg" onclick="if(event.target===this)mwBack('wfdlg')">
+ <div class="box">
+  <div class="mwd-t">WolfMax pide verificar cada descarga</div>
+  <div class="mwd-s">Consigue <b id="wfd-n"></b> en dos toques y lo mandamos a la tele. Queda guardado para toda la casa.</div>
+  <div class="wfd-pasos">
+   <button class="wfd-b pri" id="wfd-1" onclick="wfAbre()">1 · Abrir en WolfTorrent<small>Marca la casilla y el .torrent se descarga solo</small></button>
+   <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas</small></button>
+  </div>
+  <input type="file" id="wfd-f" style="display:none" onchange="wfSube(this)">
+  <div class="mwd-b wfd-pie">
+   <button class="mwd-x" onclick="wfOtras()">Buscar en otras fuentes</button>
+   <button class="mwd-x" onclick="mwBack('wfdlg')">Cerrar</button>
+  </div>
+ </div>
+</div>
+<input type="file" id="wfz-f" style="display:none" onchange="wfSubeZip(this)">
 <div class="sheet" id="lsheet" onclick="if(event.target===this)closeLS()">
  <div class="box">
   <div class="ls-head"><div class="ls-t" id="ls-t">Guardar en…</div>
@@ -13388,7 +14119,8 @@ var SRANK={dt:3,wf:2,dx:1,et:0};
 var WFVERIF=0;
 function wfVerifDe(d){if(d&&d.wf_verif)WFVERIF=1}
 function srcScore(x){var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
- if(WFVERIF&&(x.source||'dt')==='wf')return q*10-1000;
+ // ...salvo lo que ya se puede ver por magnet (`mag`, dtbl75): ese 4K manda
+ if(WFVERIF&&(x.source||'dt')==='wf'&&!x.mag)return q*10-1000;
  return q*10+(SRANK[x.source||'dt']||0);}
 // Une dos listas de capítulos sin repetir, en orden.
 // UN ARCHIVO, UNA FILA (dtbl55): el pack de WolfMax "1x01 al 1x03" llega
@@ -14609,7 +15341,8 @@ function closeShared(){$('shared').classList.remove('on')}
 function play(){if(!sel)return;
  if(sel.source&&sel.source!=='dt'){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
   toast('Resolviendo en tu box…');
-  fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)).then(function(r){return r.json()}).then(function(d){
+  WFPIDE={url:sel.url||sel.content_id,t:sel.title||'',q:sel.quality||'',sz:sel.size||''};
+  fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)+wfMetaQS(WFPIDE)).then(function(r){return r.json()}).then(function(d){
    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}
    else if(d&&d.vieja){webViejaDlg(d.vieja,sel.title)}                      // dtbl49
    else if(d&&d.error){limiteDlg(sel.source,d,sel.title)}                     // dtbl51
@@ -14647,14 +15380,57 @@ function webViejaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
 // cajas cuentan como una) y a veces pide un captcha. Antes: "No se pudo
 // obtener el enlace", sin saber si era la tele, la red o que (dtbl51).
 function limiteDlg(src,d,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
- if(d.error==='verificacion'){WFVERIF=1;
-  mwConfirm(n+' pide verificar cada descarga',
-   'Desde el 7 de octubre WolfMax pide una verificación humana (un captcha) en cada descarga, y eso no se puede hacer desde la tele. Sus títulos se siguen viendo, pero para reproducir hay que buscarlo en otra fuente.',
-   'Buscar en otras fuentes',function(){buscaOtras(q)});return}
+ if(d.error==='verificacion'){WFVERIF=1;wfConsigueDlg(d,t);return}
  var txt=d.error==='captcha'
   ?'Ahora mismo pide una verificación que no se puede hacer desde la tele. Suele pasarse sola en un rato. Mientras, puedes buscarlo en las otras fuentes.'
   :'Ha llegado a su límite de descargas por hora'+(d.minutos?(' y pide esperar unos '+d.minutos+' min'):'')+'. No es tu tele. Mientras, puedes buscarlo en las otras fuentes.';
  mwConfirm(n+' no da el torrent ahora',txt,'Buscar en otras fuentes',function(){buscaOtras(q)});}
+// ---- WolfMax: la PERSONA consigue el .torrent (dtbl75) --------------------
+// WolfMax pide marcar una casilla en cada descarga: eso lo hace una persona en
+// SU web, y el .torrent se baja solo. Aqui solo se recoge ese archivo: se
+// guarda su huella (vale para toda la casa, para siempre) y va a la tele.
+var WFPIDE=null;
+function wfMetaQS(p){return p?('&t='+encodeURIComponent(p.t||'')+'&q='+encodeURIComponent(p.q||'')+'&sz='+encodeURIComponent(p.sz||'')):''}
+function wfConsigueDlg(d,t){WFPIDE=WFPIDE||{};if(!WFPIDE.t)WFPIDE.t=t||'';WFPIDE.gw=(d&&d.wolftorrent)||'';
+ $('wfd-n').textContent=WFPIDE.t||'este título';
+ $('wfd-1').style.display=WFPIDE.gw?'':'none';
+ $('wfdlg').classList.add('on');
+ mwOpen('wfdlg',$('wfdlg').querySelector('.box'),function(){$('wfdlg').classList.remove('on')});}
+function wfAbre(){var u=WFPIDE&&WFPIDE.gw;if(!u)return;
+ var w=null;try{w=window.open(u,'_blank')}catch(e){}if(!w)location.href=u;}
+function wfElige(){var f=$('wfd-f');f.value='';f.click()}
+function wfSube(inp){var fl=inp.files&&inp.files[0];if(!fl)return;var p=WFPIDE||{};
+ var fd=new FormData();fd.append('f',fl,fl.name);
+ ['url','t','q','sz'].forEach(function(k){fd.append(k,p[k]||'')});
+ toast('Leyendo el .torrent…');
+ fetch('/wfsube',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.ok&&d.link){mwBack('wfdlg');var tt=p.t||d.nombre||'';
+    setTimeout(function(){sendPlay({a:'pl',u:d.link,t:tt})},220)}
+   else toast((d&&d.error)||'No se pudo leer ese archivo',6000)})
+  .catch(function(){toast('No se pudo subir el archivo')})}
+function wfOtras(){var q=_tituloBase((WFPIDE&&WFPIDE.t)||'');mwBack('wfdlg');setTimeout(function(){buscaOtras(q)},220)}
+// El ZIP OFICIAL del dia: WolfMax junta cada mañana (07:00) todos los .torrent
+// del dia anterior. Una casilla y ~130 torrents que ya se ven por magnet.
+var WFZIP=null,ULTCAIDAS=null;
+function _diaISO(ms){var x=new Date(ms);return x.getFullYear()+'-'+('0'+(x.getMonth()+1)).slice(-2)+'-'+('0'+x.getDate()).slice(-2)}
+function wfZipAlDia(z){if(!z||!z.dia)return false;var h=new Date().getHours();
+ return z.dia>=_diaISO(Date.now()-(h<7?2:1)*864e5)}
+function wfZipHTML(d){var z=WFZIP||(d&&d.wf_zip);
+ if(wfZipAlDia(z))return '<div class="wfz">✅ Ya están los torrents de WolfMax del '+z.dia.slice(8,10)+'/'+z.dia.slice(5,7)+' ('+z.n+'): se ven sin verificar.</div>';
+ return '<div class="wfz">📦 <b>Torrents de WolfMax de ayer</b>, con una sola casilla:'+
+  '<span class="wfz-r"><button class="wfz-b" onclick="wfZipAbre()">1 · Abrir el ZIP del día</button>'+
+  '<button class="wfz-b" onclick="wfZipElige()">2 · Subirlo aquí</button></span></div>'}
+function wfZipAbre(){var u='https://wolftorrent.com/torrents-del-dia',w=null;try{w=window.open(u,'_blank')}catch(e){}if(!w)location.href=u}
+function wfZipElige(){var f=$('wfz-f');f.value='';f.click()}
+function wfSubeZip(inp){var fl=inp.files&&inp.files[0];if(!fl)return;
+ var fd=new FormData();fd.append('f',fl,fl.name);toast('Abriendo el ZIP…');
+ fetch('/wfsube',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.ok&&d.tipo==='zip'){WFZIP={dia:d.dia,n:d.n,emp:d.emparejados};
+    toast('📦 '+d.n+' torrents de WolfMax guardados: ya se pueden ver en la tele',6000);
+    try{if(ULTCAIDAS)pintaCaidas(ULTCAIDAS)}catch(e){}}
+   else if(d&&d.ok)toast('Guardado: '+(d.nombre||'el .torrent'),5000);
+   else toast((d&&d.error)||'No se pudo leer ese archivo',6000)})
+  .catch(function(){toast('No se pudo subir el archivo')})}
 function fuenteCaidaDlg(src,t){var q=_tituloBase(t),n=PROGN[src]||'Esa fuente';
  mwConfirm(n+' está caído',
   'Su web no responde ahora mismo: es un fallo de su servidor, no de tu tele. Suele volver sola en unas horas. Mientras, puedes buscarlo en las otras fuentes.',
@@ -14681,10 +15457,10 @@ function buscaOtras(t){t=String(t||'').trim();if(!t)return;
 // las que no se sabe nada no se afirma nada. Cada carga del Inicio lo repinta,
 // asi que se va solo cuando vuelven.
 function _listaY(a){return a.length<2?(a[0]||''):(a.slice(0,-1).join(', ')+' y '+a[a.length-1])}
-function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);
+function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);ULTCAIDAS=d;
  var c=((d&&d.caidas)||[]).slice();if(d&&d.dt_caida&&c.indexOf('dt')<0)c.unshift('dt');
  var wv=!!(d&&d.wf_verif)&&c.indexOf('wf')<0;
- if(!c.length&&wv){e.innerHTML='ℹ️ <b>WolfMax pide ahora verificar cada descarga</b> (un captcha): sus títulos se ven, pero para reproducir en la tele usa otra fuente.';e.classList.add('on');return}
+ if(!c.length&&wv){e.innerHTML='ℹ️ <b>WolfMax pide ahora verificar cada descarga</b> (una casilla). Lo que ya conocemos se ve igual; lo demás lo consigues en dos toques al darle a reproducir.'+wfZipHTML(d);e.classList.add('on');return}
  if(!c.length){e.classList.remove('on');e.innerHTML='';return}
  var nom=c.map(function(s){return PROGN[s]||s}),un=nom.length===1;
  // WolfMax con verificacion humana NO "funciona" para la tele: ni en la lista
@@ -14693,7 +15469,7 @@ function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);
  var viv=((d&&d.vivas)||[]).filter(function(s){return c.indexOf(s)<0&&!(wv&&s==='wf')}).map(function(s){return PROGN[s]||s});
  e.innerHTML='⚠️ <b>'+_listaY(nom)+(un?' está caído':' están caídos')+' ahora mismo</b> — es un fallo de '+(un?'su web':'sus webs')+'. Sus títulos pueden no abrir'+
   (viv.length?('; '+_listaY(viv)+(viv.length===1?' sí funciona':' sí funcionan')):'')+'.'+
-  (wv?'<br>ℹ️ <b>WolfMax pide ahora verificar cada descarga</b> (un captcha): para reproducir en la tele usa otra fuente.':'');
+  (wv?'<br>ℹ️ <b>WolfMax pide ahora verificar cada descarga</b>: lo ya conocido se ve igual; lo demás, en dos toques al darle a reproducir.'+wfZipHTML(d):'');
  e.classList.add('on');}
 function pintaDtAviso(dc){pintaCaidas(dc?{dt_caida:dc}:null)}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
@@ -14948,7 +15724,8 @@ function playEp(id){var e=EPS[id];if(!e)return;
   var _cd2=(code.value||'').replace(/\D/g,'');
   if(_cd2.length!==6){avisaCodigo();return}
   toast('Preparando '+e.label+'…');
-  fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id))
+  WFPIDE={url:e.url||e.content_id,t:_t2,q:e.quality||'',sz:e.size||''};
+  fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id)+wfMetaQS(WFPIDE))
    .then(function(r){return r.json()}).then(function(d){
     if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2,q:e.quality}))closeOv();}
     else if(d&&d.vieja)webViejaDlg(d.vieja,SHOW||_t2);                       // dtbl49
@@ -16090,6 +16867,7 @@ def _arranque_worker():
     _wfidx_arranca()            # solo baja si el indice esta vacio
     _semillas_arranca()         # funde, nunca pisa: repetirlo no hace dano
     _enriq_arranca()            # las fichas del Inicio (dtbl65): idem
+    _wfih_arranca()             # las huellas de WolfMax (dtbl75): idem
 
 
 if __name__ == "__main__":

@@ -35,8 +35,10 @@ import time
 BASE = "https://wolfmax4k.com"
 API_DESCARGAS = BASE + "/api/descargas"
 
+# wolftorrent.com tambien (2.9.89): es su nombre nuevo y su dominio canonico;
+# si un dia sus enlaces pasan a llevarlo, las fichas no se pierden en silencio
 _RUTA_RE = re.compile(
-    r"^(?:https?:)?(?://(?:www\.)?wolfmax4k\.com)?"
+    r"^(?:https?:)?(?://(?:www\.)?(?:wolfmax4k|wolftorrent)\.com)?"
     r"/(pelicula|serie/episodio|serie|documental/episodio|documental)"
     r"/([a-z0-9]{4,16})/?(?:[?#].*)?$", re.I)
 _TIPO = {"pelicula": "pelicula", "serie": "serie", "serie/episodio": "episodio",
@@ -66,7 +68,8 @@ def absoluta(href):
         h = "https:" + h
     elif h.startswith("/"):
         h = BASE + h
-    return re.sub(r"^https?://www\.wolfmax4k\.com", BASE, h, flags=re.I)
+    # una sola forma para todo (claves de caches, indice, relay): wolfmax4k.com
+    return re.sub(r"^https?://(?:www\.)?(?:wolfmax4k|wolftorrent)\.com", BASE, h, flags=re.I)
 
 
 def texto(s):

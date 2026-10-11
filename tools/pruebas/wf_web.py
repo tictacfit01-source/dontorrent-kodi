@@ -619,6 +619,53 @@ W._TORRENTS.clear()
 comprueba("si WolfMax quita la verificacion, todo vuelve solo (la v2 de siempre)",
           W.torrent(post_v2, "2s42pf", "series").endswith(".torrent"))
 
+print("\n=== 9) WolfTorrent y el tamaño de cada archivo (caja 2.9.89) ===")
+comprueba("sus enlaces con wolftorrent.com tambien son fichas", W.ruta("https://wolftorrent.com/pelicula/r2h3bn")
+          == ("pelicula", "r2h3bn") and W.ruta("https://www.wolftorrent.com/serie/episodio/2ap2ud/")[0] == "episodio")
+comprueba("...y se guardan con una sola forma (wolfmax4k.com), sin duplicar nada",
+          W.absoluta("https://wolftorrent.com/pelicula/r2h3bn") == W.BASE + "/pelicula/r2h3bn"
+          and W.absoluta("https://www.wolftorrent.com/serie/x") == W.BASE + "/serie/x"
+          and W.absoluta("/pelicula/abc123") == W.BASE + "/pelicula/abc123")
+its = S._items([{"tipo": "pelicula", "titulo": "Spider-Man", "base": "Spider-Man", "url": W.BASE + "/pelicula/r2h3bn",
+                 "archivos": [{"url": W.BASE + "/pelicula/r2h3bn", "calidad": "4K", "tamano": "26,59 GB",
+                               "cid": "r2h3bn", "tabla": "peliculas"}]},
+                {"tipo": "serie", "titulo": "Ted Lasso", "base": "Ted Lasso", "url": W.BASE + "/serie/zrdqqp",
+                 "archivos": [{"url": W.BASE + "/serie/episodio/2s42pf", "calidad": "720p", "tamano": "1,31 GB",
+                               "temporada": 1, "episodio": 10, "cid": "2s42pf", "tabla": "series"}]}])
+comprueba("cada peli y cada capitulo llevan su tamaño (con el se encuentra su torrent en el ZIP del dia)",
+          [x.get("size") for x in its] == ["26,59 GB", "1,31 GB"], its)
+comprueba("del enlace diferido a su ficha (la clave de las huellas en el relay)",
+          S.url_de_diferido(W.diferido("2ap2ud", "series")) == W.BASE + "/serie/episodio/2ap2ud"
+          and S.url_de_diferido(W.diferido("r2h3bn", "peliculas")) == W.BASE + "/pelicula/r2h3bn"
+          and S.url_de_diferido(W.diferido("270683", "peliculas")) == "" and S.url_de_diferido("x") == "")
+# En Kodi: abrir la ficha de una peli pedia su torrent al momento y, con la
+# verificacion, la ficha entera fallaba. Ahora: magnet si el relay sabe su
+# huella; si no, el enlace diferido (la ficha se ve; al reproducir se dice).
+viejos9 = (S._pide, W.ficha, W.torrent, S.magnet_conocido)
+PREG = []
+try:
+    S._pide = lambda u: "<html></html>"
+    W.ficha = lambda html, u: {"tipo": "pelicula", "base": "Spider-Man", "titulo": "Spider-Man", "calidad": "4K",
+                               "sinopsis": "", "thumb": "", "anio": 2026,
+                               "archivos": [{"cid": "r2h3bn", "tabla": "peliculas", "calidad": "4K",
+                                             "tamano": "26,59 GB", "url": W.BASE + "/pelicula/r2h3bn"}]}
+
+    def _verif(*a, **k):
+        raise W.Verificacion("turnstile")
+    W.torrent = _verif
+    S.magnet_conocido = lambda url, titulo="", tamano="": (PREG.append((url, titulo, tamano))
+                                                           or "magnet:?xt=urn:btih:" + "6" * 40)
+    dd = S.detail(W.BASE + "/pelicula/r2h3bn")
+    comprueba("ficha de peli con verificacion: sale, y por magnet si el relay sabe su huella",
+              dd["downloads"][0]["torrent_url"].startswith("magnet:")
+              and PREG == [(W.BASE + "/pelicula/r2h3bn", "Spider-Man", "26,59 GB")], (dd, PREG))
+    S.magnet_conocido = lambda url, titulo="", tamano="": ""
+    dd = S.detail(W.BASE + "/pelicula/r2h3bn")
+    comprueba("...y si no la sabe, el enlace diferido (la ficha NO falla entera)",
+              dd["downloads"][0]["torrent_url"] == "wf2:peliculas:r2h3bn", dd)
+finally:
+    S._pide, W.ficha, W.torrent, S.magnet_conocido = viejos9
+
 print("\n---- VEREDICTO ----")
 if fallos:
     print("%d comprobaciones MAL" % fallos)

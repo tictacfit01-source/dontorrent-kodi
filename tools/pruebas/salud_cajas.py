@@ -143,6 +143,8 @@ try:
     comprueba("el fin de un pack de WolfMax llega al relay", c.get("episode_end") == 9, c)
     c = service._src_item_compact({"title": "Dune", "kind": "movie", "url": "u"}, "wf")
     comprueba("...y lo demas no lleva ese campo", "episode_end" not in c, c)
+    c = service._src_item_compact({"title": "Spider-Man", "kind": "movie", "url": "u", "size": "26,59 GB"}, "wf")
+    comprueba("el tamaño de WolfMax llega al relay (para su ZIP diario, 2.9.89)", c.get("size") == "26,59 GB", c)
 
     print("\n=== 4) Ponerse al dia sola (2.9.83) ===")
     PEDIDO = []

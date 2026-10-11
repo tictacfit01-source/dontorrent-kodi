@@ -211,8 +211,11 @@ export default {
     // "enriq": la ficha (cartel HD, año, nota, titulo con tildes) que las cajas
     // resolvieron para cada titulo del Inicio -- sin ella, tras cada despliegue
     // el Inicio salia unos minutos sin tildes ni carteles (03-10-2026).
+    // "wfih": la huella de cada archivo de WolfMax que ya conocemos (desde el
+    // 07-10 pide un captcha en cada descarga: lo que trae una persona o el ZIP
+    // del dia vale para siempre, y en /tmp se perderia en cada despliegue).
     // Lista cerrada de nombres: esto no es un almacen para cualquiera.
-    const kvm = path.match(/^\/kv\/(semillas|enriq)$/);
+    const kvm = path.match(/^\/kv\/(semillas|enriq|wfih)$/);
     if (kvm) {
       const clave = "kv:" + kvm[1];
       await ensureKV(env);

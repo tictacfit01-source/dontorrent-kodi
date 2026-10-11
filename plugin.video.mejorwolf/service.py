@@ -359,6 +359,8 @@ def _src_item_compact(it, src):
         out["year"] = it["year"]    # la web nueva de WolfMax lo trae (2.9.77)
     if it.get("episode_end"):
         out["episode_end"] = it["episode_end"]   # pack de WolfMax (2.9.81)
+    if it.get("size"):
+        out["size"] = str(it["size"])[:20]       # WolfMax: para su ZIP diario (2.9.89)
     return out
 
 

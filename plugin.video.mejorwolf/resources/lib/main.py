@@ -1114,12 +1114,21 @@ def play(torrent_url, title=""):
         except Exception:
             pass
         _motivo = ""
+        _diferido = torrent_url
         try:
             torrent_url = wf.resolver_diferido(torrent_url) or ""
         except Exception as e:
             xbmc.log(f"[MejorWolf] wf2: {e}", xbmc.LOGWARNING)
             torrent_url = ""
             _motivo = type(e).__name__
+        if not torrent_url and _motivo == "Verificacion":
+            # (2.9.89) si el relay ya conoce su huella, por magnet: no toca su web
+            try:
+                torrent_url = wf.magnet_conocido(wf.url_de_diferido(_diferido), title) or ""
+                if torrent_url:
+                    xbmc.log("[MejorWolf] wf2: por magnet (huella conocida)", xbmc.LOGINFO)
+            except Exception:
+                torrent_url = ""
         if not torrent_url:
             try:
                 if progress:
@@ -1128,8 +1137,8 @@ def play(torrent_url, title=""):
                 pass
             if _motivo == "Verificacion":
                 _error("WolfMax pide ahora una verificación humana (un captcha) en cada "
-                       "descarga, y eso no se puede hacer desde la tele. Busca este "
-                       "título en otra fuente.")
+                       "descarga, y eso no se puede hacer desde la tele. Desde la web de "
+                       "MejorWolf puedes conseguirlo con una casilla, o búscalo en otra fuente.")
             else:
                 _error("WolfMax no ha dado el torrent ahora mismo. Inténtalo en un rato.")
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())

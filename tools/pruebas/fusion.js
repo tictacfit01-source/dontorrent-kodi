@@ -218,6 +218,12 @@ mergeResults('inicio', g, [
 comprueba('con WolfMax sin poder reproducir, manda la version que SI se reproduce (DonTorrent 1080p)',
   LISTS.inicio.length === 1 && LISTS.inicio[0].source === 'dt'
   && (LISTS.inicio[0].alts || []).some(a => a.source === 'wf'), LISTS.inicio.map(x => x.source));
+LISTS.inicio = [];
+mergeResults('inicio', g, [
+  { title: 'Weapons', kind: 'movie', source: 'dt', year: '2025', quality: '1080p', content_id: 'd1' },
+  { title: 'Weapons', kind: 'movie', source: 'wf', year: '2025', quality: '4K', content_id: 'w4k', mag: 1 }], 1);
+comprueba('...pero si su huella ya se sabe (`mag`, se ve por magnet: dtbl75), el 4K de WolfMax manda',
+  LISTS.inicio.length === 1 && LISTS.inicio[0].source === 'wf', LISTS.inicio.map(x => x.source));
 WFVERIF = 0;
 LISTS.inicio = [];
 mergeResults('inicio', g, [

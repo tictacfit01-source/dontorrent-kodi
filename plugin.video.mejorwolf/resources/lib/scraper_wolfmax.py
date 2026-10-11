@@ -119,6 +119,10 @@ def _items(tarjetas):
                 cap = dict(comun, title="%s %dx%02d" % (base, a["temporada"], a["episodio"]),
                            kind="tvshow", url=a["url"],
                            quality=t.get("calidad") or a.get("calidad") or "")
+                # el TAMAÑO (2.9.89): con el, el relay encuentra su .torrent en
+                # el ZIP diario de WolfMax sin dudas ("1,31 GB" = 1,31 GiB)
+                if a.get("tamano"):
+                    cap["size"] = a["tamano"]
                 # PACK ("1x06 al 1x09"): el relay lo rotula entero (2.9.81);
                 # sin esto salia "1x06" y la temporada parecia tener huecos
                 if (a.get("episodio_fin") or 0) > (a.get("episodio") or 0):
@@ -132,8 +136,11 @@ def _items(tarjetas):
             continue
         for a in archivos:
             _recuerda(a)
-            pelis.append(dict(comun, title=base, kind="movie", url=a["url"],
-                              quality=a.get("calidad") or t.get("calidad") or ""))
+            peli = dict(comun, title=base, kind="movie", url=a["url"],
+                        quality=a.get("calidad") or t.get("calidad") or "")
+            if a.get("tamano"):
+                peli["size"] = a["tamano"]          # (2.9.89, ver arriba)
+            pelis.append(peli)
     caps.sort(key=lambda it: -_W.rango(it.get("quality")))
     return pelis + caps
 
@@ -222,6 +229,45 @@ def resolver_diferido(link, referer=""):
     return _W.torrent(_post_json, cid, tabla, referer)
 
 
+_RUTA_DE_TABLA = {"peliculas": "/pelicula/%s", "series": "/serie/episodio/%s",
+                  "documentales": "/documental/episodio/%s"}
+
+
+def url_de_diferido(link):
+    """"wf2:series:2ap2ud" -> la URL de su ficha (la clave con que el relay
+    guarda las huellas). "" si no se puede saber."""
+    try:
+        cid, tabla = _W.de_diferido(link)
+    except Exception:
+        return ""
+    plantilla = _RUTA_DE_TABLA.get(str(tabla or "").lower())
+    if not plantilla or not cid or str(cid).isdigit():
+        return ""
+    return _W.BASE + plantilla % cid
+
+
+def magnet_conocido(url, titulo="", tamano=""):
+    """El magnet de una ficha si el relay ya conoce su huella (2.9.89). Desde
+    el 07-10 WolfMax pide una verificacion humana en cada descarga y eso no se
+    puede hacer desde la tele; pero lo que ya se conoce (lo que trajo una
+    persona, o el ZIP del dia) se reproduce por la red torrent sin tocar su
+    web. "" si no se conoce. Solo pregunta: el relay no encarga nada a nadie."""
+    if not url:
+        return ""
+    try:
+        from . import remote_kb as rkb
+        base = rkb.relay_base()
+        if not base:
+            return ""
+        r = rkb._SESSION.get(base + "/wfmagnet", params={"url": url, "t": titulo or "",
+                                                         "sz": tamano or ""}, timeout=8)
+        m = ((r.json() or {}).get("link") or "") if r.status_code == 200 else ""
+        return m if m.startswith("magnet:") else ""
+    except Exception as e:
+        _LOG("magnet_conocido: %s" % e)
+        return ""
+
+
 def torrent_de(url):
     """URL del .torrent de una peli (una version) o un capitulo."""
     u = _W.absoluta(url)
@@ -256,10 +302,21 @@ def detail(url):
     downloads = []
     for a in d["archivos"]:
         _recuerda(a)
-        tu = _W.torrent(_post_json, a["cid"], a["tabla"], u) if suelto \
-            else _W.diferido(a["cid"], a["tabla"])
         s, e = a.get("temporada") or 0, a.get("episodio") or 0
         es_cap = bool(s or e) and d["tipo"] != "pelicula"
+        if suelto:
+            try:
+                tu = _W.torrent(_post_json, a["cid"], a["tabla"], u)
+            except _W.Verificacion:
+                # su verificacion humana (07-10): si el relay ya conoce su
+                # huella, por magnet; si no, el enlace diferido (al reproducir
+                # se dira por que no sale), pero la ficha se ve igual (2.9.89)
+                tt = ("%s %dx%02d" % (d["base"] or d["titulo"], s, e)) if es_cap \
+                    else (d["base"] or d["titulo"])
+                tu = magnet_conocido(a.get("url") or u, tt, a.get("tamano") or "") \
+                    or _W.diferido(a["cid"], a["tabla"])
+        else:
+            tu = _W.diferido(a["cid"], a["tabla"])
         downloads.append({"label": _W.etiqueta_ep(s, e, a.get("episodio_fin") or 0) if es_cap
                           else (a.get("etiqueta") or d["calidad"] or "Descargar"),
                           "season": s if es_cap else None, "episode": e if es_cap else None,
