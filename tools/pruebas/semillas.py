@@ -48,7 +48,7 @@ def comprueba(nombre, ok, detalle=""):
 
 
 FICHEROS = [A._DTPACKED_FILE, A._DXIH_FILE, A._SEEDS_FILE, A._KB_STATUS_FILE,
-            A._KB_NOW_FILE, A._APR_FILE]
+            A._KB_NOW_FILE, A._APR_FILE, A._WFIH_FILE]
 os.makedirs("/tmp", exist_ok=True)
 copia = {}
 for f in FICHEROS:

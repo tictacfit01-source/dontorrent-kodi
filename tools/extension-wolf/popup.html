@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 0; width: 340px; color: #202124; }
+  header { padding: 12px 14px; border-bottom: 1px solid #e0e0e0; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  #cuenta { color: #5f6368; }
+  ul { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; }
+  li { padding: 9px 14px; border-bottom: 1px solid #f1f3f4; }
+  .n { font-weight: 600; word-break: break-word; }
+  .t { color: #5f6368; margin-top: 2px; }
+  .vacio { padding: 18px 14px; color: #5f6368; }
+  footer { display: flex; gap: 8px; padding: 10px 14px; }
+  button { flex: 1; padding: 8px; font-size: 13px; cursor: pointer; border-radius: 8px;
+           border: 1px solid #dadce0; background: #fff; }
+  button.pri { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+</style>
+</head>
+<body>
+<header><h1>MejorWolf · WolfTorrent → tele</h1><div id="cuenta"></div></header>
+<ul id="lista"></ul>
+<footer>
+  <button class="pri" id="reintentar">Reintentar</button>
+  <button id="limpiar">Limpiar terminados</button>
+  <button id="opciones">Opciones</button>
+</footer>
+<script src="popup.js"></script>
+</body>
+</html>

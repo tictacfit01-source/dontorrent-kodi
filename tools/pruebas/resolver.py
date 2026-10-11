@@ -73,6 +73,10 @@ def olvida():
         pass
 
 
+# Las huellas de WolfMax (dtbl75), en un fichero suyo: si otra prueba hubiera
+# dejado una para estas URLs, el relay daria su magnet y no se veria lo de aqui.
+A._WFIH_FILE = tempfile.mktemp(prefix="mw_wfih_res_")
+A._WFIH_MEM.update(mt=-1.0, d=None)
 viejos = {k: getattr(A, k) for k in ("_kb_enqueue", "_catjob_wait_any", "_box_wf", "_box_for",
                                      "_live_boxes", "_resuelve_enlace", "_vigia_busca",
                                      "_wf_cupo_toma", "_fuentes_caidas")}

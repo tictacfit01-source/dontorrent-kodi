@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl75"
+BUILD = "dtbl76"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3247,6 +3247,50 @@ def _lend_release(sem):
 _WF_SEM = _thr.Semaphore(2)
 
 
+# Las teles que han latido alguna vez (60 dias). _kbstatus solo recuerda 10 min;
+# para saber si un codigo es de una casa nuestra (p. ej. quien sube un .torrent
+# de WolfMax a las 07:05, con la tele apagada) hace falta memoria mas larga.
+# Tras un despliegue (/tmp vacio) se rellena con el primer latido de cada tele;
+# quien suba antes recibe un "no lo conozco" y su extension lo reintenta (dtbl76).
+_CAJAS_VISTAS_FILE = "/tmp/mw_cajas_vistas.json"
+_CAJAS_VISTAS_TTL = 60 * 86400
+_CAJAS_VISTAS_MEM = {"ts": 0.0}
+
+
+def _caja_vista(code, now=None):
+    now = now or _t.time()
+    # una vez por minuto basta (el latido llega cada pocos segundos)
+    if (now - _CAJAS_VISTAS_MEM.get(code, 0.0)) < 60:
+        return
+    _CAJAS_VISTAS_MEM[code] = now
+    try:
+        with _FileLock(_CAJAS_VISTAS_FILE):
+            try:
+                with open(_CAJAS_VISTAS_FILE, "r", encoding="utf-8") as f:
+                    d = _json.load(f) or {}
+            except Exception:
+                d = {}
+            d = {k: v for k, v in d.items() if (now - float(v or 0)) < _CAJAS_VISTAS_TTL}
+            d[code] = int(now)
+            tmp = "%s.%d.tmp" % (_CAJAS_VISTAS_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _CAJAS_VISTAS_FILE)
+    except Exception:
+        pass
+
+
+def _caja_conocida(code):
+    if len(code or "") != 6 or not code.isdigit():
+        return False
+    try:
+        with open(_CAJAS_VISTAS_FILE, "r", encoding="utf-8") as f:
+            ts = float((_json.load(f) or {}).get(code) or 0)
+        return (_t.time() - ts) < _CAJAS_VISTAS_TTL
+    except Exception:
+        return _box_live(code, max_age=_KB_STATUS_TTL)
+
+
 def _box_live(code, max_age=90):
     """¿ESE code tiene latido reciente? (mismo criterio que /kb/status)."""
     try:
@@ -4195,6 +4239,7 @@ def kb_status_push():
         }
     d[code] = entry
     _kbstatus_save(d)
+    _caja_vista(code, now)
     # la version mas nueva que ha latido: la caja que vaya por detras pide a
     # Kodi que mire el repositorio (2.9.83). Las de antes ignoran la clave.
     try:
@@ -8136,6 +8181,23 @@ def _wf_url_clave(u):
     return ("https://wolfmax4k.com" + m.group(1).rstrip("/")) if m else ""
 
 
+_WF_DE_PASARELA_RE = re.compile(
+    r"^https?://(?:www\.)?wolftorrent\.com/descarga/(pelicula|serie|documental)/([a-z0-9]{4,16})/?(?:[?#].*)?$",
+    re.I)
+_WF_FICHA_DE = {"pelicula": "/pelicula/%s", "serie": "/serie/episodio/%s",
+                "documental": "/documental/episodio/%s"}
+
+
+def _wf_url_de_pasarela(ref):
+    """La ficha de la que salio una descarga, por la pagina de su pasarela
+    ("https://wolftorrent.com/descarga/serie/2ap2ud" -> el capitulo 2ap2ud).
+    "" si no es una pasarela de WolfTorrent (dtbl76)."""
+    m = _WF_DE_PASARELA_RE.match((ref or "").strip())
+    if not m:
+        return ""
+    return "https://wolfmax4k.com" + _WF_FICHA_DE[m.group(1).lower()] % m.group(2).lower()
+
+
 def _wf_pasarela(url):
     """La pagina OFICIAL donde una persona consigue ese .torrent (marca la
     casilla de Cloudflare y el navegador lo baja solo). "" si no se sabe."""
@@ -8625,7 +8687,9 @@ def _wfih_nube_sube(forzar=False):
     """Como mucho cada 2 min (una huella nueva es oro: es una verificacion de
     una persona), solo con cambios, en segundo plano y con tope."""
     try:
-        if (not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1") and not forzar:
+        # NUNCA fuera de Render, ni con `forzar` (que solo se salta la espera):
+        # un relay en el PC no puede mezclar sus datos de prueba con la copia buena
+        if not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1":
             return 0
         ahora = _t.time()
         if not forzar and ((ahora - _WFIH_NUBE["subida_ts"]) < 120 or _WFIH_NUBE["cambios"] <= 0):
@@ -8908,6 +8972,14 @@ def wfsube():
     if len(_WFSUBE_RL) > 500:
         for k in [k for k, v in _WFSUBE_RL.items() if not v or (now - v[-1]) > 600]:
             _WFSUBE_RL.pop(k, None)
+    # Solo una casa nuestra: el codigo de una tele que ha latido estos 60 dias
+    # (la web lo tiene puesto; la extension, en sus opciones) (dtbl76)
+    code = re.sub(r"\D", "", str(request.form.get("code") or ""))[:6]
+    if len(code) != 6:
+        return jsonify({"ok": False, "error": "Falta el código de tu Kodi.", "reintentar": False}), 401
+    if not _caja_conocida(code):
+        return jsonify({"ok": False, "reintentar": True,
+                        "error": "MejorWolf no conoce ese código de Kodi todavía: enciende esa tele un momento."}), 403
     f = request.files.get("f")
     if f is None:
         return jsonify({"ok": False, "error": "No ha llegado ningún archivo."}), 400
@@ -8916,6 +8988,11 @@ def wfsube():
         return jsonify({"ok": False, "error": "Ese archivo es demasiado grande."}), 413
     nombre = (f.filename or "")[:200]
     url = (request.form.get("url") or "").strip()
+    # La extension no sabe de que ficha venia, pero Chrome si: la descarga sale
+    # de la pasarela de ESA ficha (/descarga/<tipo>/<codigo>), y su codigo es el
+    # de la ficha. Asi se ata sin depender del nombre del archivo (dtbl76).
+    if not url:
+        url = _wf_url_de_pasarela(request.form.get("ref") or "")
     meta = {"t": (request.form.get("t") or "").strip()[:160],
             "q": (request.form.get("q") or "").strip()[:20],
             "sz": (request.form.get("sz") or "").strip()[:20]}
@@ -8938,10 +9015,18 @@ def wfsube():
             _WFIH_N["rechazos"] += 1
             return jsonify({"ok": False, "error": "Ese .torrent no parece de «%s»: es «%s»."
                             % (meta["t"][:60], inf["n"][:80])}), 409
+        # sin titulo (la extension), al menos el TAMAÑO, si la ficha se conoce
+        if not meta["t"]:
+            sz = next((m.get("sz") for u, m in _wfih_conocidos() if u == _wf_url_clave(url)), "")
+            if sz and not _wf_tam_casa(inf["b"], sz):
+                _WFIH_N["rechazos"] += 1
+                return jsonify({"ok": False, "error": "Ese .torrent no casa con su ficha (%s, no %s)."
+                                % (inf["n"][:60], sz)}), 409
+        ya = (_wfih_de(url) or {}).get("ih") == inf["ih"]
         _wfih_apunta(url, inf["ih"], inf["n"], inf["b"], o="persona", pisa=True)
         _WFIH_N["subidas"] += 1
-        return jsonify({"ok": True, "tipo": "torrent", "nombre": inf["n"][:120],
-                        "link": _wf_magnet(inf, meta["t"])})
+        return jsonify({"ok": True, "tipo": "torrent", "nombre": inf["n"][:120], "ya": ya,
+                        "url": _wf_url_clave(url), "link": _wf_magnet(inf, meta["t"])})
     # suelto, sin ficha (compartido desde el movil): a la reserva, y su magnet
     r = _wfih_de_zip([(nombre or inf["n"], inf)], nombre, es_zip=False)
     _WFIH_N["subidas"] += 1
@@ -13467,8 +13552,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <div class="mwd-s">Consigue <b id="wfd-n"></b> en dos toques y lo mandamos a la tele. Queda guardado para toda la casa.</div>
   <div class="wfd-pasos">
    <button class="wfd-b pri" id="wfd-1" onclick="wfAbre()">1 · Abrir en WolfTorrent<small>Marca la casilla y el .torrent se descarga solo</small></button>
-   <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas</small></button>
+   <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas (con la extensión de Chrome, no hace falta)</small></button>
   </div>
+  <div class="mwd-s" id="wfd-est" aria-live="polite"></div>
   <input type="file" id="wfd-f" style="display:none" onchange="wfSube(this)">
   <div class="mwd-b wfd-pie">
    <button class="mwd-x" onclick="wfOtras()">Buscar en otras fuentes</button>
@@ -15395,14 +15481,36 @@ function wfConsigueDlg(d,t){WFPIDE=WFPIDE||{};if(!WFPIDE.t)WFPIDE.t=t||'';WFPIDE
  $('wfd-n').textContent=WFPIDE.t||'este título';
  $('wfd-1').style.display=WFPIDE.gw?'':'none';
  $('wfdlg').classList.add('on');
- mwOpen('wfdlg',$('wfdlg').querySelector('.box'),function(){$('wfdlg').classList.remove('on')});}
+ var e=$('wfd-est');if(e)e.textContent='';
+ // cerrarlo es "ya no lo quiero": se deja de esperar (nada arranca la tele por sorpresa)
+ mwOpen('wfdlg',$('wfdlg').querySelector('.box'),function(){$('wfdlg').classList.remove('on');WFESP=null});}
 function wfAbre(){var u=WFPIDE&&WFPIDE.gw;if(!u)return;
- var w=null;try{w=window.open(u,'_blank')}catch(e){}if(!w)location.href=u;}
+ var w=null;try{w=window.open(u,'_blank')}catch(e){}
+ if(!w){location.href=u;return}
+ wfEspera();}
+// Mientras la persona esta en WolfTorrent, esta pestaña pregunta cada pocos
+// segundos si ya se conoce su huella (la trae la extension de Chrome, o la
+// persona con "Ya lo tengo"). En cuanto si: a la tele, sin tocar nada (dtbl76).
+var WFESP=null;
+function wfEspera(){var p=WFPIDE;if(!p||!p.url)return;clearTimeout(WFESP&&WFESP.t);
+ WFESP={p:p,hasta:Date.now()+4*60e3,t:0};var e=$('wfd-est');if(e)e.textContent='Esperando la descarga… en cuanto llegue, va a la tele.';
+ wfMira();}
+function wfMira(){var s=WFESP;if(!s)return;clearTimeout(s.t);
+ if(Date.now()>s.hasta){WFESP=null;var e=$('wfd-est');if(e)e.textContent='';return}
+ fetch('/wfmagnet?url='+encodeURIComponent(s.p.url)+wfMetaQS(s.p)).then(function(r){return r.json()}).then(function(d){
+   if(WFESP!==s)return;
+   if(d&&d.link){WFESP=null;var e=$('wfd-est');if(e)e.textContent='';
+    if($('wfdlg').classList.contains('on'))mwBack('wfdlg');
+    var tt=s.p.t||'';setTimeout(function(){sendPlay({a:'pl',u:d.link,t:tt})},220);return}
+   s.t=setTimeout(wfMira,2500)})
+  .catch(function(){if(WFESP===s)s.t=setTimeout(wfMira,4000)})}
+try{document.addEventListener('visibilitychange',function(){if(!document.hidden&&WFESP)wfMira()})}catch(e){}
 function wfElige(){var f=$('wfd-f');f.value='';f.click()}
 function wfSube(inp){var fl=inp.files&&inp.files[0];if(!fl)return;var p=WFPIDE||{};
  var fd=new FormData();fd.append('f',fl,fl.name);
  ['url','t','q','sz'].forEach(function(k){fd.append(k,p[k]||'')});
- toast('Leyendo el .torrent…');
+ fd.append('code',(code.value||'').replace(/\D/g,''));
+ WFESP=null;toast('Leyendo el .torrent…');
  fetch('/wfsube',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
    if(d&&d.ok&&d.link){mwBack('wfdlg');var tt=p.t||d.nombre||'';
     setTimeout(function(){sendPlay({a:'pl',u:d.link,t:tt})},220)}
@@ -15423,7 +15531,8 @@ function wfZipHTML(d){var z=WFZIP||(d&&d.wf_zip);
 function wfZipAbre(){var u='https://wolftorrent.com/torrents-del-dia',w=null;try{w=window.open(u,'_blank')}catch(e){}if(!w)location.href=u}
 function wfZipElige(){var f=$('wfz-f');f.value='';f.click()}
 function wfSubeZip(inp){var fl=inp.files&&inp.files[0];if(!fl)return;
- var fd=new FormData();fd.append('f',fl,fl.name);toast('Abriendo el ZIP…');
+ var fd=new FormData();fd.append('f',fl,fl.name);fd.append('code',(code.value||'').replace(/\D/g,''));
+ toast('Abriendo el ZIP…');
  fetch('/wfsube',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
    if(d&&d.ok&&d.tipo==='zip'){WFZIP={dia:d.dia,n:d.n,emp:d.emparejados};
     toast('📦 '+d.n+' torrents de WolfMax guardados: ya se pueden ver en la tele',6000);

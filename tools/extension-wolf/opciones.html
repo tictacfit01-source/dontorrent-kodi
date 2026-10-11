@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>MejorWolf · WolfTorrent → tele</title>
+<style>
+  body { font: 15px system-ui, sans-serif; margin: 24px; max-width: 520px; color: #222; }
+  label { display: block; margin: 16px 0 6px; font-weight: 600; }
+  input[type=text] { width: 9em; padding: 9px; font-size: 18px; letter-spacing: 3px; }
+  .fila { display: flex; gap: 8px; align-items: center; margin-top: 16px; }
+  button { margin-top: 18px; padding: 10px 16px; font-size: 14px; cursor: pointer; }
+  #estado { margin-top: 12px; min-height: 1.2em; }
+  p.nota { color: #555; font-size: 13px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<h2>MejorWolf · WolfTorrent → tele</h2>
+<p class="nota">Cuando tu navegador termina de bajar un .torrent o el ZIP del día de WolfTorrent,
+  esta extensión se lo da a MejorWolf (y a nadie más). La verificación de su web la pasa tu
+  navegador, contigo delante: la extensión no la toca.</p>
+<label for="code">Código de tu Kodi (el de la web de MejorWolf)</label>
+<input id="code" type="text" inputmode="numeric" maxlength="6" autocomplete="off">
+<div class="fila"><input id="aviso" type="checkbox"><label for="aviso" style="margin:0;font-weight:400">
+  Avisarme cada mañana si el ZIP de ayer aún no está subido</label></div>
+<button id="guardar">Guardar</button>
+<div id="estado"></div>
+<script src="opciones.js"></script>
+</body>
+</html>

@@ -52,7 +52,7 @@ def comprueba(nombre, ok, detalle=""):
 
 FICHEROS = [A._DTCAIDA_FILE, A._DTPACKED_FILE, A._CATDETAIL_FILE, A._CATJOB_FILE,
             A._DT_DOWN_FILE, A._CATSEARCH_FILE, A._CATBROWSE_FILE, A._KB_FILE,
-            A._DXIH_FILE, A._SEEDS_FILE]
+            A._DXIH_FILE, A._SEEDS_FILE, A._WFIH_FILE]
 os.makedirs("/tmp", exist_ok=True)
 copia = {}
 for f in FICHEROS:

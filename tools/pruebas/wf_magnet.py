@@ -66,12 +66,14 @@ GIB = 1024 ** 3
 SM = 28551267564                                  # Spider-Man 4K, medido
 TMP = tempfile.mkdtemp(prefix="mw_wfmag_")
 viejos = {k: getattr(A, k) for k in (
-    "_WFIH_FILE", "_DXIH_FILE", "_WF_VERIF_FILE", "_WFULT_FILE", "_kb_enqueue",
+    "_WFIH_FILE", "_DXIH_FILE", "_WF_VERIF_FILE", "_WFULT_FILE", "_CAJAS_VISTAS_FILE", "_kb_enqueue",
     "_catjob_wait_any", "_box_wf", "_box_for", "_live_boxes")}
 A._WFIH_FILE = os.path.join(TMP, "wfih.json")
 A._DXIH_FILE = os.path.join(TMP, "dxih.json")
 A._WF_VERIF_FILE = os.path.join(TMP, "verif.json")
 A._WFULT_FILE = os.path.join(TMP, "wfult.json")
+A._CAJAS_VISTAS_FILE = os.path.join(TMP, "cajas.json")
+A._caja_vista("123456")
 A._WFULT.clear()
 A._WFIH_MEM.update(mt=-1.0, d=None)
 
@@ -202,21 +204,21 @@ try:
     verif(True)
     d3, ih3 = torrent("Ted Lasso - Temporada 1 [HDTV 720p][Cap.105][Esp]", b15)
     U3 = N + "/serie/episodio/2s42pf"
-    rr = cli.post("/wfsube", data={"f": (io.BytesIO(d3), "Ted_Lasso_1_5_HDTV_720p.torrent"), "url": U3,
+    rr = cli.post("/wfsube", data={"code": "123456", "f": (io.BytesIO(d3), "Ted_Lasso_1_5_HDTV_720p.torrent"), "url": U3,
                                    "t": "Ted Lasso 1x05", "q": "720p", "sz": "1,31 GB"},
                   content_type="multipart/form-data").get_json()
     comprueba("su .torrent de esa ficha: se guarda y vuelve el magnet para la tele",
               rr.get("ok") and rr.get("link", "").startswith("magnet:?xt=urn:btih:" + ih3)
               and A._wfih_de(U3)["o"] == "persona", rr)
-    rr = cli.post("/wfsube", data={"f": (io.BytesIO(d1), "x.torrent"), "url": N + "/serie/episodio/2tzkkn",
+    rr = cli.post("/wfsube", data={"code": "123456", "f": (io.BytesIO(d1), "x.torrent"), "url": N + "/serie/episodio/2tzkkn",
                                    "t": "Ted Lasso 1x10", "q": "HDTV", "sz": "380,17 MB"},
                   content_type="multipart/form-data")
     comprueba("si elige OTRO .torrent de Descargas: se dice cual es y no se guarda",
               rr.status_code == 409 and "Spider-Man" in rr.get_json().get("error", "")
               and not A._wfih_de(N + "/serie/episodio/2tzkkn"), rr.get_json())
     comprueba("sin archivo o con basura: un error que se entiende (nunca un cuerpo vacio)",
-              cli.post("/wfsube", data={}, content_type="multipart/form-data").get_json().get("error")
-              and cli.post("/wfsube", data={"f": (io.BytesIO(b"<html>"), "a.torrent")},
+              cli.post("/wfsube", data={"code": "123456"}, content_type="multipart/form-data").get_json().get("error")
+              and cli.post("/wfsube", data={"code": "123456", "f": (io.BytesIO(b"<html>"), "a.torrent")},
                            content_type="multipart/form-data").status_code == 400)
     # el ZIP del dia: tres torrents; dos fichas conocidas (con tamaño, caja 2.9.89)
     da, iha = torrent("Pelicula Uno [1080p][Esp]", int(5.55 * GIB))
@@ -233,7 +235,7 @@ try:
     with zipfile.ZipFile(zb, "w", zipfile.ZIP_DEFLATED) as z:
         for nom, dat in (("Pelicula-Uno.torrent", da), ("Serie-Dos.torrent", db), ("Sin-Ficha.torrent", dc)):
             z.writestr(nom, dat)
-    rr = cli.post("/wfsube", data={"f": (io.BytesIO(zb.getvalue()), "WolfTorrent-2026-10-10.zip")},
+    rr = cli.post("/wfsube", data={"code": "123456", "f": (io.BytesIO(zb.getvalue()), "WolfTorrent-2026-10-10.zip")},
                   content_type="multipart/form-data").get_json()
     comprueba("ZIP: los tres guardados, dos ya atados a su ficha, con el dia del ZIP",
               rr.get("ok") and rr.get("n") == 3 and rr.get("emparejados") == 2 and rr.get("dia") == "2026-10-10"
@@ -270,8 +272,34 @@ try:
     comprueba("/catdiag -> wfih: atadas, reserva, de donde salieron, el ultimo ZIP",
               dg.get("atadas", 0) >= 5 and dg.get("origen", {}).get("persona") == 2
               and dg.get("zip", {}).get("dia"), dg)
-    A._WFSUBE_RL["127.0.0.1"] = [time.time()] * 20
+    print("\n=== 6) Solo una casa nuestra, y sin depender del nombre del archivo (dtbl76) ===")
     rr = cli.post("/wfsube", data={"f": (io.BytesIO(d3), "a.torrent")}, content_type="multipart/form-data")
+    comprueba("sin el codigo de una tele: 401", rr.status_code == 401, rr.status_code)
+    rr = cli.post("/wfsube", data={"code": "999999", "f": (io.BytesIO(d3), "a.torrent")},
+                  content_type="multipart/form-data")
+    comprueba("con un codigo que MejorWolf no conoce: 403, y la extension sabe que puede reintentar",
+              rr.status_code == 403 and rr.get_json().get("reintentar") is True, rr.get_json())
+    dr, ihr = torrent("Nombre Cualquiera.torrent", int(7.77 * GIB))
+    rr = cli.post("/wfsube", data={"code": "123456", "ref": "https://wolftorrent.com/descarga/serie/rf7777",
+                                   "f": (io.BytesIO(dr), "x (3).torrent")},
+                  content_type="multipart/form-data").get_json()
+    comprueba("la extension manda la pagina de la que salio la descarga: queda atada a SU ficha",
+              rr.get("ok") and rr.get("url") == N + "/serie/episodio/rf7777"
+              and A._wfih_de(N + "/serie/episodio/rf7777")["ih"] == ihr, rr)
+    rr = cli.post("/wfsube", data={"code": "123456", "ref": "https://wolftorrent.com/descarga/serie/rf7777",
+                                   "f": (io.BytesIO(dr), "x (4).torrent")},
+                  content_type="multipart/form-data").get_json()
+    comprueba("enviarlo otra vez no duplica nada (y lo dice: 'ya')", rr.get("ok") and rr.get("ya") is True, rr)
+    rr = cli.post("/wfsube", data={"code": "123456", "ref": "https://wolftorrent.com/descarga/pelicula/pu1111",
+                                   "f": (io.BytesIO(dr), "x.torrent")}, content_type="multipart/form-data")
+    comprueba("si la ficha tiene tamaño conocido y no casa: 409, no se guarda",
+              rr.status_code == 409 and A._wfih_de(N + "/pelicula/pu1111")["ih"] == iha, rr.get_json())
+    comprueba("una pagina que no es su pasarela no ata nada",
+              A._wf_url_de_pasarela("https://evil.example/descarga/serie/rf7777") == ""
+              and A._wf_url_de_pasarela("https://wolftorrent.com/descarga/serie/rf7777?x=1") ==
+              N + "/serie/episodio/rf7777")
+    A._WFSUBE_RL["127.0.0.1"] = [time.time()] * 20
+    rr = cli.post("/wfsube", data={"code": "123456", "f": (io.BytesIO(d3), "a.torrent")}, content_type="multipart/form-data")
     comprueba("y con un tope de subidas por IP", rr.status_code == 429, rr.status_code)
     A._WFSUBE_RL.clear()
 finally:
