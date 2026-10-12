@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl79"
+BUILD = "dtbl80"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -10041,6 +10041,14 @@ def catjob_done():
         _min = max(0, min(600, int(body.get("minutos") or 0)))
     except Exception:
         _min = 0
+    # Nombre y bytes del .torrent del trabajo dtmeta (caja 2.9.90): el cruce
+    # WolfMax-DonTorrent los necesita y esta lista fija los tiraba (dtbl80).
+    # Solo con su forma: texto de 1 a 200 caracteres y un entero positivo.
+    _n = body.get("n")
+    _n = _n.strip() if isinstance(_n, str) else ""
+    _n = _n if 0 < len(_n) <= 200 else None
+    _b = body.get("b")
+    _b = _b if isinstance(_b, int) and not isinstance(_b, bool) and 0 < _b < 2 ** 50 else None
     with _FileLock(_CATJOB_FILE):   # serializa con _catjob_wait (no perder el resultado)
         d = _catjob_load()
         d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _CATJOB_TTL}
@@ -10049,7 +10057,7 @@ def catjob_done():
                   "eps": body.get("eps"), "ih": body.get("ih"),
                   "html": body.get("html"),
                   "error": _err if _err in ("limite", "captcha", "verificacion") else None,
-                  "minutos": _min or None, "ts": now}
+                  "minutos": _min or None, "n": _n, "b": _b, "ts": now}
         _catjob_save(d)
     # AUNQUE YA NO LO ESPERE NADIE: al indice de WolfMax. Un titulo que la caja
     # no tenia indexado le cuesta ~88s de crawl (medido con "the last of us");
