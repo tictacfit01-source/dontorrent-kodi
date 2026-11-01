@@ -255,7 +255,9 @@ export default {
     // 07-10 pide un captcha en cada descarga: lo que trae una persona o el ZIP
     // del dia vale para siempre, y en /tmp se perderia en cada despliegue).
     // Lista cerrada de nombres: esto no es un almacen para cualquiera.
-    const kvm = path.match(/^\/kv\/(semillas|enriq|wfih)$/);
+    // "uso" (dtbl81): el histórico de uso que solo ve el dueño, CIFRADO por el
+    // relay (estas lecturas son públicas): aquí solo se guarda la cadena.
+    const kvm = path.match(/^\/kv\/(semillas|enriq|wfih|uso)$/);
     if (kvm) {
       const clave = "kv:" + kvm[1];
       await ensureKV(env);

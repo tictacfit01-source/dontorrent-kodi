@@ -273,10 +273,11 @@ try:
     src = open(os.path.join(RAIZ, "render_relay", "app.py"), encoding="utf-8").read()
     comprueba("la copia de las semillas en mw-sync sube lo mismo que antes (sin nombre ni bytes)",
               'for kk in ("p", "q", "ih", "ts", "s", "sts")' in src)
-    comprueba("y siguen siendo cuatro escrituras firmadas a mw-sync",
+    comprueba("y siguen siendo las escrituras firmadas conocidas a mw-sync (dtbl81: + el uso)",
               src.count("_post_con_tope(") == 1 + src.count("_post_con_tope(_SEMI_SYNC") +
               src.count("_post_con_tope(_ENRIQ_SYNC") + src.count("_post_con_tope(_WFIH_SYNC") +
-              src.count("_post_con_tope(_WFIDX_SYNC"))
+              src.count("_post_con_tope(_WFIDX_SYNC") +
+              src.count("_post_con_tope(_USO_SYNC"))
 finally:
     for k, v in viejos.items():
         setattr(A, k, v)

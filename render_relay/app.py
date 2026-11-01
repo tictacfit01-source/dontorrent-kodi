@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl80"
+BUILD = "dtbl81"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -8513,14 +8513,23 @@ def _wfih_lee():
 def _wfih_actual():
     """Lo de disco, en memoria mientras no cambie (se mira en cada lista que se
     sirve: tiene que costar nada). SOLO LECTURA: para escribir, _wfih_cambia."""
-    try:
-        mt = os.path.getmtime(_WFIH_FILE)
-    except Exception:
-        mt = 0.0
+    mt = _wfih_marca()
     if _WFIH_MEM["d"] is None or mt != _WFIH_MEM["mt"]:
         _WFIH_MEM["d"] = _wfih_lee()
         _WFIH_MEM["mt"] = mt
     return _WFIH_MEM["d"]
+
+
+def _wfih_marca():
+    """Lo que dice si el fichero cambio. La hora sola NO basta (12-10): dos
+    escrituras seguidas comparten mtime (Windows ~15 ms) y la cache se quedaba
+    con la primera -- wf_magnet.py fallaba 4 de 12. Cada os.replace deja un
+    fichero (inodo) nuevo, asi que va con la hora en ns, el tamano y el inodo."""
+    try:
+        st = os.stat(_WFIH_FILE)
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+    except Exception:
+        return 0.0
 
 
 def _wfih_guarda(d):
@@ -8545,6 +8554,8 @@ def _wfih_cambia(fn):
         n = fn(d) or 0
         if n:
             _wfih_guarda(d)
+            # y la cache de este worker, con lo que acaba de escribir
+            _WFIH_MEM["d"], _WFIH_MEM["mt"] = d, _wfih_marca()
     if n:
         _WFIH_NUBE["cambios"] += n
         _wfih_nube_sube()
@@ -12938,6 +12949,589 @@ def catdump():
     return jsonify(out)
 
 
+# --- Uso de la app, SOLO PARA EL DUEÑO (dtbl81) ------------------------------
+# "¿Cuántas teles hay ahora? ¿La gente la usa?" -- y que el resto no lo sepa.
+# Hasta dtbl80 esos recuentos salían en /catdiag, que es pública; ahora van
+# detrás de una LLAVE y aquí se lleva además un histórico por día.
+#  * Nada de códigos: cada caja se cuenta por una huella HMAC con el secreto de
+#    Render (MW_KV_FIRMA), recortada. Un código de 6 cifras a pelo, o con un
+#    sha256 sin secreto, se saca por fuerza bruta en un segundo.
+#  * Una muestra por minuto entre los dos workers (cerrojo + marca en el fichero).
+#  * El histórico se copia a mw-sync (/kv/uso) CIFRADO: las lecturas de mw-sync
+#    son públicas y el repo dice dónde están. /tmp se vacía en cada despliegue.
+#  * La llave: la reclama UNA VEZ quien llega primero en los 20 primeros minutos
+#    tras arrancar, solo si la copia se pudo leer y no hay ninguna. Se guarda su
+#    sha256 (la llave son 144 bits al azar). Para cambiarla: borrar `kv:uso` de
+#    la D1 de mw-sync (o rotar MW_KV_FIRMA) y reclamar otra tras desplegar.
+_USO_FILE = "/tmp/mw_uso.json"
+_USO_SYNC = "https://mw-sync.israeldm93.workers.dev/kv/uso"
+_USO_T0 = _t.time()
+_USO_DIAS = 400                 # días que se guardan (compactos: ~100 B cada uno)
+_USO_SETS_DIAS = 2              # hoy y ayer guardan las huellas; los demás, cuentas
+_USO_ALTA_S = 20 * 60
+_USO_NUBE = {"leida": False, "bajadas": 0, "subidas": 0, "fallos": 0,
+             "vuelo": 0.0, "subida_ts": 0.0, "cambios": 0}
+_USO_SAL = {"local": os.urandom(16)}   # sin secreto (en el PC): huellas de un solo proceso
+
+
+def _uso_es(ts=None):
+    """(día 'AAAA-MM-DD', hora 0-23, 'HH:MM') en hora de España."""
+    import datetime as _dtm
+    ts = _t.time() if ts is None else float(ts)
+    try:
+        from zoneinfo import ZoneInfo
+        d = _dtm.datetime.fromtimestamp(ts, ZoneInfo("Europe/Madrid"))
+    except Exception:
+        # sin tzdata: horario de verano de la UE (último domingo de marzo y de
+        # octubre, a la 01:00 UTC)
+        u = _dtm.datetime.utcfromtimestamp(ts)
+
+        def _ult_dom(mes):
+            d0 = _dtm.datetime(u.year, mes, 31, 1, 0)
+            return d0 - _dtm.timedelta(days=(d0.weekday() + 1) % 7)
+        verano = _ult_dom(3) <= u < _ult_dom(10)
+        d = u + _dtm.timedelta(hours=2 if verano else 1)
+    return d.strftime("%Y-%m-%d"), d.hour, d.strftime("%H:%M")
+
+
+def _uso_huella(code):
+    sem = _kv_par()[0] or _USO_SAL["local"]
+    import hmac as _hm
+    return _hm.new(sem, b"mw-uso-caja-v1\n" + str(code).encode("utf-8"),
+                   _hl.sha256).hexdigest()[:12]
+
+
+def _uso_vacio():
+    return {"v": 1, "adm": "", "dias": {}, "cj": {}, "desde": _uso_es()[0], "ult": 0}
+
+
+def _uso_valida(d):
+    """Lo que venga de disco o de la copia, con la forma buena (o vacío)."""
+    out = _uso_vacio()
+    if not isinstance(d, dict):
+        return out
+    adm = str(d.get("adm") or "")
+    out["adm"] = adm if re.match(r"^[0-9a-f]{64}$", adm) else ""
+    if re.match(r"^\d{4}-\d\d-\d\d$", str(d.get("desde") or "")):
+        out["desde"] = d["desde"]
+    try:
+        out["ult"] = float(d.get("ult") or 0)
+    except Exception:
+        pass
+    for dia, e in (d.get("dias") or {}).items() if isinstance(d.get("dias"), dict) else []:
+        if not (re.match(r"^\d{4}-\d\d-\d\d$", str(dia)) and isinstance(e, dict)):
+            continue
+        x = {}
+        for k in ("c", "r", "m"):
+            if isinstance(e.get(k), list):
+                x[k] = sorted({str(h)[:12] for h in e[k] if isinstance(h, str)})
+        for k in ("nc", "nr", "nm", "pico", "tm", "mu"):
+            try:
+                x[k] = max(0, int(e.get(k) or 0))
+            except Exception:
+                x[k] = 0
+        x["pico_h"] = str(e.get("pico_h") or "")[:5]
+        hp = e.get("hp") if isinstance(e.get("hp"), list) else []
+        x["hp"] = [max(0, int(v or 0)) if isinstance(v, (int, float)) else 0 for v in hp[:24]] + \
+            [0] * max(0, 24 - len(hp[:24]))
+        out["dias"][dia] = x
+    if isinstance(d.get("cj"), dict):
+        for h, v in d["cj"].items():
+            if isinstance(v, list) and len(v) == 2 and all(isinstance(z, str) for z in v):
+                out["cj"][str(h)[:12]] = [v[0][:10], v[1][:10]]
+    return out
+
+
+def _uso_lee():
+    try:
+        with open(_USO_FILE, "r", encoding="utf-8") as f:
+            return _uso_valida(_json.load(f))
+    except Exception:
+        return _uso_vacio()
+
+
+def _uso_guarda(d):
+    try:
+        tmp = "%s.%d.tmp" % (_USO_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _USO_FILE)
+    except Exception:
+        pass
+
+
+def _uso_cuenta(e, k):
+    """Cuántas cajas: la lista si aún la hay, si no la cuenta ya compactada."""
+    return len(e[k]) if isinstance(e.get(k), list) else int(e.get("n" + k) or 0)
+
+
+def _uso_compacta(d, hoy):
+    """Hoy y ayer guardan sus huellas (para no contar dos veces a nadie al
+    fundir con la copia); los días anteriores, solo las cuentas."""
+    import datetime as _dtm
+    dias = sorted(d["dias"])
+    try:
+        base = _dtm.date.fromisoformat(hoy)
+        guarda = {(base - _dtm.timedelta(days=i)).isoformat() for i in range(_USO_SETS_DIAS)}
+    except Exception:
+        guarda = {hoy}
+    for dia in dias:
+        e = d["dias"][dia]
+        if dia not in guarda:
+            for k in ("c", "r", "m"):
+                if isinstance(e.get(k), list):
+                    e["n" + k] = max(int(e.get("n" + k) or 0), len(e[k]))
+                    e.pop(k, None)
+    for dia in dias[:-_USO_DIAS]:
+        d["dias"].pop(dia, None)
+    if len(d["cj"]) > 5000:      # nunca debería: 5000 Kodis distintos
+        for h in sorted(d["cj"], key=lambda h: d["cj"][h][1])[:len(d["cj"]) - 5000]:
+            d["cj"].pop(h, None)
+
+
+def _uso_funde(a, b):
+    """La unión de dos estados (local y copia). Nunca pierde nada de ninguno."""
+    out = _uso_valida(a)
+    b = _uso_valida(b)
+    out["adm"] = b["adm"] or out["adm"]          # la de la copia manda
+    out["desde"] = min(out["desde"], b["desde"])
+    out["ult"] = max(out["ult"], b["ult"])
+    for dia, eb in b["dias"].items():
+        ea = out["dias"].get(dia)
+        if not ea:
+            out["dias"][dia] = eb
+            continue
+        for k in ("c", "r", "m"):
+            if isinstance(ea.get(k), list) or isinstance(eb.get(k), list):
+                ea[k] = sorted(set(ea.get(k) or []) | set(eb.get(k) or []))
+            ea["n" + k] = max(int(ea.get("n" + k) or 0), int(eb.get("n" + k) or 0))
+        for k in ("tm", "mu"):
+            ea[k] = max(ea.get(k, 0), eb.get(k, 0))
+        if eb.get("pico", 0) > ea.get("pico", 0):
+            ea["pico"], ea["pico_h"] = eb["pico"], eb.get("pico_h", "")
+        ea["hp"] = [max(x, y) for x, y in zip(ea["hp"], eb["hp"])]
+    for h, (p, u) in b["cj"].items():
+        ya = out["cj"].get(h)
+        out["cj"][h] = [min(p, ya[0]), max(u, ya[1])] if ya else [p, u]
+    return out
+
+
+def _uso_muestra(now=None, forzar=False):
+    """Una foto de este minuto: qué Kodis laten, cuáles tienen un vídeo puesto
+    y de cuáles se está mirando la web. Devuelve True si la tomó."""
+    now = _t.time() if now is None else now
+    try:
+        vivas = [c for c, e in (_kbstatus_load() or {}).items()
+                 if (now - float(e.get("ts", 0) or 0)) < 90]
+        np = {c: e.get("np") or {} for c, e in (_kbnow_load() or {}).items()
+              if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and e.get("np")}
+        moviles = [c for c, ts in (_kb_seen_load() or {}).items()
+                   if (now - float(ts or 0)) < _KB_SEEN_TTL]
+    except Exception:
+        return False
+    rep = [c for c, x in np.items() if not x.get("paused")]
+    hoy, hora, hhmm = _uso_es(now)
+    with _FileLock(_USO_FILE):
+        d = _uso_lee()
+        if not forzar and (now - d["ult"]) < 55:
+            return False                          # el otro worker ya la tomó
+        e = d["dias"].setdefault(hoy, _uso_valida({"dias": {hoy: {}}})["dias"][hoy])
+        for k, lista in (("c", vivas), ("r", list(np)), ("m", moviles)):
+            hs = {_uso_huella(c) for c in lista}
+            e[k] = sorted(set(e.get(k) or []) | hs)
+        if len(rep) > e.get("pico", 0):
+            e["pico"], e["pico_h"] = len(rep), hhmm
+        e["hp"][hora] = max(e["hp"][hora], len(rep))
+        e["tm"] = e.get("tm", 0) + len(rep)       # minutos de tele (uno por muestra)
+        e["mu"] = e.get("mu", 0) + 1              # minutos con el relay mirando
+        for c in vivas:
+            h = _uso_huella(c)
+            ya = d["cj"].get(h)
+            d["cj"][h] = [ya[0], hoy] if ya else [hoy, hoy]
+        d["ult"] = now
+        _uso_compacta(d, hoy)
+        _uso_guarda(d)
+    _USO_NUBE["cambios"] += 1
+    return True
+
+
+# -- la copia cifrada en mw-sync (sus lecturas son públicas) --
+def _uso_claves():
+    sem = _kv_par()[0]
+    if not sem:
+        return None, None
+    import hmac as _hm
+    return (_hm.new(sem, b"mw-uso-cifra-v1", _hl.sha256).digest(),
+            _hm.new(sem, b"mw-uso-mac-v1", _hl.sha256).digest())
+
+
+def _uso_flujo(clave, nonce, n):
+    out = bytearray()
+    i = 0
+    while len(out) < n:
+        out += _hl.sha256(clave + nonce + i.to_bytes(8, "big")).digest()
+        i += 1
+    return bytes(out[:n])
+
+
+def _uso_cifra(datos, kc, km):
+    import hmac as _hm
+    nonce = os.urandom(16)
+    ks = _uso_flujo(kc, nonce, len(datos))
+    ct = (int.from_bytes(datos, "big") ^ int.from_bytes(ks, "big")).to_bytes(len(datos), "big") \
+        if datos else b""
+    tag = _hm.new(km, nonce + ct, _hl.sha256).digest()
+    return nonce + ct + tag
+
+
+def _uso_descifra(blob, kc, km):
+    import hmac as _hm
+    if len(blob) < 48:
+        return None
+    nonce, ct, tag = blob[:16], blob[16:-32], blob[-32:]
+    if not _hm.compare_digest(tag, _hm.new(km, nonce + ct, _hl.sha256).digest()):
+        return None
+    ks = _uso_flujo(kc, nonce, len(ct))
+    return (int.from_bytes(ct, "big") ^ int.from_bytes(ks, "big")).to_bytes(len(ct), "big") \
+        if ct else b""
+
+
+def _uso_empaqueta(d, kc, km):
+    import base64
+    raw = _gzmod.compress(_json.dumps(d, separators=(",", ":")).encode("utf-8"), 6)
+    return "u1." + base64.b64encode(_uso_cifra(raw, kc, km)).decode("ascii")
+
+
+def _uso_desempaqueta(gz, kc, km):
+    import base64
+    if not (isinstance(gz, str) and gz.startswith("u1.")):
+        return None
+    try:
+        raw = _uso_descifra(base64.b64decode(gz[3:]), kc, km)
+        return _uso_valida(_json.loads(_gzmod.decompress(raw).decode("utf-8"))) if raw is not None else None
+    except Exception:
+        return None
+
+
+def _uso_nube_lee():
+    """La copia, descifrada. None si NO se pudo leer (no es lo mismo que vacía:
+    vacía es que aún no hay ninguna)."""
+    kc, km = _uso_claves()
+    if not kc:
+        return None
+    try:
+        txt, st = _get_con_tope(_USO_SYNC, 10.0)
+        if st != 200 or not txt:
+            return None
+        gz = (_json.loads(txt) or {}).get("gz")
+        if not gz:
+            return _uso_vacio()
+        return _uso_desempaqueta(gz, kc, km)      # None si no es nuestra (no se pisa)
+    except Exception:
+        return None
+
+
+def _uso_sube_ya():
+    """Leer, fundir y subir la unión (nunca a ciegas). True si la copia quedó."""
+    kc, km = _uso_claves()
+    if not kc or not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1":
+        return False
+    remoto = _uso_nube_lee()
+    if remoto is None:
+        _USO_NUBE["fallos"] += 1
+        return False
+    _USO_NUBE["leida"] = True
+    with _FileLock(_USO_FILE):
+        d = _uso_funde(_uso_lee(), remoto)
+        _uso_compacta(d, _uso_es()[0])
+        _uso_guarda(d)
+    gz = _uso_empaqueta(d, kc, km)
+    if len(gz) <= 900 * 1024 and _post_con_tope(_USO_SYNC, {"gz": gz}, 15.0) == 200:
+        _USO_NUBE["subidas"] += 1
+        _USO_NUBE["subida_ts"] = _t.time()
+        return True
+    _USO_NUBE["fallos"] += 1
+    return False
+
+
+def _uso_nube_sube():
+    """Cada 10 min como mucho, con cambios, en segundo plano."""
+    ahora = _t.time()
+    if not _USO_NUBE["leida"] or _USO_NUBE["cambios"] <= 0:
+        return
+    if (ahora - _USO_NUBE["subida_ts"]) < 600:
+        return
+    if _USO_NUBE["vuelo"] and (ahora - _USO_NUBE["vuelo"]) < 120:
+        return
+    _USO_NUBE["vuelo"] = ahora
+    _USO_NUBE["subida_ts"] = ahora
+    _USO_NUBE["cambios"] = 0
+
+    def _ir():
+        try:
+            _uso_sube_ya()
+        finally:
+            _USO_NUBE["vuelo"] = 0.0
+    _thr.Thread(target=_ir, daemon=True).start()
+
+
+def _uso_bucle():
+    # primero la copia: hasta tenerla no se sube nada ni se reclama la llave
+    for espera in (3, 10, 30, 60, 120, 300):
+        if os.environ.get("MW_SIN_NUBE") == "1" or not _EN_RENDER:
+            break
+        got = _uso_nube_lee()
+        if got is not None:
+            with _FileLock(_USO_FILE):
+                _uso_guarda(_uso_funde(_uso_lee(), got))
+            _USO_NUBE["leida"] = True
+            _USO_NUBE["bajadas"] += 1
+            break
+        _t.sleep(espera)
+    reintento = _t.time()
+    while True:
+        try:
+            _uso_muestra()
+            _uso_nube_sube()
+            # ¿la copia no se pudo leer al arrancar? se vuelve a mirar cada
+            # 10 min: sin ella no se sube nada (pisaría la buena)
+            if not _USO_NUBE["leida"] and _EN_RENDER and os.environ.get("MW_SIN_NUBE") != "1" \
+                    and (_t.time() - reintento) >= 600:
+                reintento = _t.time()
+                got = _uso_nube_lee()
+                if got is not None:
+                    with _FileLock(_USO_FILE):
+                        _uso_guarda(_uso_funde(_uso_lee(), got))
+                    _USO_NUBE["leida"] = True
+                    _USO_NUBE["bajadas"] += 1
+        except Exception:
+            pass
+        _t.sleep(30 + _rnd_uso.random() * 5)
+
+
+import random as _rnd_uso      # noqa: E402
+
+
+def _uso_arranca():
+    if os.environ.get("MW_SIN_USO") == "1":
+        return
+    try:
+        _thr.Thread(target=_uso_bucle, daemon=True).start()
+    except Exception:
+        pass
+
+
+def _uso_llave_de(req):
+    return str(req.headers.get("X-MW-Uso") or req.args.get("k") or "").strip()[:80]
+
+
+def _uso_es_admin(req):
+    k = _uso_llave_de(req)
+    if not k:
+        return False
+    adm = _uso_lee()["adm"]
+    import hmac as _hm
+    return bool(adm) and _hm.compare_digest(_hl.sha256(k.encode("utf-8")).hexdigest(), adm)
+
+
+@app.post("/uso/alta")
+def uso_alta():
+    """Reclamar la llave. Solo una vez, solo recién arrancado, y solo si se sabe
+    seguro que no hay otra (la copia se leyó)."""
+    en_local = os.environ.get("MW_SIN_NUBE") == "1" or not _EN_RENDER
+    if (_t.time() - _USO_T0) > _USO_ALTA_S:
+        return jsonify({"ok": False, "error": "cerrado"}), 403
+    if not en_local and not _USO_NUBE["leida"]:
+        return jsonify({"ok": False, "error": "aun no"}), 503
+    import secrets as _sec
+    llave = _sec.token_urlsafe(18)
+    with _FileLock(_USO_FILE):
+        d = _uso_lee()
+        if d["adm"]:
+            return jsonify({"ok": False, "error": "ya hay llave"}), 403
+        d["adm"] = _hl.sha256(llave.encode("utf-8")).hexdigest()
+        _uso_guarda(d)
+    if not en_local and not _uso_sube_ya():
+        with _FileLock(_USO_FILE):            # sin copia, no hay llave
+            d = _uso_lee()
+            d["adm"] = ""
+            _uso_guarda(d)
+        return jsonify({"ok": False, "error": "sin copia"}), 503
+    return jsonify({"ok": True, "k": llave})
+
+
+def _uso_ahora(now=None):
+    now = _t.time() if now is None else now
+    np = [e.get("np") or {} for e in (_kbnow_load() or {}).values()
+          if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and e.get("np")]
+    vivas = [e for e in (_kbstatus_load() or {}).values()
+             if (now - float(e.get("ts", 0) or 0)) < 90]
+    vers = {}
+    for e in vivas:
+        vers[e.get("v") or "?"] = vers.get(e.get("v") or "?", 0) + 1
+    moviles = sum(1 for ts in (_kb_seen_load() or {}).values()
+                  if (now - float(ts or 0)) < _KB_SEEN_TTL)
+    return {"viendo": sum(1 for x in np if not x.get("paused")),
+            "en_pausa": sum(1 for x in np if x.get("paused")),
+            "kodis": len(vivas), "webs": moviles, "versiones": vers}
+
+
+@app.get("/uso/datos")
+def uso_datos():
+    d = _uso_lee()
+    if not d["adm"] and not _USO_NUBE["leida"] and _EN_RENDER \
+            and os.environ.get("MW_SIN_NUBE") != "1":
+        return jsonify({"ok": False, "error": "arrancando"}), 503
+    if not _uso_es_admin(request):
+        return jsonify({"ok": False, "error": "privado"}), 401
+    now = _t.time()
+    hoy = _uso_es(now)[0]
+    import datetime as _dtm
+    base = _dtm.date.fromisoformat(hoy)
+
+    def _activos(n):
+        lim = (base - _dtm.timedelta(days=n - 1)).isoformat()
+        return sum(1 for p, u in d["cj"].values() if u >= lim)
+    dias = []
+    for i in range(29, -1, -1):
+        dia = (base - _dtm.timedelta(days=i)).isoformat()
+        e = d["dias"].get(dia)
+        if dia < d["desde"]:
+            continue
+        dias.append({"dia": dia, "kodis": _uso_cuenta(e, "c") if e else 0,
+                     "teles": _uso_cuenta(e, "r") if e else 0,
+                     "webs": _uso_cuenta(e, "m") if e else 0,
+                     "pico": (e or {}).get("pico", 0), "pico_h": (e or {}).get("pico_h", ""),
+                     "horas": round((e or {}).get("tm", 0) / 60.0, 1),
+                     "medido_min": (e or {}).get("mu", 0)})
+    eh = d["dias"].get(hoy) or {}
+    out = {"ok": True, "ahora": _uso_ahora(now), "hoy": hoy,
+           "horas_hoy": eh.get("hp") or [0] * 24, "dias": dias,
+           "activos_7": _activos(7), "activos_30": _activos(30),
+           "nuevos_7": sum(1 for p, u in d["cj"].values()
+                           if p >= (base - _dtm.timedelta(days=6)).isoformat() and p > d["desde"]),
+           "conocidos": len(d["cj"]), "desde": d["desde"],
+           "copia": {"leida": _USO_NUBE["leida"], "subidas": _USO_NUBE["subidas"],
+                     "fallos": _USO_NUBE["fallos"],
+                     "hace_s": int(now - _USO_NUBE["subida_ts"]) if _USO_NUBE["subida_ts"] else None},
+           "build": BUILD}
+    r = jsonify(out)
+    r.headers["Cache-Control"] = "no-store"
+    return r
+
+
+@app.get("/uso")
+def uso_pagina():
+    r = Response(_USO_PAGE, mimetype="text/html")
+    r.headers["Cache-Control"] = "no-store"
+    r.headers["X-Robots-Tag"] = "noindex, nofollow"
+    r.headers["Referrer-Policy"] = "no-referrer"
+    return r
+
+
+_USO_PAGE = r"""<!doctype html><html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#06070c">
+<title>Uso · MejorWolf</title>
+<style>
+:root{--bg:#06070c;--card:#11131a;--stroke:rgba(255,255,255,.10);--txt:#f4f6fb;--sub:#a3abbc;--mut:#6f788a;--bar:#409cff;--gap:16px}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:calc(env(safe-area-inset-top) + var(--gap)) var(--gap) calc(env(safe-area-inset-bottom) + 40px)}
+h1{font-size:22px;margin:4px 0 2px}
+.sub{color:var(--sub);font-size:14px;margin:0 0 var(--gap)}
+.card{background:var(--card);border:1px solid var(--stroke);border-radius:16px;padding:var(--gap);margin-bottom:var(--gap)}
+.card h2{font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--sub);margin:0 0 12px}
+.hero{display:flex;align-items:baseline;gap:10px}
+.hero b{font-size:56px;line-height:1;font-variant-numeric:tabular-nums}
+.hero span{color:var(--sub);font-size:17px}
+.fila{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.fila div{background:rgba(255,255,255,.04);border-radius:12px;padding:10px}
+.fila b{display:block;font-size:24px;font-variant-numeric:tabular-nums}
+.fila small{color:var(--sub);font-size:13px}
+.graf{position:relative;display:flex;align-items:flex-end;gap:2px;height:120px;border-bottom:1px solid var(--stroke);margin-top:6px}
+.graf button{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:flex-end;background:none;border:0;padding:0;cursor:pointer}
+.graf button i{display:block;width:100%;background:var(--bar);border-radius:4px 4px 0 0;min-height:0}
+.graf button.cero i{background:transparent}
+.graf button[aria-pressed=true] i{background:#8cc4ff}
+.eje{display:flex;justify-content:space-between;color:var(--mut);font-size:12px;margin-top:4px}
+.dato{min-height:22px;color:var(--sub);font-size:14px;margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:7px 4px;border-bottom:1px solid var(--stroke)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--sub);font-weight:600}
+details summary{min-height:44px;display:flex;align-items:center;color:var(--bar);cursor:pointer}
+.priv{text-align:center;padding:60px 10px;color:var(--sub)}
+.nota{color:var(--mut);font-size:13px}
+</style></head><body><main id="m">
+<h1>Uso de MejorWolf</h1>
+<p class="sub" id="st">Cargando…</p>
+<div id="c"></div>
+</main>
+<script>
+(function(){
+var K="mw_uso_k";
+var h=location.hash.match(/k=([A-Za-z0-9_-]{10,80})/);
+if(h){try{localStorage.setItem(K,h[1])}catch(e){}history.replaceState(null,"",location.pathname)}
+var llave="";try{llave=localStorage.getItem(K)||""}catch(e){}
+var $c=document.getElementById("c"),$st=document.getElementById("st");
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+function n(x){return Number(x||0).toLocaleString("es-ES")}
+var MES=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+var DS=["dom","lun","mar","mié","jue","vie","sáb"];
+function fecha(iso,larga){var p=iso.split("-"),d=new Date(+p[0],p[1]-1,+p[2]);return (larga?DS[d.getDay()]+" ":"")+(+p[2])+" "+MES[p[1]-1]}
+function privado(){$st.textContent="";$c.innerHTML='<div class="priv">Esta página es privada.</div>'}
+if(!llave){privado();return}
+function grafico(id,vals,etq,fmt){
+  var mx=Math.max.apply(null,vals.concat([1]));
+  var html='<div class="graf" role="group">';
+  vals.forEach(function(v,i){html+='<button type="button" data-i="'+i+'" aria-label="'+esc(fmt(i,v))+'" aria-pressed="false" class="'+(v?'':'cero')+'"><i style="height:'+(v?Math.max(4,v/mx*100):0)+'%"></i></button>'});
+  return html+'</div><div class="eje"><span>'+esc(etq[0])+'</span><span>'+esc(etq[1])+'</span></div><div class="dato" id="'+id+'">Toca una barra para ver su valor</div>';
+}
+function engancha(id,fmt,vals){
+  var g=document.getElementById(id).previousElementSibling.previousElementSibling;
+  g.addEventListener("click",function(ev){var b=ev.target.closest("button");if(!b)return;
+    g.querySelectorAll("button").forEach(function(x){x.setAttribute("aria-pressed","false")});
+    b.setAttribute("aria-pressed","true");var i=+b.dataset.i;sel[id]=i;document.getElementById(id).textContent=fmt(i,vals[i])});
+  if(sel[id]!=null){var b=g.querySelector('button[data-i="'+sel[id]+'"]');if(b)b.click()}
+}
+var sel={};
+function pinta(d){
+  var a=d.ahora;
+  $st.textContent="Solo lo ves tú · se actualiza solo";
+  var dias=d.dias||[],hoyE=dias[dias.length-1]||{};
+  var tv=dias.map(function(x){return x.teles}),hr=d.horas_hoy||[];
+  var fmtD=function(i,v){var x=dias[i];return fecha(x.dia,true)+": "+n(v)+(v==1?" tele":" teles")+" con algo puesto · "+n(x.kodis)+" Kodis encendidos · pico "+n(x.pico)+(x.pico_h?" a las "+x.pico_h:"")+" · "+String(x.horas).replace(".",",")+" h de tele"};
+  var fmtH=function(i,v){return (i<10?"0":"")+i+":00–"+(i<9?"0":"")+(i+1)+":00: hasta "+n(v)+(v==1?" tele":" teles")+" a la vez"};
+  var filas=dias.slice().reverse().map(function(x){return '<tr><td>'+esc(fecha(x.dia,true))+'</td><td>'+n(x.teles)+'</td><td>'+n(x.kodis)+'</td><td>'+n(x.pico)+'</td><td>'+String(x.horas).replace(".",",")+'</td></tr>'}).join("");
+  $c.innerHTML=
+   '<section class="card"><h2>Ahora mismo</h2><div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+(a.en_pausa?" · "+n(a.en_pausa)+" en pausa":"")+'</span></div>'+
+   '<div class="fila"><div><b>'+n(a.kodis)+'</b><small>Kodis encendidos</small></div><div><b>'+n(a.webs)+'</b><small>con la web abierta</small></div><div><b>'+n(hoyE.pico)+'</b><small>pico de hoy'+(hoyE.pico_h?" ("+esc(hoyE.pico_h)+")":"")+'</small></div></div></section>'+
+   '<section class="card"><h2>Hoy</h2><div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles con algo puesto</small></div><div><b>'+n(hoyE.kodis)+'</b><small>Kodis distintos</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas de tele</small></div></div>'+
+   '<p class="nota" style="margin:14px 0 4px">Teles a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH)+'</section>'+
+   '<section class="card"><h2>Últimos días</h2><div class="fila" style="margin-top:0"><div><b>'+n(d.activos_7)+'</b><small>Kodis activos en 7 días</small></div><div><b>'+n(d.activos_30)+'</b><small>en 30 días</small></div><div><b>'+n(d.nuevos_7)+'</b><small>nuevos en 7 días</small></div></div>'+
+   '<p class="nota" style="margin:14px 0 4px">Teles distintas con algo puesto, por día</p>'+(dias.length?grafico("dd",tv,[fecha(dias[0].dia),"hoy"],fmtD):"")+
+   '<details><summary>Ver la tabla</summary><table><thead><tr><th>Día</th><th>Teles</th><th>Kodis</th><th>Pico</th><th>Horas</th></tr></thead><tbody>'+filas+'</tbody></table></details></section>'+
+   '<p class="nota">Cuenta Kodis, no personas, y también los tuyos. Sin códigos ni títulos: nadie sabe qué ve cada casa. Datos desde el '+esc(fecha(d.desde))+'.</p>';
+  engancha("dh",fmtH,hr);if(dias.length)engancha("dd",fmtD,tv);
+}
+var t=null;
+function carga(){
+  fetch("/uso/datos",{headers:{"X-MW-Uso":llave},cache:"no-store"}).then(function(r){
+    if(r.status==401){try{localStorage.removeItem(K)}catch(e){}privado();return null}
+    if(!r.ok){$st.textContent=r.status==503?"El servidor está arrancando, reintento en unos segundos…":"No se pudo cargar ("+r.status+"), reintento…";return null}
+    return r.json()}).then(function(d){if(d&&d.ok)pinta(d)}).catch(function(){$st.textContent="Sin conexión, reintento…"});
+}
+carga();
+setInterval(function(){if(!document.hidden)carga()},30000);
+document.addEventListener("visibilitychange",function(){if(!document.hidden)carga()});
+})();
+</script></body></html>"""
+
+
 @app.get("/catdiag")
 def catdiag():
     """Radiografia del estado INTERNO del relay para diagnosticar por que el Inicio
@@ -13159,6 +13753,19 @@ def catdiag():
     except Exception as e:
         out["seed_meta"] = "ERR:%s" % e
     out["pid"] = os.getpid()
+    # (dtbl81) cuántas teles y cuántas cajas hay es cosa del dueño: /catdiag es
+    # pública. Con su llave (?k= o X-MW-Uso) sale todo, como antes.
+    if _uso_es_admin(request):
+        try:
+            out["uso"] = {"copia": dict((k, v) for k, v in _USO_NUBE.items()),
+                          "dias": len(_uso_lee()["dias"])}
+        except Exception:
+            pass
+    else:
+        for k in ("boxes_live", "reproduciendo"):
+            out.pop(k, None)
+        if isinstance(out.get("catbox"), dict):
+            out["catbox"].pop("lend_boxes", None)
     return jsonify(out)
 
 
@@ -17685,6 +18292,7 @@ def _arranque_worker():
     _semillas_arranca()         # funde, nunca pisa: repetirlo no hace dano
     _enriq_arranca()            # las fichas del Inicio (dtbl65): idem
     _wfih_arranca()             # las huellas de WolfMax (dtbl75): idem
+    _uso_arranca()              # el uso, para el dueño (dtbl81): una muestra/min
 
 
 if __name__ == "__main__":

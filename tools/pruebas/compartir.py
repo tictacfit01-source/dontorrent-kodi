@@ -202,10 +202,11 @@ try:
     print("\n=== 8) Las escrituras protegidas siguen firmadas ===")
     src = open(os.path.join(os.path.dirname(A.__file__), "app.py"), encoding="utf-8").read()
     comprueba("_post_con_tope sigue firmando con _kv_cabeceras", "cab.update(_kv_cabeceras(url, datos))" in src)
-    comprueba("y ninguna escritura nueva a mw-sync en esta fase",
+    comprueba("y ninguna escritura a mw-sync fuera de las conocidas (dtbl81: + el uso, cifrado)",
               src.count("_post_con_tope(") == 1 + src.count("_post_con_tope(_SEMI_SYNC") +
               src.count("_post_con_tope(_ENRIQ_SYNC") + src.count("_post_con_tope(_WFIH_SYNC") +
-              src.count("_post_con_tope(_WFIDX_SYNC"))
+              src.count("_post_con_tope(_WFIDX_SYNC") +
+              src.count("_post_con_tope(_USO_SYNC"))
 finally:
     for k, v in viejos.items():
         setattr(A, k, v)
