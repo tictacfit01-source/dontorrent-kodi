@@ -205,6 +205,14 @@ la lista guardada del relay, que además se cura al leerla.
 igual pero la web ya no dice «En la tele»: `/kb/send` y `/kb/now` dicen si la
 tele tiene latido. Recién desplegado (latidos aún vacíos) no se afirma nada.
 
+**`dt4k.py`** (02-11-2026, dtbl82) — los capítulos 4K de WolfMax por las Series
+4K de DonTorrent (es el MISMO archivo: misma huella medida en 6 de 6). El
+aprendiz real lee una página por vuelta, pide los capítulos con la pausa de
+DonTorrent, los deja en la reserva de los ZIP y la tarjeta de WolfMax sale por
+magnet; con otro tamaño, otro capítulo u otro título no se ata nada, lo que no
+es 4K no entra, y tras un despliegue no se repite nada (lo mirado va en la
+copia, `dt`). Fuera de Render no sale de casa (`MW_DT4K`).
+
 Para pasarlas todas de una vez (con el Python que tiene bs4: el 3.13 de
 `AppData/Local/Programs/Python/Python313`; el `python` del PATH es un 3.11 sin él):
 

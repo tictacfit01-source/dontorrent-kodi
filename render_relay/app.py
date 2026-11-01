@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl81"
+BUILD = "dtbl82"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -8432,11 +8432,13 @@ _WFIH_FILE = "/tmp/mw_wfih.json"
 _WFIH_SYNC = "https://mw-sync.israeldm93.workers.dev/kv/wfih"
 _WFIH_MAX_H = 15000          # huellas ya atadas a su ficha
 _WFIH_MAX_P = 6000           # torrents de los ZIP aun sin ficha
+_WFIH_MAX_DT = 4000          # capitulos de las Series 4K de DonTorrent ya mirados (dtbl82)
 _WFIH_TOPE_GZ = 900 * 1024   # el worker admite 1 MB (en base64)
 _WFIH_NUBE = {"subida_ts": 0.0, "vuelo": 0.0, "cambios": 0, "subidas": 0,
               "fallos": 0, "bajadas": 0, "recuperadas": 0, "bytes": 0}
 _WFIH_N = {"magnet": 0, "subidas": 0, "rechazos": 0, "emparejados": 0, "cruce_dt": 0}
 _WFIH_IH = re.compile(r"^[0-9a-f]{40}$")
+_WFIH_DTK = re.compile(r"^series:\d{1,12}$")
 _WFIH_MEM = {"mt": -1.0, "d": None}
 # Los publicos que sus .torrent ya traen (y los mismos con que se cuentan las
 # semillas): con ellos el magnet encuentra el enjambre en segundos.
@@ -8483,7 +8485,9 @@ def _wf_pasarela(url):
 
 
 def _wfih_vacio():
-    return {"h": {}, "p": {}, "zip": {}}
+    # dt: los capitulos de las Series 4K de DonTorrent ya aprendidos ("series:<id>"
+    # -> huella), para que un despliegue no los vuelva a pedir todos (dtbl82)
+    return {"h": {}, "p": {}, "zip": {}, "dt": {}}
 
 
 def _wfih_valida(d):
@@ -8499,6 +8503,9 @@ def _wfih_valida(d):
     z = (d or {}).get("zip")
     if isinstance(z, dict):
         out["zip"] = {kk: z[kk] for kk in ("dia", "n", "emp", "ts") if kk in z}
+    for k, ih in (((d or {}).get("dt") or {}) if isinstance((d or {}).get("dt"), dict) else {}).items():
+        if _WFIH_DTK.match(str(k)) and _WFIH_IH.match(str(ih or "")):
+            out["dt"][k] = ih
     return out
 
 
@@ -8537,6 +8544,9 @@ def _wfih_guarda(d):
         if len(d[clave]) > tope:
             d[clave] = dict(sorted(d[clave].items(),
                                    key=lambda kv: -float(kv[1].get("ts") or 0))[:tope])
+    dt = d.setdefault("dt", {})
+    if len(dt) > _WFIH_MAX_DT:          # los mas viejos fuera (van por orden de llegada)
+        d["dt"] = dict(list(dt.items())[-_WFIH_MAX_DT:])
     try:
         tmp = "%s.%d.tmp" % (_WFIH_FILE, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
@@ -9084,6 +9094,10 @@ def _wfih_funde(remoto):
         if remoto.get("zip") and float(remoto["zip"].get("ts") or 0) > float(d["zip"].get("ts") or 0):
             d["zip"] = remoto["zip"]
             n += 1
+        for k, ih in (remoto.get("dt") or {}).items():
+            if k not in d["dt"]:
+                d["dt"][k] = ih
+                n += 1
         return n
     with _FileLock(_WFIH_FILE):
         d = _wfih_lee()
@@ -9105,7 +9119,8 @@ def _wfih_sube_hilo():
         import gzip
         while True:
             gz = base64.b64encode(gzip.compress(_json.dumps(
-                {"v": 1, "h": d["h"], "p": d["p"], "zip": d["zip"]}).encode("utf-8"), 6)).decode("ascii")
+                {"v": 1, "h": d["h"], "p": d["p"], "zip": d["zip"],
+                 "dt": d["dt"]}).encode("utf-8"), 6)).decode("ascii")
             if len(gz) <= _WFIH_TOPE_GZ or not d["p"]:
                 break
             # no cabe: fuera la mitad mas vieja de la reserva (lo atado no se toca)
@@ -10987,6 +11002,11 @@ def _apr_guarda(src, k, r, now):
                 _wf_cruce_dt()                   # ¿es el mismo de alguna ficha de WolfMax?
             except Exception:
                 pass
+        if k.startswith("series:"):
+            try:
+                _dt4k_apunta(k, ih, r.get("n"), r.get("b"))   # (dtbl82)
+            except Exception:
+                pass
     else:
         with _FileLock(_DXIH_FILE):
             d = _dxih_load()
@@ -10999,6 +11019,125 @@ def _apr_guarda(src, k, r, now):
             _wfih_apunta(k, ih, o="aprendiz", pisa=False)
     if cuenta is not None:
         _seeds_guarda({ih: cuenta}, now)
+
+
+# --- Las Series 4K de DonTorrent, para los capitulos 4K de WolfMax (dtbl82) ------
+# Medido el 02-11: de las 24 temporadas 4K mas nuevas de WolfMax, 14 estan en las
+# Series 4K de DonTorrent con el MISMO archivo (misma huella y bytes en las 6
+# comprobadas: Kill Jackie, Materia oscura, Marshals, VisionQuest...), y de sus
+# 95 capitulos solo 13 se podian reproducir desde la tarjeta de WolfMax (el
+# resto choca con su verificacion). El aprendiz aprende tambien esos capitulos de
+# DonTorrent -- huella, nombre interno y bytes, por una caja libre y con la misma
+# pausa que las pelis -- y los deja en la reserva de los ZIP: la tarjeta de
+# WolfMax los empareja con la regla de siempre (_wf_casa: titulo + capitulo +
+# tamaño exacto, y si hay duda, nada). Lo ya mirado queda en la copia de las
+# huellas ("dt") para que un despliegue no lo repita. Solo en Render (o con
+# MW_DT4K=1 en las pruebas): sin eso el aprendiz no sale de casa.
+_DT4K_PAGINAS = ("/series/4k", "/series/4k/page/2", "/series/4k/page/3")
+_DT4K_CADA = 3 * 3600            # la lista de temporadas 4K
+_DT4K_TEMP_CADA = 12 * 3600      # cada temporada (van saliendo capitulos)
+_DT4K_TEMP_RE = re.compile(r'href="(/serie/\d+/\d+/[^"<>\s]{1,160}?-\d{1,2}-Temporada-4k)"', re.I)
+_DT4K = {"t_lista": 0.0, "temps": [], "vistas": {}, "pend": [], "lista_n": 0,
+         "caps_vistos": 0, "aprendidos": 0, "a_reserva": 0, "fallos_html": 0}
+
+
+def _dt4k_activo():
+    return os.environ.get("MW_DT4K") == "1" or (
+        _EN_RENDER and os.environ.get("MW_DT4K") != "0")
+
+
+def _dt4k_html(path):
+    """El HTML de una pagina de DonTorrent: desde Render y, si no, por una caja
+    libre (su IP de casa). "" si no se pudo."""
+    html = _bounded(lambda: (_cat_dt_session_get(path) or ("", None))[0], 10.0, "") or ""
+    if html or _dt_caida_ya():
+        return html
+    box = _apr_caja()
+    if not box:
+        return ""
+    sem = _lend_acquire(box)
+    if sem is None:
+        return ""
+    try:
+        j = "d4" + os.urandom(5).hex()
+        _kb_enqueue(box, {"c": "etjob", "job": j, "op": "dthtml", "path": path})
+        res = _catjob_wait(j, 20.0)
+    finally:
+        _lend_release(sem)
+    h = (res or {}).get("html") or ""
+    return "" if _dt_es_mantenimiento(h) else h
+
+
+def _dt4k_pendientes(now):
+    """Los capitulos de las Series 4K de DonTorrent aun sin aprender, como
+    trabajos del aprendiz [("dt", "series:<id>", {title})]. Cada vuelta lee como
+    mucho la lista (cada 3 h) o UNA temporada: esto no tiene ninguna prisa."""
+    if not _dt4k_activo() or _dt_caida_ya():
+        return []
+    hechos = _wfih_actual().get("dt") or {}
+    leida = False
+    if (now - _DT4K["t_lista"]) >= _DT4K_CADA:
+        _DT4K["t_lista"] = now
+        leida = True
+        temps = []
+        for pg in _DT4K_PAGINAS:
+            h = _dt4k_html(pg)
+            if not h:
+                _DT4K["fallos_html"] += 1
+                break
+            for p in _DT4K_TEMP_RE.findall(h):
+                if p not in temps:
+                    temps.append(p)
+        if temps:
+            _DT4K["temps"] = temps[:80]
+            _DT4K["lista_n"] = len(temps)
+    if not leida:
+        for p in _DT4K["temps"]:
+            if (now - _DT4K["vistas"].get(p, 0)) < _DT4K_TEMP_CADA:
+                continue
+            _DT4K["vistas"][p] = now
+            h = _dt4k_html(p)
+            if not h:
+                _DT4K["fallos_html"] += 1
+                break
+            titulo, eps = _cat_parse_detail(h)
+            ya = set(x[1] for x in _DT4K["pend"])
+            for e in eps:
+                k = "%s:%s" % (e.get("tabla") or "series", e.get("content_id"))
+                if _WFIH_DTK.match(k) and k not in hechos and k not in ya:
+                    _DT4K["pend"].append(("dt", k, {"title": "%s %s" % (titulo, e.get("label") or "")}))
+                    _DT4K["caps_vistos"] += 1
+            break                                  # una temporada por vuelta
+    _DT4K["pend"] = [x for x in _DT4K["pend"] if x[1] not in hechos][-400:]
+    out = []
+    for x in _DT4K["pend"]:
+        neg = _APR_NEG.get(x[1]) or _APR_NEG.get("nb:" + x[1])
+        if not (neg and (now - neg[0]) < neg[1]):
+            out.append(x)
+    return out
+
+
+def _dt4k_apunta(k, ih, n, b):
+    """Un capitulo de DonTorrent aprendido: queda apuntado como mirado y, si es un
+    capitulo en 4K, va a la reserva (y se ata ya si casa sin dudas con una ficha
+    conocida de WolfMax). Devuelve True si fue a la reserva."""
+    if not _WFIH_DTK.match(str(k)) or not _WFIH_IH.match(str(ih or "")):
+        return False
+
+    def _f(d):
+        if d["dt"].get(k) == ih:
+            return 0
+        d["dt"][k] = ih
+        return 1
+    _wfih_cambia(_f)
+    _DT4K["aprendidos"] += 1
+    if not (isinstance(n, str) and n and isinstance(b, int) and b > 0):
+        return False
+    if not _wf_cap(n) or _wf_resol(n) != "2160":
+        return False                               # solo capitulos 4K
+    _wfih_de_zip([("DonTorrent-" + k, {"ih": ih, "n": n[:200], "b": b})], es_zip=False)
+    _DT4K["a_reserva"] += 1
+    return True
 
 
 def _apr_ronda():
@@ -11020,6 +11159,12 @@ def _apr_ronda():
         _WF_CRUCE_T[0] = now
         _bounded(_wf_cruce_dt, 20.0, 0)
     pend, viejos = _apr_pendientes(_apr_items_inicio(), now)
+    # (dtbl82) detras de las del Inicio, los capitulos de las Series 4K
+    try:
+        pend = pend + _bounded(lambda: _dt4k_pendientes(now), 40.0, []) if \
+            not any(s == "dt" for s, _k, _i in pend) else pend
+    except Exception:
+        pass
     _APR["pendientes"] = len(pend)
     # Los conteos del Inicio, frescos para quien abra la app (un paquete UDP
     # por tracker para todas, cada 40 min como mucho).
@@ -13693,6 +13838,15 @@ def catdiag():
         out["wfih"] = dict(_WFIH_N, atadas=len(_wd["h"]), reserva=len(_wd["p"]),
                            origen=_org, zip=_wd.get("zip") or {},
                            nube={k: v for k, v in _WFIH_NUBE.items() if k != "vuelo"})
+        # (dtbl82) las Series 4K de DonTorrent: lo mirado (de los dos workers, de
+        # la copia), lo que espera en la reserva y las fichas de WolfMax ya atadas
+        _dtv = set((_wd.get("dt") or {}).values())
+        out["dt4k"] = dict(
+            {k: v for k, v in _DT4K.items() if k not in ("pend", "vistas", "temps")},
+            activo=_dt4k_activo(), mirados=len(_wd.get("dt") or {}),
+            en_reserva=sum(1 for ih in _wd["p"] if ih in _dtv),
+            atadas=sum(1 for e in _wd["h"].values() if e.get("ih") in _dtv),
+            en_cola=len(_DT4K["pend"]), temporadas=len(_DT4K["temps"]))
     except Exception:
         out["wfih"] = {"error": True}
     # la copia de las fichas del Inicio (dtbl65)
