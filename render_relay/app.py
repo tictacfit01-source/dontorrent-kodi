@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl92"
+BUILD = "dtbl93"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13744,19 +13744,39 @@ def _cb_lee_tmp():
         return {}
 
 
-def _cb_guarda_tmp(c):
+_CB_COD = re.compile(r"^\d{6}$")
+
+
+def _cb_casa_valida(casa):
+    return [str(x) for x in (casa or []) if _CB_COD.match(str(x))][:6] if isinstance(casa, list) else []
+
+
+def _cb_casa():
+    """Las teles de casa del dueño (dtbl93): Cinubo se pide primero por ellas,
+    para que vea UNA casa y no treinta. Solo en /tmp y en la copia CIFRADA."""
+    try:
+        with open(_CB_FILE, encoding="utf-8") as f:
+            return _cb_casa_valida((_json.load(f) or {}).get("casa"))
+    except Exception:
+        return []
+
+
+def _cb_guarda_tmp(c, casa=None):
+    if casa is None:
+        casa = _cb_casa()
     try:
         tmp = _CB_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump({"c": c, "ts": _t.time()}, f)
+            _json.dump({"c": c, "casa": casa, "ts": _t.time()}, f)
         os.replace(tmp, _CB_FILE)
     except Exception:
         pass
 
 
-def _cb_empaqueta(c, kc, km):
+def _cb_empaqueta(c, kc, km, casa=None):
     import base64
-    return "c1." + base64.b64encode(_uso_cifra(_json.dumps(c).encode("utf-8"), kc, km)).decode("ascii")
+    d = {"c": c, "casa": _cb_casa_valida(casa)}
+    return "c1." + base64.b64encode(_uso_cifra(_json.dumps(d).encode("utf-8"), kc, km)).decode("ascii")
 
 
 def _cb_desempaqueta(gz, kc, km):
@@ -13765,9 +13785,21 @@ def _cb_desempaqueta(gz, kc, km):
         return None
     try:
         raw = _uso_descifra(base64.b64decode(gz[3:]), kc, km)
-        return _cb_valida(_json.loads(raw.decode("utf-8"))) if raw is not None else None
+        if raw is None:
+            return None
+        d = _json.loads(raw.decode("utf-8"))
+        return _cb_valida(d.get("c") if isinstance(d, dict) and "c" in d else d)
     except Exception:
         return None
+
+
+def _cb_desempaqueta_casa(gz, kc, km):
+    import base64
+    try:
+        d = _json.loads(_uso_descifra(base64.b64decode(gz[3:]), kc, km).decode("utf-8"))
+        return _cb_casa_valida(d.get("casa")) if isinstance(d, dict) else []
+    except Exception:
+        return []
 
 
 def _cb_nube_lee():
@@ -13782,6 +13814,7 @@ def _cb_nube_lee():
         gz = (_json.loads(txt) or {}).get("gz")
         if not gz:
             return {}
+        _CB["casa_nube"] = _cb_desempaqueta_casa(gz, kc, km)
         return _cb_desempaqueta(gz, kc, km)
     except Exception:
         return None
@@ -13791,7 +13824,7 @@ def _cb_nube_sube(c):
     kc, km = _cb_claves()
     if not kc or not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1":
         return False
-    return _post_con_tope(_CB_SYNC, {"gz": _cb_empaqueta(c, kc, km)}, 15.0) == 200
+    return _post_con_tope(_CB_SYNC, {"gz": _cb_empaqueta(c, kc, km, _cb_casa())}, 15.0) == 200
 
 
 def _cb_mtime():
@@ -13817,7 +13850,7 @@ def _cb_cookies():
         _CB["nube"] = "leida" if r is not None else "fallo"
         if r:
             c = r
-            _cb_guarda_tmp(c)
+            _cb_guarda_tmp(c, _CB.get("casa_nube") or [])
     if c:
         _CB["c"], _CB["mt"] = c, _cb_mtime()
     return c
@@ -13837,7 +13870,9 @@ def _cb_cajas():
     except Exception:
         return []
     libres = set(_cajas_libres())
-    return [c for c in vivas if c in libres] + [c for c in vivas if c not in libres]
+    casa = set(_cb_casa())
+    orden = lambda c: (c not in casa, c not in libres)
+    return sorted(vivas, key=orden)
 
 
 def _cb_cupo():
@@ -14183,14 +14218,16 @@ def cb_sesion_alta():
     """El dueño da aquí sus cookies de Cinubo (solo con la llave de /uso)."""
     if not _uso_es_admin(request):
         return jsonify({"ok": False, "error": "no"}), 403
-    c = _cb_valida((request.get_json(silent=True) or {}).get("c"))
+    body = request.get_json(silent=True) or {}
+    c = _cb_valida(body.get("c"))
     if not any(k.startswith("remember_web_") or k == "seriesly_session" for k in c):
         return jsonify({"ok": False, "error": "faltan cookies"}), 400
+    casa = _cb_casa_valida(body.get("casa")) if "casa" in body else None
     with _CB_LOCK:
         _CB.update(c=c)
-    _cb_guarda_tmp(c)
+    _cb_guarda_tmp(c, casa)
     sub = _bounded(lambda: _cb_nube_sube(c), 20.0, False)
-    return jsonify({"ok": True, "n": len(c), "nube": bool(sub)})
+    return jsonify({"ok": True, "n": len(c), "casa": len(_cb_casa()), "nube": bool(sub)})
 
 
 @app.get("/cb/prueba")
@@ -14452,7 +14489,9 @@ def catdiag():
             pass
         try:   # Cinubo (dtbl88): sin cookies ni nada de la sesión, solo cuentas
             _ca = _cb_cache_lee()
-            out["cinubo"] = {"sesion": bool(_cb_cookies()), "cajas": len(_cb_cajas()),
+            _cc = _cb_cajas()
+            out["cinubo"] = {"sesion": bool(_cb_cookies()), "cajas": len(_cc),
+                             "casa": len(_cb_casa()), "casa_vivas": len(set(_cc) & set(_cb_casa())),
                              "hora": len([x for x in _CB["hora"] if _t.time() - x < 3600]),
                              "cupo_h": _CB_CUPO_H, "cache": {k: len(v) for k, v in _ca.items()},
                              **{k: _CB[k] for k in ("peticiones", "fallos", "ult_st", "ult_ms",

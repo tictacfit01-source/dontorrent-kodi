@@ -81,6 +81,15 @@ try:
     malo = paq[:-6] + ("A" if paq[-6] != "A" else "B") + paq[-5:]
     comprueba("manipulada no vale", A._cb_desempaqueta(malo, kc, km) is None)
     comprueba("otro formato (la de /uso) no vale", A._cb_desempaqueta("u1.xxxx", kc, km) is None)
+    paq2 = A._cb_empaqueta(BUENAS, kc, km, ["123456", "654321", "x"])
+    comprueba("con las teles de casa: las cookies igual y las teles, sin basura",
+              A._cb_desempaqueta(paq2, kc, km) == BUENAS
+              and A._cb_desempaqueta_casa(paq2, kc, km) == ["123456", "654321"])
+    comprueba("los códigos de las teles tampoco se leen en claro", "123456" not in paq2 and "654321" not in paq2)
+    import base64 as _b64
+    vieja = "c1." + _b64.b64encode(A._uso_cifra(json.dumps(BUENAS).encode("utf-8"), kc, km)).decode("ascii")
+    comprueba("la copia de antes (solo cookies) se sigue leyendo",
+              A._cb_desempaqueta(vieja, kc, km) == BUENAS and A._cb_desempaqueta_casa(vieja, kc, km) == [])
 
     print("\n=== 3) Los enlaces de una ficha ===")
     T = "https://cinubo.com/t/"
@@ -191,6 +200,28 @@ try:
         comprueba("sin cajas al día: nada, y se dice", A._cb_pide(path="/s/abc123") == (None, 0)
                   and A._CB["ult_err"] == "sin caja")
         A._cb_cajas = lambda: ["111111"]
+
+        print("\n=== 7b) Primero las teles de casa del dueño ===")
+        rv = (A._live_boxes, A._kbstatus_load, A._cajas_libres)
+        try:
+            A._live_boxes = lambda *a, **k: ["900001", "900002", "900003", "900004"]
+            A._kbstatus_load = lambda: {c: {"v": "2.9.91"} for c in ("900001", "900002", "900003", "900004")}
+            A._cajas_libres = lambda: ["900001", "900004"]
+            A._cb_cajas = reales[0]
+            r = cli.post("/cb/sesion", json={"c": BUENAS, "casa": ["900003", "900004", "malo"]},
+                         headers={"X-MW-Uso": llave})
+            comprueba("/cb/sesion guarda las teles de casa (solo códigos válidos)",
+                      r.status_code == 200 and r.get_json().get("casa") == 2, r.get_json())
+            comprueba("orden: casa libre, casa ocupada, otra libre, otra ocupada",
+                      A._cb_cajas() == ["900004", "900003", "900001", "900002"], A._cb_cajas())
+            r = cli.post("/cb/sesion", json={"c": BUENAS}, headers={"X-MW-Uso": llave})
+            comprueba("renovar la sesión sin decir 'casa' no las borra", A._cb_casa() == ["900003", "900004"])
+            adm = cli.get("/catdiag?k=" + llave).get_data(as_text=True)
+            comprueba("el diagnóstico dice cuántas, nunca los códigos",
+                      "900003" not in adm and "900004" not in adm and '"casa": 2' in adm.replace('"casa":2', '"casa": 2'), adm[:0])
+        finally:
+            A._live_boxes, A._kbstatus_load, A._cajas_libres = rv
+            A._cb_cajas = lambda: ["111111"]
 
         print("\n=== 8) La ficha por tmdb_id, los enlaces y los endpoints ===")
         try:
