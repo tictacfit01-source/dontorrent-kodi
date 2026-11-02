@@ -48,7 +48,7 @@ def fila(url, srv, q, lang):
 
 
 os.makedirs("/tmp", exist_ok=True)
-FICH = [A._CB_FILE, A._USO_FILE]
+FICH = [A._CB_FILE, A._USO_FILE, A._CB_CACHE_FILE]
 copias = {}
 for f in FICH:
     if os.path.exists(f):
@@ -138,8 +138,7 @@ try:
     r = cli.post("/cb/sesion", json={"c": BUENAS}, headers={"X-MW-Uso": llave})
     comprueba("con llave: guardadas", r.status_code == 200 and r.get_json().get("n") == 2, r.get_json())
     comprueba("en /tmp, y se leen igual", A._cb_lee_tmp() == BUENAS)
-    comprueba("la sesión HTTP lleva las dos cookies",
-              {c.name for c in A._cb_sesion().cookies} == set(BUENAS))
+    comprueba("y en memoria, las dos", A._cb_cookies() == BUENAS)
     comprueba("/catdiag pública no dice nada de Cinubo",
               "seriesly" not in cli.get("/catdiag").get_data(as_text=True))
 
@@ -149,15 +148,94 @@ try:
     comprueba("nunca más de %d por hora" % A._CB_CUPO_H, n == A._CB_CUPO_H, n)
     A._CB["hora"] = [A._t.time() - 3700] * A._CB_CUPO_H
     comprueba("pasada la hora, vuelve a haber", A._cb_cupo())
-    A._CB["hora"] = [A._t.time()] * A._CB_CUPO_H
-    llamadas = []
-    real = A._get_con_tope
-    A._get_con_tope = lambda *a, **k: (llamadas.append(a) or ("x", 200))
+
+    print("\n=== 7) Por una caja (Render recibe 403 de Cinubo) ===")
+    cola, respuestas = [], {}
+    reales = (A._cb_cajas, A._kb_enqueue, A._catjob_wait, A._lend_acquire, A._lend_release)
+    A._cb_cajas = lambda: ["111111"]
+    A._kb_enqueue = lambda box, ev: cola.append((box, ev))
+    A._lend_acquire = lambda box: object()
+    A._lend_release = lambda sem: None
+
+    def espera(job, secs):
+        ev = cola[-1][1]
+        clave = ("q:%s:%s" % (ev["q"], ev.get("pg"))) if ev.get("q") else ev.get("path")
+        r = respuestas.get(clave)
+        return None if r is None else {"html": json.dumps({"st": r[0], "t": r[1]})}
+    A._catjob_wait = espera
     try:
-        comprueba("sin cupo, no se pide nada a Cinubo",
-                  A._cb_get("/s/x") == (None, 0) and not llamadas)
+        A._CB["hora"] = []
+        respuestas["/s/abc123/4x2"] = (200, html)
+        txt, st = A._cb_pide(path="/s/abc123/4x2")
+        comprueba("la caja trae la página", st == 200 and "detail-page" in txt)
+        box, ev = cola[-1]
+        comprueba("el trabajo es cbget, con la sesión y la ruta",
+                  ev["op"] == "cbget" and ev["ck"] == BUENAS and ev["path"] == "/s/abc123/4x2", ev)
+        comprueba("una caja que no contesta: nada", A._cb_pide(path="/s/zzzzzz") == (None, 0))
+        A._CB["hora"] = [A._t.time()] * A._CB_CUPO_H
+        n0 = len(cola)
+        comprueba("sin cupo, ni se encola", A._cb_pide(path="/s/abc123") == (None, 0) and len(cola) == n0)
+        A._CB["hora"] = []
+        A._cb_cajas = lambda: []
+        comprueba("sin cajas al día: nada, y se dice", A._cb_pide(path="/s/abc123") == (None, 0)
+                  and A._CB["ult_err"] == "sin caja")
+        A._cb_cajas = lambda: ["111111"]
+
+        print("\n=== 8) La ficha por tmdb_id, los enlaces y los endpoints ===")
+        try:
+            os.remove(A._CB_CACHE_FILE)
+        except Exception:
+            pass
+        posts = [{"tmdb_id": 97546, "type": "movie", "link": "/p/zzzz11"},
+                 {"tmdb_id": 11111, "type": "serie", "link": "/s/yyyy22"},
+                 {"tmdb_id": 97546, "type": "serie", "link": "/s/nzp5nh"}]
+        respuestas["q:ted lasso:1"] = (200, json.dumps({"posts": posts, "pagination": {"has_more": False}}))
+        comprueba("serie: la del mismo tmdb_id Y tipo serie (no la peli con el mismo número)",
+                  A._cb_ficha(97546, "serie", "ted lasso") == "/s/nzp5nh")
+        comprueba("película: la de tipo movie", A._cb_ficha(97546, "movie", "ted lasso") == "/p/zzzz11")
+        n0 = len(cola)
+        comprueba("la segunda vez, de la caché (sin caja)",
+                  A._cb_ficha(97546, "serie", "ted lasso") == "/s/nzp5nh" and len(cola) == n0)
+        respuestas["q:nada:1"] = (200, json.dumps({"posts": [], "pagination": {}}))
+        comprueba("si no lo tiene: vacío (y se recuerda)", A._cb_ficha(5, "movie", "nada") == ""
+                  and A._cb_cache_get("f", "movie:5", A._CB_TTL_NOESTA) == "")
+        respuestas["/s/nzp5nh/4x2"] = (200, html)
+        r = cli.get("/cbenlaces?id=97546&kind=serie&t=ted%20lasso&s=4&e=2").get_json()
+        comprueba("/cbenlaces: los de castellano de España del capítulo",
+                  r.get("ok") and [(x["srv"], x["q"]) for x in r["items"]]
+                  == [("VIDARA", "HD 1080p"), ("LULUSTREAM", "HD 720p")], r)
+        comprueba("/cbenlaces de una serie sin temporada ni capítulo: 400",
+                  cli.get("/cbenlaces?id=97546&kind=serie&t=ted").status_code == 400)
+        respuestas["/s/nzp5nh/4x3"] = (200, "<html>portada</html>")
+        r = cli.get("/cbenlaces?id=97546&kind=serie&t=ted%20lasso&s=4&e=3").get_json()
+        comprueba("sesión caducada: se dice, no 'no hay enlaces'",
+                  r.get("ok") is False and r.get("motivo") == "sesion caducada", r)
+        ref = "eyJpdiI6IlpkQ3RhVlpKWDJtYkpx"
+        respuestas["/t/" + ref] = (200, json.dumps(
+            {"e": '<iframe src="https:\\/\\/vidara.to\\/e\\/jkbr5gxmPV0CZ"><\\/iframe>'}))
+        r = cli.get("/cbembed?r=" + ref).get_json()
+        comprueba("/cbembed: el servidor de vídeo", r.get("u") == "https://vidara.to/e/jkbr5gxmPV0CZ", r)
+        n0 = len(cola)
+        comprueba("y la segunda vez, de la caché",
+                  cli.get("/cbembed?r=" + ref).get_json().get("u") and len(cola) == n0)
+        comprueba("/cbembed con una referencia rara: 400", cli.get("/cbembed?r=<script>").status_code == 400)
+
+        print("\n=== 9) A la tele: la orden st ===")
+        enviados = []
+        A._kb_enqueue = lambda box, ev: enviados.append((box, ev))
+
+        def manda(u):
+            return cli.post("/kb/send", json={"code": "123456", "cmd": "play_ref", "a": "st",
+                                              "u": u, "t": "Ted Lasso 4x02"})
+        r = manda("https://vidara.to/e/jkbr5gxmPV0CZ")
+        comprueba("una página https de servidor: se encola para esa tele",
+                  r.status_code == 200 and enviados and enviados[-1][0] == "123456"
+                  and enviados[-1][1].get("a") == "st", (r.get_json(), enviados[-1:]))
+        for malo in ("http://vidara.to/e/x", "javascript:alert(1)", "https://x.y/" + "a" * 500,
+                     'https://a.b/"><script>'):
+            comprueba("rechaza " + malo[:30], manda(malo).status_code == 400)
     finally:
-        A._get_con_tope = real
+        A._cb_cajas, A._kb_enqueue, A._catjob_wait, A._lend_acquire, A._lend_release = reales
 finally:
     for f in FICH:
         try:

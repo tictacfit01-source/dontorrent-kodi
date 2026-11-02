@@ -213,6 +213,22 @@ magnet; con otro tamaño, otro capítulo u otro título no se ata nada, lo que n
 es 4K no entra, y tras un despliegue no se repite nada (lo mirado va en la
 copia, `dt`). Fuera de Render no sale de casa (`MW_DT4K`).
 
+**`cinubo.py`** (02-11-2026, dtbl85-86) — Cinubo (antigua series.ly), streaming
+en castellano con la sesión del dueño. Solo las cookies que sirven; su copia en
+mw-sync va CIFRADA (ajena o manipulada no vale); de cada ficha, SOLO los
+enlaces de «Español - España»; el captcha se cuenta y no rompe nada;
+`/cb/sesion` y `/cb/prueba` solo con la llave de /uso; cupo de 150/h. Como
+Render recibe 403 de Cinubo, todo va por una CAJA 2.9.91+ (trabajo `cbget`):
+sin cajas o sin cupo no se encola nada. La ficha se busca por `tmdb_id` Y tipo
+(una peli y una serie pueden compartir número); caché de fichas, enlaces e
+iframes; sesión caducada se dice como tal; la orden `st` solo lleva https.
+
+**`cinubo_caja.py`** (02-11-2026, caja 2.9.91) — la parte de la tele: `pedir`
+solo va a las rutas de Cinubo necesarias (nunca `/logout` ni ajustes con la
+sesión del dueño); el desempaquetado de Lulustream; cada servidor por su
+familia de dominios (y no uno que solo se le parezca); cabeceras para Kodi con
+`%20` (con `+` Lulustream da 403) y Lulustream sin `Origin`.
+
 Para pasarlas todas de una vez (con el Python que tiene bs4: el 3.13 de
 `AppData/Local/Programs/Python/Python313`; el `python` del PATH es un 3.11 sin él):
 

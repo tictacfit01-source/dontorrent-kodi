@@ -1088,6 +1088,45 @@ def _set_continue(title, a, ci="", tb="", u=""):
         pass
 
 
+def cb_play(u, title=""):
+    """Streaming de Cinubo (2.9.91): de la pagina del servidor de video
+    (Lulustream, Vidara...) a su emision directa, y a reproducir. Sin Elementum
+    ni semillas; sin el reproductor web, o sea, sin su publicidad."""
+    from resources.lib import cinubo as cbm
+    progress = xbmcgui.DialogProgressBG()
+    try:
+        progress.create("MejorWolf", "Abriendo el servidor de vídeo...")
+    except Exception:
+        progress = None
+    try:
+        url = cbm.resolver(u)
+    except cbm.NoSale as e:
+        xbmc.log("[MejorWolf] cb_play: %s -> %s" % (u[:80], e), xbmc.LOGWARNING)
+        url = ""
+    finally:
+        try:
+            if progress:
+                progress.close()
+        except Exception:
+            pass
+    if not url:
+        _error("Ese servidor no da el vídeo ahora. Elige otro en la web.")
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        return
+    xbmc.log("[MejorWolf] cb_play: %s" % url.split("|")[0][:120], xbmc.LOGINFO)
+    li = xbmcgui.ListItem(path=url)
+    try:
+        li.setInfo("video", {"title": title or "MejorWolf"})
+    except Exception:
+        pass
+    try:
+        li.setMimeType("application/vnd.apple.mpegurl")
+        li.setContentLookup(False)
+    except Exception:
+        pass
+    xbmcplugin.setResolvedUrl(HANDLE, True, li)
+
+
 def play(torrent_url, title=""):
     """Reproduce un magnet o URL de .torrent via Elementum."""
     if not torrent_url:
@@ -2537,6 +2576,8 @@ def router(qs):
                                                params.get("title", ""))
         elif action == "play":          play(params.get("torrent", ""),
                                              params.get("t", ""))
+        elif action == "cb_play":       cb_play(params.get("u", ""),
+                                                params.get("t", ""))
         elif action == "dx_season":     dx_season(params.get("url", ""),
                                                   params.get("season", "1"),
                                                   params.get("title", ""))

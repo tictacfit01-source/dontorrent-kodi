@@ -719,6 +719,12 @@ def _do_etjob(ev):
                         xbmc.log("[MejorWolf/service] ih de wolfmax: %s" % _e2,
                                  xbmc.LOGWARNING)
                 out["link"] = lk
+            elif op == "cbget":
+                # Cinubo (2.9.91): el relay no puede entrar (Cloudflare frena su
+                # IP); la caja pide la pagina desde casa con la sesion que trae
+                # el trabajo, sin guardarla
+                from resources.lib import cinubo as _cbm
+                out["html"] = _cbm.pedir(ev)
             elif op == "dthtml":
                 from resources.lib import scraper_dontorrent as dt
                 out["html"] = dt.fetch_html(path=ev.get("path"),
@@ -767,6 +773,13 @@ def _play_ref(ev):
                     or u.endswith(".torrent")):
                 return
             url = base + "play&torrent=%s&t=%s" % (quote(u, safe=""), quote(t))
+        elif a == "st":
+            # streaming de Cinubo (2.9.91): la pagina del servidor de video; la
+            # emision se saca AQUI (va firmada para la IP de esta casa)
+            u = (ev.get("u") or "").strip()
+            if not u.startswith("https://"):
+                return
+            url = base + "cb_play&u=%s&t=%s" % (quote(u, safe=""), quote(t))
         else:
             return
         xbmc.log("[MejorWolf/service] play_ref -> %s" % url[:120],

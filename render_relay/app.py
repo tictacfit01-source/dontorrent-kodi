@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl85"
+BUILD = "dtbl86"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4248,6 +4248,15 @@ def kb_send():
                     return jsonify({"ok": False,
                                     "error": "enlace inválido"}), 400
                 ev["u"] = u[:2000]
+            elif a == "st":
+                # streaming de Cinubo (dtbl86): la pagina del servidor de video;
+                # la caja (2.9.91+) saca la emision desde su casa
+                u = (body.get("u") or "").strip()
+                if not (u.startswith("https://") and len(u) <= 400
+                        and re.match(r"^https://[A-Za-z0-9.-]+/[^\s<>\"']*$", u)):
+                    return jsonify({"ok": False,
+                                    "error": "enlace inválido"}), 400
+                ev["u"] = u
             else:
                 return jsonify({"ok": False,
                                 "error": "referencia inválida"}), 400
@@ -13701,9 +13710,8 @@ _CB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 _CB_NOMBRE = re.compile(r"^(seriesly_session|remember_web_[0-9a-f]{40}|sly_device_id)$")
 _CB_VALOR = re.compile(r"^[A-Za-z0-9%=._-]{8,1200}$")
 _CB_CUPO_H = 150                     # peticiones a Cinubo por hora, por worker
-_CB = {"c": None, "nube": "sin leer", "sess": None, "csrf": "", "csrf_ts": 0.0,
-       "peticiones": 0, "fallos": 0, "ult_st": 0, "ult_ms": 0,
-       "hora": [], "captcha": 0, "cupo_lleno": 0}
+_CB = {"c": None, "nube": "sin leer", "peticiones": 0, "fallos": 0, "ult_st": 0,
+       "ult_ms": 0, "ult_err": "", "hora": [], "captcha": 0, "cupo_lleno": 0}
 _CB_LOCK = _thr.Lock()
 
 
@@ -13802,21 +13810,21 @@ def _cb_cookies():
     return c
 
 
-def _cb_sesion():
-    """La sesión HTTP de este worker, con las cookies puestas (una por worker:
-    así guarda la cookie de sesión que Cinubo renueva en cada respuesta)."""
-    c = _cb_cookies()
-    if not c:
-        return None
-    with _CB_LOCK:
-        s = _CB["sess"]
-        if s is None:
-            s = requests.Session()
-            s.headers.update({"User-Agent": _CB_UA, "Accept-Language": "es-ES,es;q=0.9"})
-            for k, v in c.items():
-                s.cookies.set(k, v, domain=".cinubo.com", path="/")
-            _CB["sess"] = s
-        return s
+# Desde Render, Cinubo contesta 403 (Cloudflare frena las IPs de servidores;
+# medido el 02-11). Todo se le pide a una CAJA actualizada (2.9.91+), desde
+# casa: el trabajo "cbget" lleva la sesion y la caja no la guarda.
+_CB_VER_MIN = (2, 9, 91)
+
+
+def _cb_cajas():
+    """Cajas vivas que saben hablar con Cinubo; primero las que no reproducen."""
+    try:
+        d = _kbstatus_load()
+        vivas = [c for c in _live_boxes() if _ver_tupla((d.get(c) or {}).get("v")) >= _CB_VER_MIN]
+    except Exception:
+        return []
+    libres = set(_cajas_libres())
+    return [c for c in vivas if c in libres] + [c for c in vivas if c not in libres]
 
 
 def _cb_cupo():
@@ -13832,60 +13840,54 @@ def _cb_cupo():
         return True
 
 
-def _cb_get(path, json_=False, tope=12.0, referer=None):
-    """(texto, status) de una página de Cinubo con la sesión de Israel."""
-    s = _cb_sesion()
-    if s is None or not _cb_cupo():
+def _cb_pide(path="", q="", pg=1, espera=20.0):
+    """(texto, status) de Cinubo por una caja. (None, 0) si no se pudo."""
+    c = _cb_cookies()
+    if not c:
+        _CB["ult_err"] = "sin sesion"
         return None, 0
-    cab = {"Referer": referer or (_CB_BASE + "/")}
-    if json_:
-        cab["Accept"] = "application/json"
+    cajas = _cb_cajas()
+    if not cajas:
+        _CB["ult_err"] = "sin caja"
+        return None, 0
+    if not _cb_cupo():
+        _CB["ult_err"] = "cupo"
+        return None, 0
+    box = cajas[0]
+    sem = _lend_acquire(box)
+    if sem is None:
+        _CB["ult_err"] = "caja ocupada"
+        return None, 0
     t0 = _t.time()
-    txt, st = _get_con_tope(_CB_BASE + path, tope, headers=cab, scraper=s, todo=True)
-    _CB["ult_st"], _CB["ult_ms"] = st, int((_t.time() - t0) * 1000)
+    try:
+        j = "cb" + os.urandom(5).hex()
+        ev = {"c": "etjob", "job": j, "op": "cbget", "ck": c}
+        if q:
+            ev.update(q=q[:80], pg=int(pg))
+        else:
+            ev["path"] = path
+        _kb_enqueue(box, ev)
+        res = _catjob_wait(j, espera)
+    finally:
+        _lend_release(sem)
+    _CB["ult_ms"] = int((_t.time() - t0) * 1000)
+    try:
+        d = _json.loads((res or {}).get("html") or "")
+        st, txt = int(d.get("st") or 0), d.get("t") or ""
+    except Exception:
+        st, txt = 0, None
+    _CB["ult_st"] = st
     if st != 200:
         _CB["fallos"] += 1
-    return txt, st
-
-
-_CB_CSRF_RE = re.compile(r'<meta name="csrf-token" content="([A-Za-z0-9]{20,80})"')
-
-
-def _cb_csrf():
-    """El token CSRF de la sesión (se renueva cada hora o tras un 419)."""
-    if _CB["csrf"] and _t.time() - _CB["csrf_ts"] < 3600:
-        return _CB["csrf"]
-    txt, st = _cb_get("/", tope=10.0)
-    m = _CB_CSRF_RE.search(txt or "")
-    if m:
-        _CB["csrf"], _CB["csrf_ts"] = m.group(1), _t.time()
-        return _CB["csrf"]
-    return ""
-
-
-def _cb_post_json(path, cuerpo, tope=12.0):
-    s = _cb_sesion()
-    if s is None:
-        return None, 0
-    csrf = _cb_csrf()
-    if not csrf or not _cb_cupo():
-        return None, 0
-
-    def _ir():
-        r = s.post(_CB_BASE + path, json=cuerpo, timeout=(5.0, tope),
-                   headers={"Accept": "application/json", "X-CSRF-TOKEN": csrf,
-                            "X-Requested-With": "XMLHttpRequest",
-                            "Referer": _CB_BASE + "/"})
-        return r.status_code, r.text
-    t0 = _t.time()
-    st, txt = _bounded(_ir, tope + 3.0, (0, None)) or (0, None)
-    _CB["ult_st"], _CB["ult_ms"] = st, int((_t.time() - t0) * 1000)
-    if st == 419:                       # token caducado: a por otro la próxima
-        _CB["csrf"] = ""
-    if st != 200:
-        _CB["fallos"] += 1
+        _CB["ult_err"] = "http %s" % st if st else "la caja no contesto"
         return None, st
+    _CB["ult_err"] = ""
     return txt, st
+
+
+def _cb_get(path, json_=False, tope=20.0, referer=None):
+    """Compatibilidad: una pagina de Cinubo (por caja)."""
+    return _cb_pide(path=path, espera=tope)
 
 
 def _cb_logueado(html):
@@ -13939,6 +13941,149 @@ def _cb_embed(ref):
     return (m.group(1), "") if m else (None, "sin iframe")
 
 
+# -- Caché (los dos workers comparten /tmp): ficha por tmdb, enlaces, iframes --
+_CB_CACHE_FILE = "/tmp/mw_cbcache.json"
+_CB_TTL_FICHA = 7 * 86400        # tmdb -> /p/xxx: no cambia
+_CB_TTL_NOESTA = 12 * 3600       # "no lo tiene": se vuelve a mirar en 12 h
+_CB_TTL_ENLACES = 6 * 3600       # los enlaces de una ficha o capitulo
+_CB_TTL_EMBED = 12 * 3600        # el iframe de un enlace
+_CB_MAX = {"f": 4000, "e": 3000, "i": 3000}
+
+
+def _cb_cache_lee():
+    try:
+        with open(_CB_CACHE_FILE, encoding="utf-8") as f:
+            d = _json.load(f)
+        return {k: d.get(k) if isinstance(d.get(k), dict) else {} for k in ("f", "e", "i")}
+    except Exception:
+        return {"f": {}, "e": {}, "i": {}}
+
+
+def _cb_cache_get(tabla, clave, ttl):
+    e = _cb_cache_lee()[tabla].get(clave)
+    if isinstance(e, list) and len(e) == 2 and (_t.time() - float(e[1] or 0)) < ttl:
+        return e[0]
+    return None
+
+
+def _cb_cache_pon(tabla, clave, valor):
+    with _FileLock(_CB_CACHE_FILE):
+        d = _cb_cache_lee()
+        d[tabla][clave] = [valor, _t.time()]
+        if len(d[tabla]) > _CB_MAX[tabla]:
+            for k in sorted(d[tabla], key=lambda k: d[tabla][k][1])[:len(d[tabla]) - _CB_MAX[tabla]]:
+                d[tabla].pop(k, None)
+        try:
+            tmp = _CB_CACHE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _CB_CACHE_FILE)
+        except Exception:
+            pass
+
+
+_CB_LINK_POST = re.compile(r"^/[psa]/[a-z0-9]{4,12}$")
+
+
+def _cb_ficha(tmdb, kind, titulo):
+    """La ficha de Cinubo ('/p/xxx', '/s/xxx' o '/a/xxx') de un titulo, por su
+    tmdb_id (el mismo que usa MejorWolf: sin adivinar por el nombre). "" si
+    Cinubo no lo tiene; None si no se pudo mirar."""
+    clave = "%s:%s" % ("movie" if kind == "movie" else "tv", tmdb)
+    ya = _cb_cache_get("f", clave, _CB_TTL_FICHA)
+    if ya:
+        return ya
+    if ya == "" and _cb_cache_get("f", clave, _CB_TTL_NOESTA) == "":
+        return ""
+    tipos = ("movie",) if kind == "movie" else ("serie", "anime")
+    for pg in (1, 2):
+        txt, st = _cb_pide(q=titulo, pg=pg)
+        if txt is None:
+            return None
+        try:
+            d = _json.loads(txt)
+        except Exception:
+            return None
+        for p in d.get("posts") or []:
+            try:
+                if int(p.get("tmdb_id") or 0) == int(tmdb) and p.get("type") in tipos \
+                        and _CB_LINK_POST.match(str(p.get("link") or "")):
+                    _cb_cache_pon("f", clave, p["link"])
+                    return p["link"]
+            except (TypeError, ValueError):
+                continue
+        if not (d.get("pagination") or {}).get("has_more"):
+            break
+    _cb_cache_pon("f", clave, "")
+    return ""
+
+
+def _cb_enlaces(ruta):
+    """[{r, srv, q}] de una ficha o capitulo (cache 6 h). None si no se pudo."""
+    ya = _cb_cache_get("e", ruta, _CB_TTL_ENLACES)
+    if ya is not None:
+        return ya
+    txt, st = _cb_pide(path=ruta)
+    if txt is None:
+        return None
+    if not _cb_logueado(txt):
+        _CB["ult_err"] = "sesion caducada"
+        return None
+    en = [{"r": x["r"], "srv": x["srv"], "q": x["q"]} for x in _cb_enlaces_de(txt)]
+    _cb_cache_pon("e", ruta, en)
+    return en
+
+
+_CB_REF = re.compile(r"^[A-Za-z0-9=_%-]{20,600}$")
+
+
+@app.get("/cbenlaces")
+def cb_enlaces():
+    """Los servidores de Cinubo (castellano de España) de una peli o capitulo,
+    para que la persona elija uno en la web. ?id=<tmdb>&kind=movie|serie&t=
+    <titulo> [&s=<temporada>&e=<capitulo>]."""
+    try:
+        tmdb = int(request.args.get("id") or 0)
+    except ValueError:
+        tmdb = 0
+    kind = "movie" if request.args.get("kind") == "movie" else "serie"
+    titulo = str(request.args.get("t") or "").strip()[:80]
+    try:
+        tp, ep = int(request.args.get("s") or 0), int(request.args.get("e") or 0)
+    except ValueError:
+        tp, ep = 0, 0
+    if tmdb <= 0 or not titulo or (kind == "serie" and not (0 < tp < 200 and 0 < ep < 5000)):
+        return jsonify({"ok": False, "error": "faltan datos"}), 400
+    ficha = _cb_ficha(tmdb, kind, titulo)
+    if ficha is None:
+        return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
+    if not ficha:
+        return jsonify({"ok": True, "items": []})
+    ruta = ficha if kind == "movie" else "%s/%dx%d" % (ficha, tp, ep)
+    en = _cb_enlaces(ruta)
+    if en is None:
+        return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
+    return jsonify({"ok": True, "items": en})
+
+
+@app.get("/cbembed")
+def cb_embed_ruta():
+    """El servidor de video de UN enlace (lo que pide la persona al elegirlo).
+    Una peticion a Cinubo por reproduccion: su limite salta con rafagas."""
+    ref = str(request.args.get("r") or "")
+    if not _CB_REF.match(ref):
+        return jsonify({"ok": False, "error": "referencia"}), 400
+    ya = _cb_cache_get("i", ref, _CB_TTL_EMBED)
+    if ya:
+        return jsonify({"ok": True, "u": ya})
+    e, err = _cb_embed(ref)
+    if not e:
+        return jsonify({"ok": False, "error": "captcha" if err == "captcha" else "no_disponible",
+                        "motivo": err})
+    _cb_cache_pon("i", ref, e)
+    return jsonify({"ok": True, "u": e})
+
+
 @app.post("/cb/sesion")
 def cb_sesion_alta():
     """El dueño da aquí sus cookies de Cinubo (solo con la llave de /uso)."""
@@ -13948,7 +14093,7 @@ def cb_sesion_alta():
     if not any(k.startswith("remember_web_") or k == "seriesly_session" for k in c):
         return jsonify({"ok": False, "error": "faltan cookies"}), 400
     with _CB_LOCK:
-        _CB.update(c=c, sess=None, csrf="")
+        _CB.update(c=c)
     _cb_guarda_tmp(c)
     sub = _bounded(lambda: _cb_nube_sube(c), 20.0, False)
     return jsonify({"ok": True, "n": len(c), "nube": bool(sub)})
@@ -14749,6 +14894,16 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .ep .eye{flex:none;width:44px;height:44px;border-radius:11px;border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--sub);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}
 .ep .eye svg{display:block}
 .ep .eye:active{transform:scale(.86)}
+.ep .cbep{flex:none;width:44px;height:44px;border-radius:11px;border:1px solid var(--stroke);background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;margin-right:6px}
+.ep .cbep:active{transform:scale(.86)}
+.cbbox{margin:12px 0 4px}
+.cbt{font-size:13px;font-weight:700;color:var(--sub);margin:0 0 8px}
+.cbt span{font-weight:500;opacity:.8}
+.cbr{display:flex;flex-wrap:wrap;gap:8px}
+.cbb{min-height:44px;padding:0 14px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:inherit;font:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.cbb i{font-style:normal;font-weight:500;opacity:.75}
+.cbb:active{transform:scale(.96)}
+.cbmsg{font-size:13px;color:var(--sub);line-height:1.5}
 .ep.seen{opacity:.62}
 .ep.seen::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green)}
 .ep.seen .epl{text-decoration:line-through;text-decoration-color:rgba(48,209,88,.55)}
@@ -15144,6 +15299,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  </div>
 </div>
 <input type="file" id="wfz-f" style="display:none" onchange="wfSubeZip(this)">
+<div class="sheet mwd" id="cbdlg" onclick="if(event.target===this)mwBack('cbdlg')">
+ <div class="box">
+  <div class="mwd-t" id="cbd-t"></div>
+  <div class="cbbox" id="cbd-l"></div>
+  <div class="mwd-b"><button class="mwd-x" onclick="mwBack('cbdlg')">Cerrar</button></div>
+ </div>
+</div>
 <div class="sheet" id="lsheet" onclick="if(event.target===this)closeLS()">
  <div class="box">
   <div class="ls-head"><div class="ls-t" id="ls-t">Guardar en…</div>
@@ -15170,6 +15332,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <div id="sh-ovwrap"></div>
    <div class="rar" id="sh-rar"></div>
    <button class="btn play" onclick="play()">▶ Reproducir en la tele</button>
+   <div class="cbbox" id="sh-cb"></div>
    <div class="btnrow">
     <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Guardar en una lista</button>
     <button class="btn trailer" id="sh-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button>
@@ -16896,7 +17059,8 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  // enrichItem rellena los favoritos GUARDADOS sin enriquecer (1 vez, se persiste).
  shEnrich(x);
  if(!(x.overview&&x.genres&&x.genres.length)){$('sh-ovwrap').innerHTML='<div class="sh-ovload"><span class="spin"></span> Cargando detalles…</div>';}
- enrichItem(x,function(){if(sel===x)shEnrich(x);});
+ $('sh-cb').innerHTML='';cbCarga({x:x,el:'sh-cb',t:x.title});
+ enrichItem(x,function(){if(sel===x){shEnrich(x);cbCarga({x:x,el:'sh-cb',t:x.title})}});
  // SEMILLAS: SIEMPRE se muestran -> "comprobando" y luego numero / "sin semillas"
  // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
  $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;mwOpen('sheet',_bx,_closeSheet);
@@ -17022,7 +17186,7 @@ function play(){if(!sel)return;
 // lo que de verdad sabe (el reparto de lo compartido espera a que Kodi lo confirme).
 function sendPlay(ref,cdF,alOk){var cd=(cdF||code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return false}
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
- if((ref.a||'dt')==='pl'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
+ if(ref.a==='pl'||ref.a==='st'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
  toast('Enviando a la tele...');
  var hsnap=null;try{hsnap=histSnap(ref)}catch(e){}   // ver histSnap: `sel` cambia
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
@@ -17549,6 +17713,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq" data-q="'+esc(e.quality)+'">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
+     ((x.tmdb_id&&e.season&&e.episode)?'<div class="cbep" onclick="event.stopPropagation();cbEp(\''+id+'\')" title="Streaming sin anuncios" aria-label="Streaming sin anuncios">📺</div>':'')+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
  });$('ov-body').innerHTML=h;_seguirPinta();lazyEps();
  // Tráiler de la serie: si ya lo tenemos (de enrichItem) lo mostramos; si no,
@@ -17615,6 +17780,39 @@ function playEp(id){var e=EPS[id];if(!e)return;
    }).catch(function(){toast('No se pudo obtener el enlace de ese capítulo')});
   return}
  var ttl=(SHOW+' '+e.label).trim();seedGate(e.content_id,e.tabla||'series',function(){if(sendPlay({a:'dt',c:e.content_id,tb:e.tabla,t:ttl,q:e.quality}))closeOv()})}
+// ---- Cinubo: streaming sin anuncios, en castellano (dtbl86) ----------------
+// Para cuando el torrent no está o pide casilla: la persona ve los servidores
+// y la calidad, elige uno y va a la tele. Sin semillas (no es torrent). Solo se
+// le pide a Cinubo el enlace del servidor ELEGIDO (su límite salta con ráfagas).
+var CBSEL=null;
+function cbNom(s){s=String(s||'');return s.charAt(0)+s.slice(1).toLowerCase()}
+function cbQ(q){var m=/(\d{3,4})p/i.exec(q||'');return m?m[1]+'p':String(q||'')}
+function cbCarga(o){var x=o.x,el=$(o.el);if(!el||!x||!x.tmdb_id)return;
+ var k=(x.kind==='serie'?'serie':'movie')+':'+x.tmdb_id+':'+(o.s||0)+'x'+(o.e||0);
+ if(CBSEL&&CBSEL.k===k&&CBSEL.el===o.el)return CBSEL.items?cbPinta(o.el):null;   // ya está o va en camino
+ var yo={k:k,el:o.el,t:o.t,items:null};CBSEL=yo;
+ if(o.dlg)el.innerHTML='<div class="cbmsg"><span class="spin"></span> Buscando servidores…</div>';
+ var qs='/cbenlaces?id='+encodeURIComponent(x.tmdb_id)+'&kind='+(x.kind==='serie'?'serie':'movie')+
+  '&t='+encodeURIComponent(_tituloBase(x.title||''))+(o.s?('&s='+o.s+'&e='+o.e):'');
+ fetch(qs).then(function(r){return r.json()}).then(function(d){if(CBSEL!==yo)return;
+   yo.items=(d&&d.ok&&d.items)||[];yo.err=(d&&!d.ok)?(d.motivo||d.error||'no'):'';cbPinta(o.el)})
+  .catch(function(){if(CBSEL!==yo)return;yo.items=[];yo.err='red';cbPinta(o.el)})}
+function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
+ if(!c.items.length){el.innerHTML=(elId==='cbd-l')?('<div class="cbmsg">'+(c.err?'Cinubo no contesta ahora mismo. Prueba en un rato.':'Cinubo no tiene este capítulo en castellano.')+'</div>'):'';return}
+ el.innerHTML='<div class="cbt">📺 Streaming sin anuncios <span>· castellano · sin semillas</span></div><div class="cbr">'+
+  c.items.map(function(it,i){return '<button class="cbb" onclick="cbPlay('+i+')">▶ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+'</i></button>'}).join('')+'</div>'}
+function cbEp(id){var e=EPS[id],x=OVDATA&&OVDATA.x;if(!e||!x)return;
+ var t=(SHOW+' '+e.label).trim();$('cbd-t').textContent=t;
+ $('cbdlg').classList.add('on');mwOpen('cbdlg',$('cbdlg').querySelector('.box'),function(){$('cbdlg').classList.remove('on')});
+ cbCarga({x:x,el:'cbd-l',t:t,s:e.season,e:e.episode,dlg:1})}
+function cbPlay(i){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
+ var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
+ toast('Abriendo '+cbNom(it.srv)+'…');
+ fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
+    setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)})},dl?220:0);return}
+   toast(d&&d.error==='captcha'?'Cinubo pide una verificación ahora mismo: prueba en unos minutos':'Ese servidor no contesta: prueba con otro',6000)})
+  .catch(function(){toast('No se pudo conectar: prueba otra vez')})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}
