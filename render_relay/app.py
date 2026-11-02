@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl115"
+BUILD = "dtbl116"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4271,6 +4271,8 @@ def kb_send():
     _kb_enqueue(code, ev)
     _kb_phone_seen(code)
     tele_on = _tele_conectada(code)
+    _k = "query" if query else str(ev.get("c") or "?")
+    _USO_ORDENES[_k] = _USO_ORDENES.get(_k, 0) + 1
     if query or ev.get("c") in ("open", "ok"):
         _uso_toque_movil(code)
     if ev.get("c") == "play_ref":
@@ -13291,7 +13293,7 @@ _USO_DIC = {"km": ("n", 5000), "rm": ("n", 5000), "rf": ("n", 20), "rq": ("n", 2
             "ta": ("p", 20), "tb": ("b", 20), "pm": ("n", 4), "rs": ("n", 8),
             "bf": ("p", 20), "dv": ("s", 5000), "pa": ("s", 5000), "dvn": ("n", 40),
             "kvn": ("n", 40), "pan": ("n", 80), "vt": ("l", 400), "vtn": ("n", 400),
-            "bq": ("p", 400), "lim": ("n", 60), "vm": ("n", 400)}
+            "bq": ("p", 400), "lim": ("n", 60), "vm": ("n", 400), "ki": ("s", 5000)}
 _USO_BQ_DIAS = 35               # las búsquedas se guardan 5 semanas
 _USO_TT = (15, 30, 60, 120)     # cortes de "segundos hasta arrancar"
 _USO_DIA_ARRANQUE = "2026-11-02"   # el detalle (casas, fuentes, servicio...) se midió desde la tarde
@@ -13450,6 +13452,7 @@ def _uso_compacta(d, hoy):
             if isinstance(e.get("vt"), dict):
                 e["vtn"] = {t: len(hs) for t, hs in e["vt"].items()}
                 e.pop("vt", None)
+            e.pop("ki", None)
         try:
             if (base - _dtm.date.fromisoformat(dia)).days > _USO_BQ_DIAS:
                 e.pop("bq", None)
@@ -13481,6 +13484,7 @@ def _uso_res(dg):
     return "" if h <= 0 else "2160" if h >= 1600 else "1080" if h >= 1000 else "720" if h >= 700 else "sd"
 
 
+_USO_ORDENES = {"desde": 0}     # (dtbl116) órdenes de la web recibidas por este worker
 _USO_MOVIL_S = 180              # un vídeo que empieza hasta 3 min después de tocar el mando del móvil
 
 
@@ -13525,6 +13529,8 @@ def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy, np=None):
             e.setdefault("dv", {})[h] = ("%s|%s" % (dev.get("pl", ""), dev.get("kv", "")))[:24]
         if ent.get("pais"):
             e.setdefault("pa", {})[h] = ent["pais"]
+        if ent.get("ih"):         # (dtbl116) para la auditoría: Kodi -> conexión (huellas)
+            e.setdefault("ki", {})[h] = str(ent["ih"])[:12]
         if dia_n:
             ds = d["act"].get(h) or []
             if not ds:          # los de antes: su primer y último día ya sabidos
@@ -14156,6 +14162,48 @@ def _uso_ahora(now=None):
     return {"viendo": sum(1 for x in np if not x.get("paused")),
             "en_pausa": sum(1 for x in np if x.get("paused")),
             "kodis": len(vivas), "webs": moviles, "versiones": vers, "lista": lista}
+
+
+@app.get("/uso/auditoria")
+def uso_auditoria():
+    """(dtbl116) Los datos en bruto detrás de cada número, para comprobarlos.
+    Solo el dueño, y solo huellas cortas: ni códigos ni IP."""
+    if not _uso_es_admin(request):
+        return jsonify({"ok": False, "error": "privado"}), 401
+    now = _t.time()
+    if not _USO_ORDENES.get("desde"):
+        _USO_ORDENES["desde"] = now
+    st = _kbstatus_load() or {}
+    npd = _kbnow_load() or {}
+    vivos = []
+    for c, e in st.items():
+        edad = now - float(e.get("ts", 0) or 0)
+        if edad > 600:
+            continue
+        dg = e.get("diag") or {}
+        x = npd.get(c) or {}
+        vivos.append({"k": _uso_huella(c)[:5], "ip": str(e.get("ih") or "")[:5], "v": e.get("v"),
+                      "edad": int(edad), "dev": e.get("dev"), "bids": len(e.get("bids") or {}),
+                      "res": dg.get("res"), "cach": dg.get("cach"),
+                      "np": bool(x.get("np")) and (now - float(x.get("ts", 0) or 0)) < _KB_NOW_TTL})
+    vivos.sort(key=lambda z: (z["ip"], z["k"]))
+    d = _uso_lee()
+    hoy = _uso_es(now)[0]
+    eh = d["dias"].get(hoy) or {}
+    km, ki, cj = eh.get("km") or {}, eh.get("ki") or {}, d["cj"]
+    por_ip = {}
+    for h, ip in ki.items():
+        por_ip.setdefault(ip[:5], []).append(h)
+    kodis_hoy = []
+    for h in sorted(set(eh.get("c") or [])):
+        kodis_hoy.append({"k": h[:5], "min_encendido": km.get(h), "ip": (ki.get(h) or "")[:5],
+                          "primer_dia": (cj.get(h) or ["?"])[0], "vio_algo": h in set(eh.get("r") or [])})
+    return jsonify({"ok": True, "pid": os.getpid(), "hoy": hoy,
+                    "vivos": vivos, "n_vivos": len(vivos),
+                    "kodis_hoy": kodis_hoy,
+                    "conexiones_con_varios_kodis_hoy": {ip: len(hs) for ip, hs in por_ip.items() if len(hs) > 1},
+                    "ordenes_web_este_worker": _USO_ORDENES,
+                    "uptime_s": int(now - _USO_T0)})
 
 
 @app.post("/uso/limpia")
