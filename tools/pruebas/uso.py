@@ -118,7 +118,8 @@ try:
     respuesta = cli.get("/uso/datos?k=" + llave).get_data(as_text=True)
     comprueba("ni en el fichero", not any(c in crudo for c in CODIGOS), crudo[:200])
     comprueba("ni en la respuesta", not any(c in respuesta for c in CODIGOS))
-    comprueba("ni qué ve nadie", "secreta" not in crudo and "secreta" not in respuesta)
+    comprueba("lo que se ve se suma por título, nunca junto al código (dtbl112)",
+              not any(c in crudo for c in CODIGOS) and not any(c in respuesta for c in CODIGOS))
 
     print("\n=== 5) La copia cifrada ===")
     kc, km = os.urandom(32), os.urandom(32)
@@ -245,9 +246,15 @@ try:
     comprueba("minutos cargando de Cinubo: 1 de 1", sv["cb"]["min_cargando"] == 1 and sv["cb"]["min_viendo"] == 1, sv["cb"])
     comprueba("aparato, versión de Kodi y país", d["aparatos"] == {"android": 1} and d["kodi"] == {"21.1": 1}
               and d["paises"] == {"ES": 1}, (d["aparatos"], d["kodi"], d["paises"]))
-    vis = dict((t, k) for t, k in d["semana"]["vistos"])
-    comprueba("lo más puesto: 'The Bear' junta sus capítulos (2 teles); Perdida sin el año",
-              vis.get("The Bear") == 2 and vis.get("Perdida") == 1, d["semana"]["vistos"])
+    vis = {t: (k, h) for t, k, h in d["semana"]["vistos"]}
+    comprueba("lo más visto sale de lo que SE REPRODUCE: 'The Bear' (1 tele, con sus minutos)",
+              vis.get("The Bear", (0, 0))[0] == 1, d["semana"]["vistos"])
+    comprueba("...y lo mandado que nunca se vio (Perdida) no está", "Perdida" not in vis, vis)
+    comprueba("...y también lo puesto con el mando (Peli secreta, de la muestra del principio)",
+              "Peli secreta" in vis, vis)
+    a = cli.get("/uso/datos?k=" + llave).get_json()["ahora"]
+    comprueba("ahora mismo: qué se está viendo, sin código", [x["t"] for x in a["lista"]] == ["The Bear"]
+              and not any(c in json.dumps(a) for c in CODIGOS), a.get("lista"))
     for q, n in (("Pérdida", 3), ("  perdida ", 3), ("Gone  Girl!", 0), ("xx", 0)):
         cli.post("/uso/busca", json={"q": q, "n": n}, headers={"X-Forwarded-For": "5.5.5.5, 10.0.0.1"})
     cli.post("/uso/busca", json={"q": "perdida", "n": 2}, headers={"X-Forwarded-For": "6.6.6.6"})

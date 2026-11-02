@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl111"
+BUILD = "dtbl112"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13289,7 +13289,7 @@ _USO_DIC = {"km": ("n", 5000), "rm": ("n", 5000), "rf": ("n", 20), "rq": ("n", 2
             "ta": ("p", 20), "tb": ("b", 20), "pm": ("n", 4), "rs": ("n", 8),
             "bf": ("p", 20), "dv": ("s", 5000), "pa": ("s", 5000), "dvn": ("n", 40),
             "kvn": ("n", 40), "pan": ("n", 80), "vt": ("l", 400), "vtn": ("n", 400),
-            "bq": ("p", 400), "lim": ("n", 60)}
+            "bq": ("p", 400), "lim": ("n", 60), "vm": ("n", 400)}
 _USO_BQ_DIAS = 35               # las búsquedas se guardan 5 semanas
 _USO_TT = (15, 30, 60, 120)     # cortes de "segundos hasta arrancar"
 _USO_DIA_ARRANQUE = "2026-11-02"   # el detalle (casas, fuentes, servicio...) se midió desde la tarde
@@ -13518,6 +13518,15 @@ def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy, np=None):
             if dia_n not in ds:
                 ds.append(dia_n)
             d["act"][h] = sorted(set(ds))[-60:]
+    # (dtbl112) lo que de verdad se ve en cada tele: teles distintas por título
+    # y minutos. Antes solo contaba lo mandado desde la web.
+    for c in rep:
+        t = _uso_titulo(((np or {}).get(c) or {}).get("title"))
+        if t and t.lower() != "reproduciendo":
+            vt = e.setdefault("vt", {})
+            if t in vt or len(vt) < 400:
+                vt[t] = sorted(set(vt.get(t) or []) | {_uso_huella(c)[:6]})
+                _uso_suma(e, "vm", t)
     for c in rep:
         dg = (st.get(c) or {}).get("diag") or {}
         r = _uso_res(dg)
@@ -13983,9 +13992,28 @@ def _uso_calidad(q):
 _USO_CAP_RE = re.compile(r"(?i)\s*[-·:(]*\s*(\b\d{1,2}x\d{1,3}\b.*|\bS\d{1,2}\s*E\d{1,3}\b.*|\btemporada\s*\d+.*|\(\d{4}\)\s*)$")
 
 
+_USO_ETIQ_RE = re.compile(
+    r"(?i)\b(2160p|1080p|720p|480p|4k|uhd|hdr10?\+?|hdr|dv|bluray|blu-ray|bdrip|brrip|web-?dl|webrip|"
+    r"hdtv|dvdrip|remux|x26[45]|h\.?26[45]|hevc|avc|aac|ac3|dts(-hd)?|atmos|ddp?5\.1|5\.1|10bit|"
+    r"castellano|spanish|esp|dual|multi|subs?|vose|proper|repack|microhd|fullbluray)\b.*$")
+
+
 def _uso_titulo(t):
-    """El título sin el capítulo: 'The Bear 5x02' -> 'The Bear'."""
+    """El título sin el capítulo ni las etiquetas: 'The Bear · 5x02' -> 'The
+    Bear'; 'Resident.Evil.2002.1080p.BluRay.mkv' -> 'Resident Evil'."""
     t = re.sub(r"\s+", " ", str(t or "")).strip()
+    t = re.sub(r"(?i)\.(mkv|mp4|avi|m4v|mov|ts)$", "", t)
+    fichero = " " not in t and bool(re.search(r"[._]", t))
+    if fichero:                                       # nombre de fichero
+        t = re.sub(r"[._]+", " ", t)
+    t = re.sub(r"\[[^\]]*\]", " ", t)
+    t = _USO_ETIQ_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    # el año: entre paréntesis siempre; suelto solo en nombres de fichero
+    # ("Blade Runner 2049" o "1917" son títulos)
+    t = re.sub(r"\s*[(\[]\s*(19|20)\d\d\s*[)\]]\s*$", "", t) or t
+    if fichero:
+        t = re.sub(r"\s+(19|20)\d\d$", "", t) or t
     t = _USO_CAP_RE.sub("", t).strip(" -·:")
     t = re.sub(r"[\x00-\x1f<>]", "", t)
     return t[:60]
@@ -14018,13 +14046,6 @@ def _uso_envio(fuente, q, code="", titulo="", tipo="", espera=True):
                 _uso_suma(e, "cb", cambio.get("f") or "otra")
             if tipo in ("movie", "tv"):
                 _uso_suma(e, "rk", tipo)
-            t = _uso_titulo(titulo)
-            if t and code:
-                vt = e.setdefault("vt", {})
-                if t in vt or len(vt) < 400:
-                    hs = set(vt.get(t) or [])
-                    hs.add(_uso_huella(code)[:6])
-                    vt[t] = sorted(hs)
             _uso_guarda(d)
         _USO_NUBE["cambios"] += 1
     except Exception:
@@ -14101,9 +14122,14 @@ def _uso_ahora(now=None):
         vers[e.get("v") or "?"] = vers.get(e.get("v") or "?", 0) + 1
     moviles = sum(1 for ts in (_kb_seen_load() or {}).values()
                   if (now - float(ts or 0)) < _KB_SEEN_TTL)
+    lista = sorted(({"t": _uso_titulo(x.get("title")) or "Sin título",
+                     "cap": (re.search(r"\b(\d{1,2}x\d{1,3})\b", str(x.get("title") or "")) or [None, ""])[1],
+                     "min": int(x.get("elapsed") or 0) // 60, "de": int(x.get("total") or 0) // 60,
+                     "pausa": bool(x.get("paused"))} for x in np),
+                   key=lambda z: (z["pausa"], z["t"].lower()))
     return {"viendo": sum(1 for x in np if not x.get("paused")),
             "en_pausa": sum(1 for x in np if x.get("paused")),
-            "kodis": len(vivas), "webs": moviles, "versiones": vers}
+            "kodis": len(vivas), "webs": moviles, "versiones": vers, "lista": lista}
 
 
 @app.post("/uso/limpia")
@@ -14186,7 +14212,7 @@ def uso_busca():
 def _uso_semana(d, base, n=7):
     """Lo sumado de los últimos n días: búsquedas y lo más puesto."""
     import datetime as _dtm
-    bq, vt = {}, {}
+    bq, vt, vm = {}, {}, {}
     for i in range(n):
         e = d["dias"].get((base - _dtm.timedelta(days=i)).isoformat()) or {}
         for q, (a, b) in (e.get("bq") or {}).items():
@@ -14197,13 +14223,16 @@ def _uso_semana(d, base, n=7):
             vt[t] = vt.get(t, 0) + len(hs)
         for t, k in (e.get("vtn") or {}).items():
             vt[t] = vt.get(t, 0) + k
+        for t, k in (e.get("vm") or {}).items():
+            vm[t] = vm.get(t, 0) + k
     top = sorted(bq.items(), key=lambda kv: (-kv[1][0], kv[0]))[:25]
     sin = sorted(((q, x) for q, x in bq.items() if x[1] > 0),
                  key=lambda kv: (-kv[1][1], kv[0]))[:25]
     return {"buscadas": [[q, x[0], x[1]] for q, x in top],
             "sin_nada": [[q, x[1]] for q, x in sin],
             "total_busquedas": sum(x[0] for x in bq.values()),
-            "vistos": [[t, k] for t, k in sorted(vt.items(), key=lambda kv: (-kv[1], kv[0]))[:20]]}
+            "vistos": [[t, k, round(vm.get(t, 0) / 60.0, 1)]
+                       for t, k in sorted(vt.items(), key=lambda kv: (-kv[1], -vm.get(kv[0], 0), kv[0]))[:20]]}
 
 
 def _uso_crece(d, base):
@@ -14439,6 +14468,9 @@ function lista(xs,vacio,cols){if(!xs||!xs.length)return '<p class="nota">'+vacio
   var h=function(r,i){return '<tr><td>'+(i+1)+'. '+esc(r[0])+'</td>'+cols.map(function(c){return '<td>'+n(r[c])+'</td>'}).join("")+'</tr>'};
   var top=xs.slice(0,10).map(h).join(""),resto=xs.slice(10).map(function(r,i){return h(r,i+10)}).join("");
   return '<table><tbody>'+top+'</tbody></table>'+(resto?'<details><summary>Ver '+(xs.length-10)+' más</summary><table><tbody>'+resto+'</tbody></table></details>':'');}
+function viendoHTML(a){var l=a.lista||[];if(!l.length)return '';
+  return '<p class="nota" style="margin:14px 0 6px">Lo que se está viendo ahora <small>(sin decir en qué casa)</small></p><table class="tsv"><tbody>'+
+   l.map(function(x){return '<tr><td>'+esc(x.t)+(x.cap?' <small class="tag">'+esc(x.cap)+'</small>':'')+(x.pausa?' <small class="tag">pausa</small>':'')+'</td><td>'+(x.de?n(x.min)+' de '+n(x.de)+' min':n(x.min)+' min')+'</td></tr>'}).join("")+'</tbody></table>';}
 function servicioHTML(d){
   var sv=d.servicio||{},ks=Object.keys(sv);
   if(!ks.length)return '<section class="card"><h2>Calidad del servicio, hoy</h2><p class="nota">Aún no hay envíos medidos hoy.</p></section>';
@@ -14459,7 +14491,7 @@ function buscaHTML(d){var s=d.semana||{};
   return '<section class="card"><h2>Lo que busca la gente, 7 días</h2><p class="linea" style="margin:0 0 10px"><b>'+n(s.total_busquedas)+'</b> búsquedas</p>'+
    '<p class="nota" style="margin:0 0 6px">Lo más buscado</p>'+lista(s.buscadas,"Aún no hay búsquedas medidas.",[1])+
    '<p class="nota" style="margin:16px 0 6px">Buscado sin encontrar nada <small>(lo que falta)</small></p>'+lista(s.sin_nada,"Todas las búsquedas han encontrado algo.",[1])+'</section>'+
-   '<section class="card"><h2>Lo más puesto, 7 días</h2><p class="nota" style="margin:0 0 6px">Teles distintas que lo han puesto desde la web (una serie junta todos sus capítulos)</p>'+lista(s.vistos,"Aún no hay nada medido.",[1])+'</section>';
+   '<section class="card"><h2>Lo más visto, 7 días</h2><p class="nota" style="margin:0 0 6px">Lo que de verdad se ha reproducido en las teles, se pusiera como se pusiera: teles distintas y horas (una serie junta todos sus capítulos)</p>'+lista(s.vistos,"Aún no hay nada medido.",[1,2])+'<p class="nota" style="margin:8px 0 0">Columnas: teles · horas.</p></section>';
 }
 function creceHTML(d,dias){var c=d.crece||{};
   var nv=dias.filter(function(x){return x.nuevos!=null}).map(function(x){return [fecha(x.dia,true),x.nuevos]});
@@ -14517,7 +14549,7 @@ function pinta(d){
   $c.innerHTML=
    '<section class="card"><h2>Ahora mismo</h2><div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+(a.en_pausa?" · "+n(a.en_pausa)+" en pausa":"")+'</span></div>'+
    '<div class="fila"><div><b>'+n(a.kodis)+'</b><small>Kodis encendidos</small></div><div><b>'+n(a.webs)+'</b><small>con la web abierta</small></div><div><b>'+n(hoyE.pico)+'</b><small>pico de hoy'+(hoyE.pico_h?" ("+esc(hoyE.pico_h)+")":"")+'</small></div></div>'+
-   '<p class="linea">'+verTxt+'</p>'+(verLista?'<details><summary>Versiones de los Kodis encendidos</summary><table><thead><tr><th>Versión</th><th>Kodis</th></tr></thead><tbody>'+verLista+'</tbody></table></details>':'')+'</section>'+
+   viendoHTML(a)+'<p class="linea">'+verTxt+'</p>'+(verLista?'<details><summary>Versiones de los Kodis encendidos</summary><table><thead><tr><th>Versión</th><th>Kodis</th></tr></thead><tbody>'+verLista+'</tbody></table></details>':'')+'</section>'+
    '<section class="card"><h2>Hoy</h2>'+(d.dia_parcial?'<p class="aviso">Hoy es el día en que empezó a medirse el detalle: casas, ratos, fuentes, calidad del servicio y web o tele cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+'<div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles con algo puesto</small></div><div><b>'+n(hoyE.kodis)+'</b><small>Kodis encendidos en algún momento</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas de tele</small></div></div>'+
    hoyLineas+
    '<p class="nota" style="margin:14px 0 4px">Teles a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH)+usoHTML(d,hoyE)+'</section>'+servicioHTML(d)+
@@ -14534,7 +14566,7 @@ function pinta(d){
      ["Un rato","Encendido menos de 15 minutos en el día: probarlo, encenderlo sin ver nada…"],
      ["Fiel","Un Kodi que se ha encendido al menos 4 de los últimos 7 días."],
      ["Código compartido","Varias teles con el mismo código porque se copió la instalación de Kodi. Cuentan como un solo Kodi y comparten mando: lo que se manda a ese código puede salir en cualquiera de ellas."],
-     ["Lo más puesto","Cuántas teles distintas lo han puesto desde la web. Nunca se guarda cuál."]])+'</section>'+
+     ["Lo más visto","Lo que se ha reproducido de verdad en las teles: cuántas distintas y cuántas horas. Nunca se guarda cuál."]])+'</section>'+
    '<p class="nota">Las búsquedas y lo más puesto se suman entre todos: nunca se guarda qué tele ni qué casa. Sin códigos, y las conexiones se guardan cifradas (nunca la IP). Datos desde el '+esc(fecha(d.desde))+'.</p>';
   engancha("dh",fmtH,hr);engancha("dd",fmtD,tv);
 }
