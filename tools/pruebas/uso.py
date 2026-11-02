@@ -161,6 +161,47 @@ try:
     comprueba("verano: UTC+2", A._uso_es(ver) == ("2026-07-16", 0, "00:30"), A._uso_es(ver))
     comprueba("invierno: UTC+1 y cambio de día", A._uso_es(inv) == ("2027-01-01", 0, "00:30"), A._uso_es(inv))
 
+    print("\n=== 6b) Más detalle (dtbl104): casas, ratos, fuentes y calidades ===")
+    for i, c in enumerate(CODIGOS):
+        ip = "81.0.0.1" if i < 3 else "90.0.0.9"         # 3 Kodis en una casa, 1 en otra
+        cli.post("/kb/status", json={"code": c, "v": "2.9.92"},
+                 headers={"X-Forwarded-For": "1.2.3.4, " + ip})
+    st = A._kbstatus_load()
+    comprueba("el latido guarda la conexión cifrada, nunca la IP",
+              st["111111"].get("ih") and "81.0.0.1" not in json.dumps(st), st["111111"])
+    comprueba("la IP que cuenta es la del proxy (la última), no la que pone el cliente",
+              st["111111"]["ih"] == A._uso_huella("ip:81.0.0.1"))
+    A._uso_muestra(A._t.time(), forzar=True)
+    d = cli.get("/uso/datos?k=" + llave).get_json()
+    hoy = d["dias"][-1]
+    comprueba("casas: 2 (cuatro Kodis desde dos conexiones)", hoy["casas"] == 2 and d["ip_medidas"], hoy)
+    comprueba("ninguna IP en el fichero", "81.0.0.1" not in open(A._USO_FILE, encoding="utf-8").read())
+    comprueba("minutos de cada Kodi: se miden (y 1-3 min = 'solo un rato')",
+              hoy["km_n"] == 4 and hoy["cortos"] == 4, hoy)
+    comprueba("la mediana de lo que ve una tele, en minutos", d["med_min_tele"] >= 1, d["med_min_tele"])
+    for body in ({"a": "st", "u": "https://vidara.to/e/x", "q": "1080p"},
+                 {"a": "pl", "u": "magnet:?xt=urn:btih:abc", "f": "wf", "q": "2160p 4K"},
+                 {"a": "pl", "u": "magnet:?xt=urn:btih:abd"}):
+        cli.post("/kb/send", json=dict(body, code="111111", cmd="play_ref", t="Peli secreta"))
+    hoy = cli.get("/uso/datos?k=" + llave).get_json()["dias"][-1]
+    comprueba("fuentes de lo enviado: Cinubo 1, WolfMax 1, otra 1",
+              hoy["fuentes"] == {"cb": 1, "wf": 1, "otra": 1}, hoy["fuentes"])
+    comprueba("calidades: 1080 1, 4K 1, sin indicar 1",
+              hoy["calidad"] == {"1080": 1, "4k": 1, "nd": 1}, hoy["calidad"])
+    comprueba("y ningún título", "secreta" not in open(A._USO_FILE, encoding="utf-8").read())
+    g = A._uso_valida(A._uso_lee())
+    viejo = dict(g["dias"][d["hoy"]])
+    g["dias"]["2026-10-03"] = viejo
+    A._uso_compacta(g, d["hoy"])
+    gv = g["dias"]["2026-10-03"]
+    comprueba("un día viejo: sin huellas ni minutos por Kodi, con sus cuentas",
+              "km" not in gv and "ip" not in gv and gv["nip"] == 2 and gv["nk15"] == 4
+              and gv["rf"] == {"cb": 1, "wf": 1, "otra": 1}, gv)
+    f2 = A._uso_funde(A._uso_lee(), {"dias": {d["hoy"]: {"km": {"a" * 12: 99}, "rf": {"dt": 2}}}})
+    comprueba("fundir: minutos y fuentes, el mayor de cada uno",
+              f2["dias"][d["hoy"]]["km"]["a" * 12] == 99 and f2["dias"][d["hoy"]]["rf"].get("dt") == 2
+              and f2["dias"][d["hoy"]]["rf"].get("cb") == 1, f2["dias"][d["hoy"]].get("rf"))
+
     print("\n=== 7) La página ===")
     r = cli.get("/uso")
     html = r.get_data(as_text=True)

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl103"
+BUILD = "dtbl104"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4267,6 +4267,11 @@ def kb_send():
     # perderse o ejecutarse duplicada (la misma race que describe _FileLock).
     _kb_enqueue(code, ev)
     _kb_phone_seen(code)
+    if ev.get("c") == "play_ref":
+        a = ev.get("a")
+        f = str(body.get("f") or "").lower()[:4]
+        _uso_envio("dt" if (a == "dt" or via == "magnet") else "cb" if a == "st" else f,
+                   body.get("q"))
     # `tele`: si esa tele tiene latido. La orden se encola igual (la caja la
     # recoge al conectarse, hasta _KB_TTL), pero la web ya no dice "En la tele"
     # con la tele apagada y deja el mando en "Preparando..." para siempre.
@@ -4507,6 +4512,13 @@ def kb_status_push():
     d = _kbstatus_load()
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _KB_STATUS_TTL}
     entry = {"v": str(body.get("v", ""))[:16], "ts": now}
+    try:     # (dtbl104) la conexión de casa, cifrada: para contar casas, no Kodis
+        ip = (request.headers.get("X-Forwarded-For", "")
+              or request.remote_addr or "").split(",")[-1].strip()
+        if ip:
+            entry["ih"] = _uso_huella("ip:" + ip)
+    except Exception:
+        pass
     diag = body.get("diag")
     if isinstance(diag, dict):
         entry["diag"] = {k: (str(v)[:40] if v is not None else None)
@@ -13189,6 +13201,12 @@ def _uso_huella(code):
                    _hl.sha256).hexdigest()[:12]
 
 
+# huellas que se guardan por día: Kodis encendidos (c), con algo puesto (r),
+# con la web mirándolos (m) y conexiones (ip: la de casa, cifrada) (dtbl104)
+_USO_SETS = ("c", "r", "m", "ip")
+_USO_CORTO_MIN = 15             # encendido menos que esto en el día: "solo un rato"
+
+
 def _uso_vacio():
     return {"v": 1, "adm": "", "dias": {}, "cj": {}, "desde": _uso_es()[0], "ult": 0}
 
@@ -13210,10 +13228,17 @@ def _uso_valida(d):
         if not (re.match(r"^\d{4}-\d\d-\d\d$", str(dia)) and isinstance(e, dict)):
             continue
         x = {}
-        for k in ("c", "r", "m"):
+        for k in _USO_SETS:
             if isinstance(e.get(k), list):
                 x[k] = sorted({str(h)[:12] for h in e[k] if isinstance(h, str)})
-        for k in ("nc", "nr", "nm", "pico", "tm", "mu"):
+        # (dtbl104) minutos encendido / viendo de cada Kodi (por huella, solo hoy y
+        # ayer) y lo que se manda desde la web: fuente y calidad (solo cuentas)
+        for k, patron, tope in (("km", r"^[0-9a-f]{12}$", 5000), ("rm", r"^[0-9a-f]{12}$", 5000),
+                                ("rf", r"^[a-z0-9]{1,8}$", 20), ("rq", r"^[a-z0-9]{1,8}$", 20)):
+            if isinstance(e.get(k), dict):
+                x[k] = {str(h): max(0, int(v)) for h, v in list(e[k].items())[:tope]
+                        if re.match(patron, str(h)) and isinstance(v, (int, float))}
+        for k in ("nc", "nr", "nm", "nip", "nk15", "pico", "tm", "mu"):
             try:
                 x[k] = max(0, int(e.get(k) or 0))
             except Exception:
@@ -13266,15 +13291,32 @@ def _uso_compacta(d, hoy):
     for dia in dias:
         e = d["dias"][dia]
         if dia not in guarda:
-            for k in ("c", "r", "m"):
+            for k in _USO_SETS:
                 if isinstance(e.get(k), list):
                     e["n" + k] = max(int(e.get("n" + k) or 0), len(e[k]))
                     e.pop(k, None)
+            if isinstance(e.get("km"), dict):
+                e["nk15"] = max(int(e.get("nk15") or 0), _uso_cortos(e))
+                e.pop("km", None)
+            e.pop("rm", None)
     for dia in dias[:-_USO_DIAS]:
         d["dias"].pop(dia, None)
     if len(d["cj"]) > 5000:      # nunca debería: 5000 Kodis distintos
         for h in sorted(d["cj"], key=lambda h: d["cj"][h][1])[:len(d["cj"]) - 5000]:
             d["cj"].pop(h, None)
+
+
+def _uso_cortos(e):
+    """Kodis que ese día estuvieron encendidos solo un rato (< _USO_CORTO_MIN)."""
+    if isinstance(e.get("km"), dict):
+        return sum(1 for v in e["km"].values() if v < _USO_CORTO_MIN)
+    return int(e.get("nk15") or 0)
+
+
+def _uso_suma(e, k, clave, n=1):
+    x = e.get(k) if isinstance(e.get(k), dict) else {}
+    x[clave] = int(x.get(clave, 0)) + n
+    e[k] = x
 
 
 def _uso_funde(a, b):
@@ -13289,11 +13331,15 @@ def _uso_funde(a, b):
         if not ea:
             out["dias"][dia] = eb
             continue
-        for k in ("c", "r", "m"):
+        for k in _USO_SETS:
             if isinstance(ea.get(k), list) or isinstance(eb.get(k), list):
                 ea[k] = sorted(set(ea.get(k) or []) | set(eb.get(k) or []))
             ea["n" + k] = max(int(ea.get("n" + k) or 0), int(eb.get("n" + k) or 0))
-        for k in ("tm", "mu"):
+        for k in ("km", "rm", "rf", "rq"):
+            if isinstance(ea.get(k), dict) or isinstance(eb.get(k), dict):
+                xa, xb = ea.get(k) or {}, eb.get(k) or {}
+                ea[k] = {h: max(xa.get(h, 0), xb.get(h, 0)) for h in set(xa) | set(xb)}
+        for k in ("tm", "mu", "nk15"):
             ea[k] = max(ea.get(k, 0), eb.get(k, 0))
         if eb.get("pico", 0) > ea.get("pico", 0):
             ea["pico"], ea["pico_h"] = eb["pico"], eb.get("pico_h", "")
@@ -13309,8 +13355,10 @@ def _uso_muestra(now=None, forzar=False):
     y de cuáles se está mirando la web. Devuelve True si la tomó."""
     now = _t.time() if now is None else now
     try:
-        vivas = [c for c, e in (_kbstatus_load() or {}).items()
+        st = _kbstatus_load() or {}
+        vivas = [c for c, e in st.items()
                  if (now - float(e.get("ts", 0) or 0)) < 90]
+        ips = [str(st[c].get("ih") or "") for c in vivas if st[c].get("ih")]
         np = {c: e.get("np") or {} for c, e in (_kbnow_load() or {}).items()
               if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and e.get("np")}
         moviles = [c for c, ts in (_kb_seen_load() or {}).items()
@@ -13327,6 +13375,11 @@ def _uso_muestra(now=None, forzar=False):
         for k, lista in (("c", vivas), ("r", list(np)), ("m", moviles)):
             hs = {_uso_huella(c) for c in lista}
             e[k] = sorted(set(e.get(k) or []) | hs)
+        e["ip"] = sorted(set(e.get("ip") or []) | set(ips))
+        for c in vivas:
+            _uso_suma(e, "km", _uso_huella(c))
+        for c in rep:
+            _uso_suma(e, "rm", _uso_huella(c))
         if len(rep) > e.get("pico", 0):
             e["pico"], e["pico_h"] = len(rep), hhmm
         e["hp"][hora] = max(e["hp"][hora], len(rep))
@@ -13500,6 +13553,36 @@ def _uso_bucle():
 import random as _rnd_uso      # noqa: E402
 
 
+_USO_FUENTES = ("dt", "dx", "et", "wf", "cb")
+
+
+def _uso_calidad(q):
+    q = str(q or "").lower()
+    if re.search(r"2160|4k|uhd", q):
+        return "4k"
+    if "1080" in q:
+        return "1080"
+    if "720" in q:
+        return "720"
+    return "otra" if q.strip() else "nd"
+
+
+def _uso_envio(fuente, q):
+    """Una reproducción mandada desde la web: de qué fuente y en qué calidad.
+    Sin código ni título: solo dos contadores del día (dtbl104)."""
+    try:
+        hoy = _uso_es()[0]
+        with _FileLock(_USO_FILE):
+            d = _uso_lee()
+            e = d["dias"].setdefault(hoy, _uso_valida({"dias": {hoy: {}}})["dias"][hoy])
+            _uso_suma(e, "rf", fuente if fuente in _USO_FUENTES else "otra")
+            _uso_suma(e, "rq", _uso_calidad(q))
+            _uso_guarda(d)
+        _USO_NUBE["cambios"] += 1
+    except Exception:
+        pass
+
+
 def _uso_arranca():
     if os.environ.get("MW_SIN_USO") == "1":
         return
@@ -13589,11 +13672,23 @@ def uso_datos():
         dias.append({"dia": dia, "kodis": _uso_cuenta(e, "c") if e else 0,
                      "teles": _uso_cuenta(e, "r") if e else 0,
                      "webs": _uso_cuenta(e, "m") if e else 0,
+                     "casas": _uso_cuenta(e, "ip") if e else 0,
+                     "cortos": _uso_cortos(e) if e else 0,
+                     "km_n": len((e or {}).get("km") or {}),
+                     "fuentes": (e or {}).get("rf") or {},
+                     "calidad": (e or {}).get("rq") or {},
                      "pico": (e or {}).get("pico", 0), "pico_h": (e or {}).get("pico_h", ""),
                      "horas": round((e or {}).get("tm", 0) / 60.0, 1),
                      "medido_min": (e or {}).get("mu", 0)})
     eh = d["dias"].get(hoy) or {}
-    out = {"ok": True, "ahora": _uso_ahora(now), "hoy": hoy,
+    rm = sorted((eh.get("rm") or {}).values())
+    try:
+        publicada = _ver_publicada()
+    except Exception:
+        publicada = ""
+    out = {"ok": True, "ahora": _uso_ahora(now), "hoy": hoy, "publicada": publicada,
+           "med_min_tele": rm[len(rm) // 2] if rm else 0,
+           "ip_medidas": isinstance(eh.get("ip"), list) and bool(eh.get("ip")),
            "horas_hoy": eh.get("hp") or [0] * 24, "dias": dias,
            "activos_7": _activos(7), "activos_30": _activos(30),
            "nuevos_7": sum(1 for p, u in d["cj"].values()
@@ -13654,6 +13749,23 @@ th{color:var(--sub);font-weight:600}
 details summary{min-height:44px;display:flex;align-items:center;color:var(--bar);cursor:pointer}
 .priv{text-align:center;padding:60px 10px;color:var(--sub)}
 .nota{color:var(--mut);font-size:13px}
+.nota small,.lst small{color:var(--mut);font-size:12px}
+.linea{color:var(--sub);font-size:14px;margin:14px 0 0}
+.linea b{color:var(--txt)}
+.tag{display:inline-block;padding:1px 6px;border-radius:6px;background:rgba(64,156,255,.16);color:#8cc4ff;font-size:11px}
+.lst{margin:14px 0 0}
+.lst div{display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0;border-top:1px solid var(--stroke)}
+.lst dt{color:var(--sub);font-size:14px}
+.lst dd{margin:0;font-size:15px;font-variant-numeric:tabular-nums;text-align:right;flex:0 0 auto;max-width:60%}
+.hbs{display:flex;flex-direction:column;gap:10px}
+.hb{display:grid;grid-template-columns:minmax(0,8em) minmax(56px,1fr) auto;gap:10px;align-items:center;font-size:14px}
+.hbn{color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hbt{height:8px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
+.hbt i{display:block;height:100%;background:var(--bar);border-radius:4px}
+.hbv{font-variant-numeric:tabular-nums;min-width:4.5em;text-align:right}
+.hbv small{color:var(--mut);font-size:12px}
+.graf button.vacio i{background:transparent}
+.def{margin:0}.def dt{font-size:14px;font-weight:600;margin-top:10px}.def dt:first-child{margin-top:0}.def dd{margin:2px 0 0;color:var(--sub);font-size:14px}
 </style></head><body><main id="m">
 <h1>Uso de MejorWolf</h1>
 <p class="sub" id="st">Cargando…</p>
@@ -13687,24 +13799,75 @@ function engancha(id,fmt,vals){
   if(sel[id]!=null){var b=g.querySelector('button[data-i="'+sel[id]+'"]');if(b)b.click()}
 }
 var sel={};
+var FN={dt:"DonTorrent",dx:"DivxTotal",et:"EliteTorrent",wf:"WolfMax",cb:"Cinubo (streaming)",otra:"Otras (historial, compartidos)"};
+var QN={"4k":"4K","1080":"1080p","720":"720p",otra:"Otra calidad",nd:"Sin calidad indicada"};
+function dur(min){min=Math.round(min||0);if(min<60)return min+" min";var h=Math.floor(min/60),m=min%60;return h+" h"+(m?" "+m+" min":"")}
+function vcmp(a,b){a=String(a).split(".");b=String(b).split(".");for(var i=0;i<Math.max(a.length,b.length);i++){var x=+(a[i]||0),y=+(b[i]||0);if(x!==y)return x<y?-1:1}return 0}
+function barras(obj,nombres,orden){
+  var ks=Object.keys(obj||{}).filter(function(k){return obj[k]>0});
+  if(!ks.length)return '<p class="nota">Todavía nada hoy.</p>';
+  ks.sort(function(a,b){return obj[b]-obj[a]||orden.indexOf(a)-orden.indexOf(b)});
+  var tot=ks.reduce(function(s,k){return s+obj[k]},0),mx=obj[ks[0]];
+  return '<div class="hbs">'+ks.map(function(k){var v=obj[k];
+    return '<div class="hb"><span class="hbn">'+esc(nombres[k]||k)+'</span><span class="hbt"><i style="width:'+Math.max(3,v/mx*100)+'%"></i></span><span class="hbv">'+n(v)+' <small>'+Math.round(v/tot*100)+'%</small></span></div>'}).join("")+'</div>';
+}
+function lineas(xs){return '<dl class="lst">'+xs.map(function(x){return '<div><dt>'+x[0]+'</dt><dd>'+x[1]+'</dd></div>'}).join("")+'</dl>'}
+function defs(xs){return '<dl class="def">'+xs.map(function(x){return '<dt>'+x[0]+'</dt><dd>'+x[1]+'</dd>'}).join("")+'</dl>'}
 function pinta(d){
   var a=d.ahora;
   $st.textContent="Solo lo ves tú · se actualiza solo";
   var dias=d.dias||[],hoyE=dias[dias.length-1]||{};
-  var tv=dias.map(function(x){return x.teles}),hr=d.horas_hoy||[];
-  var fmtD=function(i,v){var x=dias[i];return fecha(x.dia,true)+": "+n(v)+(v==1?" tele":" teles")+" con algo puesto · "+n(x.kodis)+" Kodis encendidos · pico "+n(x.pico)+(x.pico_h?" a las "+x.pico_h:"")+" · "+String(x.horas).replace(".",",")+" h de tele"};
+  var hr=d.horas_hoy||[];
+  // --- versiones de ahora ---
+  var vers=a.versiones||{},pub=d.publicada||"",vk=Object.keys(vers);
+  if(!pub)pub=vk.reduce(function(m,v){return v!=="?"&&(!m||vcmp(v,m)>0)?v:m},"");
+  var aldia=vk.reduce(function(s,v){return s+(pub&&vcmp(v,pub)>=0?vers[v]:0)},0);
+  vk.sort(function(x,y){return vcmp(y,x)});
+  var verTxt=a.kodis?('<b>'+n(aldia)+'</b> de '+n(a.kodis)+' con la última ('+esc(pub||"?")+')'+(a.kodis-aldia?' · '+n(a.kodis-aldia)+' por detrás: se ponen al día solos':'')):'Ningún Kodi encendido ahora';
+  var verLista=vk.map(function(v){return '<tr><td>'+esc(v)+(v===pub?' <small class="tag">última</small>':'')+'</td><td>'+n(vers[v])+'</td></tr>'}).join("");
+  // --- hoy ---
+  var cortosTxt=hoyE.km_n?(n(hoyE.cortos)+(hoyE.km_n<hoyE.kodis?' <small>(de '+n(hoyE.km_n)+' medidos)</small>':'')):'<small>midiendo desde hoy</small>';
+  var casasTxt=d.ip_medidas?n(hoyE.casas):'<small>midiendo desde hoy</small>';
+  var med=d.med_min_tele?dur(d.med_min_tele):'<small>midiendo desde hoy</small>';
+  var hoyLineas=lineas([
+    ["Casas distintas <small>(conexiones a internet)</small>",casasTxt],
+    ["Kodis encendidos solo un rato <small>(menos de 15 min)</small>",cortosTxt],
+    ["Lo normal que se ve cada tele <small>(la mediana)</small>",med],
+    ["Móviles que han abierto la web",n(hoyE.webs)]]);
+  // --- días: 14 huecos fijos, los que aún no tienen datos quedan vacíos ---
+  var SL=14,porDia={};dias.forEach(function(x){porDia[x.dia]=x});
+  var p0=d.hoy.split("-"),base=new Date(+p0[0],p0[1]-1,+p0[2]),huecos=[];
+  for(var i=SL-1;i>=0;i--){var t=new Date(base);t.setDate(t.getDate()-i);
+    var iso=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");
+    huecos.push(porDia[iso]||{dia:iso,vacio:true,teles:0,kodis:0,pico:0,horas:0,casas:0})}
+  var tv=huecos.map(function(x){return x.teles});
+  var fmtD=function(i,v){var x=huecos[i];if(x.vacio)return fecha(x.dia,true)+": sin datos (se mide desde el "+fecha(d.desde)+")";
+    return fecha(x.dia,true)+": "+n(v)+(v==1?" tele":" teles")+" con algo puesto · "+n(x.kodis)+" Kodis · pico "+n(x.pico)+(x.pico_h?" a las "+x.pico_h:"")+" · "+String(x.horas).replace(".",",")+" h de tele"};
   var fmtH=function(i,v){return (i<10?"0":"")+i+":00–"+(i<9?"0":"")+(i+1)+":00: hasta "+n(v)+(v==1?" tele":" teles")+" a la vez"};
-  var filas=dias.slice().reverse().map(function(x){return '<tr><td>'+esc(fecha(x.dia,true))+'</td><td>'+n(x.teles)+'</td><td>'+n(x.kodis)+'</td><td>'+n(x.pico)+'</td><td>'+String(x.horas).replace(".",",")+'</td></tr>'}).join("");
+  var nd=dias.length,totH=dias.reduce(function(s,x){return s+(x.horas||0)},0);
+  var medTeles=nd?Math.round(dias.reduce(function(s,x){return s+x.teles},0)/nd):0;
+  var filas=dias.slice().reverse().map(function(x){return '<tr><td>'+esc(fecha(x.dia,true))+'</td><td>'+n(x.teles)+'</td><td>'+n(x.kodis)+'</td><td>'+(x.casas?n(x.casas):'–')+'</td><td>'+n(x.pico)+'</td><td>'+String(x.horas).replace(".",",")+'</td></tr>'}).join("");
+  var distLbl=nd<7?"Kodis distintos desde el "+esc(fecha(d.desde)):"Kodis distintos en 7 días";
   $c.innerHTML=
    '<section class="card"><h2>Ahora mismo</h2><div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+(a.en_pausa?" · "+n(a.en_pausa)+" en pausa":"")+'</span></div>'+
-   '<div class="fila"><div><b>'+n(a.kodis)+'</b><small>Kodis encendidos</small></div><div><b>'+n(a.webs)+'</b><small>con la web abierta</small></div><div><b>'+n(hoyE.pico)+'</b><small>pico de hoy'+(hoyE.pico_h?" ("+esc(hoyE.pico_h)+")":"")+'</small></div></div></section>'+
-   '<section class="card"><h2>Hoy</h2><div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles con algo puesto</small></div><div><b>'+n(hoyE.kodis)+'</b><small>Kodis distintos</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas de tele</small></div></div>'+
+   '<div class="fila"><div><b>'+n(a.kodis)+'</b><small>Kodis encendidos</small></div><div><b>'+n(a.webs)+'</b><small>con la web abierta</small></div><div><b>'+n(hoyE.pico)+'</b><small>pico de hoy'+(hoyE.pico_h?" ("+esc(hoyE.pico_h)+")":"")+'</small></div></div>'+
+   '<p class="linea">'+verTxt+'</p>'+(verLista?'<details><summary>Versiones de los Kodis encendidos</summary><table><thead><tr><th>Versión</th><th>Kodis</th></tr></thead><tbody>'+verLista+'</tbody></table></details>':'')+'</section>'+
+   '<section class="card"><h2>Hoy</h2><div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles con algo puesto</small></div><div><b>'+n(hoyE.kodis)+'</b><small>Kodis encendidos en algún momento</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas de tele</small></div></div>'+
+   hoyLineas+
    '<p class="nota" style="margin:14px 0 4px">Teles a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH)+'</section>'+
-   '<section class="card"><h2>Últimos días</h2><div class="fila" style="margin-top:0"><div><b>'+n(d.activos_7)+'</b><small>Kodis activos en 7 días</small></div><div><b>'+n(d.activos_30)+'</b><small>en 30 días</small></div><div><b>'+n(d.nuevos_7)+'</b><small>nuevos en 7 días</small></div></div>'+
-   '<p class="nota" style="margin:14px 0 4px">Teles distintas con algo puesto, por día</p>'+(dias.length?grafico("dd",tv,[fecha(dias[0].dia),"hoy"],fmtD):"")+
-   '<details><summary>Ver la tabla</summary><table><thead><tr><th>Día</th><th>Teles</th><th>Kodis</th><th>Pico</th><th>Horas</th></tr></thead><tbody>'+filas+'</tbody></table></details></section>'+
-   '<p class="nota">Cuenta Kodis, no personas, y también los tuyos. Sin códigos ni títulos: nadie sabe qué ve cada casa. Datos desde el '+esc(fecha(d.desde))+'.</p>';
-  engancha("dh",fmtH,hr);if(dias.length)engancha("dd",fmtD,tv);
+   '<section class="card"><h2>Lo que se pone desde la web, hoy</h2><p class="nota" style="margin:0 0 8px">Por fuente</p>'+barras(hoyE.fuentes,FN,["dt","wf","et","dx","cb","otra"])+
+   '<p class="nota" style="margin:14px 0 8px">Por calidad</p>'+barras(hoyE.calidad,QN,["4k","1080","720","otra","nd"])+
+   '<p class="nota" style="margin:10px 0 0">Se cuenta desde el 2 nov por la tarde. No incluye lo que se pone con el mando de la tele.</p></section>'+
+   '<section class="card"><h2>Últimos días</h2><div class="fila" style="margin-top:0"><div><b>'+n(d.activos_7)+'</b><small>'+distLbl+'</small></div><div><b>'+n(medTeles)+'</b><small>teles al día con algo puesto (media)</small></div><div><b>'+n(Math.round(totH))+'</b><small>horas de tele en total</small></div></div>'+
+   '<p class="nota" style="margin:14px 0 4px">Teles distintas con algo puesto, por día</p>'+grafico("dd",tv,[fecha(huecos[0].dia),"hoy"],fmtD)+
+   '<details><summary>Ver la tabla</summary><table><thead><tr><th>Día</th><th>Teles</th><th>Kodis</th><th>Casas</th><th>Pico</th><th>Horas</th></tr></thead><tbody>'+filas+'</tbody></table></details></section>'+
+   '<section class="card"><h2>Qué significa cada número</h2>'+defs([
+     ["Kodi","Cada instalación del addon tiene su código. Una casa con tres teles son tres Kodis."],
+     ["Tele con algo puesto","Un Kodi que ha reproducido algo, aunque sea un momento."],
+     ["Casa","Una conexión a internet distinta. Si alguien se lleva la tele a otra casa, cuenta dos."],
+     ["Un rato","Encendido menos de 15 minutos en el día: probarlo, encenderlo sin ver nada…"]])+'</section>'+
+   '<p class="nota">Sin códigos ni títulos: nadie sabe qué ve cada casa, y las conexiones se guardan cifradas (nunca la IP). Datos desde el '+esc(fecha(d.desde))+'.</p>';
+  engancha("dh",fmtH,hr);engancha("dd",fmtD,tv);
 }
 var t=null;
 function carga(){
@@ -17685,19 +17848,20 @@ function play(){if(!sel)return;
   toast('Resolviendo en tu box…');
   WFPIDE={url:sel.url||sel.content_id,t:sel.title||'',q:sel.quality||'',sz:sel.size||''};
   fetch('/catetboxresolve?code='+cd+'&src='+encodeURIComponent(sel.source)+'&url='+encodeURIComponent(sel.url||sel.content_id)+wfMetaQS(WFPIDE)).then(function(r){return r.json()}).then(function(d){
-   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title}))closeSheet()}
+   if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:sel.title,f:sel.source,q:sel.quality}))closeSheet()}
    else if(d&&d.vieja){webViejaDlg(d.vieja,sel.title)}                      // dtbl49
    else if(d&&d.error){limiteDlg(sel.source,d,sel.title)}                     // dtbl51
    else if(d&&d.fuente_caida){fuenteCaidaDlg(d.fuente_caida,sel.title)}     // dtbl40
    else{toast('No se pudo (¿box encendido?)')}}).catch(function(){toast('No se pudo obtener el enlace')});
   return}
- var _x=sel;seedGate(_x.content_id,_x.tabla||'peliculas',function(){if(sendPlay({a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title}))closeSheet()})}
+ var _x=sel;seedGate(_x.content_id,_x.tabla||'peliculas',function(){if(sendPlay({a:'dt',c:_x.content_id,tb:_x.tabla,t:_x.title,q:_x.quality}))closeSheet()})}
 // `cdF` (dtbl78): a ESA tele (la que se eligio al pedirlo), no a la que este
 // seleccionada ahora. `alOk(d)`: en vez del aviso "En la tele", quien llama dice
 // lo que de verdad sabe (el reparto de lo compartido espera a que Kodi lo confirme).
 function sendPlay(ref,cdF,alOk){var cd=(cdF||code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return false}
  var body={code:cd,cmd:'play_ref',a:ref.a||'dt',t:ref.t};
  if(ref.a==='pl'||ref.a==='st'){body.u=ref.u}else{body.c=ref.c;body.tb=ref.tb}
+ var _f=ref.f||(ref.a==='pl'&&typeof sel!=='undefined'&&sel&&sel.source)||'';if(_f)body.f=_f;if(ref.q)body.q=String(ref.q).slice(0,24);   // (dtbl104) solo para contar fuentes y calidades
  toast('Enviando a la tele...');
  var hsnap=null;try{hsnap=histSnap(ref)}catch(e){}   // ver histSnap: `sel` cambia
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
@@ -17873,7 +18037,7 @@ function wfManda(link,tit,cd){
    mwConfirm(tele+' no está conectada','Abre Kodi en esa tele y pulsa «Reintentar». No he mandado nada.','Reintentar',function(){wfManda(link,tit,cd)});
    return}
   var antes=(a&&a.np&&a.np.title)||'';
-  sendPlay({a:'pl',u:link,t:tit},cd,function(d){
+  sendPlay({a:'pl',u:link,t:tit,f:'wf'},cd,function(d){
    if(!d)return;                        // el error ya lo ha dicho sendPlay
    wfFin();
    if(d.tele===false){toast('📴 '+tele+' no está conectada: la orden espera a que abras Kodi. Aún no se reproduce nada.',7000);return}
@@ -18285,7 +18449,7 @@ function playEp(id){var e=EPS[id];if(!e)return;
  // `q`: la calidad de ESTE capitulo. Una serie mezcla calidades (el 1x01 de
  // Silo es 1080p aunque la tarjeta sea 4K), y el historial ensenaba la de la
  // tarjeta, que podia no ser la que se esta viendo.
- if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim(),q:e.quality}))closeOv();return}
+ if(e.link){if(sendPlay({a:'pl',u:e.link,t:(SHOW+' '+e.label).trim(),q:e.quality,f:e.src}))closeOv();return}
  // Capítulo de EliteTorrent/WolfMax: su enlace vive en la ficha del capítulo y
  // lo resuelve una caja (IP residencial). Se avisa porque tarda 1-3s, y NO se
  // cierra la ficha hasta que sale de verdad -> nada de "he pulsado y no pasa nada".
@@ -18296,7 +18460,7 @@ function playEp(id){var e=EPS[id];if(!e)return;
   WFPIDE={url:e.url||e.content_id,t:_t2,q:e.quality||'',sz:e.size||''};
   fetch('/catetboxresolve?code='+_cd2+'&src='+encodeURIComponent(e.src)+'&url='+encodeURIComponent(e.url||e.content_id)+wfMetaQS(WFPIDE))
    .then(function(r){return r.json()}).then(function(d){
-    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2,q:e.quality}))closeOv();}
+    if(d&&d.link){if(sendPlay({a:'pl',u:d.link,t:_t2,q:e.quality,f:e.src}))closeOv();}
     else if(d&&d.vieja)webViejaDlg(d.vieja,SHOW||_t2);                       // dtbl49
     else if(d&&d.error)limiteDlg(e.src,d,SHOW||_t2);                          // dtbl51
     else if(d&&d.fuente_caida)fuenteCaidaDlg(d.fuente_caida,_t2);            // dtbl40
