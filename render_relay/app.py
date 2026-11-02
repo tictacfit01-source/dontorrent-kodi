@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl87"
+BUILD = "dtbl88"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14034,9 +14034,21 @@ def _cb_enlaces(ruta):
     if not _cb_logueado(txt):
         _CB["ult_err"] = "sesion caducada"
         return None
-    en = [{"r": x["r"], "srv": x["srv"], "q": x["q"]} for x in _cb_enlaces_de(txt)]
+    en = _cb_ordena([{"r": x["r"], "srv": x["srv"], "q": x["q"]} for x in _cb_enlaces_de(txt)])
     _cb_cache_pon("e", ruta, en)
     return en
+
+
+# Los que la caja abre por si misma (resources/lib/cinubo.py), primero; el resto
+# depende de que la tele tenga ResolveURL. A igualdad, la mejor calidad.
+_CB_ABRE = {"VIDARA": 0, "LULUSTREAM": 1}
+
+
+def _cb_ordena(en):
+    def _q(x):
+        m = re.search(r"(\d{3,4})p", x.get("q") or "", re.I)
+        return -int(m.group(1)) if m else 0
+    return sorted(en, key=lambda x: (_CB_ABRE.get(x.get("srv"), 9), _q(x)))
 
 
 _CB_REF = re.compile(r"^[A-Za-z0-9=_%-]{20,600}$")
@@ -14359,6 +14371,15 @@ def catdiag():
         try:
             out["uso"] = {"copia": dict((k, v) for k, v in _USO_NUBE.items()),
                           "dias": len(_uso_lee()["dias"])}
+        except Exception:
+            pass
+        try:   # Cinubo (dtbl88): sin cookies ni nada de la sesión, solo cuentas
+            _ca = _cb_cache_lee()
+            out["cinubo"] = {"sesion": bool(_cb_cookies()), "cajas": len(_cb_cajas()),
+                             "hora": len([x for x in _CB["hora"] if _t.time() - x < 3600]),
+                             "cupo_h": _CB_CUPO_H, "cache": {k: len(v) for k, v in _ca.items()},
+                             **{k: _CB[k] for k in ("peticiones", "fallos", "ult_st", "ult_ms",
+                                                    "ult_err", "captcha", "cupo_lleno", "nube")}}
         except Exception:
             pass
     else:
@@ -15296,6 +15317,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <button class="wfd-b" id="wfd-1" onclick="wfAbre()">1 · Abrir en WolfTorrent<small>Marca la casilla y el .torrent se descarga solo</small></button>
    <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas (o compártelo con MejorWolf desde la descarga)</small></button>
   </div></details>
+  <div class="cbbox" id="wfd-cb"></div>
   <div class="mwd-s" id="wfd-est" aria-live="polite"></div>
   <input type="file" id="wfd-f" style="display:none" onchange="wfSube(this)">
   <div class="mwd-b">
@@ -17238,6 +17260,12 @@ function wfConsigueDlg(d,t){WFPIDE=WFPIDE||{};if(!WFPIDE.t)WFPIDE.t=t||'';WFPIDE
  $('wfd-n').textContent=WFPIDE.t||'este título';
  $('wfd-1').style.display=WFPIDE.gw?'':'none';
  var dm=$('wfd-mas');if(dm)dm.open=false;
+ // (dtbl88) ahí mismo, el streaming de Cinubo de ese título o capítulo
+ try{var _wc=$('wfd-cb');if(_wc)_wc.innerHTML='';
+  var _ovo=$('ov')&&$('ov').classList.contains('on'),_wx=(_ovo&&OVDATA&&OVDATA.x)?OVDATA.x:sel,
+   _se=/\b(\d{1,2})x(\d{1,3})\b/.exec(WFPIDE.t||'');
+  if(_wx&&(_wx.kind!=='serie'||_se))cbCarga({x:_wx,el:'wfd-cb',t:WFPIDE.t||_wx.title,
+   s:_se?parseInt(_se[1],10):0,e:_se?parseInt(_se[2],10):0})}catch(e){}
  $('wfdlg').classList.add('on');
  var e=$('wfd-est');if(e)e.textContent='';
  // cerrarlo es "ya no lo quiero": se deja de esperar (nada arranca la tele por sorpresa)
@@ -17815,6 +17843,7 @@ function cbPlay(i){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
  toast('Abriendo '+cbNom(it.srv)+'…');
  fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){
    if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
+    if($('wfdlg').classList.contains('on')){dl=true;mwBack('wfdlg')}
     setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)})},dl?220:0);return}
    toast(d&&d.error==='captcha'?'Cinubo pide una verificación ahora mismo: prueba en unos minutos':'Ese servidor no contesta: prueba con otro',6000)})
   .catch(function(){toast('No se pudo conectar: prueba otra vez')})}

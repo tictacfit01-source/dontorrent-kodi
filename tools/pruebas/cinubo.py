@@ -222,6 +222,19 @@ try:
                   cli.get("/cbembed?r=" + ref).get_json().get("u") and len(cola) == n0)
         comprueba("/cbembed con una referencia rara: 400", cli.get("/cbembed?r=<script>").status_code == 400)
 
+        orden = A._cb_ordena([{"srv": "VOE", "q": "HD 1080p"}, {"srv": "LULUSTREAM", "q": "HD 720p"},
+                               {"srv": "VIDARA", "q": "HD 720p"}, {"srv": "VIDARA", "q": "HD 1080p"},
+                               {"srv": "POWVIDEO", "q": "HD 720p"}])
+        comprueba("orden: lo que la tele abre sola primero (Vidara, Lulustream); a igualdad, 1080p",
+                  [(x["srv"], x["q"]) for x in orden] == [("VIDARA", "HD 1080p"), ("VIDARA", "HD 720p"),
+                                                         ("LULUSTREAM", "HD 720p"), ("VOE", "HD 1080p"),
+                                                         ("POWVIDEO", "HD 720p")], orden)
+        pub = cli.get("/catdiag").get_json()
+        adm = cli.get("/catdiag?k=" + llave).get_json()
+        comprueba("/catdiag: Cinubo solo con la llave, y sin cookies dentro",
+                  "cinubo" not in pub and adm.get("cinubo", {}).get("sesion") is True
+                  and all(v not in json.dumps(adm) for v in BUENAS.values()), adm.get("cinubo"))
+
         print("\n=== 9) A la tele: la orden st ===")
         enviados = []
         A._kb_enqueue = lambda box, ev: enviados.append((box, ev))
