@@ -378,6 +378,28 @@ try:
                   [x["kind"] for x in r.get("items", [])] == ["serie"] and len(cola) == n0, r)
         comprueba("otra pestaña: 400", cli.get("/cbinicio?kind=x").status_code == 400)
 
+        print("\n=== 8d2) Castigo: esperas que crecen, y vuelven a cero ===")
+        quita(A._CB_RITMO_FILE)
+        cid = "prueba"
+        A._cb_ritmo(captcha=True, cid=cid)
+        e1 = A._cb_ritmo(cid=cid)
+        d = json.load(open(A._CB_RITMO_FILE))
+        d["a"][cid]["calma"] = A._t.time() - 1                  # pasó la 1ª espera
+        json.dump(d, open(A._CB_RITMO_FILE, "w"))
+        comprueba("pasada la 1ª espera, se puede probar una vez", A._cb_ritmo(cid=cid) == 0)
+        A._cb_ritmo(captcha=True, cid=cid)                      # ...y sigue castigada
+        e2 = A._cb_ritmo(cid=cid)
+        comprueba("1er captcha: 2 min; si al volver sigue castigada: 5 min (no se insiste)",
+                  110 <= e1 <= 120 and 290 <= e2 <= 300, (e1, e2))
+        A._cb_ritmo(captcha="ok", cid=cid)
+        d = json.load(open(A._CB_RITMO_FILE))
+        comprueba("al primer acierto, el castigo se olvida", d["a"][cid]["nivel"] == 0)
+        quita(A._CB_RITMO_FILE)
+        A._cb_ritmo(cid="h")
+        comprueba("dos peticiones a la misma cuenta, a menos de 3 s: la 2ª espera",
+                  0 < A._cb_ritmo(cid="h") <= 3)
+        quita(A._CB_RITMO_FILE)
+
         print("\n=== 8e) Varias cuentas y enlaces muertos ===")
         quita(A._CB_RITMO_FILE)
         OTRA_C = {REM: "eyJpdiI6IkNVRU5UQTJDVUVOVEEyQ1VFTlRBMj09In0%3D"}

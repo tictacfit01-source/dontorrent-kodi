@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl102"
+BUILD = "dtbl103"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14236,6 +14236,13 @@ _CB_RITMO_FILE = "/tmp/mw_cbritmo.json"
 _CB_RITMO_N = 6
 _CB_RITMO_S = 60.0
 _CB_CALMA_S = 120.0
+# (dtbl103) Tras un captcha la cuenta queda castigada más de un minuto (02-11:
+# seguía a los 20 min) y probar mientras dura parece alargarlo. Esperas que
+# crecen (una sola prueba en cada una) y vuelven a cero al primer acierto.
+_CB_ESCALA = (120.0, 300.0, 600.0, 1200.0, 1800.0)
+# Nunca dos peticiones a la misma cuenta a menos de 3 s: así ni una sola
+# persona tocando servidores deprisa hace una ráfaga (8 en 25 s = castigo).
+_CB_HUECO_S = 3.0
 
 
 def _cb_ritmo(captcha=False, cid="_"):
@@ -14253,16 +14260,22 @@ def _cb_ritmo(captcha=False, cid="_"):
         d = todo["a"].get(cid) or {}
         ts = [float(x) for x in (d.get("t") or []) if ahora - float(x) < _CB_RITMO_S]
         calma = float(d.get("calma") or 0)
+        nivel = int(d.get("nivel") or 0)
         espera = 0.0
-        if captcha:
-            calma = ahora + _CB_CALMA_S
+        if captcha == "ok":                  # acertó: el castigo se olvida
+            nivel = 0
+        elif captcha:
+            nivel = min(nivel + 1, len(_CB_ESCALA))
+            calma = ahora + _CB_ESCALA[nivel - 1]
         elif calma > ahora:
             espera = calma - ahora
         elif len(ts) >= _CB_RITMO_N:
             espera = _CB_RITMO_S - (ahora - min(ts)) + 1
+        elif ts and (ahora - max(ts)) < _CB_HUECO_S:
+            espera = _CB_HUECO_S - (ahora - max(ts))
         else:
             ts.append(ahora)
-        todo["a"][cid] = {"t": ts, "calma": calma}
+        todo["a"][cid] = {"t": ts, "calma": calma, "nivel": nivel}
         try:
             tmp = _CB_RITMO_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -14313,15 +14326,20 @@ def cb_embed_ruta():
     for ck in orden:
         cid = _cb_cid(ck)
         esp = _cb_ritmo(cid=cid)
+        if 0 < esp <= _CB_HUECO_S:           # solo el hueco de 3 s: se espera aquí
+            _t.sleep(esp)
+            esp = _cb_ritmo(cid=cid)
         if esp:
             minimo = esp if minimo is None else min(minimo, esp)
             continue
         e, err = _cb_embed(ref, ck)
         if e:
+            _cb_ritmo(captcha="ok", cid=cid)
             break
         if err == "captcha":                 # esa cuenta, a descansar; la siguiente
             _cb_ritmo(captcha=True, cid=cid)
-            minimo = int(_CB_CALMA_S) if minimo is None else min(minimo, int(_CB_CALMA_S))
+            esp2 = _cb_ritmo(cid=cid)
+            minimo = esp2 if minimo is None else min(minimo, esp2)
             continue
         break
     if not e:
@@ -18393,7 +18411,7 @@ function cbEp(id){var e=EPS[id],x=OVDATA&&OVDATA.x;if(!e||!x)return;
 // luego los demás servidores que la tele abre, sin que la persona haga nada.
 function cbSiguientes(c,i){var a=c.items[i],g=cbGemelos(c,i),vis={};vis[i]=1;g.forEach(function(j){vis[j]=1});
  var mas=c.items.map(function(x,j){return j}).filter(function(j){return !vis[j]&&CBABRE[c.items[j].srv]&&(j!==i)});
- return g.concat(mas).slice(0,4)}
+ return g.concat(mas).slice(0,2)}   // (dtbl103) como mucho 2 más: nada de ráfagas
 function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
  var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
  if(resto===undefined)resto=cbSiguientes(c,i);vez=vez||0;
@@ -18401,12 +18419,12 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
  fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){
    // (dtbl101) Cinubo va con mucha gente: se espera lo que diga el relay y se
    // reintenta SOLO (hasta 3 veces). La persona no tiene que hacer nada.
-   if(d&&d.error==='espera'&&vez<3){var sg=Math.max(3,Math.min(90,d.s||30));
+   if(d&&d.error==='espera'&&vez<3&&(d.s||0)<=120){var sg=Math.max(3,Math.min(90,d.s||30));
     toast('⏳ Cinubo va con mucha gente: lo pongo en la tele en '+sg+' s',Math.min(sg*1000,8000));
     setTimeout(function(){if(CBSEL===c)cbPlay(i,resto,vez+1)},sg*1000);return}
    if(!(d&&d.ok&&d.u)&&d&&d.error!=='espera'&&resto.length){var nx=c.items[resto[0]];
     toast((d.error==='muerto'?'Ese enlace ya no existe':cbNom(it.srv)+' no responde')+': pruebo con '+cbNom(nx&&nx.srv)+'…',4000);
-    cbPlay(resto[0],resto.slice(1),vez);return}
+    setTimeout(function(){if(CBSEL===c)cbPlay(resto[0],resto.slice(1),vez)},3000);return}
    if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
     if($('wfdlg').classList.contains('on')){dl=true;mwBack('wfdlg')}
     // (dtbl96) como el torrent: a la tele y el mando abierto. sendPlay cierra
@@ -18415,7 +18433,7 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
     setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)},null,function(r){if(!r)return;
       if(r.tele===false){toast('📴 Tu tele no está conectada. Enciéndela y abre Kodi: empezará sola',5500);return}
       toast('▶ En la tele');setTimeout(function(){openRemote();setTimeout(pollNow,1200)},450)})},dl?220:0);return}
-   toast(d&&d.error==='espera'?'Cinubo sigue muy ocupado: prueba en un par de minutos':
+   toast(d&&d.error==='espera'?('Cinubo está saturado ahora mismo: prueba en '+Math.max(2,Math.round((d.s||120)/60))+' min o elige otra fuente'):
     (d&&d.error==='muerto'?'Ese enlace ya no existe en Cinubo: elige otro servidor':(cbNom(it.srv)+' no contesta ahora: elige otro servidor')),6000)})
   .catch(function(){toast('No se pudo conectar: prueba otra vez')})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}

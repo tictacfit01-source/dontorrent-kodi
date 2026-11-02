@@ -135,7 +135,7 @@ console.log('\n=== 3) Al elegir ===');
   comprueba('Cinubo ocupado: lo dice, espera y reintenta solo (3 veces, sin pasar a la gemela)',
     PIDE.length === 4 && PIDE.every((u) => /r=v1&?/.test(u) || /r=v1$/.test(u)) && ENVIOS.length === 0
     && /mucha gente: lo pongo en la tele en 40 s/.test(TOASTS.join(' '))
-    && /sigue muy ocupado/.test(TOASTS.join(' ')), { PIDE, TOASTS });
+    && /saturado ahora mismo/.test(TOASTS.join(' ')), { PIDE, TOASTS });
   PIDE.length = 0; ENVIOS.length = 0; TOASTS.length = 0;
   let veces = 0;
   RESP = {};
@@ -148,8 +148,8 @@ console.log('\n=== 3) Al elegir ===');
   CTX.cbPlay(6);
   await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
   for (let k = 0; k < 14; k++) await new Promise((r) => setImmediate(r));
-  comprueba('si falla: prueba SOLA los servidores que la tele abre (como mucho 4 más) y luego lo dice',
-    PIDE.length === 5 && /pruebo con Vidara/.test(TOASTS.join(' ')) && /elige otro servidor/.test(TOASTS[TOASTS.length - 1]), { PIDE, TOASTS });
+  comprueba('si falla: prueba SOLA los servidores que la tele abre (como mucho 2 más, sin ráfagas) y luego lo dice',
+    PIDE.length === 3 && /pruebo con Vidara/.test(TOASTS.join(' ')) && /elige otro servidor/.test(TOASTS[TOASTS.length - 1]), { PIDE, TOASTS });
   PIDE.length = 0; TOASTS.length = 0; ENVIOS.length = 0;
   RESP = { v1: { ok: false, error: 'muerto' }, v2: { ok: true, u: 'https://vidara.to/e/VIVO' } };
   CTX.cbPlay(0);
