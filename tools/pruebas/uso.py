@@ -277,6 +277,29 @@ try:
               and A._uso_titulo("Silo - S02E03") == "Silo" and A._uso_titulo("Alien: Romulus (2024)") == "Alien: Romulus",
               [A._uso_titulo(x) for x in ("The Bear 5x02", "Silo - S02E03", "Alien: Romulus (2024)")])
 
+    print("\n=== 6d) El mismo vídeo no cuenta dos veces (dtbl107) ===")
+    antes_pm = dict(cli.get("/uso/datos?k=" + llave).get_json()["como"])
+    A._USO_VISTO.clear()
+    for i in range(6):
+        cli.post("/kb/now", json={"code": "111111", "np": {"title": "Peli larga", "elapsed": i * 3, "total": 5000}})
+        if i == 2:          # el fichero de "qué se ve" sale roto (dos workers a la vez)...
+            open(A._KB_NOW_FILE, "w").write("{roto")
+        if i == 4:          # ...y el otro worker, que no lo tiene en memoria
+            A._USO_VISTO.clear()
+    pm = cli.get("/uso/datos?k=" + llave).get_json()["como"]
+    comprueba("6 avisos del mismo vídeo (con el fichero roto y otro worker): cuenta 1",
+              pm.get("mando", 0) - antes_pm.get("mando", 0) == 1, (antes_pm, pm))
+    cli.post("/kb/now", json={"code": "111111", "np": {"title": "Otra peli", "elapsed": 1, "total": 5000}})
+    pm2 = cli.get("/uso/datos?k=" + llave).get_json()["como"]
+    comprueba("otro título en la misma tele: sí cuenta", pm2.get("mando", 0) == pm.get("mando", 0) + 1, pm2)
+    A._uso_muestra(A._t.time() + 900, forzar=True)
+    sv = cli.get("/uso/datos?k=" + llave).get_json()["servicio"]
+    comprueba("lo que recuerda los títulos no se toma por envíos que no arrancaron",
+              sum(x["ko"] for x in sv.values()) == 1, sv)
+    import inspect
+    comprueba("cada worker escribe su propio temporal (kbnow y kbstatus)",
+              "os.getpid()" in inspect.getsource(A._kbnow_save) and "os.getpid()" in inspect.getsource(A._kbstatus_save))
+
     print("\n=== 7) La página ===")
     r = cli.get("/uso")
     html = r.get_data(as_text=True)

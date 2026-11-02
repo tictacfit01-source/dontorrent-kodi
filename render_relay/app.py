@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl106"
+BUILD = "dtbl107"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -3330,7 +3330,10 @@ def _kbnow_load():
 
 def _kbnow_save(d):
     try:
-        tmp = _KB_NOW_FILE + ".tmp"
+        # (dtbl107) un temporal POR PROCESO: con uno compartido, dos workers
+        # escribiendo a la vez dejaban un JSON roto y la siguiente lectura salía
+        # vacía (el "Estás viendo" parpadeaba y cada vídeo parecía nuevo)
+        tmp = "%s.%d.tmp" % (_KB_NOW_FILE, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
             _json.dump(d, f)
         os.replace(tmp, _KB_NOW_FILE)
@@ -3355,7 +3358,7 @@ def _kbstatus_load():
 
 def _kbstatus_save(d):
     try:
-        tmp = _KB_STATUS_FILE + ".tmp"
+        tmp = "%s.%d.tmp" % (_KB_STATUS_FILE, os.getpid())     # (dtbl107) ver _kbnow_save
         with open(tmp, "w", encoding="utf-8") as f:
             _json.dump(d, f)
         os.replace(tmp, _KB_STATUS_FILE)
@@ -4473,9 +4476,8 @@ def kb_now_push():
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _KB_NOW_TTL}
     if isinstance(np, dict):
         # (dtbl106) ¿empieza un vídeo nuevo? (antes nada, u otro título)
-        antes = ((d.get(code) or {}).get("np") or {}).get("title")
         nuevo = str(np.get("title", ""))[:120]
-        if nuevo and nuevo != antes:
+        if nuevo and _uso_titulo_nuevo(code, nuevo, now):
             _uso_arranco(code, now)
         d[code] = {"np": {"title": str(np.get("title", ""))[:120],
                           "elapsed": int(np.get("elapsed", 0) or 0),
@@ -13470,7 +13472,7 @@ def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy):
             bf[0] += 1
     # los envíos que no han arrancado a tiempo: "no arrancó"
     caducados = [c for c, x in pend.items()
-                 if not x.get("hecho") and (now - float(x.get("ts") or 0)) > _USO_PEND_S]
+                 if not c.startswith("t:") and not x.get("hecho") and (now - float(x.get("ts") or 0)) > _USO_PEND_S]
     if caducados:
         with _FileLock(_USO_PEND_FILE):
             pend = _uso_pend_lee()
@@ -13510,6 +13512,34 @@ def _uso_pend_guarda(x, now):
 
 def _uso_dia_e(d, hoy):
     return d["dias"].setdefault(hoy, _uso_valida({"dias": {hoy: {}}})["dias"][hoy])
+
+
+_USO_VISTO = {}                 # por worker: code -> (título, última vez)
+_USO_VISTO_S = 600              # el mismo título en 10 min es el mismo vídeo
+
+
+def _uso_titulo_nuevo(code, titulo, now):
+    """¿Empieza un vídeo NUEVO en esa tele? Primero la memoria de este worker
+    (cero E/S en el 99 % de los avisos, que llegan cada 3 s); si no lo sabe,
+    el fichero común, bajo lock: así el otro worker no lo cuenta otra vez."""
+    ya = _USO_VISTO.get(code)
+    if ya and ya[0] == titulo and now - ya[1] < _USO_VISTO_S:
+        _USO_VISTO[code] = (titulo, now)
+        return False
+    _USO_VISTO[code] = (titulo, now)
+    if len(_USO_VISTO) > 3000:
+        for k in [k for k, v in _USO_VISTO.items() if now - v[1] > _USO_VISTO_S]:
+            _USO_VISTO.pop(k, None)
+    try:
+        with _FileLock(_USO_PEND_FILE):
+            pend = _uso_pend_lee()
+            x = pend.setdefault("t:" + code, {"ts": 0})
+            nuevo = not (x.get("t") == titulo and now - float(x.get("ts") or 0) < _USO_VISTO_S)
+            x.update(t=titulo[:120], ts=now)
+            _uso_pend_guarda(pend, now)
+        return nuevo
+    except Exception:
+        return False
 
 
 def _uso_arranco(code, now=None):
