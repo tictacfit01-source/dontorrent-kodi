@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl107"
+BUILD = "dtbl108"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13516,6 +13516,7 @@ def _uso_dia_e(d, hoy):
 
 _USO_VISTO = {}                 # por worker: code -> (título, última vez)
 _USO_VISTO_S = 600              # el mismo título en 10 min es el mismo vídeo
+_USO_VDIAG = {}
 
 
 def _uso_titulo_nuevo(code, titulo, now):
@@ -13525,6 +13526,7 @@ def _uso_titulo_nuevo(code, titulo, now):
     ya = _USO_VISTO.get(code)
     if ya and ya[0] == titulo and now - ya[1] < _USO_VISTO_S:
         _USO_VISTO[code] = (titulo, now)
+        _USO_VDIAG["mem"] = _USO_VDIAG.get("mem", 0) + 1
         return False
     _USO_VISTO[code] = (titulo, now)
     if len(_USO_VISTO) > 3000:
@@ -13535,6 +13537,14 @@ def _uso_titulo_nuevo(code, titulo, now):
             pend = _uso_pend_lee()
             x = pend.setdefault("t:" + code, {"ts": 0})
             nuevo = not (x.get("t") == titulo and now - float(x.get("ts") or 0) < _USO_VISTO_S)
+            _h = lambda v: _hl.md5(str(v).encode("utf-8")).hexdigest()[:6]
+            _USO_VDIAG["nuevo" if nuevo else "fich"] = _USO_VDIAG.get("nuevo" if nuevo else "fich", 0) + 1
+            if nuevo:     # (diagnóstico) qué cambió: huellas, nunca el título ni el código
+                _USO_VDIAG.setdefault("ult", []).append(
+                    [_h(code)[:4], _h(titulo), _h(ya[0]) if ya else None,
+                     int(now - ya[1]) if ya else None, _h(x.get("t")) if x.get("t") else None,
+                     int(now - float(x.get("ts") or 0)) if x.get("ts") else None, os.getpid(), len(titulo)])
+                _USO_VDIAG["ult"] = _USO_VDIAG["ult"][-12:]
             x.update(t=titulo[:120], ts=now)
             _uso_pend_guarda(pend, now)
         return nuevo
@@ -15447,7 +15457,7 @@ def catdiag():
     if _uso_es_admin(request):
         try:
             out["uso"] = {"copia": dict((k, v) for k, v in _USO_NUBE.items()),
-                          "dias": len(_uso_lee()["dias"])}
+                          "dias": len(_uso_lee()["dias"]), "vistos": _USO_VDIAG}
         except Exception:
             pass
         try:   # Cinubo (dtbl88): sin cookies ni nada de la sesión, solo cuentas
