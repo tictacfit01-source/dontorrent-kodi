@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl88"
+BUILD = "dtbl89"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14744,6 +14744,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 #devsheet{z-index:42}
 #lsheet{z-index:44}
 #mwdlg{z-index:46}
+#cbdlg,#wfdlg{z-index:40}   /* encima de la ficha de serie (.ov, 35): antes quedaban debajo */
 .sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:0;animation:up .2s ease;max-height:92vh;overflow-y:auto;overflow-x:hidden}
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
 .sh-poster{width:min(68vw,260px);aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 12px 34px rgba(0,0,0,.6)}
@@ -14930,6 +14931,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .cbb i{font-style:normal;font-weight:500;opacity:.75}
 .cbb:active{transform:scale(.96)}
 .cbmsg{font-size:13px;color:var(--sub);line-height:1.5}
+.cbmas{margin-top:10px}
+.cbmas>summary{cursor:pointer;color:var(--sub);font-size:13.5px;min-height:44px;display:flex;align-items:center}
 .ep.seen{opacity:.62}
 .ep.seen::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green)}
 .ep.seen .epl{text-decoration:line-through;text-decoration-color:rgba(48,209,88,.55)}
@@ -17832,20 +17835,34 @@ function cbCarga(o){var x=o.x,el=$(o.el);if(!el||!x||!x.tmdb_id)return;
   .catch(function(){if(CBSEL!==yo)return;yo.items=[];yo.err='red';cbPinta(o.el)})}
 function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
  if(!c.items.length){el.innerHTML=(elId==='cbd-l')?('<div class="cbmsg">'+(c.err?'Cinubo no contesta ahora mismo. Prueba en un rato.':'Cinubo no tiene este capítulo en castellano.')+'</div>'):'';return}
- el.innerHTML='<div class="cbt">📺 Streaming sin anuncios <span>· castellano · sin semillas</span></div><div class="cbr">'+
-  c.items.map(function(it,i){return '<button class="cbb" onclick="cbPlay('+i+')">▶ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+'</i></button>'}).join('')+'</div>'}
+ // un botón por servidor+calidad (dos "Vidara 1080p" son dos subidas del mismo
+ // capítulo: se ve uno; si falla, cbPlay prueba la otra). Arriba los que la tele
+ // abre sola; el resto, plegado y avisado.
+ var vistos={},bot=function(it,i){return '<button class="cbb" onclick="cbPlay('+i+')">▶ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+'</i></button>'},
+  seg='',otros='',n=0;
+ c.items.forEach(function(it,i){var k=it.srv+'|'+cbQ(it.q);if(vistos[k])return;vistos[k]=1;
+  if(CBABRE[it.srv]){seg+=bot(it,i);n++}else otros+=bot(it,i)});
+ el.innerHTML='<div class="cbt">📺 Streaming sin anuncios <span>· castellano · sin semillas</span></div>'+
+  (seg?('<div class="cbr">'+seg+'</div>'):'')+
+  (otros?((seg?'<details class="cbmas"><summary>Más servidores (pueden no abrir en la tele)</summary>':'')+'<div class="cbr">'+otros+'</div>'+(seg?'</details>':'')):'')}
+var CBABRE={VIDARA:1,LULUSTREAM:1};
+// las demás subidas del mismo servidor y calidad, por si la elegida falla
+function cbGemelos(c,i){var a=c.items[i],k=a.srv+'|'+cbQ(a.q);
+ return c.items.map(function(it,j){return j}).filter(function(j){var it=c.items[j];return j!==i&&(it.srv+'|'+cbQ(it.q))===k})}
 function cbEp(id){var e=EPS[id],x=OVDATA&&OVDATA.x;if(!e||!x)return;
  var t=(SHOW+' '+e.label).trim();$('cbd-t').textContent=t;
  $('cbdlg').classList.add('on');mwOpen('cbdlg',$('cbdlg').querySelector('.box'),function(){$('cbdlg').classList.remove('on')});
  cbCarga({x:x,el:'cbd-l',t:t,s:e.season,e:e.episode,dlg:1})}
-function cbPlay(i){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
+function cbPlay(i,resto){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
  var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
+ if(resto===undefined)resto=cbGemelos(c,i);
  toast('Abriendo '+cbNom(it.srv)+'…');
  fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){
+   if(!(d&&d.ok&&d.u)&&d&&d.error!=='captcha'&&resto.length){cbPlay(resto[0],resto.slice(1));return}
    if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
     if($('wfdlg').classList.contains('on')){dl=true;mwBack('wfdlg')}
     setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)})},dl?220:0);return}
-   toast(d&&d.error==='captcha'?'Cinubo pide una verificación ahora mismo: prueba en unos minutos':'Ese servidor no contesta: prueba con otro',6000)})
+   toast(d&&d.error==='captcha'?'Cinubo pide una verificación ahora mismo: prueba en unos minutos':(cbNom(it.srv)+' no contesta ahora: elige otro servidor'),6000)})
   .catch(function(){toast('No se pudo conectar: prueba otra vez')})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
