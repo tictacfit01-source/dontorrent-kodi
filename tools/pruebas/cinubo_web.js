@@ -147,8 +147,15 @@ console.log('\n=== 3) Al elegir ===');
   RESP = {};
   CTX.cbPlay(6);
   await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
-  comprueba('sin gemelos y sin servidor: dice cuál falló y que se elija otro',
-    PIDE.length === 1 && /Vidmoly no contesta ahora: elige otro servidor/.test(TOASTS.join(' ')), TOASTS);
+  for (let k = 0; k < 14; k++) await new Promise((r) => setImmediate(r));
+  comprueba('si falla: prueba SOLA los servidores que la tele abre (como mucho 4 más) y luego lo dice',
+    PIDE.length === 5 && /pruebo con Vidara/.test(TOASTS.join(' ')) && /elige otro servidor/.test(TOASTS[TOASTS.length - 1]), { PIDE, TOASTS });
+  PIDE.length = 0; TOASTS.length = 0; ENVIOS.length = 0;
+  RESP = { v1: { ok: false, error: 'muerto' }, v2: { ok: true, u: 'https://vidara.to/e/VIVO' } };
+  CTX.cbPlay(0);
+  for (let k = 0; k < 8; k++) await new Promise((r) => setImmediate(r));
+  comprueba('enlace muerto: lo dice y pasa al siguiente, que va a la tele',
+    /Ese enlace ya no existe: pruebo con Vidara/.test(TOASTS.join(' ')) && ENVIOS.length === 1 && ENVIOS[0].u === 'https://vidara.to/e/VIVO', { TOASTS, ENVIOS });
 
   console.log('\n---- VEREDICTO ----');
   if (fallos) { console.log(fallos + ' comprobaciones MAL'); process.exit(1); }

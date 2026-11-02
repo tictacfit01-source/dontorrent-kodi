@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl101"
+BUILD = "dtbl102"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13779,6 +13779,38 @@ def _cb_casa_valida(casa):
     return [str(x) for x in (casa or []) if _CB_COD.match(str(x))][:6] if isinstance(casa, list) else []
 
 
+def _cb_otras_valida(otras):
+    """Las cuentas de Cinubo de reserva (dtbl102): cada una, sus cookies sanas."""
+    if not isinstance(otras, list):
+        return []
+    out = []
+    for c in otras[:8]:
+        v = _cb_valida(c)
+        if any(k.startswith("remember_web_") or k == "seriesly_session" for k in v):
+            out.append(v)
+    return out
+
+
+def _cb_otras():
+    try:
+        with open(_CB_FILE, encoding="utf-8") as f:
+            return _cb_otras_valida((_json.load(f) or {}).get("otras"))
+    except Exception:
+        return []
+
+
+def _cb_cuentas():
+    """Todas las cuentas: la principal y las de reserva. El límite de Cinubo es
+    POR CUENTA (02-11: con mejorwolf castigada, otra cuenta entró a la primera
+    desde la misma casa) y la referencia de un enlace vale con cualquiera."""
+    c = _cb_cookies()
+    return ([c] if c else []) + [o for o in _cb_otras() if o != c]
+
+
+def _cb_cid(ck):
+    return _hl.sha256(_json.dumps(ck, sort_keys=True).encode("utf-8")).hexdigest()[:10]
+
+
 def _cb_casa():
     """Las teles de casa del dueño (dtbl93): Cinubo se pide primero por ellas,
     para que vea UNA casa y no treinta. Solo en /tmp y en la copia CIFRADA."""
@@ -13789,21 +13821,23 @@ def _cb_casa():
         return []
 
 
-def _cb_guarda_tmp(c, casa=None):
+def _cb_guarda_tmp(c, casa=None, otras=None):
     if casa is None:
         casa = _cb_casa()
+    if otras is None:
+        otras = _cb_otras()
     try:
         tmp = _CB_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump({"c": c, "casa": casa, "ts": _t.time()}, f)
+            _json.dump({"c": c, "casa": casa, "otras": otras, "ts": _t.time()}, f)
         os.replace(tmp, _CB_FILE)
     except Exception:
         pass
 
 
-def _cb_empaqueta(c, kc, km, casa=None):
+def _cb_empaqueta(c, kc, km, casa=None, otras=None):
     import base64
-    d = {"c": c, "casa": _cb_casa_valida(casa)}
+    d = {"c": c, "casa": _cb_casa_valida(casa), "otras": _cb_otras_valida(otras or [])}
     return "c1." + base64.b64encode(_uso_cifra(_json.dumps(d).encode("utf-8"), kc, km)).decode("ascii")
 
 
@@ -13821,11 +13855,13 @@ def _cb_desempaqueta(gz, kc, km):
         return None
 
 
-def _cb_desempaqueta_casa(gz, kc, km):
+def _cb_desempaqueta_casa(gz, kc, km, que="casa"):
     import base64
     try:
         d = _json.loads(_uso_descifra(base64.b64decode(gz[3:]), kc, km).decode("utf-8"))
-        return _cb_casa_valida(d.get("casa")) if isinstance(d, dict) else []
+        if not isinstance(d, dict):
+            return []
+        return _cb_otras_valida(d.get("otras")) if que == "otras" else _cb_casa_valida(d.get("casa"))
     except Exception:
         return []
 
@@ -13843,6 +13879,7 @@ def _cb_nube_lee():
         if not gz:
             return {}
         _CB["casa_nube"] = _cb_desempaqueta_casa(gz, kc, km)
+        _CB["otras_nube"] = _cb_desempaqueta_casa(gz, kc, km, "otras")
         return _cb_desempaqueta(gz, kc, km)
     except Exception:
         return None
@@ -13852,7 +13889,7 @@ def _cb_nube_sube(c):
     kc, km = _cb_claves()
     if not kc or not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1":
         return False
-    return _post_con_tope(_CB_SYNC, {"gz": _cb_empaqueta(c, kc, km, _cb_casa())}, 15.0) == 200
+    return _post_con_tope(_CB_SYNC, {"gz": _cb_empaqueta(c, kc, km, _cb_casa(), _cb_otras())}, 15.0) == 200
 
 
 def _cb_mtime():
@@ -13878,7 +13915,7 @@ def _cb_cookies():
         _CB["nube"] = "leida" if r is not None else "fallo"
         if r:
             c = r
-            _cb_guarda_tmp(c, _CB.get("casa_nube") or [])
+            _cb_guarda_tmp(c, _CB.get("casa_nube") or [], _CB.get("otras_nube") or [])
     if c:
         _CB["c"], _CB["mt"] = c, _cb_mtime()
     return c
@@ -13947,10 +13984,10 @@ def _cb_pide_una(box, c, path, q, pg, espera):
         return None, 0
 
 
-def _cb_pide(path="", q="", pg=1, espera=20.0):
+def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None):
     """(texto, status) de Cinubo por una caja (si una recibe 403, la siguiente).
-    (None, st) si no se pudo."""
-    c = _cb_cookies()
+    (None, st) si no se pudo. `ck`: la cuenta (si no, la principal)."""
+    c = ck or _cb_cookies()
     if not c:
         _CB["ult_err"] = "sin sesion"
         return None, 0
@@ -14028,10 +14065,10 @@ def _cb_enlaces_de(html):
 _CB_IFRAME_RE = re.compile(r'<iframe[^>]+src="(https://[^"]{8,300})"', re.I)
 
 
-def _cb_embed(ref):
+def _cb_embed(ref, ck=None):
     """La URL del reproductor del servidor (iframe) de un enlace. Es lo que la
     web de Cinubo pide al pulsar Reproducir; puede pedir captcha si se abusa."""
-    txt, st = _cb_get("/t/" + ref, json_=True, tope=12.0)
+    txt, st = _cb_pide(path="/t/" + ref, espera=12.0, ck=ck)
     if st != 200 or not txt:
         return None, "http %s" % st
     try:
@@ -14198,18 +14235,22 @@ def cb_enlaces():
 _CB_RITMO_FILE = "/tmp/mw_cbritmo.json"
 _CB_RITMO_N = 6
 _CB_RITMO_S = 60.0
-_CB_CALMA_S = 65.0
+_CB_CALMA_S = 120.0
 
 
-def _cb_ritmo(captcha=False):
-    """0 si se puede pedir ya (y lo apunta); si no, los segundos a esperar."""
+def _cb_ritmo(captcha=False, cid="_"):
+    """0 si se puede pedir ya con ESA cuenta (y lo apunta); si no, los segundos
+    a esperar. Cada cuenta lleva su propio ritmo (el límite es por cuenta)."""
     ahora = _t.time()
     with _FileLock(_CB_RITMO_FILE):
         try:
             with open(_CB_RITMO_FILE, encoding="utf-8") as f:
-                d = _json.load(f)
+                todo = _json.load(f)
         except Exception:
-            d = {}
+            todo = {}
+        if "a" not in todo:
+            todo = {"a": {}}
+        d = todo["a"].get(cid) or {}
         ts = [float(x) for x in (d.get("t") or []) if ahora - float(x) < _CB_RITMO_S]
         calma = float(d.get("calma") or 0)
         espera = 0.0
@@ -14221,14 +14262,33 @@ def _cb_ritmo(captcha=False):
             espera = _CB_RITMO_S - (ahora - min(ts)) + 1
         else:
             ts.append(ahora)
+        todo["a"][cid] = {"t": ts, "calma": calma}
         try:
             tmp = _CB_RITMO_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                _json.dump({"t": ts, "calma": calma}, f)
+                _json.dump(todo, f)
             os.replace(tmp, _CB_RITMO_FILE)
         except Exception:
             pass
     return int(espera + 0.999) if espera > 0 else 0
+
+
+# Enlaces MUERTOS (02-11: los dos Firestream de The Bear 5x01, "Video Not
+# Found"). Se mira la página del servidor antes de mandar nada a la tele; si
+# está borrado, la web pasa SOLA al siguiente servidor. Si no se puede saber
+# (el servidor no deja entrar a Render), se da por vivo: la tele lo dirá.
+_CB_MUERTO_RE = re.compile(r"(?i)video not found|file not found|file was deleted|no longer available|"
+                           r"has been removed|archivo no encontrado|video no encontrado|not found</title>")
+
+
+def _cb_vivo(url):
+    try:
+        txt, st = _get_con_tope(url, 7.0, headers={"User-Agent": _CB_UA, "Referer": _CB_BASE + "/"}, todo=True)
+    except Exception:
+        return True
+    if st in (404, 410):
+        return False
+    return not (st == 200 and _CB_MUERTO_RE.search((txt or "")[:20000]))
 
 
 @app.get("/cbembed")
@@ -14241,16 +14301,38 @@ def cb_embed_ruta():
     ya = _cb_cache_get("i", ref, _CB_TTL_EMBED)
     if ya:
         return jsonify({"ok": True, "u": ya})
-    esp = _cb_ritmo()
-    if esp:
-        _CB["esperas"] = _CB.get("esperas", 0) + 1
-        return jsonify({"ok": False, "error": "espera", "s": min(esp, 90)})
-    e, err = _cb_embed(ref)
+    if ya == "":
+        return jsonify({"ok": False, "error": "muerto"})
+    cuentas = _cb_cuentas()
+    if not cuentas:
+        return jsonify({"ok": False, "error": "no_disponible", "motivo": "sin sesion"})
+    # la que menos se ha usado primero, para repartir
+    _CB["turno"] = (_CB.get("turno", 0) + 1) % max(1, len(cuentas))
+    orden = cuentas[_CB["turno"]:] + cuentas[:_CB["turno"]]
+    e, err, minimo = None, "", None
+    for ck in orden:
+        cid = _cb_cid(ck)
+        esp = _cb_ritmo(cid=cid)
+        if esp:
+            minimo = esp if minimo is None else min(minimo, esp)
+            continue
+        e, err = _cb_embed(ref, ck)
+        if e:
+            break
+        if err == "captcha":                 # esa cuenta, a descansar; la siguiente
+            _cb_ritmo(captcha=True, cid=cid)
+            minimo = int(_CB_CALMA_S) if minimo is None else min(minimo, int(_CB_CALMA_S))
+            continue
+        break
     if not e:
-        if err == "captcha":                 # se calma el ritmo y se espera
-            _cb_ritmo(captcha=True)
-            return jsonify({"ok": False, "error": "espera", "s": int(_CB_CALMA_S), "motivo": "captcha"})
+        if err in ("", "captcha") and minimo:
+            _CB["esperas"] = _CB.get("esperas", 0) + 1
+            return jsonify({"ok": False, "error": "espera", "s": min(minimo, 90)})
         return jsonify({"ok": False, "error": "no_disponible", "motivo": err})
+    if not _bounded(lambda: _cb_vivo(e), 9.0, True):
+        _CB["muertos"] = _CB.get("muertos", 0) + 1
+        _cb_cache_pon("i", ref, "")
+        return jsonify({"ok": False, "error": "muerto"})
     _cb_cache_pon("i", ref, e)
     return jsonify({"ok": True, "u": e})
 
@@ -14431,11 +14513,13 @@ def cb_sesion_alta():
     if not any(k.startswith("remember_web_") or k == "seriesly_session" for k in c):
         return jsonify({"ok": False, "error": "faltan cookies"}), 400
     casa = _cb_casa_valida(body.get("casa")) if "casa" in body else None
+    otras = _cb_otras_valida(body.get("otras")) if "otras" in body else None
     with _CB_LOCK:
         _CB.update(c=c)
-    _cb_guarda_tmp(c, casa)
+    _cb_guarda_tmp(c, casa, otras)
     sub = _bounded(lambda: _cb_nube_sube(c), 20.0, False)
-    return jsonify({"ok": True, "n": len(c), "casa": len(_cb_casa()), "nube": bool(sub)})
+    return jsonify({"ok": True, "n": len(c), "casa": len(_cb_casa()), "cuentas": len(_cb_cuentas()),
+                    "nube": bool(sub)})
 
 
 @app.get("/cb/prueba")
@@ -14709,7 +14793,8 @@ def catdiag():
                                                     "ult_err", "captcha", "cupo_lleno", "nube")},
                              "apartadas_403": len([1 for v in _CB_MALAS.values() if _t.time() - v < _CB_MALAS_S]),
                              "vacias": _CB.get("vacias", 0), "ult_vacia": _CB.get("ult_vacia"),
-                             "esperas": _CB.get("esperas", 0)}
+                             "esperas": _CB.get("esperas", 0), "muertos": _CB.get("muertos", 0),
+                             "cuentas": len(_cb_cuentas())}
         except Exception:
             pass
     else:
@@ -18304,9 +18389,14 @@ function cbEp(id){var e=EPS[id],x=OVDATA&&OVDATA.x;if(!e||!x)return;
  var t=(SHOW+' '+e.label).trim();$('cbd-t').textContent=t;
  $('cbdlg').classList.add('on');mwOpen('cbdlg',$('cbdlg').querySelector('.box'),function(){$('cbdlg').classList.remove('on')});
  cbCarga({x:x,el:'cbd-l',t:t,s:e.season,e:e.episode,dlg:1})}
+// (dtbl102) si el enlace elegido está muerto o no da servidor: sus gemelos y
+// luego los demás servidores que la tele abre, sin que la persona haga nada.
+function cbSiguientes(c,i){var a=c.items[i],g=cbGemelos(c,i),vis={};vis[i]=1;g.forEach(function(j){vis[j]=1});
+ var mas=c.items.map(function(x,j){return j}).filter(function(j){return !vis[j]&&CBABRE[c.items[j].srv]&&(j!==i)});
+ return g.concat(mas).slice(0,4)}
 function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
  var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
- if(resto===undefined)resto=cbGemelos(c,i);vez=vez||0;
+ if(resto===undefined)resto=cbSiguientes(c,i);vez=vez||0;
  if(!vez)toast('Abriendo '+cbNom(it.srv)+'…');
  fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){
    // (dtbl101) Cinubo va con mucha gente: se espera lo que diga el relay y se
@@ -18314,7 +18404,9 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
    if(d&&d.error==='espera'&&vez<3){var sg=Math.max(3,Math.min(90,d.s||30));
     toast('⏳ Cinubo va con mucha gente: lo pongo en la tele en '+sg+' s',Math.min(sg*1000,8000));
     setTimeout(function(){if(CBSEL===c)cbPlay(i,resto,vez+1)},sg*1000);return}
-   if(!(d&&d.ok&&d.u)&&d&&d.error!=='espera'&&resto.length){cbPlay(resto[0],resto.slice(1),vez);return}
+   if(!(d&&d.ok&&d.u)&&d&&d.error!=='espera'&&resto.length){var nx=c.items[resto[0]];
+    toast((d.error==='muerto'?'Ese enlace ya no existe':cbNom(it.srv)+' no responde')+': pruebo con '+cbNom(nx&&nx.srv)+'…',4000);
+    cbPlay(resto[0],resto.slice(1),vez);return}
    if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
     if($('wfdlg').classList.contains('on')){dl=true;mwBack('wfdlg')}
     // (dtbl96) como el torrent: a la tele y el mando abierto. sendPlay cierra
@@ -18323,7 +18415,8 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
     setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)},null,function(r){if(!r)return;
       if(r.tele===false){toast('📴 Tu tele no está conectada. Enciéndela y abre Kodi: empezará sola',5500);return}
       toast('▶ En la tele');setTimeout(function(){openRemote();setTimeout(pollNow,1200)},450)})},dl?220:0);return}
-   toast(d&&d.error==='espera'?'Cinubo sigue muy ocupado: prueba en un par de minutos':(cbNom(it.srv)+' no contesta ahora: elige otro servidor'),6000)})
+   toast(d&&d.error==='espera'?'Cinubo sigue muy ocupado: prueba en un par de minutos':
+    (d&&d.error==='muerto'?'Ese enlace ya no existe en Cinubo: elige otro servidor':(cbNom(it.srv)+' no contesta ahora: elige otro servidor')),6000)})
   .catch(function(){toast('No se pudo conectar: prueba otra vez')})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}

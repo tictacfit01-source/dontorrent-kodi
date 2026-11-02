@@ -48,6 +48,13 @@ def fila(url, srv, q, lang):
 
 
 os.makedirs("/tmp", exist_ok=True)
+
+
+def quita(f):
+    try:
+        os.remove(f)
+    except Exception:
+        pass
 FICH = [A._CB_FILE, A._USO_FILE, A._CB_CACHE_FILE, A._CB_RITMO_FILE]
 copias = {}
 for f in FICH:
@@ -117,10 +124,10 @@ try:
     print("\n=== 4) El servidor (iframe) y el captcha ===")
     resp = {}
 
-    def falso_get(path, json_=False, tope=12.0, referer=None):
+    def falso_get(path="", json_=False, tope=12.0, referer=None, **kw):
         return resp.get("txt"), resp.get("st", 200)
-    real_get = A._cb_get
-    A._cb_get = falso_get
+    real_get = A._cb_pide
+    A._cb_pide = falso_get
     try:
         resp.update(txt=json.dumps({"e": '<iframe src="https:\\/\\/luluvdo.com\\/e\\/ve3xgnce2zrn" width="640"><\\/iframe>'}))
         e, err = A._cb_embed("eyJxxxxxxxxxxxxxxxxxxxxx")
@@ -134,7 +141,7 @@ try:
         resp.update(txt="<html>no json</html>", st=200)
         comprueba("algo que no es JSON: nada", A._cb_embed("eyJxxxxxxxxxxxxxxxxxxxxx")[0] is None)
     finally:
-        A._cb_get = real_get
+        A._cb_pide = real_get
 
     print("\n=== 5) Solo el dueño ===")
     cli = A.app.test_client()
@@ -172,6 +179,8 @@ try:
     print("\n=== 7) Por una caja (Render recibe 403 de Cinubo) ===")
     cola, respuestas = [], {}
     reales = (A._cb_cajas, A._kb_enqueue, A._catjob_wait, A._lend_acquire, A._lend_release)
+    real_vivo = A._cb_vivo
+    A._cb_vivo = lambda u: "muerto" not in u          # sin red: lo dice la URL
     A._cb_cajas = lambda: ["111111"]
     A._kb_enqueue = lambda box, ev: cola.append((box, ev))
     A._lend_acquire = lambda box: object()
@@ -289,7 +298,7 @@ try:
 
         print("\n=== 8d) El ritmo: nunca se llega al límite de Cinubo ===")
         try:
-            os.remove(A._CB_RITMO_FILE)
+            quita(A._CB_RITMO_FILE)
         except Exception:
             pass
         oks = 0
@@ -302,14 +311,15 @@ try:
                   oks == A._CB_RITMO_N and r.get("error") == "espera" and 0 < r.get("s", 0) <= 61, (oks, r))
         comprueba("lo que ya está en caché no cuenta ni espera",
                   cli.get("/cbembed?r=eyJpdiI6IlJJVE1PUklUTU9SSVRN0").get_json().get("u"))
-        os.remove(A._CB_RITMO_FILE)
+        quita(A._CB_RITMO_FILE)
         rc = "eyJpdiI6IkNBUFRDSEFDQVBUQ0hB"
         respuestas["/t/" + rc] = (200, json.dumps({"captcha_required": True}))
         r = cli.get("/cbembed?r=" + rc).get_json()
-        comprueba("si aun así salta el captcha: espera de 65 s (no 'error')", r.get("error") == "espera" and r.get("s") == 65, r)
+        comprueba("si aun así salta el captcha (y no hay otra cuenta): espera, como mucho 90 s (no 'error')",
+                  r.get("error") == "espera" and r.get("s") == 90, r)
         r = cli.get("/cbembed?r=eyJpdiI6IlJJVE1PUklUTU9SSVRNYY").get_json()
         comprueba("...y mientras dura la calma, nadie más le pide a Cinubo", r.get("error") == "espera" and r.get("s", 0) > 55, r)
-        os.remove(A._CB_RITMO_FILE)
+        quita(A._CB_RITMO_FILE)
 
         orden = A._cb_ordena([{"srv": "VOE", "q": "HD 1080p"}, {"srv": "LULUSTREAM", "q": "HD 720p"},
                                {"srv": "VIDARA", "q": "HD 720p"}, {"srv": "VIDARA", "q": "HD 1080p"},
@@ -368,6 +378,41 @@ try:
                   [x["kind"] for x in r.get("items", [])] == ["serie"] and len(cola) == n0, r)
         comprueba("otra pestaña: 400", cli.get("/cbinicio?kind=x").status_code == 400)
 
+        print("\n=== 8e) Varias cuentas y enlaces muertos ===")
+        quita(A._CB_RITMO_FILE)
+        OTRA_C = {REM: "eyJpdiI6IkNVRU5UQTJDVUVOVEEyQ1VFTlRBMj09In0%3D"}
+        r = cli.post("/cb/sesion", json={"c": BUENAS, "otras": [OTRA_C, {"basura": "x"}]}, headers={"X-MW-Uso": llave})
+        comprueba("/cb/sesion guarda las cuentas de reserva (solo las válidas)", r.get_json().get("cuentas") == 2, r.get_json())
+        usadas = []
+
+        def espera_cuentas(job, secs):
+            box, ev = cola[-1]
+            usadas.append(ev["ck"].get(REM, ""))
+            if ev["ck"] == BUENAS:
+                return {"html": json.dumps({"st": 200, "t": json.dumps({"captcha_required": True})})}
+            return {"html": json.dumps({"st": 200, "t": json.dumps({"e": '<iframe src="https://vidara.to/e/OTRA1"></iframe>'})})}
+        A._catjob_wait = espera_cuentas
+        A._CB["turno"] = len(A._cb_cuentas()) - 1        # que empiece por la principal
+        r = cli.get("/cbembed?r=eyJpdiI6IkNVRU5UQVNDVUVOVEFT").get_json()
+        comprueba("la principal pide captcha -> la de reserva lo saca, sin esperar",
+                  r.get("u") == "https://vidara.to/e/OTRA1" and usadas == [BUENAS[REM], OTRA_C[REM]], (r, usadas))
+        usadas.clear()
+        r = cli.get("/cbembed?r=eyJpdiI6IkNVRU5UQVNDVUVOVEFUMg").get_json()
+        comprueba("la castigada descansa: ya ni se le pregunta", r.get("u") and usadas == [OTRA_C[REM]], usadas)
+
+        def espera_muerto(job, secs):
+            return {"html": json.dumps({"st": 200, "t": json.dumps({"e": '<iframe src="https://firestream.site/e/muerto"></iframe>'})})}
+        A._catjob_wait = espera_muerto
+        rm = "eyJpdiI6Ik1VRVJUT01VRVJUT01V"
+        r = cli.get("/cbembed?r=" + rm).get_json()
+        comprueba("un enlace muerto (Video Not Found): 'muerto', no a la tele", r.get("error") == "muerto", r)
+        n0 = len(cola)
+        r = cli.get("/cbembed?r=" + rm).get_json()
+        comprueba("...y se recuerda: ni se vuelve a preguntar", r.get("error") == "muerto" and len(cola) == n0, r)
+        A._catjob_wait = espera
+        cli.post("/cb/sesion", json={"c": BUENAS, "otras": []}, headers={"X-MW-Uso": llave})
+        quita(A._CB_RITMO_FILE)
+
         print("\n=== 9) A la tele: la orden st ===")
         enviados = []
         A._kb_enqueue = lambda box, ev: enviados.append((box, ev))
@@ -384,6 +429,7 @@ try:
             comprueba("rechaza " + malo[:30], manda(malo).status_code == 400)
     finally:
         A._cb_cajas, A._kb_enqueue, A._catjob_wait, A._lend_acquire, A._lend_release = reales
+        A._cb_vivo = real_vivo
 finally:
     for f in FICH:
         try:
