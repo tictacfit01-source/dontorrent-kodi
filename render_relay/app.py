@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl91"
+BUILD = "dtbl92"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13794,11 +13794,24 @@ def _cb_nube_sube(c):
     return _post_con_tope(_CB_SYNC, {"gz": _cb_empaqueta(c, kc, km)}, 15.0) == 200
 
 
+def _cb_mtime():
+    try:
+        return os.path.getmtime(_CB_FILE)
+    except Exception:
+        return 0.0
+
+
 def _cb_cookies():
-    """Las cookies vigentes: memoria -> /tmp -> copia en la nube."""
-    if _CB["c"]:
+    """Las cookies vigentes: memoria -> /tmp -> copia en la nube. Si /tmp cambió
+    (la sesión se cambió en el OTRO worker), se relee: si no, este seguía con
+    la cuenta anterior hasta el siguiente despliegue (dtbl92)."""
+    mt = _cb_mtime()
+    if _CB["c"] and mt == _CB.get("mt"):
         return _CB["c"]
     c = _cb_lee_tmp()
+    if c:
+        _CB["c"], _CB["mt"] = c, mt
+        return c
     if not c and _EN_RENDER and os.environ.get("MW_SIN_NUBE") != "1":
         r = _cb_nube_lee()
         _CB["nube"] = "leida" if r is not None else "fallo"
@@ -13806,7 +13819,7 @@ def _cb_cookies():
             c = r
             _cb_guarda_tmp(c)
     if c:
-        _CB["c"] = c
+        _CB["c"], _CB["mt"] = c, _cb_mtime()
     return c
 
 

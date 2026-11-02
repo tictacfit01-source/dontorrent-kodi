@@ -141,6 +141,15 @@ try:
     comprueba("con llave: guardadas", r.status_code == 200 and r.get_json().get("n") == 2, r.get_json())
     comprueba("en /tmp, y se leen igual", A._cb_lee_tmp() == BUENAS)
     comprueba("y en memoria, las dos", A._cb_cookies() == BUENAS)
+    OTRA = {REM: "eyJpdiI6IkNVRU5UQU5VRVZBQ1VFTlRBTlVFVkE9PSJ9%3D"}
+    A._t.sleep(0.05)
+    A._cb_guarda_tmp(OTRA)                    # lo que haría /cb/sesion en el OTRO worker
+    os.utime(A._CB_FILE, (A._t.time() + 5, A._t.time() + 5))
+    comprueba("cambiada en el otro worker: este la relee (cuenta nueva, no la vieja)",
+              A._cb_cookies() == OTRA, A._cb_cookies())
+    A._cb_guarda_tmp(BUENAS)
+    os.utime(A._CB_FILE, (A._t.time() + 10, A._t.time() + 10))
+    comprueba("...y vuelta", A._cb_cookies() == BUENAS)
     comprueba("/catdiag pública no dice nada de Cinubo",
               "seriesly" not in cli.get("/catdiag").get_data(as_text=True))
 
