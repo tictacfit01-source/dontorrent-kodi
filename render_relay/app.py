@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl114"
+BUILD = "dtbl115"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14578,10 +14578,8 @@ function pinta(d){
   var hoy=(d.dia_parcial?'<p class="aviso">Hoy empezó a medirse el detalle: «lo normal por tele», cómo se eligen los vídeos (desde esta noche) y la calidad del servicio cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+
     '<div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles han visto algo</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas vistas</small></div><div><b>'+n(hoyE.pico)+'</b><small>a la vez como mucho'+(hoyE.pico_h?' ('+esc(hoyE.pico_h)+')':'')+'</small></div></div>'+
     lineas([["Lo normal que ve cada tele <small>(la mediana)</small>",d.med_min_tele?dur(d.med_min_tele):'<small>midiendo</small>'],
-            ["Vídeos que empiezan, elegidos…","<small>"+n(totN)+" en total</small>"],
-            ["…en el catálogo de la web",n(webN)+(totN?' <small>('+pct(webN,totN)+')</small>':'')],
-            ["…con el mando del móvil <small>(la lista de la tele en el móvil)</small>",n(movN)+(totN?' <small>('+pct(movN,totN)+')</small>':'')],
-            ["…en la propia tele <small>(su mando, o el siguiente capítulo solo)</small>",n(teleN)+(totN?' <small>('+pct(teleN,totN)+')</small>':'')]])+
+            ["Vídeos puestos desde la web",n(webN+movN)+(totN?' <small>('+pct(webN+movN,totN)+')</small>':'')],
+            ["Vídeos puestos en la propia tele <small>(con su mando, o el siguiente capítulo que Kodi pone solo)</small>",n(teleN)+(totN?' <small>('+pct(teleN,totN)+')</small>':'')]])+
     '<p class="nota" style="margin:14px 0 4px">Teles viendo algo a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH);
   // 3) CRECIMIENTO
   var cr=d.crece||{};
@@ -14612,7 +14610,7 @@ function pinta(d){
       ["Tele viendo algo","Un Kodi reproduciendo un vídeo, sea de MejorWolf o de cualquier otro sitio."],
       ["Horas vistas","Suma de los minutos de vídeo de todas las teles (sin contar las pausas)."],
       ["Kodi","Cada instalación del addon tiene su código. Una casa con tres teles son tres Kodis."],
-      ["Elegido en el catálogo / con el mando del móvil / en la tele","Cada vídeo que empieza: si se mandó desde el catálogo de la web, si se eligió en la lista de la tele que sale en el móvil (en los 3 min anteriores se tocó algo ahí), o si se puso en la propia tele con su mando (o Kodi pasó solo al siguiente capítulo)."],
+      ["Puesto desde la web / en la tele","Cada vídeo que empieza: desde la web, si se mandó a la tele o se tocó algo en la web en los 3 min anteriores; en la tele, si se puso con su propio mando (o Kodi pasó solo al siguiente capítulo)."],
       ["Fiel","Un Kodi que se ha encendido al menos 4 de los últimos 7 días."],
       ["Lo más visto","Lo que se ha reproducido de verdad: cuántas teles distintas y cuántas horas. Nunca se guarda en qué casa."]]));
 
