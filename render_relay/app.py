@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl93"
+BUILD = "dtbl94"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13888,25 +13888,19 @@ def _cb_cupo():
         return True
 
 
-def _cb_pide(path="", q="", pg=1, espera=20.0):
-    """(texto, status) de Cinubo por una caja. (None, 0) si no se pudo."""
-    c = _cb_cookies()
-    if not c:
-        _CB["ult_err"] = "sin sesion"
-        return None, 0
-    cajas = _cb_cajas()
-    if not cajas:
-        _CB["ult_err"] = "sin caja"
-        return None, 0
-    if not _cb_cupo():
-        _CB["ult_err"] = "cupo"
-        return None, 0
-    box = cajas[0]
+# Cajas a las que Cinubo (Cloudflare) contesta 403 aunque salgan por la misma
+# casa que otra a la que no: depende de como se conecta cada una (02-11: el
+# Comedor 403, el PC 200, misma red). Se apartan 6 h y se prueba la siguiente.
+_CB_MALAS = {}
+_CB_MALAS_S = 6 * 3600
+_CB_INTENTOS = 3
+
+
+def _cb_pide_una(box, c, path, q, pg, espera):
+    """(texto, status) por UNA caja; (None, 0) si no contesta."""
     sem = _lend_acquire(box)
     if sem is None:
-        _CB["ult_err"] = "caja ocupada"
-        return None, 0
-    t0 = _t.time()
+        return None, -1
     try:
         j = "cb" + os.urandom(5).hex()
         ev = {"c": "etjob", "job": j, "op": "cbget", "ck": c}
@@ -13918,12 +13912,41 @@ def _cb_pide(path="", q="", pg=1, espera=20.0):
         res = _catjob_wait(j, espera)
     finally:
         _lend_release(sem)
-    _CB["ult_ms"] = int((_t.time() - t0) * 1000)
     try:
         d = _json.loads((res or {}).get("html") or "")
-        st, txt = int(d.get("st") or 0), d.get("t") or ""
+        return d.get("t") or "", int(d.get("st") or 0)
     except Exception:
-        st, txt = 0, None
+        return None, 0
+
+
+def _cb_pide(path="", q="", pg=1, espera=20.0):
+    """(texto, status) de Cinubo por una caja (si una recibe 403, la siguiente).
+    (None, st) si no se pudo."""
+    c = _cb_cookies()
+    if not c:
+        _CB["ult_err"] = "sin sesion"
+        return None, 0
+    ahora = _t.time()
+    cajas = [b for b in _cb_cajas() if (ahora - _CB_MALAS.get(b, 0)) > _CB_MALAS_S]
+    if not cajas:
+        _CB["ult_err"] = "sin caja"
+        return None, 0
+    t0 = _t.time()
+    st, txt = 0, None
+    for box in cajas[:_CB_INTENTOS]:
+        if not _cb_cupo():
+            _CB["ult_err"] = "cupo"
+            return None, 0
+        txt, st = _cb_pide_una(box, c, path, q, pg, espera)
+        if st == 403:                       # a esta caja Cloudflare no la deja
+            _CB_MALAS[box] = _t.time()
+            _CB["cajas_403"] = _CB.get("cajas_403", 0) + 1
+            continue
+        if st == -1:                        # prestada a otra cosa: la siguiente
+            st = 0
+            continue
+        break
+    _CB["ult_ms"] = int((_t.time() - t0) * 1000)
     _CB["ult_st"] = st
     if st != 200:
         _CB["fallos"] += 1
@@ -14495,7 +14518,8 @@ def catdiag():
                              "hora": len([x for x in _CB["hora"] if _t.time() - x < 3600]),
                              "cupo_h": _CB_CUPO_H, "cache": {k: len(v) for k, v in _ca.items()},
                              **{k: _CB[k] for k in ("peticiones", "fallos", "ult_st", "ult_ms",
-                                                    "ult_err", "captcha", "cupo_lleno", "nube")}}
+                                                    "ult_err", "captcha", "cupo_lleno", "nube")},
+                             "apartadas_403": len([1 for v in _CB_MALAS.values() if _t.time() - v < _CB_MALAS_S])}
         except Exception:
             pass
     else:

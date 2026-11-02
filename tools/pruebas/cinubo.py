@@ -201,6 +201,31 @@ try:
                   and A._CB["ult_err"] == "sin caja")
         A._cb_cajas = lambda: ["111111"]
 
+        print("\n=== 7a) Una caja a la que Cloudflare dice 403: la siguiente ===")
+        A._CB_MALAS.clear()
+        A._cb_cajas = lambda: ["700001", "700002"]
+        real_espera = A._catjob_wait
+
+        def espera2(job, secs):
+            box, ev = cola[-1]
+            if box == "700001":
+                return {"html": json.dumps({"st": 403, "t": "cf"})}
+            return {"html": json.dumps({"st": 200, "t": html})}
+        A._catjob_wait = espera2
+        A._CB["hora"] = []
+        txt, st = A._cb_pide(path="/s/abc123/4x2")
+        comprueba("la 1ª da 403 -> la 2ª la trae", st == 200 and cola[-1][0] == "700002", (st, cola[-1][0]))
+        n0 = len(cola)
+        A._cb_pide(path="/s/abc123/4x2")
+        comprueba("y la 1ª queda apartada: ya no se le pide",
+                  len(cola) == n0 + 1 and cola[-1][0] == "700002", [c[0] for c in cola[n0:]])
+        A._CB_MALAS["700001"] = A._t.time() - A._CB_MALAS_S - 1
+        A._cb_pide(path="/s/abc123/4x2")
+        comprueba("pasadas 6 h se vuelve a probar", cola[n0 + 1][0] == "700001", [c[0] for c in cola[n0:]])
+        A._catjob_wait = real_espera
+        A._CB_MALAS.clear()
+        A._cb_cajas = lambda: ["111111"]
+
         print("\n=== 7b) Primero las teles de casa del dueño ===")
         rv = (A._live_boxes, A._kbstatus_load, A._cajas_libres)
         try:
