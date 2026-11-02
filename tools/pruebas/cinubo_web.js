@@ -30,8 +30,10 @@ function comprueba(n, ok, d) {
 console.log('\n=== 1) Por encima de la ficha de la serie ===');
 const z = (sel) => { const m = new RegExp(sel.replace(/[.#]/g, '\\$&') + '[^{]*\\{[^}]*z-index:(\\d+)').exec(src); return m ? +m[1] : null; };
 const zOv = Number(/\.ov\{[^}]*z-index:(\d+)/.exec(src)[1]);
-const zDlg = Number(/#cbdlg,#wfdlg\{z-index:(\d+)\}/.exec(src)[1]);
+const mz = /#cbdlg,#wfdlg(,#novdlg)?\{z-index:(\d+)\}/.exec(src);
+const zDlg = Number(mz[2]);
 comprueba('el cuadro de Cinubo y el de WolfMax, encima de .ov', zDlg > zOv, { zDlg, zOv });
+comprueba('el de Novedades, también', !!mz[1]);
 comprueba('...y debajo de los avisos (mwConfirm)', zDlg < Number(/#mwdlg\{z-index:(\d+)\}/.exec(src)[1]));
 
 const codigo = saca('var CBSEL=null;', '\nfunction seekTo(');

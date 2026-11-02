@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl89"
+BUILD = "dtbl90"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14744,7 +14744,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 #devsheet{z-index:42}
 #lsheet{z-index:44}
 #mwdlg{z-index:46}
-#cbdlg,#wfdlg{z-index:40}   /* encima de la ficha de serie (.ov, 35): antes quedaban debajo */
+#cbdlg,#wfdlg,#novdlg{z-index:40}   /* encima de la ficha de serie (.ov, 35): antes quedaban debajo */
 .sheet .box{width:100%;max-width:760px;margin:0 auto;background:#0e1320;border-top:1px solid var(--stroke);border-radius:20px 20px 0 0;padding:0;animation:up .2s ease;max-height:92vh;overflow-y:auto;overflow-x:hidden}
 @keyframes up{from{transform:translateY(30px)}to{transform:none}}
 .sh-poster{width:min(68vw,260px);aspect-ratio:2/3;margin:2px auto 14px;border-radius:14px;background:#0e1320 center/cover no-repeat;border:1px solid var(--stroke);box-shadow:0 12px 34px rgba(0,0,0,.6)}
@@ -14932,6 +14932,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .cbb:active{transform:scale(.96)}
 .cbmsg{font-size:13px;color:var(--sub);line-height:1.5}
 .cbmas{margin-top:10px}
+.novb{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:44px;margin:-4px 0 13px;padding:8px 14px;border-radius:12px;border:1px solid rgba(64,156,255,.35);background:rgba(64,156,255,.10);color:var(--txt);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
+.novb .novv{flex:none;color:#7dbbff;font-weight:600;position:relative;padding-right:4px}
+.novdot{position:absolute;top:-6px;right:-8px;width:8px;height:8px;border-radius:50%;background:#ff453a;display:none}
+.novb.nueva .novdot{display:block}
+.novp{margin-top:12px;font-size:14px;line-height:1.5}
+.novp b{display:block;margin-bottom:2px}
+.novok{background:var(--blue);border-color:var(--blue);color:#fff}
 .cbmas>summary{cursor:pointer;color:var(--sub);font-size:13.5px;min-height:44px;display:flex;align-items:center}
 .ep.seen{opacity:.62}
 .ep.seen::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green)}
@@ -15252,6 +15259,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <button class="chip" data-k="peliculas" onclick="chip('peliculas')">Cine</button>
    <button class="chip" data-k="series" onclick="chip('series')">Series</button>
   </div>
+  <button class="novb" id="nov-b" onclick="novAbre()"><span>✨ <b>Novedad:</b> streaming sin anuncios</span><span class="novv">Ver cómo ›<i class="novdot"></i></span></button>
   <div id="fuentes" class="fnt"></div>
   <div id="dt-aviso" class="dtav"></div>
   <div id="inicio-grid" class="msg"></div>
@@ -15329,6 +15337,16 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  </div>
 </div>
 <input type="file" id="wfz-f" style="display:none" onchange="wfSubeZip(this)">
+<div class="sheet mwd" id="novdlg" onclick="if(event.target===this)mwBack('novdlg')">
+ <div class="box">
+  <div class="mwd-t">✨ Novedad: streaming sin anuncios</div>
+  <div class="mwd-s">Muchas pelis y capítulos se pueden ver ahora también <b>en streaming</b>: en castellano, sin anuncios y sin esperar a que descargue.</div>
+  <div class="novp"><b>🎬 Película</b>Ábrela y, debajo de «Reproducir en la tele», elige un servidor (por ejemplo <i>Vidara 1080p</i>).</div>
+  <div class="novp"><b>📺 Serie</b>Toca el 📺 que hay junto a cada capítulo y elige un servidor.</div>
+  <div class="novp"><b>💡 Si no arranca</b>Prueba con otro servidor de la lista. Lo de siempre («Reproducir en la tele») sigue igual.</div>
+  <div class="mwd-b"><button class="mwd-x novok" onclick="mwBack('novdlg')">¡Entendido!</button></div>
+ </div>
+</div>
 <div class="sheet mwd" id="cbdlg" onclick="if(event.target===this)mwBack('cbdlg')">
  <div class="box">
   <div class="mwd-t" id="cbd-t"></div>
@@ -17821,6 +17839,13 @@ function playEp(id){var e=EPS[id];if(!e)return;
 // y la calidad, elige uno y va a la tele. Sin semillas (no es torrent). Solo se
 // le pide a Cinubo el enlace del servidor ELEGIDO (su límite salta con ráfagas).
 var CBSEL=null;
+// ---- Novedades (dtbl90): un aviso corto para quien no sabe de servidores ----
+var NOV_V='cinubo1';
+function novPinta(){var b=$('nov-b');if(!b)return;var v='';try{v=localStorage.getItem('mw_nov')||''}catch(e){}
+ b.classList.toggle('nueva',v!==NOV_V)}
+function novAbre(){try{localStorage.setItem('mw_nov',NOV_V)}catch(e){}novPinta();
+ $('novdlg').classList.add('on');mwOpen('novdlg',$('novdlg').querySelector('.box'),function(){$('novdlg').classList.remove('on')})}
+try{setTimeout(novPinta,0)}catch(e){}
 function cbNom(s){s=String(s||'');return s.charAt(0)+s.slice(1).toLowerCase()}
 function cbQ(q){var m=/(\d{3,4})p/i.exec(q||'');return m?m[1]+'p':String(q||'')}
 function cbCarga(o){var x=o.x,el=$(o.el);if(!el||!x||!x.tmdb_id)return;
