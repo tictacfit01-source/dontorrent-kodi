@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl112"
+BUILD = "dtbl113"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13522,7 +13522,7 @@ def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy, np=None):
     # y minutos. Antes solo contaba lo mandado desde la web.
     for c in rep:
         t = _uso_titulo(((np or {}).get(c) or {}).get("title"))
-        if t and t.lower() != "reproduciendo":
+        if t:
             vt = e.setdefault("vt", {})
             if t in vt or len(vt) < 400:
                 vt[t] = sorted(set(vt.get(t) or []) | {_uso_huella(c)[:6]})
@@ -13998,6 +13998,10 @@ _USO_ETIQ_RE = re.compile(
     r"castellano|spanish|esp|dual|multi|subs?|vose|proper|repack|microhd|fullbluray)\b.*$")
 
 
+_USO_TIT_BASURA = {"reproducir", "reproduciendo", "play", "playing", "video", "vídeo",
+                   "sin título", "untitled", "unknown", "desconocido", "stream"}
+
+
 def _uso_titulo(t):
     """El título sin el capítulo ni las etiquetas: 'The Bear · 5x02' -> 'The
     Bear'; 'Resident.Evil.2002.1080p.BluRay.mkv' -> 'Resident Evil'."""
@@ -14016,6 +14020,8 @@ def _uso_titulo(t):
         t = re.sub(r"\s+(19|20)\d\d$", "", t) or t
     t = _USO_CAP_RE.sub("", t).strip(" -·:")
     t = re.sub(r"[\x00-\x1f<>]", "", t)
+    if t.lower() in _USO_TIT_BASURA:          # lo que algunos addons ponen de título
+        return ""
     return t[:60]
 
 
@@ -14122,7 +14128,8 @@ def _uso_ahora(now=None):
         vers[e.get("v") or "?"] = vers.get(e.get("v") or "?", 0) + 1
     moviles = sum(1 for ts in (_kb_seen_load() or {}).values()
                   if (now - float(ts or 0)) < _KB_SEEN_TTL)
-    lista = sorted(({"t": _uso_titulo(x.get("title")) or "Sin título",
+    lista = sorted(({"t": _uso_titulo(x.get("title")) or (
+                        "Serie sin nombre" if re.search(r"\b\d{1,2}x\d{1,3}\b", str(x.get("title") or "")) else "Sin título"),
                      "cap": (re.search(r"\b(\d{1,2}x\d{1,3})\b", str(x.get("title") or "")) or [None, ""])[1],
                      "min": int(x.get("elapsed") or 0) // 60, "de": int(x.get("total") or 0) // 60,
                      "pausa": bool(x.get("paused"))} for x in np),
@@ -14411,7 +14418,16 @@ details summary{min-height:44px;display:flex;align-items:center;color:var(--bar)
 .hbv small{color:var(--mut);font-size:12px}
 .graf button.vacio i{background:transparent}
 .aviso{background:rgba(255,196,0,.10);border:1px solid rgba(255,196,0,.25);color:#ffd970;border-radius:10px;padding:8px 10px;font-size:13px;margin:0 0 12px}
-.tsv{font-size:13px}.tsv th,.tsv td{padding:7px 3px}
+.ix{position:sticky;top:0;z-index:5;display:flex;gap:6px;overflow-x:auto;padding:8px 0 10px;margin:0 0 6px;background:var(--bg);scrollbar-width:none}
+.ix::-webkit-scrollbar{display:none}
+.ix a{flex:0 0 auto;min-height:36px;display:flex;align-items:center;padding:0 12px;border-radius:18px;background:var(--card);border:1px solid var(--stroke);color:var(--sub);font-size:14px;text-decoration:none}
+.card{scroll-margin-top:60px}
+.pl{border-top:1px solid var(--stroke)}
+.pl:first-child{border-top:0}
+.pl summary{min-height:48px;color:var(--txt);font-size:15px}
+.pl summary small{color:var(--mut);font-size:12px;margin-left:6px}
+.plc{padding:0 0 14px}
+.tsv{font-size:13px}.nw{white-space:nowrap}.tsv th,.tsv td{padding:7px 3px}
 .def{margin:0}.def dt{font-size:14px;font-weight:600;margin-top:10px}.def dt:first-child{margin-top:0}.def dd{margin:2px 0 0;color:var(--sub);font-size:14px}
 </style></head><body><main id="m">
 <h1>Uso de MejorWolf</h1>
@@ -14469,15 +14485,15 @@ function lista(xs,vacio,cols){if(!xs||!xs.length)return '<p class="nota">'+vacio
   var top=xs.slice(0,10).map(h).join(""),resto=xs.slice(10).map(function(r,i){return h(r,i+10)}).join("");
   return '<table><tbody>'+top+'</tbody></table>'+(resto?'<details><summary>Ver '+(xs.length-10)+' más</summary><table><tbody>'+resto+'</tbody></table></details>':'');}
 function viendoHTML(a){var l=a.lista||[];if(!l.length)return '';
-  return '<p class="nota" style="margin:14px 0 6px">Lo que se está viendo ahora <small>(sin decir en qué casa)</small></p><table class="tsv"><tbody>'+
-   l.map(function(x){return '<tr><td>'+esc(x.t)+(x.cap?' <small class="tag">'+esc(x.cap)+'</small>':'')+(x.pausa?' <small class="tag">pausa</small>':'')+'</td><td>'+(x.de?n(x.min)+' de '+n(x.de)+' min':n(x.min)+' min')+'</td></tr>'}).join("")+'</tbody></table>';}
+  return '<p class="nota" style="margin:14px 0 6px">Qué se está viendo <small>(sin decir en qué casa)</small></p><table class="tsv"><tbody>'+
+   l.map(function(x){return '<tr><td>'+esc(x.t)+(x.cap?' <small class="tag">'+esc(x.cap)+'</small>':'')+(x.pausa?' <small class="tag">pausa</small>':'')+'</td><td class="nw">'+(x.de?n(x.min)+'/'+n(x.de)+' min':n(x.min)+' min')+'</td></tr>'}).join("")+'</tbody></table>';}
 function servicioHTML(d){
   var sv=d.servicio||{},ks=Object.keys(sv);
-  if(!ks.length)return '<section class="card"><h2>Calidad del servicio, hoy</h2><p class="nota">Aún no hay envíos medidos hoy.</p></section>';
+  if(!ks.length)return '<section class="card" id="s-serv"><h2>Calidad del servicio, hoy</h2><p class="nota">Aún no hay envíos medidos hoy.</p></section>';
   ks.sort(function(a,b){return (sv[b].ok+sv[b].ko)-(sv[a].ok+sv[a].ko)});
   var filas=ks.map(function(f){var x=sv[f],tot=x.ok+x.ko;
     return '<tr><td>'+esc(FC[f]||f)+'</td><td>'+n(tot+x.cambio)+'</td><td>'+(tot?pct(x.ok,tot):'–')+'</td><td>'+(x.seg_medio!=null?n(x.seg_medio)+' s':'–')+'</td><td>'+(x.min_viendo?pct(x.min_cargando,x.min_viendo):'–')+'</td></tr>'}).join("");
-  return '<section class="card"><h2>Calidad del servicio, hoy</h2>'+
+  return '<section class="card" id="s-serv"><h2>Calidad del servicio, hoy</h2><p class="nota" style="margin:-6px 0 12px">Lo que se manda a la tele desde la web: ¿llega a verse?</p>'+
    '<table class="tsv"><thead><tr><th>Fuente</th><th>Envíos</th><th>Arrancan</th><th>Tarda</th><th>Carga</th></tr></thead><tbody>'+filas+'</tbody></table>'+
    '<p class="nota" style="margin:10px 0 0">«Arrancan»: de lo que se manda a la tele desde la web, lo que llega a verse en menos de 6 min (si se cambia antes por otra cosa, no cuenta). «Tarda»: lo que pasa de media hasta ver la imagen. «Carga»: parte del tiempo de vídeo con la rueda de carga.</p>'+
    '<p class="nota" style="margin:14px 0 8px">Lo que de verdad se ve en pantalla (minutos)</p>'+barras(d.resolucion,RSN,["2160","1080","720","sd"])+'</section>';
@@ -14510,29 +14526,15 @@ function aparatosHTML(d){
    (Object.keys(pa).length?'<p class="nota" style="margin:14px 0 8px">País</p>'+barras(pa,pn,[]):'')+'</section>';
 }
 function defs(xs){return '<dl class="def">'+xs.map(function(x){return '<dt>'+x[0]+'</dt><dd>'+x[1]+'</dd>'}).join("")+'</dl>'}
+function seccion(id,titulo,cuerpo,sub){return '<section class="card" id="'+id+'"><h2>'+titulo+'</h2>'+(sub?'<p class="nota" style="margin:-6px 0 12px">'+sub+'</p>':'')+cuerpo+'</section>'}
+function plegable(titulo,cuerpo){return '<details class="pl"><summary>'+titulo+'</summary><div class="plc">'+cuerpo+'</div></details>'}
 function pinta(d){
   var a=d.ahora;
-  $st.textContent="Solo lo ves tú · se actualiza solo";
+  var ahoraH=new Date();$st.textContent="Solo lo ves tú · actualizado a las "+String(ahoraH.getHours()).padStart(2,"0")+":"+String(ahoraH.getMinutes()).padStart(2,"0");
   var dias=d.dias||[],hoyE=dias[dias.length-1]||{};
   var hr=d.horas_hoy||[];
-  // --- versiones de ahora ---
-  var vers=a.versiones||{},pub=d.publicada||"",vk=Object.keys(vers);
-  if(!pub)pub=vk.reduce(function(m,v){return v!=="?"&&(!m||vcmp(v,m)>0)?v:m},"");
-  var aldia=vk.reduce(function(s,v){return s+(pub&&vcmp(v,pub)>=0?vers[v]:0)},0);
-  vk.sort(function(x,y){return vcmp(y,x)});
-  var verTxt=a.kodis?('<b>'+n(aldia)+'</b> de '+n(a.kodis)+' con la última ('+esc(pub||"?")+')'+(a.kodis-aldia?' · '+n(a.kodis-aldia)+' por detrás: se ponen al día solos':'')):'Ningún Kodi encendido ahora';
-  var verLista=vk.map(function(v){return '<tr><td>'+esc(v)+(v===pub?' <small class="tag">última</small>':'')+'</td><td>'+n(vers[v])+'</td></tr>'}).join("");
-  // --- hoy ---
-  var cortosTxt=hoyE.km_n?(n(hoyE.cortos)+(hoyE.km_n<hoyE.kodis?' <small>(de '+n(hoyE.km_n)+' medidos)</small>':'')):'<small>midiendo desde hoy</small>';
-  var casasTxt=d.ip_medidas?n(hoyE.casas):'<small>midiendo desde hoy</small>';
-  var med=d.med_min_tele?dur(d.med_min_tele):'<small>midiendo desde hoy</small>';
-  var hoyLineas=lineas([
-    ["Casas distintas <small>(conexiones a internet)</small>",casasTxt],
-    ["Kodis encendidos solo un rato <small>(menos de 15 min)</small>",cortosTxt],
-    ["Lo normal que se ve cada tele <small>(la mediana)</small>",med],
-    ["Teles manejadas desde la web del móvil",n(hoyE.webs)],
-    ["Códigos que usan varias teles a la vez <small>(Kodi copiado)</small>",n(hoyE.compartidos)]]);
-  // --- días: 14 huecos fijos, los que aún no tienen datos quedan vacíos ---
+  var fmtH=function(i,v){return (i<10?"0":"")+i+":00–"+(i<9?"0":"")+(i+1)+":00: hasta "+n(v)+(v==1?" tele":" teles")+" viendo algo a la vez"};
+  // --- 14 días fijos para el gráfico de días ---
   var SL=14,porDia={};dias.forEach(function(x){porDia[x.dia]=x});
   var p0=d.hoy.split("-"),base=new Date(+p0[0],p0[1]-1,+p0[2]),huecos=[];
   for(var i=SL-1;i>=0;i--){var t=new Date(base);t.setDate(t.getDate()-i);
@@ -14540,35 +14542,76 @@ function pinta(d){
     huecos.push(porDia[iso]||{dia:iso,vacio:true,teles:0,kodis:0,pico:0,horas:0,casas:0})}
   var tv=huecos.map(function(x){return x.teles});
   var fmtD=function(i,v){var x=huecos[i];if(x.vacio)return fecha(x.dia,true)+": sin datos (se mide desde el "+fecha(d.desde)+")";
-    return fecha(x.dia,true)+": "+n(v)+(v==1?" tele":" teles")+" con algo puesto · "+n(x.kodis)+" Kodis · pico "+n(x.pico)+(x.pico_h?" a las "+x.pico_h:"")+" · "+String(x.horas).replace(".",",")+" h de tele"};
-  var fmtH=function(i,v){return (i<10?"0":"")+i+":00–"+(i<9?"0":"")+(i+1)+":00: hasta "+n(v)+(v==1?" tele":" teles")+" a la vez"};
+    return fecha(x.dia,true)+": "+n(v)+(v==1?" tele ha":" teles han")+" visto algo · pico "+n(x.pico)+(x.pico_h?" a las "+x.pico_h:"")+" · "+String(x.horas).replace(".",",")+" h vistas"};
   var nd=dias.length,totH=dias.reduce(function(s,x){return s+(x.horas||0)},0);
   var medTeles=nd?Math.round(dias.reduce(function(s,x){return s+x.teles},0)/nd):0;
-  var filas=dias.slice().reverse().map(function(x){return '<tr><td>'+esc(fecha(x.dia,true))+'</td><td>'+n(x.teles)+'</td><td>'+n(x.kodis)+'</td><td>'+(x.casas?n(x.casas):'–')+'</td><td>'+n(x.pico)+'</td><td>'+String(x.horas).replace(".",",")+'</td></tr>'}).join("");
-  var distLbl=nd<7?"Kodis distintos desde el "+esc(fecha(d.desde)):"Kodis distintos en 7 días";
+  // --- versiones ---
+  var vers=a.versiones||{},pub=d.publicada||"",vk=Object.keys(vers);
+  if(!pub)pub=vk.reduce(function(m,v){return v!=="?"&&(!m||vcmp(v,m)>0)?v:m},"");
+  var aldia=vk.reduce(function(s,v){return s+(pub&&vcmp(v,pub)>=0?vers[v]:0)},0);
+  vk.sort(function(x,y){return vcmp(y,x)});
+  var c=d.como||{},webN=c.web||0,teleN=c.mando||0;
+
+  // 1) AHORA
+  var ahora='<div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+'</span></div>'+
+    '<p class="linea">'+(a.en_pausa?n(a.en_pausa)+' en pausa · ':'')+n(a.kodis)+' Kodis encendidos</p>'+viendoHTML(a);
+  // 2) HOY
+  var hoy=(d.dia_parcial?'<p class="aviso">Hoy empezó a medirse el detalle: «Lo normal por tele», «web o tele» y la calidad del servicio cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+
+    '<div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles han visto algo</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas vistas</small></div><div><b>'+n(hoyE.pico)+'</b><small>a la vez como mucho'+(hoyE.pico_h?' ('+esc(hoyE.pico_h)+')':'')+'</small></div></div>'+
+    lineas([["Lo normal que ve cada tele <small>(la mediana)</small>",d.med_min_tele?dur(d.med_min_tele):'<small>midiendo</small>'],
+            ["Elegido desde la web del móvil",n(webN)+(webN+teleN?' <small>('+pct(webN,webN+teleN)+')</small>':'')],
+            ["Elegido en la tele <small>(mando o siguiente capítulo)</small>",n(teleN)+(webN+teleN?' <small>('+pct(teleN,webN+teleN)+')</small>':'')]])+
+    '<p class="nota" style="margin:14px 0 4px">Teles viendo algo a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH);
+  // 3) CRECIMIENTO
+  var cr=d.crece||{};
+  var nv=dias.filter(function(x){return x.nuevos!=null});
+  var crece='<div class="fila" style="margin-top:0"><div><b>'+n(d.activos_7)+'</b><small>'+(nd<7?"Kodis distintos desde el "+esc(fecha(d.desde)):"Kodis distintos en 7 días")+'</small></div><div><b>'+n(medTeles)+'</b><small>teles al día viendo algo (media)</small></div><div><b>'+n(Math.round(totH))+'</b><small>horas vistas en total</small></div></div>'+
+    '<p class="nota" style="margin:14px 0 4px">Teles que han visto algo, por día</p>'+grafico("dd",tv,[fecha(huecos[0].dia),"hoy"],fmtD)+
+    lineas([["Kodis nuevos hoy",nv.length?n(nv[nv.length-1].nuevos):'<small>desde el 2.º día</small>'],
+            ["Fieles <small>(4 días o más de los últimos 7)</small>",n(cr.fieles)],
+            ["Siguen viniendo <small>(de los que llegaron hace +7 días)</small>",cr.dias_medidos>=8?pct(cr.siguen,cr.llegaron_hace_7)+' <small>('+n(cr.siguen)+' de '+n(cr.llegaron_hace_7)+')</small>':'<small>a partir del '+esc(fecha(d.desde))+' + 8 días</small>'],
+            ["Lo han dejado <small>(sin aparecer entre 8 y 30 días)</small>",cr.dias_medidos>=8?n(cr.se_fueron):'<small>a partir del '+esc(fecha(d.desde))+' + 8 días</small>']]);
+  // 4) DETALLES (plegados)
+  var pa={},pn={};Object.keys(d.paises||{}).forEach(function(k){pa[k]=d.paises[k];pn[k]=pais(k)});
+  var filas=dias.slice().reverse().map(function(x){return '<tr><td>'+esc(fecha(x.dia,true))+'</td><td>'+n(x.teles)+'</td><td>'+n(x.kodis)+'</td><td>'+n(x.pico)+'</td><td>'+String(x.horas).replace(".",",")+'</td></tr>'}).join("");
+  var detalles=
+    plegable("Kodis y casas, hoy",lineas([
+      ["Kodis encendidos en algún momento <small>(vean algo o no)</small>",n(hoyE.kodis)],
+      ["Casas distintas <small>(conexiones; lo normal es un Kodi por casa)</small>",n(hoyE.casas)],
+      ["Kodis encendidos solo un rato <small>(menos de 15 min)</small>",hoyE.km_n?n(hoyE.cortos):'<small>midiendo</small>'],
+      ["Códigos que usan varias teles <small>(Kodi copiado: se arregla solo)</small>",n(hoyE.compartidos)]]))+
+    plegable("Lo que se manda desde la web, hoy",'<p class="nota" style="margin:0 0 8px">Por fuente</p>'+barras(hoyE.fuentes,FN,["dt","wf","et","dx","cb","otra"])+
+      '<p class="nota" style="margin:14px 0 8px">Por calidad</p>'+barras(hoyE.calidad,QN,["4k","1080","720","otra","nd"])+
+      '<p class="nota" style="margin:14px 0 8px">Películas o series</p>'+barras({movie:(d.tipo||{}).movie||0,tv:(d.tipo||{}).tv||0},{movie:"Películas",tv:"Series"},["movie","tv"]))+
+    plegable("Aparatos y países, hoy",(Object.keys(d.aparatos||{}).length?barras(d.aparatos,PLN,[])+'<p class="nota" style="margin:14px 0 8px">Versión de Kodi</p>'+barras(d.kodi,{},[]):'<p class="nota">Llega con la versión 2.9.93 del addon.</p>')+
+      (Object.keys(pa).length?'<p class="nota" style="margin:14px 0 8px">País</p>'+barras(pa,pn,[]):''))+
+    plegable("Versión del addon <small>("+n(aldia)+" de "+n(a.kodis)+" con la última)</small>",'<p class="nota" style="margin:0 0 8px">Las que van por detrás se ponen al día solas.</p><table><tbody>'+vk.map(function(v){return '<tr><td>'+esc(v)+(v===pub?' <small class="tag">última</small>':'')+'</td><td>'+n(vers[v])+'</td></tr>'}).join("")+'</tbody></table>')+
+    plegable("Tabla por días",'<table><thead><tr><th>Día</th><th>Teles</th><th>Kodis</th><th>Pico</th><th>Horas</th></tr></thead><tbody>'+filas+'</tbody></table>')+
+    plegable("Qué significa cada número",defs([
+      ["Tele viendo algo","Un Kodi reproduciendo un vídeo, sea de MejorWolf o de cualquier otro sitio."],
+      ["Horas vistas","Suma de los minutos de vídeo de todas las teles (sin contar las pausas)."],
+      ["Kodi","Cada instalación del addon tiene su código. Una casa con tres teles son tres Kodis."],
+      ["Elegido desde la web / en la tele","Cada vídeo que empieza: si se mandó desde el móvil, o se puso en la tele con el mando (o Kodi pasó solo al siguiente capítulo)."],
+      ["Fiel","Un Kodi que se ha encendido al menos 4 de los últimos 7 días."],
+      ["Lo más visto","Lo que se ha reproducido de verdad: cuántas teles distintas y cuántas horas. Nunca se guarda en qué casa."]]));
+
   $c.innerHTML=
-   '<section class="card"><h2>Ahora mismo</h2><div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+(a.en_pausa?" · "+n(a.en_pausa)+" en pausa":"")+'</span></div>'+
-   '<div class="fila"><div><b>'+n(a.kodis)+'</b><small>Kodis encendidos</small></div><div><b>'+n(a.webs)+'</b><small>con la web abierta</small></div><div><b>'+n(hoyE.pico)+'</b><small>pico de hoy'+(hoyE.pico_h?" ("+esc(hoyE.pico_h)+")":"")+'</small></div></div>'+
-   viendoHTML(a)+'<p class="linea">'+verTxt+'</p>'+(verLista?'<details><summary>Versiones de los Kodis encendidos</summary><table><thead><tr><th>Versión</th><th>Kodis</th></tr></thead><tbody>'+verLista+'</tbody></table></details>':'')+'</section>'+
-   '<section class="card"><h2>Hoy</h2>'+(d.dia_parcial?'<p class="aviso">Hoy es el día en que empezó a medirse el detalle: casas, ratos, fuentes, calidad del servicio y web o tele cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+'<div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles con algo puesto</small></div><div><b>'+n(hoyE.kodis)+'</b><small>Kodis encendidos en algún momento</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas de tele</small></div></div>'+
-   hoyLineas+
-   '<p class="nota" style="margin:14px 0 4px">Teles a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH)+usoHTML(d,hoyE)+'</section>'+servicioHTML(d)+
-   '<section class="card"><h2>Lo que se manda a la tele desde la web, hoy</h2><p class="nota" style="margin:0 0 8px">Por fuente</p>'+barras(hoyE.fuentes,FN,["dt","wf","et","dx","cb","otra"])+
-   '<p class="nota" style="margin:14px 0 8px">Por calidad</p>'+barras(hoyE.calidad,QN,["4k","1080","720","otra","nd"])+
-   '<p class="nota" style="margin:10px 0 0">Cada vez que se pulsa «a la tele» en la web, haya arrancado o no (eso está en «Calidad del servicio»).</p></section>'+buscaHTML(d)+creceHTML(d,dias)+aparatosHTML(d)+
-   '<section class="card"><h2>Últimos días</h2><div class="fila" style="margin-top:0"><div><b>'+n(d.activos_7)+'</b><small>'+distLbl+'</small></div><div><b>'+n(medTeles)+'</b><small>teles al día con algo puesto (media)</small></div><div><b>'+n(Math.round(totH))+'</b><small>horas de tele en total</small></div></div>'+
-   '<p class="nota" style="margin:14px 0 4px">Teles distintas con algo puesto, por día</p>'+grafico("dd",tv,[fecha(huecos[0].dia),"hoy"],fmtD)+
-   '<details><summary>Ver la tabla</summary><table><thead><tr><th>Día</th><th>Teles</th><th>Kodis</th><th>Casas</th><th>Pico</th><th>Horas</th></tr></thead><tbody>'+filas+'</tbody></table></details></section>'+
-   '<section class="card"><h2>Qué significa cada número</h2>'+defs([
-     ["Kodi","Cada instalación del addon tiene su código. Una casa con tres teles son tres Kodis."],
-     ["Tele con algo puesto","Un Kodi que ha reproducido algo, aunque sea un momento."],
-     ["Casa","Una conexión a internet distinta. Si alguien se lleva la tele a otra casa, cuenta dos."],
-     ["Un rato","Encendido menos de 15 minutos en el día: probarlo, encenderlo sin ver nada…"],
-     ["Fiel","Un Kodi que se ha encendido al menos 4 de los últimos 7 días."],
-     ["Código compartido","Varias teles con el mismo código porque se copió la instalación de Kodi. Cuentan como un solo Kodi y comparten mando: lo que se manda a ese código puede salir en cualquiera de ellas."],
-     ["Lo más visto","Lo que se ha reproducido de verdad en las teles: cuántas distintas y cuántas horas. Nunca se guarda cuál."]])+'</section>'+
-   '<p class="nota">Las búsquedas y lo más puesto se suman entre todos: nunca se guarda qué tele ni qué casa. Sin códigos, y las conexiones se guardan cifradas (nunca la IP). Datos desde el '+esc(fecha(d.desde))+'.</p>';
+   '<nav class="ix"><a href="#s-ahora">Ahora</a><a href="#s-hoy">Hoy</a><a href="#s-visto">Lo más visto</a><a href="#s-busca">Búsquedas</a><a href="#s-serv">Servicio</a><a href="#s-crece">Crecimiento</a><a href="#s-mas">Más</a></nav>'+
+   seccion("s-ahora","Ahora mismo",ahora)+
+   seccion("s-hoy","Hoy",hoy)+
+   seccion("s-visto","Lo más visto, 7 días",lista((d.semana||{}).vistos,"Aún no hay nada medido.",[1,2]),"Lo que se ha reproducido de verdad en las teles. Columnas: teles distintas · horas. Una serie junta sus capítulos.")+
+   buscaSec(d)+
+   servicioHTML(d)+
+   seccion("s-crece","Crecimiento",crece)+
+   seccion("s-mas","Más detalles",detalles)+
+   '<p class="nota">Nunca se guarda qué ve cada casa: sin códigos, y las conexiones se guardan cifradas (nunca la IP). Datos desde el '+esc(fecha(d.desde))+'.</p>';
   engancha("dh",fmtH,hr);engancha("dd",fmtD,tv);
+}
+function buscaSec(d){var s=d.semana||{};
+  return seccion("s-busca","Lo que busca la gente, 7 días",
+   '<p class="nota" style="margin:0 0 6px">Lo más buscado</p>'+lista(s.buscadas,"Aún no hay búsquedas medidas.",[1])+
+   '<p class="nota" style="margin:16px 0 6px">Buscado sin encontrar nada <small>(lo que falta en el catálogo)</small></p>'+lista(s.sin_nada,"Todas las búsquedas han encontrado algo.",[1]),
+   n(s.total_busquedas)+" búsquedas desde la web");
 }
 var t=null;
 function carga(){
