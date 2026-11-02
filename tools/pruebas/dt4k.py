@@ -198,6 +198,23 @@ try:
     doc = json.loads(gzip.decompress(base64.b64decode(subido.get("gz") or "")).decode()) if subido else {}
     comprueba("la subida lleva 'dt'", set(doc.get("dt") or {}) >= set(TORR), list(doc))
 
+    print("\n=== 7b) Con el Inicio que nunca se vacia (lo que paso en produccion) ===")
+    _pend_real = A._apr_pendientes
+    A._apr_pendientes = lambda items, now: ([("dt", "peliculas:1", {"title": "Una peli"})], [])
+    TORR["peliculas:1"] = ("Una peli (2026) [4K]", 999)
+    A._wfih_cambia(lambda d: (d["dt"].clear(), 1)[1])          # como si no hubiera mirado nada
+    A._DT4K.update({"t_lista": 0.0, "temps": [], "vistas": {}, "pend": []})
+    del pows[:]
+    for _ in range(12):
+        A._APR_T_DT[0] = 0.0
+        A._apr_ronda()
+    n_series = sum(1 for k in pows if k.startswith("series:"))
+    n_inicio = sum(1 for k in pows if k.startswith("peliculas:"))
+    comprueba("los dos avanzan a turnos (Inicio %d, Series 4K %d)" % (n_inicio, n_series),
+              n_series >= 3 and n_inicio >= 3, pows)
+    A._apr_pendientes = _pend_real
+    TORR.pop("peliculas:1", None)
+
     print("\n=== 8) Solo en Render; /catdiag ===")
     os.environ["MW_DT4K"] = "0"
     del pedidas[:]

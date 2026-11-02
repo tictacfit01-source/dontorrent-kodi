@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl82"
+BUILD = "dtbl83"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -11038,7 +11038,8 @@ _DT4K_CADA = 3 * 3600            # la lista de temporadas 4K
 _DT4K_TEMP_CADA = 12 * 3600      # cada temporada (van saliendo capitulos)
 _DT4K_TEMP_RE = re.compile(r'href="(/serie/\d+/\d+/[^"<>\s]{1,160}?-\d{1,2}-Temporada-4k)"', re.I)
 _DT4K = {"t_lista": 0.0, "temps": [], "vistas": {}, "pend": [], "lista_n": 0,
-         "caps_vistos": 0, "aprendidos": 0, "a_reserva": 0, "fallos_html": 0}
+         "caps_vistos": 0, "aprendidos": 0, "a_reserva": 0, "fallos_html": 0,
+         "alterna": 0}
 
 
 def _dt4k_activo():
@@ -11159,10 +11160,14 @@ def _apr_ronda():
         _WF_CRUCE_T[0] = now
         _bounded(_wf_cruce_dt, 20.0, 0)
     pend, viejos = _apr_pendientes(_apr_items_inicio(), now)
-    # (dtbl82) detras de las del Inicio, los capitulos de las Series 4K
+    # (dtbl82) los capitulos de las Series 4K, a turnos con los del Inicio: el
+    # Inicio casi nunca se queda sin nada de DonTorrent (semillas que caducan,
+    # fichas nuevas) y, solo detras, no les llegaba nunca la vez (medido en
+    # produccion: 1 h, 0 capitulos). Un PoW para el Inicio, el siguiente para 4K.
     try:
-        pend = pend + _bounded(lambda: _dt4k_pendientes(now), 40.0, []) if \
-            not any(s == "dt" for s, _k, _i in pend) else pend
+        extra = _bounded(lambda: _dt4k_pendientes(now), 40.0, []) or []
+        if extra:
+            pend = (extra + pend) if _DT4K["alterna"] % 2 else (pend + extra)
     except Exception:
         pass
     _APR["pendientes"] = len(pend)
@@ -11183,6 +11188,7 @@ def _apr_ronda():
             _APR_T_WF[0] = now
         if src == "dt":
             _APR_T_DT[0] = now
+            _DT4K["alterna"] += 1            # (dtbl82) le toca al otro
             r = _apr_dt(k)
         elif src == "wf":
             r = _apr_wf(k)
