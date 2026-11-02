@@ -47,9 +47,13 @@ comprueba("sin empaquetar: vacío", C.desempaqueta("<html></html>") == "")
 
 print("\n=== 3) Cada servidor por su familia ===")
 for u in ("https://luluvdo.com/e/x", "https://luluvido.com/e/x", "https://lulustream.com/e/x"):
-    comprueba("Lulustream: " + u[8:25], C.familia(u) is C._lulu)
+    comprueba("Lulustream: " + u[8:25], C.familia(u) is C._generico)
 for u in ("https://vidara.to/e/x", "https://vidaraa.cc/e/x"):
     comprueba("Vidara: " + u[8:25], C.familia(u) is C._vidara)
+for u in ("https://firestream.site/e/x", "https://frstream.life/e/x"):
+    comprueba("Firestream: " + u[8:25], C.familia(u) is C._firestream)
+comprueba("Vidhide (dominio distinto en cada enlace): sin familia, va al genérico",
+          C.familia("https://minochinos.com/embed/x") is None and callable(C._generico))
 for u in ("https://bysekoze.com/e/x", "https://hgcloud.to/e/x", "https://evil-luluvdo.com.attacker.net/e/x"):
     comprueba("otro (ResolveURL o nada): " + u[8:30], C.familia(u) is None)
 

@@ -56,7 +56,7 @@ const sendPlay = (ref) => { ENVIOS.push(ref); return true; };
 const _tituloBase = (t) => t;
 function fetch(u) {
   PIDE.push(u);
-  const r = RESP[decodeURIComponent((u.split('r=')[1] || ''))] || { ok: false, error: 'no_disponible' };
+  const r = RESP[decodeURIComponent(((u.split('r=')[1] || '').split('&')[0]))] || { ok: false, error: 'no_disponible' };
   return Promise.resolve({ json: () => Promise.resolve(r) });
 }
 const setTimeout2 = (f) => f();
@@ -129,11 +129,20 @@ console.log('\n=== 3) Al elegir ===');
     PIDE.length === 2 && ENVIOS.length === 1 && ENVIOS[0].a === 'st' && ENVIOS[0].u === 'https://vidara.to/e/OTRA'
     && ENVIOS[0].t === 'Ted Lasso 1x10', { PIDE, ENVIOS });
   PIDE.length = 0; ENVIOS.length = 0; TOASTS.length = 0;
-  RESP = { v1: { ok: false, error: 'captcha' } };
+  RESP = { v1: { ok: false, error: 'espera', s: 40 } };
   CTX.cbPlay(0);
-  await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
-  comprueba('con captcha no se insiste (una sola petición) y se dice', PIDE.length === 1 && ENVIOS.length === 0
-    && /verificación/.test(TOASTS.join(' ')), { PIDE, TOASTS });
+  for (let k = 0; k < 12; k++) await new Promise((r) => setImmediate(r));
+  comprueba('Cinubo ocupado: lo dice, espera y reintenta solo (3 veces, sin pasar a la gemela)',
+    PIDE.length === 4 && PIDE.every((u) => /r=v1&?/.test(u) || /r=v1$/.test(u)) && ENVIOS.length === 0
+    && /mucha gente: lo pongo en la tele en 40 s/.test(TOASTS.join(' '))
+    && /sigue muy ocupado/.test(TOASTS.join(' ')), { PIDE, TOASTS });
+  PIDE.length = 0; ENVIOS.length = 0; TOASTS.length = 0;
+  let veces = 0;
+  RESP = {};
+  Object.defineProperty(RESP, 'v1', { get: () => (++veces === 1 ? { ok: false, error: 'espera', s: 5 } : { ok: true, u: 'https://vidara.to/e/YA' }), enumerable: true });
+  CTX.cbPlay(0);
+  for (let k = 0; k < 12; k++) await new Promise((r) => setImmediate(r));
+  comprueba('...y en cuanto hay hueco, a la tele', PIDE.length === 2 && ENVIOS.length === 1 && ENVIOS[0].u === 'https://vidara.to/e/YA', { PIDE, ENVIOS });
   PIDE.length = 0; TOASTS.length = 0;
   RESP = {};
   CTX.cbPlay(6);

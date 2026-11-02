@@ -48,7 +48,7 @@ def fila(url, srv, q, lang):
 
 
 os.makedirs("/tmp", exist_ok=True)
-FICH = [A._CB_FILE, A._USO_FILE, A._CB_CACHE_FILE]
+FICH = [A._CB_FILE, A._USO_FILE, A._CB_CACHE_FILE, A._CB_RITMO_FILE]
 copias = {}
 for f in FICH:
     if os.path.exists(f):
@@ -286,6 +286,30 @@ try:
         comprueba("y la segunda vez, de la caché",
                   cli.get("/cbembed?r=" + ref).get_json().get("u") and len(cola) == n0)
         comprueba("/cbembed con una referencia rara: 400", cli.get("/cbembed?r=<script>").status_code == 400)
+
+        print("\n=== 8d) El ritmo: nunca se llega al límite de Cinubo ===")
+        try:
+            os.remove(A._CB_RITMO_FILE)
+        except Exception:
+            pass
+        oks = 0
+        for k in range(A._CB_RITMO_N):
+            rk = "eyJpdiI6IlJJVE1PUklUTU9SSVRN" + str(k)
+            respuestas["/t/" + rk] = (200, json.dumps({"e": '<iframe src="https://vidara.to/e/abc%d"></iframe>' % k}))
+            oks += bool(cli.get("/cbembed?r=" + rk).get_json().get("u"))
+        r = cli.get("/cbembed?r=eyJpdiI6IlJJVE1PUklUTU9SSVRNXX").get_json()
+        comprueba("6 seguidos van; el 7º espera (con los segundos), sin pedirlo a Cinubo",
+                  oks == A._CB_RITMO_N and r.get("error") == "espera" and 0 < r.get("s", 0) <= 61, (oks, r))
+        comprueba("lo que ya está en caché no cuenta ni espera",
+                  cli.get("/cbembed?r=eyJpdiI6IlJJVE1PUklUTU9SSVRN0").get_json().get("u"))
+        os.remove(A._CB_RITMO_FILE)
+        rc = "eyJpdiI6IkNBUFRDSEFDQVBUQ0hB"
+        respuestas["/t/" + rc] = (200, json.dumps({"captcha_required": True}))
+        r = cli.get("/cbembed?r=" + rc).get_json()
+        comprueba("si aun así salta el captcha: espera de 65 s (no 'error')", r.get("error") == "espera" and r.get("s") == 65, r)
+        r = cli.get("/cbembed?r=eyJpdiI6IlJJVE1PUklUTU9SSVRNYY").get_json()
+        comprueba("...y mientras dura la calma, nadie más le pide a Cinubo", r.get("error") == "espera" and r.get("s", 0) > 55, r)
+        os.remove(A._CB_RITMO_FILE)
 
         orden = A._cb_ordena([{"srv": "VOE", "q": "HD 1080p"}, {"srv": "LULUSTREAM", "q": "HD 720p"},
                                {"srv": "VIDARA", "q": "HD 720p"}, {"srv": "VIDARA", "q": "HD 1080p"},

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Cinubo (antigua series.ly): streaming en castellano (2.9.91).
+"""Cinubo (antigua series.ly): streaming en castellano (2.9.91; 2.9.92 más servidores).
 
 Dos cosas, las dos desde la IP de casa (Cloudflare no deja entrar al relay):
 
@@ -128,16 +128,107 @@ def _con_cabeceras(url, origen, con_origin=True):
     return url + "|" + urlencode(cab, quote_via=quote)
 
 
-def _lulu(url, s):
+_LINKS = re.compile(r"var\s*links\s*=\s*(\{[^;]{10,3000}\})")
+
+
+def _generico(url, s):
+    """La familia Lulustream / Vidhide / Streamwish-XFS (2.9.92): la página trae
+    el reproductor empaquetado (P.A.C.K.E.R) con un m3u8 o un objeto
+    `links` {hls2, hls3, hls4}. Vidhide cambia de dominio en CADA enlace
+    (minochinos.com, callistanise.com...): por eso se prueba con cualquiera."""
     r = s.get(url, headers={"Referer": BASE + "/"}, timeout=(6, 15))
     if r.status_code != 200:
         raise NoSale("http %s" % r.status_code)
     txt = r.text or ""
-    claro = desempaqueta(txt) or txt
+    claro = txt + " " + desempaqueta(txt)
+    org = _origen(r.url)
+    m = _LINKS.search(claro)
+    if m:
+        try:
+            ls = json.loads(m.group(1))
+        except ValueError:
+            ls = {}
+        for k in ("hls4", "hls3", "hls2"):
+            v = str(ls.get(k) or "")
+            if v.startswith("/"):
+                v = org + v
+            if v.startswith("http"):
+                return _para_kodi(v, org)
     m = _M3U8.search(claro)
     if not m:
         raise NoSale("sin m3u8")
-    return _con_cabeceras(m.group(0), _origen(r.url), con_origin=False)
+    return _para_kodi(m.group(0), org)
+
+
+def _calienta(m3u8, cab):
+    """Despierta el servidor ANTES de dárselo a Kodi: la lista maestra, la del
+    vídeo y el principio del primer trozo. Medido el 02-11: Vidhide y Firestream
+    tardan hasta 26 s la PRIMERA vez que se pide un vídeo, Kodi se rinde antes
+    ("Error creating demuxer") y a la segunda va al instante. True si respondió."""
+    try:
+        from urllib.parse import urljoin
+    except ImportError:  # pragma: no cover
+        from urlparse import urljoin
+    try:
+        r = requests.get(m3u8, headers=cab, timeout=(6, 30))
+        if r.status_code != 200 or "#EXTM3U" not in (r.text or "")[:200]:
+            return False
+        lineas = [l.strip() for l in r.text.splitlines() if l.strip() and not l.startswith("#")]
+        if lineas and ".m3u8" in lineas[0].split("?")[0]:
+            v = urljoin(m3u8, lineas[0])
+            r2 = requests.get(v, headers=cab, timeout=(6, 30))
+            trozos = [l.strip() for l in (r2.text or "").splitlines() if l.strip() and not l.startswith("#")]
+            base = v
+        else:
+            trozos, base = lineas, m3u8
+        if trozos:
+            t = requests.get(urljoin(base, trozos[0]), headers=cab, timeout=(6, 30), stream=True)
+            try:
+                for _ in t.iter_content(65536):
+                    break
+            finally:
+                t.close()
+        return True
+    except Exception:
+        return False
+
+
+def _para_kodi(m3u8, org):
+    """La emisión, despierta, para Kodi: TAL CUAL si abre sin cabeceras; si no,
+    con las suyas (Lulustream pide Referer)."""
+    if _calienta(m3u8, {}):
+        return m3u8
+    _calienta(m3u8, {"User-Agent": UA, "Referer": org + "/"})
+    return _con_cabeceras(m3u8, org, con_origin=False)
+
+
+_lulu = _generico                         # (compatibilidad: así se llamaba)
+
+
+def _firestream(url, s):
+    """Firestream (2.9.92): su página trae un token-blob de un solo uso; se cambia
+    por la URL firmada en /api/videos/<id>/resolve (JSON)."""
+    r = s.get(url, headers={"Referer": BASE + "/"}, timeout=(6, 15))
+    if r.status_code != 200:
+        raise NoSale("http %s" % r.status_code)
+    m = re.search(r'id="token-blob"[^>]*>([^<]+)', r.text or "")
+    if not m:
+        raise NoSale("sin token")
+    o = _origen(r.url)
+    vid = urlparse(r.url).path.rstrip("/").split("/")[-1]
+    if not re.match(r"^[0-9A-Za-z_-]{4,40}$", vid):
+        raise NoSale("id raro")
+    j = s.post(o + "/api/videos/%s/resolve" % vid, json={"blob": m.group(1).strip()},
+               headers={"Referer": r.url, "Origin": o}, timeout=(6, 15))
+    if j.status_code != 200:
+        raise NoSale("http %s" % j.status_code)
+    su = str((j.json() or {}).get("signedVideoUrl") or "")
+    if su.startswith("/"):
+        su = o + su
+    if not su.startswith("http"):
+        raise NoSale("sin signedVideoUrl")
+    _calienta(su, {"User-Agent": UA})
+    return su + "|" + urlencode({"User-Agent": UA}, quote_via=quote)
 
 
 def _vidara(url, s):
@@ -157,8 +248,9 @@ def _vidara(url, s):
 
 # familia de dominios -> cómo se abre (cambian de dominio a menudo: por nombre)
 _FAMILIAS = (
-    (re.compile(r"(^|\.)lulu[a-z]*\.[a-z]{2,6}$"), _lulu),
+    (re.compile(r"(^|\.)lulu[a-z]*\.[a-z]{2,6}$"), _generico),
     (re.compile(r"(^|\.)vidar+a+\.[a-z]{2,6}$"), _vidara),
+    (re.compile(r"(^|\.)(firestream|frstream)\.[a-z]{2,6}$"), _firestream),
 )
 
 
@@ -189,6 +281,15 @@ def resolver(url):
             raise NoSale(type(e).__name__)
         finally:
             s.close()
+    # (2.9.92) ninguna familia conocida: la del empaquetado es la más común
+    s = requests.Session()
+    s.headers.update({"User-Agent": UA})
+    try:
+        return _generico(url, s)
+    except Exception:
+        pass
+    finally:
+        s.close()
     try:
         import resolveurl  # noqa: F401  (script.module.resolveurl, si está)
         hm = resolveurl.HostedMediaFile(url=url)
