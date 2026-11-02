@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl83"
+BUILD = "dtbl84"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14565,7 +14565,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .wfd-b small{font-size:12.5px;font-weight:500;color:var(--sub)}
 .wfd-b.pri{background:var(--blue);border-color:var(--blue);color:#fff}
 .wfd-b.pri small{color:rgba(255,255,255,.82)}
-.mwd-b.wfd-pie{justify-content:space-between;flex-wrap:wrap}
+.wfd-mas{margin-top:12px}
+.wfd-mas>summary{cursor:pointer;color:var(--sub);font-size:13.5px;min-height:44px;display:flex;align-items:center}
 .wfz{margin-top:8px;line-height:1.45}
 .wfz-r{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .wfz-b{border:1px solid rgba(255,214,10,.45);background:rgba(255,214,10,.12);color:inherit;
@@ -14835,16 +14836,19 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 </div>
 <div class="sheet mwd" id="wfdlg" onclick="if(event.target===this)mwBack('wfdlg')">
  <div class="box">
-  <div class="mwd-t">WolfMax pide verificar cada descarga</div>
-  <div class="mwd-s">Consigue <b id="wfd-n"></b> en dos toques y lo mandamos a la tele. Queda guardado para toda la casa.</div>
+  <div class="mwd-t">Esta versión no se puede poner directamente</div>
+  <div class="mwd-s">WolfMax pide verificar a mano cada descarga de <b id="wfd-n"></b>. Lo buscamos en las otras fuentes.</div>
   <div class="wfd-pasos">
-   <button class="wfd-b pri" id="wfd-1" onclick="wfAbre()">1 · Abrir en WolfTorrent<small>Marca la casilla y el .torrent se descarga solo</small></button>
-   <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas (o compártelo con MejorWolf desde la descarga)</small></button>
+   <button class="wfd-b pri" onclick="wfOtras()">Buscar en otras fuentes<small>Te enseña dónde más está, sin pasos</small></button>
   </div>
+  <details class="wfd-mas" id="wfd-mas"><summary>Prefiero conseguirlo de WolfMax (2 pasos)</summary>
+  <div class="wfd-pasos">
+   <button class="wfd-b" id="wfd-1" onclick="wfAbre()">1 · Abrir en WolfTorrent<small>Marca la casilla y el .torrent se descarga solo</small></button>
+   <button class="wfd-b" onclick="wfElige()">2 · Ya lo tengo: elegir el .torrent<small>Está en Descargas (o compártelo con MejorWolf desde la descarga)</small></button>
+  </div></details>
   <div class="mwd-s" id="wfd-est" aria-live="polite"></div>
   <input type="file" id="wfd-f" style="display:none" onchange="wfSube(this)">
-  <div class="mwd-b wfd-pie">
-   <button class="mwd-x" onclick="wfOtras()">Buscar en otras fuentes</button>
+  <div class="mwd-b">
    <button class="mwd-x" onclick="mwBack('wfdlg')">Cerrar</button>
   </div>
  </div>
@@ -16774,6 +16778,7 @@ function wfMetaQS(p){return p?('&t='+encodeURIComponent(p.t||'')+'&q='+encodeURI
 function wfConsigueDlg(d,t){WFPIDE=WFPIDE||{};if(!WFPIDE.t)WFPIDE.t=t||'';WFPIDE.gw=(d&&d.wolftorrent)||'';
  $('wfd-n').textContent=WFPIDE.t||'este título';
  $('wfd-1').style.display=WFPIDE.gw?'':'none';
+ var dm=$('wfd-mas');if(dm)dm.open=false;
  $('wfdlg').classList.add('on');
  var e=$('wfd-est');if(e)e.textContent='';
  // cerrarlo es "ya no lo quiero": se deja de esperar (nada arranca la tele por sorpresa)
@@ -17041,10 +17046,11 @@ function buscaOtras(t){t=String(t||'').trim();if(!t)return;
 // las que no se sabe nada no se afirma nada. Cada carga del Inicio lo repinta,
 // asi que se va solo cuando vuelven.
 function _listaY(a){return a.length<2?(a[0]||''):(a.slice(0,-1).join(', ')+' y '+a[a.length-1])}
+// La verificacion de WolfMax ya NO se anuncia en el Inicio ni pide subir el
+// ZIP (dtbl84): la gente quiere sofa, no tareas. Se resuelve solo al reproducir.
 function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);ULTCAIDAS=d;
  var c=((d&&d.caidas)||[]).slice();if(d&&d.dt_caida&&c.indexOf('dt')<0)c.unshift('dt');
  var wv=!!(d&&d.wf_verif)&&c.indexOf('wf')<0;
- if(!c.length&&wv){e.innerHTML='ℹ️ <b>WolfMax pide ahora verificar cada descarga</b> (una casilla). Lo que ya conocemos se ve igual; lo demás lo consigues en dos toques al darle a reproducir.'+wfZipHTML(d);e.classList.add('on');return}
  if(!c.length){e.classList.remove('on');e.innerHTML='';return}
  var nom=c.map(function(s){return PROGN[s]||s}),un=nom.length===1;
  // WolfMax con verificacion humana NO "funciona" para la tele: ni en la lista
@@ -17053,7 +17059,7 @@ function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);ULTCAIDAS=
  var viv=((d&&d.vivas)||[]).filter(function(s){return c.indexOf(s)<0&&!(wv&&s==='wf')}).map(function(s){return PROGN[s]||s});
  e.innerHTML='⚠️ <b>'+_listaY(nom)+(un?' está caído':' están caídos')+' ahora mismo</b> — es un fallo de '+(un?'su web':'sus webs')+'. Sus títulos pueden no abrir'+
   (viv.length?('; '+_listaY(viv)+(viv.length===1?' sí funciona':' sí funcionan')):'')+'.'+
-  (wv?'<br>ℹ️ <b>WolfMax pide ahora verificar cada descarga</b>: lo ya conocido se ve igual; lo demás, en dos toques al darle a reproducir.'+wfZipHTML(d):'');
+ '';
  e.classList.add('on');}
 function pintaDtAviso(dc){pintaCaidas(dc?{dt_caida:dc}:null)}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;

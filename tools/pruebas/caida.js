@@ -163,14 +163,13 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
   pintaCaidas({ items: [] });
   comprueba('sin caidas, fuera', !$('dt-aviso').classList.contains('on'));
   pintaCaidas({ wf_verif: true });
-  comprueba('WolfMax con verificacion humana (dtbl70): se dice, sin decir que esta caido',
-    $('dt-aviso').classList.contains('on') && /verificar cada descarga/.test($('dt-aviso').innerHTML)
-    && !/caído/.test($('dt-aviso').innerHTML), $('dt-aviso').innerHTML);
+  comprueba('WolfMax con verificacion humana (dtbl84): el Inicio NO avisa ni pide subir ZIP',
+    !$('dt-aviso').classList.contains('on') && !/ZIP|verificar/.test($('dt-aviso').innerHTML), $('dt-aviso').innerHTML);
   pintaCaidas({ caidas: ['et'], vivas: ['dt', 'wf', 'dx'], wf_verif: true });
   const av3 = $('dt-aviso').innerHTML;
-  comprueba('EliteTorrent caida + WolfMax con verificacion (08-10): WolfMax NO "funciona", y se dice por que',
+  comprueba('EliteTorrent caida + WolfMax con verificacion: WolfMax NO "funciona", sin tareas de ZIP',
     /EliteTorrent está caído/.test(av3) && /DonTorrent y DivxTotal sí funcionan/.test(av3)
-    && !/WolfMax[^<]*sí funciona/.test(av3) && /verificar cada descarga/.test(av3), av3);
+    && !/WolfMax[^<]*sí funciona/.test(av3) && !/ZIP|verificar/.test(av3), av3);
   pintaCaidas({ items: [] });
 
   console.log('\n=== 4c) Reproducir de una fuente caida (WolfMax) ===');
