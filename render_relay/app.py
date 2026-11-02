@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl99"
+BUILD = "dtbl100"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14925,10 +14925,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .devnm{font-size:15px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .devcc{font-size:12px;color:var(--sub);letter-spacing:2px;font-variant-numeric:tabular-nums;margin-top:2px}
 .devold{font-size:11.5px;line-height:1.35;color:#ffb340;margin-top:4px;white-space:normal}
-.devv{font-size:11.5px;line-height:1.35;color:var(--sub);margin-top:3px}
-.devv.ok{color:#30d158}.devv.nueva{color:#ffb340}
-.devver{font-size:13px;color:var(--sub);margin:2px 0 10px;text-align:center}
-.devver b{color:var(--txt)}
+.devpill{display:flex;width:max-content;align-items:center;gap:4px;margin:5px 0 1px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0;font-variant-numeric:tabular-nums;white-space:nowrap}
+.devpill.vok{background:rgba(48,209,88,.12);color:#6fe39a;border:1px solid rgba(48,209,88,.22)}
+.devpill.vnew{background:rgba(255,179,64,.12);color:#ffc46b;border:1px solid rgba(255,179,64,.25)}
+.devver{font-size:12px;color:var(--mut,#6f788a);margin:10px 0 2px;text-align:center}
 .deved,.devdel,.devkey{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
 .deved:active,.devkey:active{background:rgba(255,255,255,.14)}
 .devdel:active{background:rgba(255,69,58,.18)}
@@ -15747,8 +15747,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
     <button class="cta-out" onclick="syncSalir()">Salir</button>
    </div>
   </div>
-  <div class="devver" id="devver"></div>
   <div class="devlist" id="devlist"></div>
+  <div class="devver" id="devver"></div>
   <div class="devadd">
    <input id="devn" class="devin" placeholder="Nombre (Salón, Tablet, PC…)" maxlength="24" autocomplete="off" autocapitalize="words" enterkeyhint="next">
    <input id="devc" class="devin devc" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="código de 6 cifras" autocomplete="off" enterkeyhint="done">
@@ -15962,14 +15962,17 @@ function verPub(cb){if(VERPUB)return cb(VERPUB);
 function verCmp(a,b){a=String(a||'').split('.').map(Number);b=String(b||'').split('.').map(Number);
  for(var i=0;i<Math.max(a.length,b.length);i++){var d=(a[i]||0)-(b[i]||0);if(d)return d}return 0}
 function verPinta(){var el=$('devver');if(!el)return;
- verPub(function(v){el.innerHTML=v?('Última versión de MejorWolf: <b>'+esc(v)+'</b>'):''})}
+ verPub(function(v){el.textContent=v?('Última versión de MejorWolf: '+v):''})}
 function liveDot(dot,c,meta){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(function(j){
  dot.className='devdot '+((j&&j.connected)?'on':'off');
- if(meta&&j&&j.v&&!j.vieja&&!meta.querySelector('.devv'))verPub(function(pub){if(meta.querySelector('.devv'))return;
-  var w=document.createElement('div'),al=!pub||verCmp(j.v,pub)>=0;
-  w.className='devv '+(al?'ok':'nueva');
-  w.textContent='MejorWolf '+j.v+(al?' · ✓ al día':' · hay una nueva: '+pub+' (se actualiza sola)');
-  meta.appendChild(w)});
+ // una pastilla junto al nombre: al día, o la que le llega (se actualiza sola)
+ var nmEl=meta&&meta.querySelector('.devcc');   // junto al código: el nombre se corta con …
+ if(nmEl&&j&&j.v&&!j.vieja&&!nmEl.querySelector('.devpill'))verPub(function(pub){if(nmEl.querySelector('.devpill'))return;
+  var w=document.createElement('span'),al=!pub||verCmp(j.v,pub)>=0;
+  w.className='devpill '+(al?'vok':'vnew');   // NO .ok: es el botón OK del mando
+  w.textContent=al?(j.v+' ✓'):(j.v+' → '+pub);
+  w.title=al?'Tiene la última versión de MejorWolf':'Se actualizará sola a la '+pub;
+  nmEl.appendChild(w)});
  // Muy por detras de la version mas nueva (el relay lo decide, ver _ver_vieja):
  // sin esto nadie se enteraba de que una tele llevaba meses sin actualizarse.
  if(meta&&j&&j.vieja&&!meta.querySelector('.devold')){var w=document.createElement('div');w.className='devold';
