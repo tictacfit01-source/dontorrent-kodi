@@ -300,6 +300,36 @@ try:
                   "cinubo" not in pub and adm.get("cinubo", {}).get("sesion") is True
                   and all(v not in json.dumps(adm) for v in BUENAS.values()), adm.get("cinubo"))
 
+        print("\n=== 8b) La búsqueda de Cinubo ===")
+        t = A._cb_tarjeta({"tmdb_id": 136315, "type": "serie", "title": "The Bear", "item_date": "2022-06-23",
+                           "link": "/s/prqffv", "poster": "https://image.tmdb.org/t/p/w300/x.jpg", "vote_average": 8.123})
+        comprueba("serie -> tarjeta de streaming con su tmdb_id",
+                  t and t["kind"] == "serie" and t["source"] == "cb" and t["tmdb_id"] == 136315
+                  and t["year"] == "2022" and t["rating"] == 8.1, t)
+        comprueba("anime cuenta como serie; peli como movie",
+                  A._cb_tarjeta({"tmdb_id": 1, "type": "anime", "link": "/a/abcd12"})["kind"] == "serie"
+                  and A._cb_tarjeta({"tmdb_id": 1, "type": "movie", "link": "/p/abcd12"})["kind"] == "movie")
+        comprueba("sin tmdb_id, tipo raro o enlace raro: fuera",
+                  A._cb_tarjeta({"tmdb_id": 0, "type": "movie", "link": "/p/abcd12"}) is None
+                  and A._cb_tarjeta({"tmdb_id": 3, "type": "persona", "link": "/p/abcd12"}) is None
+                  and A._cb_tarjeta({"tmdb_id": 3, "type": "movie", "link": "javascript:x"}) is None)
+        comprueba("un cartel que no es de TMDB no se usa",
+                  A._cb_tarjeta({"tmdb_id": 3, "type": "movie", "link": "/p/abcd12", "poster": "http://evil/x.jpg"})["poster"] == "")
+        respuestas["q:the bear:1"] = (200, json.dumps({"posts": [
+            {"tmdb_id": 136315, "type": "serie", "title": "The Bear", "link": "/s/prqffv"},
+            {"tmdb_id": 9, "type": "persona", "title": "Jeremy", "link": "/p/zz"}]}))
+        r = cli.get("/cbsearch?q=The%20Bear").get_json()
+        comprueba("/cbsearch: las tarjetas válidas", r.get("ok") and [x["title"] for x in r["items"]] == ["The Bear"], r)
+        n0 = len(cola)
+        r = cli.get("/cbsearch?q=the  BEAR!").get_json()
+        comprueba("la misma búsqueda escrita distinta sale de la caché (sin caja)",
+                  r.get("items") and len(cola) == n0, (r, len(cola) - n0))
+        comprueba("/cbsearch sin texto: 400", cli.get("/cbsearch?q=a").status_code == 400)
+        src_web = open(os.path.join(os.path.dirname(A.__file__), "app.py"), encoding="utf-8").read()
+        comprueba("en la web, Cinubo nunca gana a un torrent (ni a WolfMax con casilla)",
+                  "if((x.source||'dt')==='cb')return -5000;" in src_web
+                  and "return q*10-1000;" in src_web)
+
         print("\n=== 9) A la tele: la orden st ===")
         enviados = []
         A._kb_enqueue = lambda box, ev: enviados.append((box, ev))

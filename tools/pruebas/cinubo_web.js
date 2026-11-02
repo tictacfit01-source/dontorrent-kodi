@@ -84,6 +84,24 @@ CTX.set({ k: 'k', el: 'cbd-l', t: 'X', items: items.filter((x) => x.srv === 'POW
 CTX.cbPinta('cbd-l');
 comprueba('si no hay ninguno seguro, los otros sin plegar', !/<details/.test($('cbd-l').innerHTML) && /Powvideo/.test($('cbd-l').innerHTML));
 
+console.log('\n=== 2a) En la ficha: si el streaming es mejor, va primero ===');
+globalThis.QRANK = { '4k': 5, '1080p': 4, hdtv: 3, '720p': 2 };
+const movido = [];
+const pb = { parentNode: { insertBefore: (el, ref) => movido.push(ref === pb ? 'antes' : 'despues') } };
+DOM.sheet = Object.assign(Elem(), { querySelector: () => pb });
+const ficha = (q) => { globalThis.sel = { source: 'dt', quality: q }; movido.length = 0;
+  CTX.set({ k: 'k', el: 'sh-cb', t: 'Peli', items: [{ r: 'v1', srv: 'VIDARA', q: 'HD 1080p' }, { r: 'x', srv: 'VOE', q: 'HD 1080p' }] });
+  CTX.cbPinta('sh-cb'); return $('sh-cb').innerHTML; };
+let hf = ficha('720p');
+comprueba('torrent 720p y streaming 1080p: sube por encima del botón, con "Mejor calidad"',
+  movido[0] === 'antes' && /Mejor calidad en streaming/.test(hf), { movido, hf: hf.slice(0, 80) });
+hf = ficha('4K');
+comprueba('torrent 4K: el streaming se queda debajo', movido[0] === 'despues' && !/Mejor calidad/.test(hf), movido);
+hf = ficha('1080p');
+comprueba('a igual calidad: debajo (el torrent manda)', movido[0] === 'despues', movido);
+hf = ficha('');
+comprueba('torrent sin calidad conocida: no se presume, debajo', movido[0] === 'despues', movido);
+
 console.log('\n=== 2b) Lo que los torrents aún no tienen (The Bear T5) ===');
 const T = [{ s: 1, e: [1, 2, 3, 4, 5, 6, 7, 8] }, { s: 4, e: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }, { s: 5, e: [1, 2, 3, 4, 5, 6, 7, 8] }];
 const X = { tmdb_id: 136315, _cbt: T };

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl94"
+BUILD = "dtbl95"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14030,9 +14030,9 @@ def _cb_cache_lee():
     try:
         with open(_CB_CACHE_FILE, encoding="utf-8") as f:
             d = _json.load(f)
-        return {k: d.get(k) if isinstance(d.get(k), dict) else {} for k in ("f", "e", "i")}
+        return {k: d.get(k) if isinstance(d.get(k), dict) else {} for k in ("f", "e", "i", "q")}
     except Exception:
-        return {"f": {}, "e": {}, "i": {}}
+        return {"f": {}, "e": {}, "i": {}, "q": {}}
 
 
 def _cb_cache_get(tabla, clave, ttl):
@@ -14220,6 +14220,62 @@ def _cb_temps(tid):
     except Exception:
         _tmdb_mark(False)
         return None
+
+
+# -- La búsqueda de Cinubo (dtbl95): lo que solo está ahí también aparece ------
+_CB_MAX["q"] = 1500
+_CB_TTL_BUSCA = 6 * 3600
+
+
+def _cb_norm_q(q):
+    import unicodedata
+    q = unicodedata.normalize("NFD", str(q or "").lower())
+    q = "".join(ch for ch in q if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9]+", " ", q).strip()[:80]
+
+
+def _cb_tarjeta(p):
+    """Un resultado del buscador de Cinubo como tarjeta de MejorWolf."""
+    try:
+        tid = int(p.get("tmdb_id") or 0)
+    except (TypeError, ValueError):
+        tid = 0
+    tipo = p.get("type")
+    if tid <= 0 or tipo not in ("movie", "serie", "anime") or not _CB_LINK_POST.match(str(p.get("link") or "")):
+        return None
+    pos = str(p.get("poster") or "")
+    if not pos.startswith("https://image.tmdb.org/"):
+        pos = ""
+    try:
+        nota = round(float(p.get("vote_average") or 0), 1)
+    except (TypeError, ValueError):
+        nota = 0
+    return {"kind": "movie" if tipo == "movie" else "serie", "title": str(p.get("title") or "")[:160],
+            "year": str(p.get("item_date") or "")[:4], "rating": nota or None, "poster": pos,
+            "overview": str(p.get("description") or "")[:600], "tmdb_id": tid,
+            "source": "cb", "quality": "Streaming"}
+
+
+@app.get("/cbsearch")
+def cb_search():
+    """Lo que tiene Cinubo para una búsqueda (caché 6 h). La web solo añade lo
+    que ninguna fuente torrent ha traído."""
+    q = _cb_norm_q(request.args.get("q"))
+    if len(q) < 2:
+        return jsonify({"ok": False, "error": "faltan datos"}), 400
+    ya = _cb_cache_get("q", q, _CB_TTL_BUSCA)
+    if ya is not None:
+        return jsonify({"ok": True, "items": ya})
+    txt, st = _cb_pide(q=q, pg=1)
+    if txt is None:
+        return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
+    try:
+        posts = (_json.loads(txt) or {}).get("posts") or []
+    except Exception:
+        return jsonify({"ok": False, "error": "no_disponible"})
+    items = [t for t in (_cb_tarjeta(p) for p in posts) if t]
+    _cb_cache_pon("q", q, items)
+    return jsonify({"ok": True, "items": items})
 
 
 @app.get("/cbtemps")
@@ -15043,6 +15099,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srctag.s-et{background:#ff9f6e;color:#2a1206}
 .srctag.s-dx{background:#34d36a;color:#04210f}
 .srctag.s-wf{background:#c77dff;color:#1e0833}
+.srctag.s-cb{background:#ffd60a;color:#2b2300}
 .srclegend{display:flex;flex-wrap:wrap;gap:9px 14px;justify-content:center;margin:-2px 0 14px;font-size:11px;color:var(--sub)}
 .srclegend span{display:flex;align-items:center;gap:5px}
 .srclegend i{width:11px;height:11px;border-radius:3px;display:inline-block;flex:none}
@@ -16136,7 +16193,8 @@ var SRANK={dt:3,wf:2,dx:1,et:0};
 // (WolfMax se queda en "Tambien en"). Si WolfMax la quita, vuelve a ganar solo.
 var WFVERIF=0;
 function wfVerifDe(d){if(d&&d.wf_verif)WFVERIF=1}
-function srcScore(x){var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
+function srcScore(x){if((x.source||'dt')==='cb')return -5000;   // Cinubo: solo si no hay otra
+ var q=QRANK[((x.quality||'')+'').toLowerCase()]||0;
  // ...salvo lo que ya se puede ver por magnet (`mag`, dtbl75): ese 4K manda
  if(WFVERIF&&(x.source||'dt')==='wf'&&!x.mag)return q*10-1000;
  return q*10+(SRANK[x.source||'dt']||0);}
@@ -16231,7 +16289,7 @@ function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return
 // ---- Progreso de la búsqueda -------------------------------------------
 // 0 = buscando · 1 = ha traído cosas · 2 = no tiene nada · 3 = no contestó
 var PROG={t0:0,st:{},n:{},tick:null,seq:0};
-var PROGN={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax'};
+var PROGN={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax',cb:'Cinubo'};
 function progStart(seq){PROG={t0:Date.now(),st:{dt:0,et:0,dx:0,wf:0},n:{dt:0,et:0,dx:0,wf:0},tick:null,seq:seq};
  var el=$('buscar-prog');if(el)el.classList.add('on');
  PROG.tick=setInterval(function(){if(PROG.seq!==_searchSeq){progStop();return}progPaint()},150);
@@ -16409,6 +16467,7 @@ function go(){var q=$('q').value.trim();if(!q)return;var g=$('buscar-grid');g.cl
     doneWf(r);lanzarResto();},seq,1);}
  wfPide();
  setTimeout(lanzarResto,1200);
+ cbBusca(q,seq,g,function(){return (catState==='pending')||boxPend>0||dxPend>0||dtPend>0||wfPend});
  function arrancaResto(){
  csTry(1);
  // DivxTotal DIRECTO via Render, EN PARALELO: llega tarde (~6s, Cloudflare) y se
@@ -17075,7 +17134,7 @@ function cardHTML(x,list,i){
  if(_tp>1)_ts=' · '+_tp+' temporadas';
  else if(_tp===1&&_tn[0]>1)_ts=' · T'+_tn[0];
  var kt='<div class="kindtag">'+kindLabel(x.kind)+(_nc?(' · '+_nc+' cap.'):_ts)+'</div>';
- var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF'};var s=x.source||'dt';
+ var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF',cb:'📺'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
  // data-i = su sitio en la LISTA (no en la pantalla). Lo que llega tarde -el
  // poster, el badge de RAR, la calidad- se estampa buscando por este atributo:
@@ -17196,7 +17255,7 @@ function openItem(list,i){openCard(LISTS[list][i])}
 // Versiones de la MISMA peli en otras fuentes. El 4K de WolfMax (capítulos de
 // 9 GB) es lo mejor que da el sistema y antes se perdía en cuanto otra fuente
 // ganaba la tarjeta: aquí se puede elegir a mano, siempre.
-var ALTLBL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax'};
+var ALTLBL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax',cb:'📺 Streaming'};
 function altsInner(x){
  // la actual + sus alternativas, SIN repetir fuente+calidad (ver addAlt)
  var by={},all=[];
@@ -17237,7 +17296,7 @@ function pickAlt(clave){
 // OBJETO -> sirve igual para una tarjeta de la cuadricula que para un enlace
 // COMPARTIDO reconstruido (abrir directo la peli/serie, sin buscar).
 function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);return}
- var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K'};var s2=x.source||'dt';
+ var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K',cb:'Streaming'};var s2=x.source||'dt';
  var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage=cssUrl(x.poster);pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  ZPOSTER=x.poster||'';
@@ -17253,6 +17312,9 @@ function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);retur
  // (0) / aviso claro. DT y DivxTotal: directo (relay). ET/WF: via box (con codigo).
  $('sh-seeds').innerHTML='<span class="seedtag" style="opacity:.6">🌱 comprobando…</span>';$('sheet').classList.add('on');var _bx=$('sheet').querySelector('.box');if(_bx)_bx.scrollTop=0;mwOpen('sheet',_bx,_closeSheet);
  var _cd=(code.value||'').replace(/\D/g,'');
+ // (dtbl95) solo en Cinubo: es streaming, no hay torrent ni semillas que mirar
+ var _pb=$('sheet').querySelector('.btn.play');if(_pb)_pb.style.display=(s2==='cb')?'none':'';
+ if(s2==='cb'){$('sh-seeds').innerHTML='<span class="seedtag">📺 Streaming · elige un servidor abajo</span>';return}
  var seedShow=function(p){if(sel!==x)return;$('sh-seeds').innerHTML=(p&&typeof p.seeds==='number')?seedTag(p.seeds):seedFail(s2,_cd);};
  if(s2==='dt'){fetch('/dtpacked?c='+encodeURIComponent(x.content_id)+'&tb='+encodeURIComponent(x.tabla||'peliculas')).then(function(r){return r.json()}).then(function(p){if(sel!==x)return;if(p&&p.packed===true)$('sh-rar').textContent='📦 Viene comprimido (RAR) — puede que no se reproduzca.';seedShow(p)}).catch(function(){seedShow(null)})}
  else if(s2==='dx'){fetch('/seeds?src=dx&url='+encodeURIComponent(x.url||x.content_id)).then(function(r){return r.json()}).then(seedShow).catch(function(){seedShow(null)})}
@@ -17711,6 +17773,8 @@ function pintaCaidas(d){var e=$('dt-aviso');if(!e)return;wfVerifDe(d);ULTCAIDAS=
  e.classList.add('on');}
 function pintaDtAviso(dc){pintaCaidas(dc?{dt_caida:dc}:null)}
 function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov').classList.add('on');mwOpen('ov',$('ov'),_closeOv);$('ov-title').textContent=x.title;
+ if((x.source||'dt')==='cb'&&x.tmdb_id){OVRETRY=x;OVDATA={d:{title:x.title,episodes:[],poster:x.poster,year:x.year,rating:x.rating,
+   backdrop:x.backdrop,overview:x.overview,genres:x.genres},x:x};renderEpisodes();return}
  // Favorito GUARDADO sin enriquecer: rellena por titulo y, al volver, re-render del hero.
  enrichItem(x,function(){if(OVDATA&&OVDATA.x===x)renderEpisodes();});
  $('ov-body').innerHTML='<div class="msg"><span class="spin"></span> Cargando episodios...</div>';
@@ -17984,6 +18048,19 @@ function playEp(id){var e=EPS[id];if(!e)return;
 // y la calidad, elige uno y va a la tele. Sin semillas (no es torrent). Solo se
 // le pide a Cinubo el enlace del servidor ELEGIDO (su límite salta con ráfagas).
 var CBSEL=null;
+// ---- La búsqueda de Cinubo (dtbl95) ---------------------------------------
+// Lo que SOLO está en Cinubo también aparece. Se pide a la vez que las demás,
+// pero se añade cuando ellas han terminado (o a los 25 s): así nunca le quita
+// la tarjeta a un torrent; lo que ya está (mismo tmdb_id) no se repite.
+function cbBusca(q,seq,g,esperando){var res=null,puesto=0,t0=Date.now();
+ var pon=function(){if(puesto||seq!==_searchSeq||!res)return;
+  if(esperando()&&Date.now()-t0<25000){setTimeout(pon,800);return}
+  puesto=1;var hay={};
+  (LISTS.buscar||[]).forEach(function(x){[x].concat(x.alts||[]).forEach(function(a){if(a&&a.tmdb_id)hay[(a.kind==='serie'?'s':'m')+a.tmdb_id]=1})});
+  var nuevos=res.filter(function(x){return !hay[(x.kind==='serie'?'s':'m')+x.tmdb_id]});
+  if(nuevos.length)mergeResults('buscar',g,nuevos)};
+ fetch('/cbsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.ok&&d.items&&d.items.length){res=d.items;pon()}}).catch(function(){})}
 // ---- Lo que los torrents aún no tienen (dtbl91) ----------------------------
 // "The Bear T5 está en Cinubo y en MejorWolf no aparece": TMDB dice qué se ha
 // emitido; lo que no traiga ninguna fuente torrent se añade con «Streaming». Si
@@ -18035,7 +18112,16 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
   seg='',otros='',n=0;
  c.items.forEach(function(it,i){var k=it.srv+'|'+cbQ(it.q);if(vistos[k])return;vistos[k]=1;
   if(CBABRE[it.srv]){seg+=bot(it,i);n++}else otros+=bot(it,i)});
- el.innerHTML='<div class="cbt">📺 Streaming sin anuncios <span>· castellano · sin semillas</span></div>'+
+ // (dtbl95) en la ficha de una peli: si el streaming que la tele abre sola tiene
+ // MEJOR calidad que el torrent (1080p frente a 720p/HDTV), sube por encima del
+ // botón del torrent. Israel: "si hay buena calidad a 1080p, que gane".
+ var mejor=false;
+ if(elId==='sh-cb'&&sel&&(sel.source||'dt')!=='cb'){var best=0;
+  c.items.forEach(function(it){if(CBABRE[it.srv])best=Math.max(best,QRANK[cbQ(it.q).toLowerCase()]||0)});
+  var tq=QRANK[String(sel.quality||'').toLowerCase()]||0;mejor=tq>0&&best>tq;
+  var pb=$('sheet').querySelector('.btn.play');
+  if(pb&&pb.parentNode){if(mejor)pb.parentNode.insertBefore(el,pb);else pb.parentNode.insertBefore(el,pb.nextSibling)}}
+ el.innerHTML='<div class="cbt">'+(mejor?'⭐ <b>Mejor calidad en streaming</b> <span>· castellano · sin anuncios</span>':'📺 Streaming sin anuncios <span>· castellano · sin semillas</span>')+'</div>'+
   (seg?('<div class="cbr">'+seg+'</div>'):'')+
   (otros?((seg?'<details class="cbmas"><summary>Más servidores (pueden no abrir en la tele)</summary>':'')+'<div class="cbr">'+otros+'</div>'+(seg?'</details>':'')):'')}
 var CBABRE={VIDARA:1,LULUSTREAM:1};
