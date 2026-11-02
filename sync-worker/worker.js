@@ -257,7 +257,8 @@ export default {
     // Lista cerrada de nombres: esto no es un almacen para cualquiera.
     // "uso" (dtbl81): el histórico de uso que solo ve el dueño, CIFRADO por el
     // relay (estas lecturas son públicas): aquí solo se guarda la cadena.
-    const kvm = path.match(/^\/kv\/(semillas|enriq|wfih|uso)$/);
+    // "cb" (dtbl85): la sesión de Cinubo del dueño, CIFRADA igual que "uso".
+    const kvm = path.match(/^\/kv\/(semillas|enriq|wfih|uso|cb)$/);
     if (kvm) {
       const clave = "kv:" + kvm[1];
       await ensureKV(env);

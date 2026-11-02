@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl84"
+BUILD = "dtbl85"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13681,6 +13681,296 @@ setInterval(function(){if(!document.hidden)carga()},30000);
 document.addEventListener("visibilitychange",function(){if(!document.hidden)carga()});
 })();
 </script></body></html>"""
+
+
+# ==== CINUBO (antigua series.ly): streaming en castellano (dtbl85) ============
+# Israel lo usa "cuando todo falla": vídeo en streaming (no torrent: sin
+# semillas, aceptado por él) alojado en servidores tipo Lulustream/Vidara. El
+# relay entra con LA SESIÓN DE ISRAEL (el login lleva Turnstile: no se puede
+# automatizar), busca por tmdb_id y lista los enlaces en castellano de ESPAÑA.
+# El vídeo NO pasa por aquí: la caja abre el servidor desde casa y saca su m3u8
+# (la URL va firmada para quien la pide).
+# La sesión: /tmp + copia CIFRADA en mw-sync /kv/cb (sus lecturas son públicas),
+# con claves derivadas del secreto de Render, como /uso. Nunca en el repo.
+# Cupo por hora para no quemar su cuenta: Cinubo da 429 y captcha si se abusa.
+_CB_BASE = "https://cinubo.com"
+_CB_FILE = "/tmp/mw_cb.json"
+_CB_SYNC = "https://mw-sync.israeldm93.workers.dev/kv/cb"
+_CB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/141.0 Safari/537.36")
+_CB_NOMBRE = re.compile(r"^(seriesly_session|remember_web_[0-9a-f]{40}|sly_device_id)$")
+_CB_VALOR = re.compile(r"^[A-Za-z0-9%=._-]{8,1200}$")
+_CB_CUPO_H = 150                     # peticiones a Cinubo por hora, por worker
+_CB = {"c": None, "nube": "sin leer", "sess": None, "csrf": "", "csrf_ts": 0.0,
+       "peticiones": 0, "fallos": 0, "ult_st": 0, "ult_ms": 0,
+       "hora": [], "captcha": 0, "cupo_lleno": 0}
+_CB_LOCK = _thr.Lock()
+
+
+def _cb_claves():
+    sem = _kv_par()[0]
+    if not sem:
+        return None, None
+    import hmac as _hm
+    return (_hm.new(sem, b"mw-cb-cifra-v1", _hl.sha256).digest(),
+            _hm.new(sem, b"mw-cb-mac-v1", _hl.sha256).digest())
+
+
+def _cb_valida(c):
+    """Solo las cookies que sirven, con valores sanos."""
+    out = {}
+    if not isinstance(c, dict):
+        return out
+    for k, v in c.items():
+        k, v = str(k).strip(), str(v).strip()
+        if _CB_NOMBRE.match(k) and _CB_VALOR.match(v):
+            out[k] = v
+    return out
+
+
+def _cb_lee_tmp():
+    try:
+        with open(_CB_FILE, encoding="utf-8") as f:
+            return _cb_valida((_json.load(f) or {}).get("c"))
+    except Exception:
+        return {}
+
+
+def _cb_guarda_tmp(c):
+    try:
+        tmp = _CB_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump({"c": c, "ts": _t.time()}, f)
+        os.replace(tmp, _CB_FILE)
+    except Exception:
+        pass
+
+
+def _cb_empaqueta(c, kc, km):
+    import base64
+    return "c1." + base64.b64encode(_uso_cifra(_json.dumps(c).encode("utf-8"), kc, km)).decode("ascii")
+
+
+def _cb_desempaqueta(gz, kc, km):
+    import base64
+    if not (isinstance(gz, str) and gz.startswith("c1.")):
+        return None
+    try:
+        raw = _uso_descifra(base64.b64decode(gz[3:]), kc, km)
+        return _cb_valida(_json.loads(raw.decode("utf-8"))) if raw is not None else None
+    except Exception:
+        return None
+
+
+def _cb_nube_lee():
+    """Las cookies de la copia, descifradas. None si no se pudo leer."""
+    kc, km = _cb_claves()
+    if not kc:
+        return None
+    try:
+        txt, st = _get_con_tope(_CB_SYNC, 10.0)
+        if st != 200 or not txt:
+            return None
+        gz = (_json.loads(txt) or {}).get("gz")
+        if not gz:
+            return {}
+        return _cb_desempaqueta(gz, kc, km)
+    except Exception:
+        return None
+
+
+def _cb_nube_sube(c):
+    kc, km = _cb_claves()
+    if not kc or not _EN_RENDER or os.environ.get("MW_SIN_NUBE") == "1":
+        return False
+    return _post_con_tope(_CB_SYNC, {"gz": _cb_empaqueta(c, kc, km)}, 15.0) == 200
+
+
+def _cb_cookies():
+    """Las cookies vigentes: memoria -> /tmp -> copia en la nube."""
+    if _CB["c"]:
+        return _CB["c"]
+    c = _cb_lee_tmp()
+    if not c and _EN_RENDER and os.environ.get("MW_SIN_NUBE") != "1":
+        r = _cb_nube_lee()
+        _CB["nube"] = "leida" if r is not None else "fallo"
+        if r:
+            c = r
+            _cb_guarda_tmp(c)
+    if c:
+        _CB["c"] = c
+    return c
+
+
+def _cb_sesion():
+    """La sesión HTTP de este worker, con las cookies puestas (una por worker:
+    así guarda la cookie de sesión que Cinubo renueva en cada respuesta)."""
+    c = _cb_cookies()
+    if not c:
+        return None
+    with _CB_LOCK:
+        s = _CB["sess"]
+        if s is None:
+            s = requests.Session()
+            s.headers.update({"User-Agent": _CB_UA, "Accept-Language": "es-ES,es;q=0.9"})
+            for k, v in c.items():
+                s.cookies.set(k, v, domain=".cinubo.com", path="/")
+            _CB["sess"] = s
+        return s
+
+
+def _cb_cupo():
+    """True si queda cupo esta hora (y lo gasta)."""
+    ahora = _t.time()
+    with _CB_LOCK:
+        _CB["hora"] = [x for x in _CB["hora"] if ahora - x < 3600]
+        if len(_CB["hora"]) >= _CB_CUPO_H:
+            _CB["cupo_lleno"] += 1
+            return False
+        _CB["hora"].append(ahora)
+        _CB["peticiones"] += 1
+        return True
+
+
+def _cb_get(path, json_=False, tope=12.0, referer=None):
+    """(texto, status) de una página de Cinubo con la sesión de Israel."""
+    s = _cb_sesion()
+    if s is None or not _cb_cupo():
+        return None, 0
+    cab = {"Referer": referer or (_CB_BASE + "/")}
+    if json_:
+        cab["Accept"] = "application/json"
+    t0 = _t.time()
+    txt, st = _get_con_tope(_CB_BASE + path, tope, headers=cab, scraper=s, todo=True)
+    _CB["ult_st"], _CB["ult_ms"] = st, int((_t.time() - t0) * 1000)
+    if st != 200:
+        _CB["fallos"] += 1
+    return txt, st
+
+
+_CB_CSRF_RE = re.compile(r'<meta name="csrf-token" content="([A-Za-z0-9]{20,80})"')
+
+
+def _cb_csrf():
+    """El token CSRF de la sesión (se renueva cada hora o tras un 419)."""
+    if _CB["csrf"] and _t.time() - _CB["csrf_ts"] < 3600:
+        return _CB["csrf"]
+    txt, st = _cb_get("/", tope=10.0)
+    m = _CB_CSRF_RE.search(txt or "")
+    if m:
+        _CB["csrf"], _CB["csrf_ts"] = m.group(1), _t.time()
+        return _CB["csrf"]
+    return ""
+
+
+def _cb_post_json(path, cuerpo, tope=12.0):
+    s = _cb_sesion()
+    if s is None:
+        return None, 0
+    csrf = _cb_csrf()
+    if not csrf or not _cb_cupo():
+        return None, 0
+
+    def _ir():
+        r = s.post(_CB_BASE + path, json=cuerpo, timeout=(5.0, tope),
+                   headers={"Accept": "application/json", "X-CSRF-TOKEN": csrf,
+                            "X-Requested-With": "XMLHttpRequest",
+                            "Referer": _CB_BASE + "/"})
+        return r.status_code, r.text
+    t0 = _t.time()
+    st, txt = _bounded(_ir, tope + 3.0, (0, None)) or (0, None)
+    _CB["ult_st"], _CB["ult_ms"] = st, int((_t.time() - t0) * 1000)
+    if st == 419:                       # token caducado: a por otro la próxima
+        _CB["csrf"] = ""
+    if st != 200:
+        _CB["fallos"] += 1
+        return None, st
+    return txt, st
+
+
+def _cb_logueado(html):
+    """Las fichas de Cinubo solo existen con sesión: sin ella, a la portada."""
+    return bool(html) and "detail-page" in html
+
+
+_CB_LINK_RE = re.compile(r'data-link-playback="([^"]{20,4000})"')
+_CB_T_RE = re.compile(r"^https://cinubo\.com/t/([A-Za-z0-9=_%-]{20,600})$")
+
+
+def _cb_enlaces_de(html):
+    """[{r, srv, q, lang}] de una ficha o capítulo: SOLO castellano de España
+    (innegociable), en el orden de Cinubo ("recomendados")."""
+    import html as _h
+    out = []
+    for m in _CB_LINK_RE.finditer(html or ""):
+        try:
+            d = _json.loads(_h.unescape(m.group(1)))
+        except Exception:
+            continue
+        inf = d.get("info") or {}
+        lang = str(inf.get("language") or "").replace("ñ", "n").lower()
+        if not lang.endswith("espana"):
+            continue
+        mt = _CB_T_RE.match(str(d.get("url") or ""))
+        if not mt:
+            continue
+        out.append({"r": mt.group(1), "srv": str(inf.get("server") or "")[:24].upper(),
+                    "q": str(inf.get("quality") or "")[:16], "lang": "es"})
+    return out
+
+
+_CB_IFRAME_RE = re.compile(r'<iframe[^>]+src="(https://[^"]{8,300})"', re.I)
+
+
+def _cb_embed(ref):
+    """La URL del reproductor del servidor (iframe) de un enlace. Es lo que la
+    web de Cinubo pide al pulsar Reproducir; puede pedir captcha si se abusa."""
+    txt, st = _cb_get("/t/" + ref, json_=True, tope=12.0)
+    if st != 200 or not txt:
+        return None, "http %s" % st
+    try:
+        d = _json.loads(txt)
+    except Exception:
+        return None, "no json"
+    if d.get("captcha_required"):
+        _CB["captcha"] += 1
+        return None, "captcha"
+    m = _CB_IFRAME_RE.search(str(d.get("e") or "").replace("\\/", "/"))
+    return (m.group(1), "") if m else (None, "sin iframe")
+
+
+@app.post("/cb/sesion")
+def cb_sesion_alta():
+    """El dueño da aquí sus cookies de Cinubo (solo con la llave de /uso)."""
+    if not _uso_es_admin(request):
+        return jsonify({"ok": False, "error": "no"}), 403
+    c = _cb_valida((request.get_json(silent=True) or {}).get("c"))
+    if not any(k.startswith("remember_web_") or k == "seriesly_session" for k in c):
+        return jsonify({"ok": False, "error": "faltan cookies"}), 400
+    with _CB_LOCK:
+        _CB.update(c=c, sess=None, csrf="")
+    _cb_guarda_tmp(c)
+    sub = _bounded(lambda: _cb_nube_sube(c), 20.0, False)
+    return jsonify({"ok": True, "n": len(c), "nube": bool(sub)})
+
+
+@app.get("/cb/prueba")
+def cb_prueba():
+    """Diagnóstico privado: ¿llega el relay a Cinubo con la sesión? Un capítulo
+    conocido (Ted Lasso 4x2) y, con &e=1, el servidor de su primer enlace."""
+    if not _uso_es_admin(request):
+        return jsonify({"ok": False, "error": "no"}), 403
+    out = {"cookies": sorted(_cb_cookies().keys()), "nube": _CB["nube"]}
+    txt, st = _cb_get("/s/nzp5nh/4x2", tope=15.0)
+    out["ficha"] = {"st": st, "ms": _CB["ult_ms"], "bytes": len(txt or ""),
+                    "logueado": _cb_logueado(txt)}
+    en = _cb_enlaces_de(txt)
+    out["enlaces"] = [{"srv": x["srv"], "q": x["q"]} for x in en]
+    if en and request.args.get("e") == "1":
+        e, err = _cb_embed(en[0]["r"])
+        out["embed"] = {"host": e.split("/")[2] if e else "", "error": err}
+    out["cb"] = {k: _CB[k] for k in ("peticiones", "fallos", "ult_st", "captcha", "cupo_lleno")}
+    return jsonify(out)
 
 
 @app.get("/catdiag")
