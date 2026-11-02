@@ -165,11 +165,11 @@ try:
     for i, c in enumerate(CODIGOS):
         ip = "81.0.0.1" if i < 3 else "90.0.0.9"         # 3 Kodis en una casa, 1 en otra
         cli.post("/kb/status", json={"code": c, "v": "2.9.92"},
-                 headers={"X-Forwarded-For": "1.2.3.4, " + ip})
+                 headers={"X-Forwarded-For": ip + ", 10.9.9.9"})
     st = A._kbstatus_load()
     comprueba("el latido guarda la conexión cifrada, nunca la IP",
               st["111111"].get("ih") and "81.0.0.1" not in json.dumps(st), st["111111"])
-    comprueba("la IP que cuenta es la del proxy (la última), no la que pone el cliente",
+    comprueba("la IP que cuenta es la de la casa (la primera), no la del borde de Render",
               st["111111"]["ih"] == A._uso_huella("ip:81.0.0.1"))
     A._uso_muestra(A._t.time(), forzar=True)
     d = cli.get("/uso/datos?k=" + llave).get_json()

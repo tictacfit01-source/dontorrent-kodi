@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl104"
+BUILD = "dtbl105"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4513,8 +4513,13 @@ def kb_status_push():
     d = {k: v for k, v in d.items() if (now - v.get("ts", 0)) < _KB_STATUS_TTL}
     entry = {"v": str(body.get("v", ""))[:16], "ts": now}
     try:     # (dtbl104) la conexión de casa, cifrada: para contar casas, no Kodis
-        ip = (request.headers.get("X-Forwarded-For", "")
-              or request.remote_addr or "").split(",")[-1].strip()
+        # La ÚLTIMA de X-Forwarded-For es la del borde de la red de Render (se
+        # vio en producción: 26 Kodis, 3 "casas"); la de la casa viene en
+        # True-Client-IP / CF-Connecting-IP o la PRIMERA de X-Forwarded-For.
+        # Para contar no importa que se pueda falsear (la caja no lo hace).
+        ip = (request.headers.get("True-Client-IP") or request.headers.get("CF-Connecting-IP")
+              or (request.headers.get("X-Forwarded-For", "").split(",")[0])
+              or request.remote_addr or "").strip()
         if ip:
             entry["ih"] = _uso_huella("ip:" + ip)
     except Exception:
