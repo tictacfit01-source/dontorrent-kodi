@@ -330,6 +330,20 @@ try:
                   "if((x.source||'dt')==='cb')return -5000;" in src_web
                   and "return q*10-1000;" in src_web)
 
+        print("\n=== 8c) El Inicio con lo de Cinubo ===")
+        portada = ('<html><script>\n    window.homeInitialData = ' + json.dumps({
+            "movie": {"posts": [{"tmdb_id": 1283515, "type": "movie", "title": "Verity", "link": "/p/abcd12"}]},
+            "serie": {"posts": [{"tmdb_id": 259909, "type": "serie", "title": "Dexter: Resurrección", "link": "/s/abcd13"}]},
+            "anime": {"posts": []}}) + ';\n</script></html>')
+        respuestas["/"] = (200, portada)
+        r = cli.get("/cbinicio?kind=estrenos").get_json()
+        comprueba("Estrenos: las pelis de su portada", [x["title"] for x in r.get("items", [])] == ["Verity"], r)
+        n0 = len(cola)
+        r = cli.get("/cbinicio?kind=series").get_json()
+        comprueba("Series: las series, de la caché (sin otra caja)",
+                  [x["kind"] for x in r.get("items", [])] == ["serie"] and len(cola) == n0, r)
+        comprueba("otra pestaña: 400", cli.get("/cbinicio?kind=x").status_code == 400)
+
         print("\n=== 9) A la tele: la orden st ===")
         enviados = []
         A._kb_enqueue = lambda box, ev: enviados.append((box, ev))

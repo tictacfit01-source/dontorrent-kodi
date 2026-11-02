@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl97"
+BUILD = "dtbl98"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14030,9 +14030,9 @@ def _cb_cache_lee():
     try:
         with open(_CB_CACHE_FILE, encoding="utf-8") as f:
             d = _json.load(f)
-        return {k: d.get(k) if isinstance(d.get(k), dict) else {} for k in ("f", "e", "i", "q")}
+        return {k: d.get(k) if isinstance(d.get(k), dict) else {} for k in ("f", "e", "i", "q", "p")}
     except Exception:
-        return {"f": {}, "e": {}, "i": {}, "q": {}}
+        return {"f": {}, "e": {}, "i": {}, "q": {}, "p": {}}
 
 
 def _cb_cache_get(tabla, clave, ttl):
@@ -14284,6 +14284,52 @@ def cb_search():
     items = [t for t in (_cb_tarjeta(p) for p in posts) if t]
     _cb_cache_pon("q", q, items)
     return jsonify({"ok": True, "items": items})
+
+
+# -- El Inicio con lo de Cinubo (dtbl98) -------------------------------------
+# Su portada con sesión trae en el HTML (window.homeInitialData) lo que tiene
+# "para ver ahora": pelis, series y anime, 13 de cada, con su tmdb_id. Un GET de
+# la portada por la caja (ya lo sabe hacer, sin versión nueva) cada 2 h.
+_CB_TTL_PORTADA = 2 * 3600
+_CB_MAX["p"] = 4
+_CB_PORTADA_RE = re.compile(r"window\.homeInitialData\s*=\s*(\{.*?\});\s*\n", re.S)
+
+
+def _cb_portada():
+    """{"movie": [...], "serie": [...], "anime": [...]} en tarjetas. None si no se pudo."""
+    ya = _cb_cache_get("p", "home", _CB_TTL_PORTADA)
+    if ya is not None:
+        return ya
+    txt, st = _cb_pide(path="/")
+    if txt is None:
+        return None
+    m = _CB_PORTADA_RE.search(txt)
+    if not m:
+        _CB["ult_err"] = "portada sin datos"
+        return None
+    try:
+        d = _json.loads(m.group(1))
+    except Exception:
+        _CB["ult_err"] = "portada ilegible"
+        return None
+    out = {}
+    for tipo in ("movie", "serie", "anime"):
+        posts = ((d.get(tipo) or {}).get("posts") or []) if isinstance(d.get(tipo), dict) else []
+        out[tipo] = [t for t in (_cb_tarjeta(p) for p in posts[:40]) if t]
+    _cb_cache_pon("p", "home", out)
+    return out
+
+
+@app.get("/cbinicio")
+def cb_inicio():
+    """Lo de Cinubo para una pestaña del Inicio (estrenos|peliculas|series)."""
+    kind = str(request.args.get("kind") or "")
+    if kind not in ("estrenos", "peliculas", "series"):
+        return jsonify({"ok": False, "error": "faltan datos"}), 400
+    por = _cb_portada()
+    if por is None:
+        return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
+    return jsonify({"ok": True, "items": por.get("serie" if kind == "series" else "movie") or []})
 
 
 @app.get("/cbtemps")
@@ -16106,7 +16152,7 @@ function chip(kind,intento){document.querySelectorAll('.chip').forEach(function(
   // se reparten ANTES de pintar. Una sola pintada, orden definitivo.
   var mix=(d&&d.mix)||[];
   if(mix.length){mergeResults('inicio',g,mix,1);repartoInicio();}
-  renderGrid(g,'inicio');pintaFuentes();box(d&&d.mixpend);
+  renderGrid(g,'inicio');pintaFuentes();box(d&&d.mixpend);cbInicio(kind,g);
  }).catch(function(){done=true;clearTimeout(slow);clearTimeout(to);fallback()})}
 function loadMoreInicio(){if(INI.loading||!INI.more)return;INI.loading=true;var next=INI.page+1;
  fetch('/catbrowse?kind='+INI.kind+'&page='+next+'&code='+(code.value||'').replace(/\D/g,'')).then(function(r){return r.json()}).then(function(d){
@@ -18063,6 +18109,18 @@ function playEp(id){var e=EPS[id];if(!e)return;
 // y la calidad, elige uno y va a la tele. Sin semillas (no es torrent). Solo se
 // le pide a Cinubo el enlace del servidor ELEGIDO (su límite salta con ráfagas).
 var CBSEL=null;
+// ---- El Inicio con lo de Cinubo (dtbl98) ------------------------------------
+// "Que aparezcan en Estrenos": lo que Cinubo tiene "para ver ahora". Llega
+// después de lo de siempre (nada se recoloca al mirar): lo que ya está se
+// queda como "También en: Streaming"; lo que solo tiene Cinubo, tarjeta 📺.
+function cbInicio(kind,g){
+ fetch('/cbinicio?kind='+encodeURIComponent(kind)).then(function(r){return r.json()}).then(function(d){
+   if(INI.kind!==kind||!d||!d.ok||!d.items||!d.items.length)return;
+   setTimeout(function(){if(INI.kind!==kind)return;
+    var hay={};(LISTS.inicio||[]).forEach(function(x){[x].concat(x.alts||[]).forEach(function(a){if(a&&a.tmdb_id)hay[(a.kind==='serie'?'s':'m')+a.tmdb_id]=1})});
+    var nuevos=d.items.filter(function(x){return !hay[(x.kind==='serie'?'s':'m')+x.tmdb_id]});
+    if(nuevos.length){mergeResults('inicio',g,nuevos);try{pintaFuentes()}catch(e){}}},1500)})
+  .catch(function(){})}
 // ---- La búsqueda de Cinubo (dtbl95) ---------------------------------------
 // Lo que SOLO está en Cinubo también aparece. Se pide a la vez que las demás,
 // pero se añade cuando ellas han terminado (o a los 25 s): así nunca le quita
