@@ -289,24 +289,92 @@ try:
     pm = cli.get("/uso/datos?k=" + llave).get_json()["como"]
     comprueba("6 avisos del mismo vídeo (con el fichero roto y otro worker): cuenta 1",
               pm.get("mando", 0) - antes_pm.get("mando", 0) == 1, (antes_pm, pm))
-    cli.post("/kb/now", json={"code": "111111", "np": {"title": "Otra peli", "elapsed": 1, "total": 5000}})
-    pm2 = cli.get("/uso/datos?k=" + llave).get_json()["como"]
-    comprueba("otro título en la misma tele: sí cuenta", pm2.get("mando", 0) == pm.get("mando", 0) + 1, pm2)
-    # 4 teles con el MISMO código (Kodi copiado), cada una con lo suyo, avisando por turnos
-    pm = pm2
+    T = A._t.time()
+    N = A._uso_titulo_nuevo
+
+    def limpio():
+        A._USO_VISTO.clear()
+        pd = A._uso_pend_lee()
+        for k in [k for k in pd if k.startswith("t:")]:
+            pd.pop(k)
+        A._uso_pend_guarda(pd, A._t.time())
+    limpio()
+    comprueba("empieza una serie: cuenta", N("565656", "The Bear 5x02", T, 2, False)[0] is True)
+    comprueba("...y a los 6 s Kodi le cambia el nombre al cargar la ficha: el mismo vídeo",
+              N("565656", "The Bear · 5x02", T + 6, 8, True)[0] is False)
+    comprueba("a mitad de la peli cambia el nombre (minuto 33): no es otro vídeo",
+              N("565656", "The Bear 5x02 (2024)", T + 2000, 2000, True)[0] is False)
+    comprueba("se acaba y Kodi pone solo el siguiente capítulo: cuenta (en la tele)",
+              N("565656", "The Bear · 5x03", T + 2400, 1, True)[0] is True)
+    comprueba("se apaga y al día siguiente se reanuda por el minuto 40: cuenta",
+              N("565656", "Silo · 2x01", T + 9000, 2400, False)[0] is True)
+    t1 = A._t.time()
+    N("575757", "Algo", t1 - 30, 2, False)                 # empezó algo hace 30 s
+    A._uso_envio("cb", "1080p", "575757", "Perdida", "movie")   # y ahora se manda otra cosa desde la web
+    ok_web = N("575757", "Perdida", A._t.time() + 1, 3, True)[0]
+    if ok_web:
+        A._uso_arranco("575757", A._t.time() + 1)
+    comprueba("un envío NUEVO de la web a los 30 s de otro inicio: cuenta igual", ok_web is True)
+    # 4 teles con el MISMO código (Kodi copiado), cada una empieza a su hora y avisan por turnos
+    limpio()
+    inicios = 0
+    for i, t in enumerate(("Uno", "Dos", "Tres", "Cuatro")):
+        inicios += N("444444", t, T + i * 300, 5, True)[0]
+    comp = 0
     for vuelta in range(5):
-        for t in ("Uno", "Dos", "Tres", "Cuatro"):
-            cli.post("/kb/now", json={"code": "444444", "np": {"title": t, "elapsed": vuelta, "total": 5000}})
+        for i, t in enumerate(("Uno", "Dos", "Tres", "Cuatro")):
+            a, b = N("444444", t, T + 1000 + vuelta * 3 + i * 0.5, 600 + vuelta * 3, True)
+            inicios += a
+            comp += b
         if vuelta == 2:
             A._USO_VISTO.clear()      # el otro worker
+    comprueba("4 teles con un mismo código, avisando por turnos: 4 vídeos, no 24", inicios == 4, inicios)
+    comprueba("...y se ve que ese código lo usan varias teles", comp > 0, comp)
+    cli.post("/kb/now", json={"code": "444444", "np": {"title": "Uno", "elapsed": 700, "total": 5000}})
+    cli.post("/kb/now", json={"code": "444444", "np": {"title": "Dos", "elapsed": 700, "total": 5000}})
+    cli.post("/kb/now", json={"code": "444444", "np": {"title": "Uno", "elapsed": 703, "total": 5000}})
     d3 = cli.get("/uso/datos?k=" + llave).get_json()
-    comprueba("4 teles con un mismo código, turnándose 5 veces: 4 vídeos, no 20",
-              d3["como"].get("mando", 0) == pm.get("mando", 0) + 4, (pm, d3["como"]))
-    comprueba("...y se dice que ese código lo usan varias teles", d3["dias"][-1]["compartidos"] == 1, d3["dias"][-1])
+    comprueba("...y la página lo cuenta como código compartido", d3["dias"][-1]["compartidos"] == 1, d3["dias"][-1])
     A._uso_muestra(A._t.time() + 900, forzar=True)
     sv = cli.get("/uso/datos?k=" + llave).get_json()["servicio"]
     comprueba("lo que recuerda los títulos no se toma por envíos que no arrancaron",
               sum(x["ko"] for x in sv.values()) == 1, sv)
+    print("\n=== 6e) Limpiar datos malos, también frente a la copia (dtbl111) ===")
+    hoyd = cli.get("/uso/datos?k=" + llave).get_json()["hoy"]
+    nube_vieja = A._uso_valida(A._uso_lee())            # la copia de la nube, con lo malo
+    comprueba("sin llave no se limpia nada",
+              cli.post("/uso/limpia", json={"dia": hoyd, "claves": ["pm"]}).status_code == 401)
+    r = cli.post("/uso/limpia", json={"dia": hoyd, "claves": ["pm", "du", "nada"]},
+                 headers={"X-MW-Uso": llave}).get_json()
+    comprueba("con llave: limpia las claves que existen (y no inventa)", r.get("limpias") == ["pm", "du"], r)
+    dl = cli.get("/uso/datos?k=" + llave).get_json()
+    comprueba("como y compartidos a cero", dl["como"] == {} and dl["dias"][-1]["compartidos"] == 0,
+              (dl["como"], dl["dias"][-1]["compartidos"]))
+    f = A._uso_funde(A._uso_lee(), nube_vieja)
+    comprueba("al fundir con la copia vieja, lo malo NO vuelve", not f["dias"][hoyd].get("pm") and not f["dias"][hoyd].get("du"),
+              f["dias"][hoyd].get("pm"))
+    f2 = A._uso_funde(nube_vieja, A._uso_lee())
+    comprueba("...ni fundiendo al revés", not f2["dias"][hoyd].get("pm"), f2["dias"][hoyd].get("pm"))
+    A._uso_arranco("616161")
+    comprueba("y lo nuevo se sigue contando", cli.get("/uso/datos?k=" + llave).get_json()["como"] == {"mando": 1})
+
+    print("\n=== 6f) Envíos: tele apagada y el mismo capítulo otra vez (dtbl111) ===")
+    A._uso_envio("dt", "1080p", "808080", "Algo", "movie", espera=False)
+    comprueba("a una tele apagada no se le espera (no culpa a la fuente)", "808080" not in A._uso_pend_lee())
+    # 616161 ya está viendo "Silo" (título conocido); se le re-envía lo mismo desde la web
+    A._uso_envio("cb", "1080p", "616161", "Silo", "tv")
+    antes = cli.get("/uso/datos?k=" + llave).get_json()
+    st = A._kbstatus_load()
+    st["616161"] = {"v": "2.9.94", "ts": A._t.time() + 60}
+    A._kbstatus_save(st)
+    A._kbnow_save({"616161": {"np": {"title": "Silo", "elapsed": 40, "paused": False}, "ts": A._t.time() + 60}})
+    A._uso_muestra(A._t.time() + 60, forzar=True)
+    desp = cli.get("/uso/datos?k=" + llave).get_json()
+    comprueba("re-enviado y el vídeo va por el segundo 40 de los 60 desde el envío: arrancó (a los ~20 s)",
+              desp["servicio"]["cb"]["ok"] == antes["servicio"]["cb"]["ok"] + 1
+              and desp["como"].get("web", 0) == antes["como"].get("web", 0) + 1, (antes["servicio"]["cb"], desp["servicio"]["cb"]))
+    comprueba("...y no se cuenta como fallo más tarde", (A._uso_pend_lee().get("616161") or {}).get("hecho") == "ok")
+
     import inspect
     comprueba("cada worker escribe su propio temporal (kbnow y kbstatus)",
               "os.getpid()" in inspect.getsource(A._kbnow_save) and "os.getpid()" in inspect.getsource(A._kbstatus_save))

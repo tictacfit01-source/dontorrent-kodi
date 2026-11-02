@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl110"
+BUILD = "dtbl111"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4270,15 +4270,17 @@ def kb_send():
     # perderse o ejecutarse duplicada (la misma race que describe _FileLock).
     _kb_enqueue(code, ev)
     _kb_phone_seen(code)
+    tele_on = _tele_conectada(code)
     if ev.get("c") == "play_ref":
         a = ev.get("a")
         f = str(body.get("f") or "").lower()[:4]
         _uso_envio("dt" if (a == "dt" or via == "magnet") else "cb" if a == "st" else f,
-                   body.get("q"), code, ev.get("t") or "", str(body.get("k") or "")[:6])
+                   body.get("q"), code, ev.get("t") or "", str(body.get("k") or "")[:6],
+                   espera=bool(tele_on))
     # `tele`: si esa tele tiene latido. La orden se encola igual (la caja la
     # recoge al conectarse, hasta _KB_TTL), pero la web ya no dice "En la tele"
     # con la tele apagada y deja el mando en "Preparando..." para siempre.
-    res = {"ok": True, "tele": _tele_conectada(code)}
+    res = {"ok": True, "tele": tele_on}
     if via:
         res["via"] = via
     return jsonify(res)
@@ -4478,7 +4480,11 @@ def kb_now_push():
         # (dtbl106) ¿empieza un vídeo nuevo? (antes nada, u otro título)
         nuevo = str(np.get("title", ""))[:120]
         if nuevo:
-            es_nuevo, compartido = _uso_titulo_nuevo(code, nuevo, now)
+            try:
+                _el = int(np.get("elapsed", 0) or 0)
+            except Exception:
+                _el = 0
+            es_nuevo, compartido = _uso_titulo_nuevo(code, nuevo, now, _el, code in d)
             if es_nuevo:
                 _uso_arranco(code, now)
             if compartido:
@@ -13283,9 +13289,10 @@ _USO_DIC = {"km": ("n", 5000), "rm": ("n", 5000), "rf": ("n", 20), "rq": ("n", 2
             "ta": ("p", 20), "tb": ("b", 20), "pm": ("n", 4), "rs": ("n", 8),
             "bf": ("p", 20), "dv": ("s", 5000), "pa": ("s", 5000), "dvn": ("n", 40),
             "kvn": ("n", 40), "pan": ("n", 80), "vt": ("l", 400), "vtn": ("n", 400),
-            "bq": ("p", 400)}
+            "bq": ("p", 400), "lim": ("n", 60)}
 _USO_BQ_DIAS = 35               # las búsquedas se guardan 5 semanas
 _USO_TT = (15, 30, 60, 120)     # cortes de "segundos hasta arrancar"
+_USO_DIA_ARRANQUE = "2026-11-02"   # el detalle (casas, fuentes, servicio...) se midió desde la tarde
 
 
 def _uso_clave_ok(k):
@@ -13472,7 +13479,19 @@ def _uso_res(dg):
     return "" if h <= 0 else "2160" if h >= 1600 else "1080" if h >= 1000 else "720" if h >= 700 else "sd"
 
 
-def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy):
+def _uso_resuelve_ok(e, x, sg):
+    """Un envío de la web que arrancó a los `sg` segundos."""
+    f = x.get("f") or "otra"
+    _uso_suma(e, "pm", "web")
+    _uso_suma(e, "ok", f)
+    ta = e.setdefault("ta", {}).setdefault(f, [0, 0])
+    ta[0] += sg
+    ta[1] += 1
+    tb = e.setdefault("tb", {}).setdefault(f, [0, 0, 0, 0, 0])
+    tb[sum(1 for c in _USO_TT if sg >= c)] += 1
+
+
+def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy, np=None):
     """(dtbl106) aparato, país, resolución real, cargas y quién vuelve."""
     import datetime as _dtm
     try:
@@ -13504,11 +13523,33 @@ def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy):
         r = _uso_res(dg)
         if r:
             _uso_suma(e, "rs", r)
-        f = (pend.get(c) or {}).get("f") or "otra"
+        f = (pend.get(c) or {}).get("f") or "tele"     # sin envío de la web: puesto en la tele
         bf = e.setdefault("bf", {}).setdefault(f, [0, 0])
         bf[1] += 1
         if str(dg.get("cach") or "") == "1":
             bf[0] += 1
+    # (dtbl111) un envío sin resolver cuya tele YA está reproduciendo algo que
+    # empezó después del envío (minuto del vídeo): arrancó. Pasa al re-enviar el
+    # mismo capítulo, cuyo título ya se conocía y no "es nuevo".
+    resueltos = []
+    for c, x in pend.items():
+        if c.startswith("t:") or x.get("hecho") or c not in (np or {}):
+            continue
+        try:
+            inicio = now - int((np[c] or {}).get("elapsed") or 0)
+        except Exception:
+            continue
+        if inicio >= float(x.get("ts") or 0) - 15:
+            resueltos.append((c, max(0, int(inicio - float(x.get("ts") or 0)))))
+    if resueltos:
+        with _FileLock(_USO_PEND_FILE):
+            pend = _uso_pend_lee()
+            for c, sg in resueltos:
+                x = pend.get(c)
+                if x and not x.get("hecho"):
+                    x["hecho"] = "ok"
+                    _uso_resuelve_ok(e, x, sg)
+            _uso_pend_guarda(pend, now)
     # los envíos que no han arrancado a tiempo: "no arrancó"
     caducados = [c for c, x in pend.items()
                  if not c.startswith("t:") and not x.get("hecho") and (now - float(x.get("ts") or 0)) > _USO_PEND_S]
@@ -13558,7 +13599,11 @@ _USO_VISTO_S = 600              # el mismo título en 10 min es el mismo vídeo
 _USO_VDIAG = {}
 
 
-def _uso_titulo_nuevo(code, titulo, now):
+_USO_INICIO_MAX_S = 180         # un vídeo "empieza" si va por el principio...
+_USO_ASIENTA_S = 90             # ...y los nombres que cambian en su primer minuto y medio son el mismo
+
+
+def _uso_titulo_nuevo(code, titulo, now, elapsed=0, previo=True):
     """¿Empieza un vídeo NUEVO en esa tele? Devuelve (nuevo, compartido).
 
     Se recuerdan TODOS los títulos recientes de cada código, no solo el último:
@@ -13567,6 +13612,11 @@ def _uso_titulo_nuevo(code, titulo, now):
     `compartido`: los títulos se INTERCALAN (vuelve uno que ya estaba cuando
     otro distinto ha llegado hace menos de 15 s): varias teles con un solo
     código. Cambiar de peli deprisa no lo es: el título viejo ya no vuelve.
+    (dtbl111) Y un título nuevo no siempre es un vídeo nuevo: al empezar una
+    serie Kodi dice primero "The Bear 5x02" y segundos después, con la ficha
+    cargada, "The Bear · 5x02". Solo cuenta como inicio si el vídeo va por el
+    principio (o la tele no estaba reproduciendo nada: reanudar tras apagar) y
+    no hubo otro inicio en los últimos 90 s (salvo un envío nuevo de la web).
     Primero la memoria de este worker (cero E/S casi siempre); si no lo sabe,
     el fichero común, bajo lock, para que el otro worker no lo cuente otra vez."""
     h = _hl.md5(titulo.encode("utf-8")).hexdigest()[:8]
@@ -13589,10 +13639,20 @@ def _uso_titulo_nuevo(code, titulo, now):
             tt = {k: float(v) for k, v in tt.items() if now - float(v or 0) < _USO_VISTO_S}
             nuevo = h not in tt
             compartido = (not nuevo) and any(k != h and tt[h] < v and now - v < 15 for k, v in tt.items())
+            ui = float((x or {}).get("ui") or 0) if isinstance(x, dict) else 0.0
+            if nuevo:
+                w = pend.get(code) or {}
+                web_nueva = bool(w) and not w.get("hecho") and float(w.get("ts") or 0) > ui
+                if (elapsed <= _USO_INICIO_MAX_S or not previo) and \
+                        (now - ui >= _USO_ASIENTA_S or web_nueva):
+                    ui = now
+                else:
+                    nuevo = False
+                    _USO_VDIAG["asienta"] = _USO_VDIAG.get("asienta", 0) + 1
             tt[h] = now
             if len(tt) > 12:
                 tt = dict(sorted(tt.items(), key=lambda kv: kv[1])[-12:])
-            pend["t:" + code] = {"ts": now, "tt": tt}
+            pend["t:" + code] = {"ts": now, "tt": tt, "ui": ui}
             _uso_pend_guarda(pend, now)
         _USO_VDIAG["nuevo" if nuevo else "fich"] = _USO_VDIAG.get("nuevo" if nuevo else "fich", 0) + 1
         if compartido:
@@ -13640,16 +13700,10 @@ def _uso_arranco(code, now=None):
         with _FileLock(_USO_FILE):
             d = _uso_lee()
             e = _uso_dia_e(d, hoy)
-            _uso_suma(e, "pm", "web" if web else "mando")
             if web:
-                f = x.get("f") or "otra"
-                sg = max(0, int(now - float(x.get("ts") or now)))
-                _uso_suma(e, "ok", f)
-                ta = e.setdefault("ta", {}).setdefault(f, [0, 0])
-                ta[0] += sg
-                ta[1] += 1
-                tb = e.setdefault("tb", {}).setdefault(f, [0, 0, 0, 0, 0])
-                tb[sum(1 for c in _USO_TT if sg >= c)] += 1
+                _uso_resuelve_ok(e, x, max(0, int(now - float(x.get("ts") or now))))
+            else:
+                _uso_suma(e, "pm", "mando")
             _uso_guarda(d)
         _USO_NUBE["cambios"] += 1
     except Exception:
@@ -13674,6 +13728,20 @@ def _uso_funde(a, b):
         if not ea:
             out["dias"][dia] = eb
             continue
+        # (dtbl111) lo limpiado a mano gana a "el mayor de los dos": si un lado
+        # limpió una clave DESPUÉS que el otro, se queda con su valor (o sin ella)
+        la, lb = ea.get("lim") or {}, eb.get("lim") or {}
+        for k in set(la) | set(lb):
+            if la.get(k, 0) == lb.get(k, 0):
+                continue
+            gana = ea if la.get(k, 0) > lb.get(k, 0) else eb
+            for kk in (k, "n" + k):
+                if kk in gana:
+                    ea[kk] = gana[kk]
+                    eb[kk] = gana[kk]
+                else:
+                    ea.pop(kk, None)
+                    eb.pop(kk, None)
         for k in _USO_SETS:
             if isinstance(ea.get(k), list) or isinstance(eb.get(k), list):
                 ea[k] = sorted(set(ea.get(k) or []) | set(eb.get(k) or []))
@@ -13724,7 +13792,7 @@ def _uso_muestra(now=None, forzar=False):
             _uso_suma(e, "km", _uso_huella(c))
         for c in rep:
             _uso_suma(e, "rm", _uso_huella(c))
-        _uso_muestra_mas(d, e, st, vivas, rep, now, hoy)
+        _uso_muestra_mas(d, e, st, vivas, rep, now, hoy, np)
         if len(rep) > e.get("pico", 0):
             e["pico"], e["pico_h"] = len(rep), hhmm
         e["hp"][hora] = max(e["hp"][hora], len(rep))
@@ -13923,7 +13991,7 @@ def _uso_titulo(t):
     return t[:60]
 
 
-def _uso_envio(fuente, q, code="", titulo="", tipo=""):
+def _uso_envio(fuente, q, code="", titulo="", tipo="", espera=True):
     """Una reproducción mandada desde la web: fuente, calidad, película o serie
     y el título (sumado entre todos: nunca se guarda qué tele lo pidió, solo
     una huella corta para no contar dos veces a la misma) (dtbl104-106)."""
@@ -13931,7 +13999,7 @@ def _uso_envio(fuente, q, code="", titulo="", tipo=""):
         now = _t.time()
         hoy = _uso_es(now)[0]
         f = fuente if fuente in _USO_FUENTES else "otra"
-        if code:
+        if code and espera:     # (dtbl111) a una tele apagada no se le espera
             with _FileLock(_USO_PEND_FILE):
                 pend = _uso_pend_lee()
                 x = pend.get(code)
@@ -14036,6 +14104,35 @@ def _uso_ahora(now=None):
     return {"viendo": sum(1 for x in np if not x.get("paused")),
             "en_pausa": sum(1 for x in np if x.get("paused")),
             "kodis": len(vivas), "webs": moviles, "versiones": vers}
+
+
+@app.post("/uso/limpia")
+def uso_limpia():
+    """El dueño borra datos que se sabe que están mal (dtbl111). Queda anotado
+    en el día (lim) para que la copia de la nube no los devuelva."""
+    if not _uso_es_admin(request):
+        return jsonify({"ok": False, "error": "privado"}), 401
+    body = request.get_json(silent=True) or {}
+    dia = str(body.get("dia") or "")
+    claves = [str(k) for k in (body.get("claves") or []) if isinstance(k, str)]
+    validas = set(_USO_DIC) | set(_USO_SETS) | {"tm", "pico", "hp"}
+    claves = [k for k in claves if k in validas and k != "lim"]
+    if not re.match(r"^\d{4}-\d\d-\d\d$", dia) or not claves:
+        return jsonify({"ok": False, "error": "dia o claves"}), 400
+    now = _t.time()
+    with _FileLock(_USO_FILE):
+        d = _uso_lee()
+        e = d["dias"].get(dia)
+        if not e:
+            return jsonify({"ok": False, "error": "sin ese dia"}), 404
+        for k in claves:
+            e.pop(k, None)
+            e.pop("n" + k, None)
+            e.setdefault("lim", {})[k] = int(now)
+        _uso_guarda(d)
+    _USO_NUBE["cambios"] += 1
+    ok = _uso_sube_ya() if _EN_RENDER and os.environ.get("MW_SIN_NUBE") != "1" else True
+    return jsonify({"ok": True, "limpias": claves, "nube": bool(ok)})
 
 
 @app.post("/uso/busca")
@@ -14204,6 +14301,7 @@ def uso_datos():
                "semana": _uso_semana(d, base), "crece": _uso_crece(d, base),
                "cab": sorted(_USO_CAB)}
     out = {"ok": True, "ahora": _uso_ahora(now), "hoy": hoy, "publicada": publicada,
+           "dia_parcial": hoy == _USO_DIA_ARRANQUE,
            "med_min_tele": rm[len(rm) // 2] if rm else 0,
            "ip_medidas": isinstance(eh.get("ip"), list) and bool(eh.get("ip")),
            "horas_hoy": eh.get("hp") or [0] * 24, "dias": dias,
@@ -14283,6 +14381,7 @@ details summary{min-height:44px;display:flex;align-items:center;color:var(--bar)
 .hbv{font-variant-numeric:tabular-nums;min-width:4.5em;text-align:right}
 .hbv small{color:var(--mut);font-size:12px}
 .graf button.vacio i{background:transparent}
+.aviso{background:rgba(255,196,0,.10);border:1px solid rgba(255,196,0,.25);color:#ffd970;border-radius:10px;padding:8px 10px;font-size:13px;margin:0 0 12px}
 .tsv{font-size:13px}.tsv th,.tsv td{padding:7px 3px}
 .def{margin:0}.def dt{font-size:14px;font-weight:600;margin-top:10px}.def dt:first-child{margin-top:0}.def dd{margin:2px 0 0;color:var(--sub);font-size:14px}
 </style></head><body><main id="m">
@@ -14331,7 +14430,7 @@ function barras(obj,nombres,orden){
     return '<div class="hb"><span class="hbn">'+esc(nombres[k]||k)+'</span><span class="hbt"><i style="width:'+Math.max(3,v/mx*100)+'%"></i></span><span class="hbv">'+n(v)+' <small>'+Math.round(v/tot*100)+'%</small></span></div>'}).join("")+'</div>';
 }
 function lineas(xs){return '<dl class="lst">'+xs.map(function(x){return '<div><dt>'+x[0]+'</dt><dd>'+x[1]+'</dd></div>'}).join("")+'</dl>'}
-var FC={dt:"DonTorrent",dx:"DivxTotal",et:"Elite",wf:"WolfMax",cb:"Cinubo",otra:"Otras"};
+var FC={dt:"DonTorrent",dx:"DivxTotal",et:"Elite",wf:"WolfMax",cb:"Cinubo",otra:"Otras",tele:"En la tele"};
 var PLN={android:"Android (TV, Fire TV, móvil)",windows:"Windows",linux:"Linux / LibreELEC",osx:"Mac",ios:"iPhone / iPad",tvos:"Apple TV",webos:"LG webOS","?":"Sin dato"};
 var RSN={"2160":"4K","1080":"1080p","720":"720p",sd:"Menos de 720p"};
 function pct(a,b){return b?Math.round(a/b*100)+"%":"–"}
@@ -14353,7 +14452,7 @@ function servicioHTML(d){
 }
 function usoHTML(d,hoyE){
   var c=d.como||{},t=d.tipo||{};
-  return '<p class="nota" style="margin:14px 0 8px">Cómo se elige lo que se ve</p>'+barras({web:c.web||0,mando:c.mando||0},{web:"Web del móvil",mando:"Mando de la tele"},["web","mando"])+
+  return '<p class="nota" style="margin:14px 0 8px">Cómo se elige lo que se ve <small>(«en la tele»: con el mando, o el siguiente capítulo que Kodi pone solo)</small></p>'+barras({web:c.web||0,mando:c.mando||0},{web:"Web del móvil",mando:"En la tele"},["web","mando"])+
    '<p class="nota" style="margin:14px 0 8px">Películas o series (desde la web)</p>'+barras({movie:t.movie||0,tv:t.tv||0},{movie:"Películas",tv:"Series"},["movie","tv"]);
 }
 function buscaHTML(d){var s=d.semana||{};
@@ -14399,7 +14498,7 @@ function pinta(d){
     ["Casas distintas <small>(conexiones a internet)</small>",casasTxt],
     ["Kodis encendidos solo un rato <small>(menos de 15 min)</small>",cortosTxt],
     ["Lo normal que se ve cada tele <small>(la mediana)</small>",med],
-    ["Móviles que han abierto la web",n(hoyE.webs)],
+    ["Teles manejadas desde la web del móvil",n(hoyE.webs)],
     ["Códigos que usan varias teles a la vez <small>(Kodi copiado)</small>",n(hoyE.compartidos)]]);
   // --- días: 14 huecos fijos, los que aún no tienen datos quedan vacíos ---
   var SL=14,porDia={};dias.forEach(function(x){porDia[x.dia]=x});
@@ -14419,12 +14518,12 @@ function pinta(d){
    '<section class="card"><h2>Ahora mismo</h2><div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+(a.en_pausa?" · "+n(a.en_pausa)+" en pausa":"")+'</span></div>'+
    '<div class="fila"><div><b>'+n(a.kodis)+'</b><small>Kodis encendidos</small></div><div><b>'+n(a.webs)+'</b><small>con la web abierta</small></div><div><b>'+n(hoyE.pico)+'</b><small>pico de hoy'+(hoyE.pico_h?" ("+esc(hoyE.pico_h)+")":"")+'</small></div></div>'+
    '<p class="linea">'+verTxt+'</p>'+(verLista?'<details><summary>Versiones de los Kodis encendidos</summary><table><thead><tr><th>Versión</th><th>Kodis</th></tr></thead><tbody>'+verLista+'</tbody></table></details>':'')+'</section>'+
-   '<section class="card"><h2>Hoy</h2><div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles con algo puesto</small></div><div><b>'+n(hoyE.kodis)+'</b><small>Kodis encendidos en algún momento</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas de tele</small></div></div>'+
+   '<section class="card"><h2>Hoy</h2>'+(d.dia_parcial?'<p class="aviso">Hoy es el día en que empezó a medirse el detalle: casas, ratos, fuentes, calidad del servicio y web o tele cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+'<div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles con algo puesto</small></div><div><b>'+n(hoyE.kodis)+'</b><small>Kodis encendidos en algún momento</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas de tele</small></div></div>'+
    hoyLineas+
    '<p class="nota" style="margin:14px 0 4px">Teles a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH)+usoHTML(d,hoyE)+'</section>'+servicioHTML(d)+
-   '<section class="card"><h2>Lo que se pone desde la web, hoy</h2><p class="nota" style="margin:0 0 8px">Por fuente</p>'+barras(hoyE.fuentes,FN,["dt","wf","et","dx","cb","otra"])+
+   '<section class="card"><h2>Lo que se manda a la tele desde la web, hoy</h2><p class="nota" style="margin:0 0 8px">Por fuente</p>'+barras(hoyE.fuentes,FN,["dt","wf","et","dx","cb","otra"])+
    '<p class="nota" style="margin:14px 0 8px">Por calidad</p>'+barras(hoyE.calidad,QN,["4k","1080","720","otra","nd"])+
-   '<p class="nota" style="margin:10px 0 0">Se cuenta desde el 2 nov por la tarde. No incluye lo que se pone con el mando de la tele.</p></section>'+buscaHTML(d)+creceHTML(d,dias)+aparatosHTML(d)+
+   '<p class="nota" style="margin:10px 0 0">Cada vez que se pulsa «a la tele» en la web, haya arrancado o no (eso está en «Calidad del servicio»).</p></section>'+buscaHTML(d)+creceHTML(d,dias)+aparatosHTML(d)+
    '<section class="card"><h2>Últimos días</h2><div class="fila" style="margin-top:0"><div><b>'+n(d.activos_7)+'</b><small>'+distLbl+'</small></div><div><b>'+n(medTeles)+'</b><small>teles al día con algo puesto (media)</small></div><div><b>'+n(Math.round(totH))+'</b><small>horas de tele en total</small></div></div>'+
    '<p class="nota" style="margin:14px 0 4px">Teles distintas con algo puesto, por día</p>'+grafico("dd",tv,[fecha(huecos[0].dia),"hoy"],fmtD)+
    '<details><summary>Ver la tabla</summary><table><thead><tr><th>Día</th><th>Teles</th><th>Kodis</th><th>Casas</th><th>Pico</th><th>Horas</th></tr></thead><tbody>'+filas+'</tbody></table></details></section>'+
