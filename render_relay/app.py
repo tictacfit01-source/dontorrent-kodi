@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl96"
+BUILD = "dtbl97"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -15013,6 +15013,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .epq[data-q="4K"]{background:rgba(191,90,242,.20);color:#d9a6ff;
  box-shadow:inset 0 0 0 1px rgba(191,90,242,.45)}
 .epq[data-q="1080p"]{background:rgba(10,132,255,.16);color:#7db8ff}
+.epq[data-q="Streaming"]{background:rgba(255,55,95,.18);color:#ff8fa8}
 .epb{display:inline-flex;gap:5px;margin-left:7px;vertical-align:middle}
 .ep-rar{font-size:10px;background:rgba(255,159,110,.95);color:#1a0d06;border-radius:5px;padding:1px 6px;font-weight:800}
 .ep-seed{font-size:10px;border-radius:5px;padding:1px 6px;font-weight:700;border:1px solid var(--stroke)}
@@ -15111,7 +15112,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srctag.s-et{background:#ff9f6e;color:#2a1206}
 .srctag.s-dx{background:#34d36a;color:#04210f}
 .srctag.s-wf{background:#c77dff;color:#1e0833}
-.srctag.s-cb{background:#ffd60a;color:#2b2300}
+.srctag.s-cb{background:#ff375f;color:#fff}
 .srclegend{display:flex;flex-wrap:wrap;gap:9px 14px;justify-content:center;margin:-2px 0 14px;font-size:11px;color:var(--sub)}
 .srclegend span{display:flex;align-items:center;gap:5px}
 .srclegend i{width:11px;height:11px;border-radius:3px;display:inline-block;flex:none}
@@ -15389,7 +15390,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srcp-f.wait i{animation:srcpPulse 1.1s ease-in-out infinite}
 @keyframes srcpPulse{0%,100%{opacity:.3;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
 .srcp-f.dt{--c:#0a84ff}.srcp-f.et{--c:#ff9f0a}
-.srcp-f.dx{--c:#30d158}.srcp-f.wf{--c:#bf5af2}.srcp-f.cb{--c:#ffd60a}
+.srcp-f.dx{--c:#30d158}.srcp-f.wf{--c:#bf5af2}.srcp-f.cb{--c:#ff375f}
 .srcp-f.zero i{opacity:.35}
 /* DonTorrent caido (lo dice su web): el chip de la busqueda y los avisos */
 .srcp-f.down{border-color:rgba(255,159,10,.35)}
@@ -15456,6 +15457,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <span><i style="background:#ff9f6e"></i>EliteTorrent</span>
   <span><i style="background:#34d36a"></i>DivxTotal</span>
   <span><i style="background:#c77dff"></i>WolfMax</span>
+  <span><i style="background:#ff375f"></i>Cinubo</span>
  </div>
  <div id="shared" class="shared"><div class="shared-in">
   <div><div class="shared-lab">Te han compartido</div><div class="shared-t" id="shared-t"></div></div>
@@ -18197,6 +18199,15 @@ function cmd(c){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toas
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:c})}).catch(function(){});
  if(c==='stop'){setTimeout(function(){closeRemote();pollNow()},700)}else{setTimeout(pollNow,500)}}
 $('q').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
+// (dtbl97) la cruz de la casilla (o borrarlo todo): la búsqueda vuelve a como
+// está al entrar, con las últimas búsquedas. Lo que iba en curso se suelta.
+function buscaLimpia(){if($('q').value.trim())return;
+ sreqAbort();_searchSeq++;try{progStop()}catch(e){}
+ var pr=$('buscar-prog');if(pr){pr.classList.remove('on');pr.innerHTML=''}
+ LISTS.buscar=[];var g=$('buscar-grid');g.className='msg';g.textContent='Busca pelis y series y envíalas a tu tele 📺';
+ var m=$('buscar-more');if(m)m.textContent='';recPinta()}
+$('q').addEventListener('input',buscaLimpia);
+$('q').addEventListener('search',buscaLimpia);
 // Añadir un Kodi con el teclado del movil: "Siguiente" pasa al codigo y "Listo"
 // guarda (antes habia que cerrar el teclado y buscar el boton). El codigo, solo
 // cifras: lo pegado con espacios o guiones ("123 456") se limpia al vuelo.
