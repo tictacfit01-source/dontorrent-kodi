@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl98"
+BUILD = "dtbl99"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4555,6 +4555,34 @@ def kb_status_get():
                     "v": entry.get("v", ""), "cont": entry.get("cont"),
                     "diag": entry.get("diag"), "ultima": ultima,
                     "vieja": bool(ultima) and _ver_vieja(entry.get("v"), ultima)})
+
+
+# La versión PUBLICADA del addon: la del repositorio de Kodi, que es de donde se
+# actualizan las teles (dtbl99). No la "más nueva entre las encendidas".
+_VER_PUB = {"v": "", "ts": 0.0}
+_VER_PUB_RE = re.compile(r'<addon\s+id="plugin\.video\.mejorwolf"[^>]*?\sversion="([0-9][0-9.]{0,15})"')
+
+
+def _ver_publicada():
+    if _VER_PUB["v"] and (_t.time() - _VER_PUB["ts"]) < 1800:
+        return _VER_PUB["v"]
+    try:
+        txt, st = _get_con_tope(_REPO_BASE + "/addons.xml", 8.0)
+        m = _VER_PUB_RE.search(txt or "")
+        if m:
+            _VER_PUB.update(v=m.group(1), ts=_t.time())
+        else:
+            _VER_PUB["ts"] = _t.time() - 1500          # reintenta en 5 min
+    except Exception:
+        pass
+    return _VER_PUB["v"]
+
+
+@app.get("/version")
+def version_publicada():
+    r = jsonify({"addon": _bounded(_ver_publicada, 10.0, "") or ""})
+    r.headers["Cache-Control"] = "public, max-age=300"
+    return r
 
 
 @app.get("/kb/qr")
@@ -14897,6 +14925,10 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .devnm{font-size:15px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .devcc{font-size:12px;color:var(--sub);letter-spacing:2px;font-variant-numeric:tabular-nums;margin-top:2px}
 .devold{font-size:11.5px;line-height:1.35;color:#ffb340;margin-top:4px;white-space:normal}
+.devv{font-size:11.5px;line-height:1.35;color:var(--sub);margin-top:3px}
+.devv.ok{color:#30d158}.devv.nueva{color:#ffb340}
+.devver{font-size:13px;color:var(--sub);margin:2px 0 10px;text-align:center}
+.devver b{color:var(--txt)}
 .deved,.devdel,.devkey{border:0;background:transparent;color:var(--sub);font-size:15px;cursor:pointer;flex:none;width:34px;height:34px;border-radius:50%}
 .deved:active,.devkey:active{background:rgba(255,255,255,.14)}
 .devdel:active{background:rgba(255,69,58,.18)}
@@ -15715,6 +15747,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
     <button class="cta-out" onclick="syncSalir()">Salir</button>
    </div>
   </div>
+  <div class="devver" id="devver"></div>
   <div class="devlist" id="devlist"></div>
   <div class="devadd">
    <input id="devn" class="devin" placeholder="Nombre (Salón, Tablet, PC…)" maxlength="24" autocomplete="off" autocapitalize="words" enterkeyhint="next">
@@ -15919,11 +15952,24 @@ function openDevs(){var cur=(code.value||'').replace(/\D/g,'');
  try{syncPinta();if(!syncOn())gsiCarga()}catch(e){}
  var dc=$('devc');if(dc)dc.value=(cur.length===6&&!devName(cur))?cur:'';
  var dn=$('devn');if(dn)dn.value='';
- renderDevs();$('devsheet').classList.add('on');mwOpen('devs',$('devsheet').querySelector('.box'),_closeDevs)}
+ renderDevs();verPinta();$('devsheet').classList.add('on');mwOpen('devs',$('devsheet').querySelector('.box'),_closeDevs)}
 function _closeDevs(){$('devsheet').classList.remove('on')}
 function closeDevs(){mwBack('devs')}
+// (dtbl99) la última versión publicada del addon, para saber si cada tele la tiene
+var VERPUB='';
+function verPub(cb){if(VERPUB)return cb(VERPUB);
+ fetch('/version').then(function(r){return r.json()}).then(function(d){VERPUB=(d&&d.addon)||'';cb(VERPUB)}).catch(function(){cb('')})}
+function verCmp(a,b){a=String(a||'').split('.').map(Number);b=String(b||'').split('.').map(Number);
+ for(var i=0;i<Math.max(a.length,b.length);i++){var d=(a[i]||0)-(b[i]||0);if(d)return d}return 0}
+function verPinta(){var el=$('devver');if(!el)return;
+ verPub(function(v){el.innerHTML=v?('Última versión de MejorWolf: <b>'+esc(v)+'</b>'):''})}
 function liveDot(dot,c,meta){fetch('/kb/status?code='+c).then(function(r){return r.json()}).then(function(j){
  dot.className='devdot '+((j&&j.connected)?'on':'off');
+ if(meta&&j&&j.v&&!j.vieja&&!meta.querySelector('.devv'))verPub(function(pub){if(meta.querySelector('.devv'))return;
+  var w=document.createElement('div'),al=!pub||verCmp(j.v,pub)>=0;
+  w.className='devv '+(al?'ok':'nueva');
+  w.textContent='MejorWolf '+j.v+(al?' · ✓ al día':' · hay una nueva: '+pub+' (se actualiza sola)');
+  meta.appendChild(w)});
  // Muy por detras de la version mas nueva (el relay lo decide, ver _ver_vieja):
  // sin esto nadie se enteraba de que una tele llevaba meses sin actualizarse.
  if(meta&&j&&j.vieja&&!meta.querySelector('.devold')){var w=document.createElement('div');w.className='devold';
