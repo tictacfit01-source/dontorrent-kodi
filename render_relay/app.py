@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl95"
+BUILD = "dtbl96"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14042,10 +14042,10 @@ def _cb_cache_get(tabla, clave, ttl):
     return None
 
 
-def _cb_cache_pon(tabla, clave, valor):
+def _cb_cache_pon(tabla, clave, valor, ts=None):
     with _FileLock(_CB_CACHE_FILE):
         d = _cb_cache_lee()
-        d[tabla][clave] = [valor, _t.time()]
+        d[tabla][clave] = [valor, _t.time() if ts is None else ts]
         if len(d[tabla]) > _CB_MAX[tabla]:
             for k in sorted(d[tabla], key=lambda k: d[tabla][k][1])[:len(d[tabla]) - _CB_MAX[tabla]]:
                 d[tabla].pop(k, None)
@@ -14106,6 +14106,14 @@ def _cb_enlaces(ruta):
         _CB["ult_err"] = "sesion caducada"
         return None
     en = _cb_ordena([{"r": x["r"], "srv": x["srv"], "q": x["q"]} for x in _cb_enlaces_de(txt)])
+    if not en:
+        # vacía: se dice por qué (cuántos había en total) y solo vale 20 min:
+        # el 02-11 "Perdida" volvió vacía UNA vez y se quedó así 6 h
+        _CB["vacias"] = _CB.get("vacias", 0) + 1
+        _CB["ult_vacia"] = {"ruta": ruta[:40], "bytes": len(txt or ""),
+                            "enlaces": (txt or "").count("data-link-playback")}
+        _cb_cache_pon("e", ruta, [], _t.time() - _CB_TTL_ENLACES + 1200)
+        return en
     _cb_cache_pon("e", ruta, en)
     return en
 
@@ -14316,9 +14324,12 @@ def cb_prueba():
     if not _uso_es_admin(request):
         return jsonify({"ok": False, "error": "no"}), 403
     out = {"cookies": sorted(_cb_cookies().keys()), "nube": _CB["nube"]}
-    txt, st = _cb_get("/s/nzp5nh/4x2", tope=15.0)
+    ruta = str(request.args.get("p") or "/s/nzp5nh/4x2")
+    if not re.match(r"^/[psa]/[a-z0-9]{4,12}(/\d{1,3}x\d{1,4})?$", ruta):
+        return jsonify({"ok": False, "error": "ruta"}), 400
+    txt, st = _cb_get(ruta, tope=15.0)
     out["ficha"] = {"st": st, "ms": _CB["ult_ms"], "bytes": len(txt or ""),
-                    "logueado": _cb_logueado(txt)}
+                    "logueado": _cb_logueado(txt), "enlaces_total": (txt or "").count("data-link-playback")}
     en = _cb_enlaces_de(txt)
     out["enlaces"] = [{"srv": x["srv"], "q": x["q"]} for x in en]
     if en and request.args.get("e") == "1":
@@ -14575,7 +14586,8 @@ def catdiag():
                              "cupo_h": _CB_CUPO_H, "cache": {k: len(v) for k, v in _ca.items()},
                              **{k: _CB[k] for k in ("peticiones", "fallos", "ult_st", "ult_ms",
                                                     "ult_err", "captcha", "cupo_lleno", "nube")},
-                             "apartadas_403": len([1 for v in _CB_MALAS.values() if _t.time() - v < _CB_MALAS_S])}
+                             "apartadas_403": len([1 for v in _CB_MALAS.values() if _t.time() - v < _CB_MALAS_S]),
+                             "vacias": _CB.get("vacias", 0), "ult_vacia": _CB.get("ult_vacia")}
         except Exception:
             pass
     else:
@@ -15377,7 +15389,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .srcp-f.wait i{animation:srcpPulse 1.1s ease-in-out infinite}
 @keyframes srcpPulse{0%,100%{opacity:.3;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
 .srcp-f.dt{--c:#0a84ff}.srcp-f.et{--c:#ff9f0a}
-.srcp-f.dx{--c:#30d158}.srcp-f.wf{--c:#bf5af2}
+.srcp-f.dx{--c:#30d158}.srcp-f.wf{--c:#bf5af2}.srcp-f.cb{--c:#ffd60a}
 .srcp-f.zero i{opacity:.35}
 /* DonTorrent caido (lo dice su web): el chip de la busqueda y los avisos */
 .srcp-f.down{border-color:rgba(255,159,10,.35)}
@@ -16290,23 +16302,24 @@ function repaintCard(g,list,i){var grid=g.querySelector('.grid');if(!grid)return
 // 0 = buscando · 1 = ha traído cosas · 2 = no tiene nada · 3 = no contestó
 var PROG={t0:0,st:{},n:{},tick:null,seq:0};
 var PROGN={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax',cb:'Cinubo'};
-function progStart(seq){PROG={t0:Date.now(),st:{dt:0,et:0,dx:0,wf:0},n:{dt:0,et:0,dx:0,wf:0},tick:null,seq:seq};
+var PROGK=['dt','dx','et','wf','cb'];   // (dtbl96) Cinubo, una fuente más
+function progStart(seq){PROG={t0:Date.now(),st:{dt:0,et:0,dx:0,wf:0,cb:0},n:{dt:0,et:0,dx:0,wf:0,cb:0},tick:null,seq:seq};
  var el=$('buscar-prog');if(el)el.classList.add('on');
  PROG.tick=setInterval(function(){if(PROG.seq!==_searchSeq){progStop();return}progPaint()},150);
  progPaint();}
 function progSet(src,estado,n){if(PROG.seq!==_searchSeq)return;
  PROG.st[src]=estado;if(n!=null)PROG.n[src]=n;progPaint();
- var fin=['dt','et','dx','wf'].every(function(k){return PROG.st[k]>0});
+ var fin=PROGK.every(function(k){return PROG.st[k]>0});
  if(fin)setTimeout(function(){if(PROG.seq===_searchSeq)progStop(1)},1400);}
 function progPaint(){var el=$('buscar-prog');if(!el)return;
- var ks=['dt','dx','et','wf'],hechas=0,total=0;
+ var ks=PROGK,hechas=0,total=0;
  var chips=ks.map(function(k){var e=PROG.st[k]||0;if(e>0)hechas++;if(e===1)total+=PROG.n[k]||0;
   // 4 = la fuente esta caida (lo dice ella misma: ver dt_caida en el relay)
   var cls='srcp-f '+k+(e>0?' on':' wait')+(e===2?' zero':'')+(e===4?' down':'');
   var txt=PROGN[k]+(e===1?(' <b>'+PROG.n[k]+'</b>'):(e===2?' <b>0</b>':(e===3?' —':(e===4?' <b>caído</b>':''))));
   return '<span class="'+cls+'"><i></i>'+txt+'</span>'}).join('');
  var seg=((Date.now()-PROG.t0)/1000).toFixed(1).replace('.',',');
- var fin=(hechas===4);
+ var fin=(hechas===ks.length);
  // Lo que se CUENTA arriba son las tarjetas que hay en pantalla, no la suma
  // de las fuentes: la misma peli en cuatro fuentes es UNA tarjeta (las otras
  // tres viven dentro, en "Tambien en"). Sumando salia "34 resultados" con 11
@@ -16319,10 +16332,10 @@ function progPaint(){var el=$('buscar-prog');if(!el)return;
  var extra=0;((window.LISTS&&LISTS.buscar)||[]).forEach(function(x){extra+=((x&&x.alts)||[]).length});
  var ttl=fin?('✓ '+vis+' título'+(vis===1?'':'s')+' en '+nf+' fuente'+(nf===1?'':'s')+
    (extra?(' <span class="srcp-x">+'+extra+(extra===1?' versión':' versiones')+'</span>'):''))
-            :('<span class="spin"></span> Buscando en '+(4-hechas)+' fuente'+((4-hechas)===1?'':'s')+'…');
+            :('<span class="spin"></span> Buscando en '+(ks.length-hechas)+' fuente'+((ks.length-hechas)===1?'':'s')+'…');
  el.innerHTML='<div class="srcp-top"><span class="srcp-ttl">'+ttl+'</span>'+
   '<span class="srcp-sec">'+seg+' s</span></div>'+
-  '<div class="srcp-bar"><i style="width:'+Math.round(hechas/4*100)+'%"></i></div>'+
+  '<div class="srcp-bar"><i style="width:'+Math.round(hechas/ks.length*100)+'%"></i></div>'+
   '<div class="srcp-row">'+chips+'</div>';}
 function progStop(suave){if(PROG.tick){clearInterval(PROG.tick);PROG.tick=null}
  var el=$('buscar-prog');if(!el)return;
@@ -18060,7 +18073,9 @@ function cbBusca(q,seq,g,esperando){var res=null,puesto=0,t0=Date.now();
   var nuevos=res.filter(function(x){return !hay[(x.kind==='serie'?'s':'m')+x.tmdb_id]});
   if(nuevos.length)mergeResults('buscar',g,nuevos)};
  fetch('/cbsearch?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
-   if(d&&d.ok&&d.items&&d.items.length){res=d.items;pon()}}).catch(function(){})}
+   if(seq!==_searchSeq)return;var n=(d&&d.ok&&d.items)?d.items.length:0;
+   progSet('cb',(d&&d.ok)?(n?1:2):3,n);
+   if(n){res=d.items;pon()}}).catch(function(){if(seq===_searchSeq)progSet('cb',3)})}
 // ---- Lo que los torrents aún no tienen (dtbl91) ----------------------------
 // "The Bear T5 está en Cinubo y en MejorWolf no aparece": TMDB dice qué se ha
 // emitido; lo que no traiga ninguna fuente torrent se añade con «Streaming». Si
@@ -18140,7 +18155,12 @@ function cbPlay(i,resto){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
    if(!(d&&d.ok&&d.u)&&d&&d.error!=='captcha'&&resto.length){cbPlay(resto[0],resto.slice(1));return}
    if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
     if($('wfdlg').classList.contains('on')){dl=true;mwBack('wfdlg')}
-    setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)})},dl?220:0);return}
+    // (dtbl96) como el torrent: a la tele y el mando abierto. sendPlay cierra
+    // ficha y serie con "atrás" del historial; si el mando se abría a la vez, el
+    // último "atrás" llegaba después y se lo llevaba. Se abre cuando ya ha pasado.
+    setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)},null,function(r){if(!r)return;
+      if(r.tele===false){toast('📴 Tu tele no está conectada. Enciéndela y abre Kodi: empezará sola',5500);return}
+      toast('▶ En la tele');setTimeout(function(){openRemote();setTimeout(pollNow,1200)},450)})},dl?220:0);return}
    toast(d&&d.error==='captcha'?'Cinubo pide una verificación ahora mismo: prueba en unos minutos':(cbNom(it.srv)+' no contesta ahora: elige otro servidor'),6000)})
   .catch(function(){toast('No se pudo conectar: prueba otra vez')})}
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}

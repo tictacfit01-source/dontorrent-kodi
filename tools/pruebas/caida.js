@@ -220,7 +220,8 @@ const espera = (ms) => new Promise((r) => setTimeout(r, ms));
     && TOASTS.some((t) => /Serie completa: 41/.test(t)), JSON.stringify(TOASTS));
 
   console.log('\n=== 5) El chip de la busqueda ===');
-  PROG = { t0: Date.now(), st: { dt: 4, et: 1, dx: 2, wf: 0 }, n: { dt: 1, et: 3, dx: 0, wf: 0 }, tick: null, seq: 1 };
+  // (dtbl96) cinco fuentes: Cinubo ya ha contestado
+  PROG = { t0: Date.now(), st: { dt: 4, et: 1, dx: 2, wf: 0, cb: 1 }, n: { dt: 1, et: 3, dx: 0, wf: 0, cb: 2 }, tick: null, seq: 1 };
   progPaint();
   const hp = $('buscar-prog').innerHTML;
   comprueba('DonTorrent: "caído", con su estilo', /class="srcp-f dt on down"/.test(hp)
