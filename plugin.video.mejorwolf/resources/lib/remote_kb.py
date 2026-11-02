@@ -172,7 +172,7 @@ def push_now(np):
         pass
 
 
-def push_status(version, cont=None, diag=None):
+def push_status(version, cont=None, diag=None, dev=None):
     """Latido del box al relay: version del addon + (opcional) 'Continuar
     viendo' + (opcional) telemetria de reproduccion (diag). Devuelve lo que
     contesta el relay ({"ok", "ultima"}: la version mas nueva que ve), o {}."""
@@ -182,7 +182,7 @@ def push_status(version, cont=None, diag=None):
     try:
         r = _SESSION.post(f"{base}/kb/status",
                           json={"code": get_code(), "v": version, "cont": cont,
-                                "diag": diag},
+                                "diag": diag, "dev": dev},
                           timeout=8)
         d = r.json()
         return d if isinstance(d, dict) else {}

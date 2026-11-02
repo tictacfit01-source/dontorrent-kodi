@@ -1246,9 +1246,39 @@ def _playback_diag():
         "res": (g("Player.Process(videowidth)") + "x"
                 + g("Player.Process(videoheight)")),
         "cache": g("VideoPlayer.CacheLevel") or "",
+        # (2.9.93) con la rueda de carga ahora mismo: para medir los cortes
+        "cach": "1" if xbmc.getCondVisibility("Player.Caching") else "0",
         "arr": _PLAYER_CFG.get("videoplayer.adjustrefreshrate"),
         "clk": _PLAYER_CFG.get("videoplayer.usedisplayasclock"),
     }
+
+
+_DEV = {}
+
+
+def _aparato():
+    """(2.9.93) Qué aparato y qué Kodi: para saber dónde se usa MejorWolf.
+    Nada que identifique a nadie: sistema, versión de Kodi y de Android."""
+    if _DEV:
+        return _DEV
+    try:
+        c = xbmc.getCondVisibility
+        pl = ("android" if c("System.Platform.Android") else
+              "tvos" if c("System.Platform.TVOS") else
+              "ios" if c("System.Platform.IOS") else
+              "osx" if c("System.Platform.OSX") else
+              "windows" if c("System.Platform.Windows") else
+              "webos" if c("System.Platform.WebOS") else
+              "linux" if c("System.Platform.Linux") else "otro")
+        kv = ".".join((xbmc.getInfoLabel("System.BuildVersion") or "").split(" ")[0].split(".")[:2])
+        so = ""
+        if pl == "android":
+            m = re.search(r"Android\s+([0-9]+)", xbmc.getInfoLabel("System.OSVersionInfo") or "")
+            so = m.group(1) if m else ""
+        _DEV.update(pl=pl, kv=kv[:8], os=so[:4])
+    except Exception:
+        pass
+    return _DEV
 
 
 _DTPATH_RE = re.compile(
@@ -1478,7 +1508,7 @@ def main():
             last_beat = now
             try:
                 r = rkb.push_status(_addon_ver, _read_continue_push(),
-                                    _playback_diag())
+                                    _playback_diag(), _aparato())
                 _ponte_al_dia((r or {}).get("ultima"))
             except Exception:
                 pass

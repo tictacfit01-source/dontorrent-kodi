@@ -42,7 +42,7 @@ def comprueba(nombre, ok, detalle=""):
 
 
 os.makedirs("/tmp", exist_ok=True)
-FICH = [A._USO_FILE, A._KB_STATUS_FILE, A._KB_NOW_FILE, A._KB_SEEN_FILE]
+FICH = [A._USO_FILE, A._KB_STATUS_FILE, A._KB_NOW_FILE, A._KB_SEEN_FILE, A._USO_PEND_FILE]
 copias = {}
 for f in FICH:
     if os.path.exists(f):
@@ -188,7 +188,9 @@ try:
               hoy["fuentes"] == {"cb": 1, "wf": 1, "otra": 1}, hoy["fuentes"])
     comprueba("calidades: 1080 1, 4K 1, sin indicar 1",
               hoy["calidad"] == {"1080": 1, "4k": 1, "nd": 1}, hoy["calidad"])
-    comprueba("y ningún título", "secreta" not in open(A._USO_FILE, encoding="utf-8").read())
+    crudo = open(A._USO_FILE, encoding="utf-8").read()
+    comprueba("lo puesto se suma por título, sin el código de la tele",
+              "Peli secreta" in crudo and "111111" not in crudo)
     g = A._uso_valida(A._uso_lee())
     viejo = dict(g["dias"][d["hoy"]])
     g["dias"]["2026-10-03"] = viejo
@@ -201,6 +203,79 @@ try:
     comprueba("fundir: minutos y fuentes, el mayor de cada uno",
               f2["dias"][d["hoy"]]["km"]["a" * 12] == 99 and f2["dias"][d["hoy"]]["rf"].get("dt") == 2
               and f2["dias"][d["hoy"]]["rf"].get("cb") == 1, f2["dias"][d["hoy"]].get("rf"))
+
+    print("\n=== 6c) Calidad del servicio, búsquedas, lo más puesto y crecimiento (dtbl106) ===")
+    for f in (A._USO_PEND_FILE,):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+    t0 = A._t.time()
+    # 222222: la web manda The Bear 5x02 por Cinubo y arranca a los 20 s
+    cli.post("/kb/send", json={"code": "222222", "cmd": "play_ref", "a": "st", "u": "https://vidara.to/e/y",
+                               "t": "The Bear 5x02", "q": "1080p", "k": "tv"})
+    A._uso_arranco("222222", A._t.time() + 20)
+    # 333333: se manda, se cambia antes de arrancar, y lo segundo nunca arranca
+    cli.post("/kb/send", json={"code": "333333", "cmd": "play_ref", "a": "pl", "u": "magnet:?xt=urn:btih:e1",
+                               "f": "et", "t": "The Bear 5x03", "k": "tv"})
+    cli.post("/kb/send", json={"code": "333333", "cmd": "play_ref", "a": "pl", "u": "magnet:?xt=urn:btih:e2",
+                               "f": "wf", "t": "Perdida (2014)", "q": "4K", "k": "movie"})
+    # 444444 pone algo con el mando (sin envío de la web)
+    A._uso_arranco("444444")
+    # pasan 7 minutos: lo de 333333 no arrancó
+    st = A._kbstatus_load()
+    for c in st:
+        st[c]["ts"] = A._t.time() + 400
+    st["222222"]["diag"] = {"res": "1920x1080", "cach": "1"}
+    st["222222"]["dev"] = {"pl": "android", "kv": "21.1"}
+    st["222222"]["pais"] = "ES"
+    A._kbstatus_save(st)
+    A._kbnow_save({"222222": {"np": {"title": "The Bear", "paused": False}, "ts": A._t.time() + 400}})
+    A._uso_muestra(A._t.time() + 400, forzar=True)
+    d = cli.get("/uso/datos?k=" + llave).get_json()
+    sv = d["servicio"]
+    comprueba("Cinubo: 1 arrancó, en ~20 s (tramo 15-30 s)",
+              sv["cb"]["ok"] == 1 and 19 <= sv["cb"]["seg_medio"] <= 21 and sv["cb"]["tramos"][1] == 1, sv.get("cb"))
+    comprueba("EliteTorrent: se cambió antes de arrancar (no cuenta como fallo)",
+              sv["et"]["cambio"] == 1 and sv["et"]["ko"] == 0, sv.get("et"))
+    comprueba("WolfMax: en 6 min no arrancó -> 'no arrancó'", sv["wf"]["ko"] == 1 and sv["wf"]["ok"] == 0, sv.get("wf"))
+    comprueba("web 1 / mando 1", d["como"] == {"web": 1, "mando": 1}, d["como"])
+    comprueba("películas 1 / series 2", d["tipo"] == {"movie": 1, "tv": 2}, d["tipo"])
+    comprueba("resolución real: 1 min en 1080", d["resolucion"] == {"1080": 1}, d["resolucion"])
+    comprueba("minutos cargando de Cinubo: 1 de 1", sv["cb"]["min_cargando"] == 1 and sv["cb"]["min_viendo"] == 1, sv["cb"])
+    comprueba("aparato, versión de Kodi y país", d["aparatos"] == {"android": 1} and d["kodi"] == {"21.1": 1}
+              and d["paises"] == {"ES": 1}, (d["aparatos"], d["kodi"], d["paises"]))
+    vis = dict((t, k) for t, k in d["semana"]["vistos"])
+    comprueba("lo más puesto: 'The Bear' junta sus capítulos (2 teles); Perdida sin el año",
+              vis.get("The Bear") == 2 and vis.get("Perdida") == 1, d["semana"]["vistos"])
+    for q, n in (("Pérdida", 3), ("  perdida ", 3), ("Gone  Girl!", 0), ("xx", 0)):
+        cli.post("/uso/busca", json={"q": q, "n": n}, headers={"X-Forwarded-For": "5.5.5.5, 10.0.0.1"})
+    cli.post("/uso/busca", json={"q": "perdida", "n": 2}, headers={"X-Forwarded-For": "6.6.6.6"})
+    sem = cli.get("/uso/datos?k=" + llave).get_json()["semana"]
+    bus = {q: (a, b) for q, a, b in sem["buscadas"]}
+    comprueba("búsquedas: sin tildes ni mayúsculas, y la misma persona no cuenta dos veces",
+              bus.get("perdida") == (2, 0), bus)
+    comprueba("las que no encuentran nada", ["gone girl", 1] in sem["sin_nada"] and ["xx", 1] in sem["sin_nada"],
+              sem["sin_nada"])
+    for i in range(45):
+        cli.post("/uso/busca", json={"q": "spam %d" % i, "n": 0}, headers={"X-Forwarded-For": "7.7.7.7"})
+    sem = cli.get("/uso/datos?k=" + llave).get_json()["semana"]
+    comprueba("nadie infla la lista: 40 por persona cada 10 min",
+              sum(1 for q, a, b in sem["buscadas"] if q.startswith("spam")) <= 25 and sem["total_busquedas"] <= 46, sem["total_busquedas"])
+    comprueba("ningún código en el fichero", not any(c in open(A._USO_FILE, encoding="utf-8").read() for c in CODIGOS))
+    import datetime as _dtm
+    g = A._uso_valida(A._uso_lee())
+    hoy_n = _dtm.date.fromisoformat(d["hoy"]).toordinal()
+    g["desde"] = (_dtm.date.fromisoformat(d["hoy"]) - _dtm.timedelta(days=20)).isoformat()
+    g["act"] = {"a" * 12: [hoy_n - 10, hoy_n - 3, hoy_n - 2, hoy_n - 1, hoy_n],
+                "b" * 12: [hoy_n - 12, hoy_n - 11],
+                "c" * 12: [hoy_n]}
+    cr = A._uso_crece(g, _dtm.date.fromisoformat(d["hoy"]))
+    comprueba("crecimiento: 1 fiel, de 2 que llegaron hace +7 días sigue 1, y 1 se fue",
+              (cr["fieles"], cr["llegaron_hace_7"], cr["siguen"], cr["se_fueron"]) == (1, 2, 1, 1), cr)
+    comprueba("el título sin el capítulo", A._uso_titulo("The Bear 5x02") == "The Bear"
+              and A._uso_titulo("Silo - S02E03") == "Silo" and A._uso_titulo("Alien: Romulus (2024)") == "Alien: Romulus",
+              [A._uso_titulo(x) for x in ("The Bear 5x02", "Silo - S02E03", "Alien: Romulus (2024)")])
 
     print("\n=== 7) La página ===")
     r = cli.get("/uso")
