@@ -243,6 +243,9 @@ try:
     comprueba("web 1 / mando 1", d["como"] == {"web": 1, "mando": 1}, d["como"])
     comprueba("películas 1 / series 2", d["tipo"] == {"movie": 1, "tv": 2}, d["tipo"])
     comprueba("resolución real: 1 min en 1080", d["resolucion"] == {"1080": 1}, d["resolucion"])
+    comprueba("la resolución como la manda Kodi (con separador de miles) y por el ancho (dtbl117)",
+              [A._uso_res({"res": r}) for r in ("1,920x1,080", "3,840x1,600", "1,920x800", "1,280x720", "852x480", "")]
+              == ["1080", "2160", "1080", "720", "sd", ""])
     comprueba("minutos cargando de Cinubo: 1 de 1", sv["cb"]["min_cargando"] == 1 and sv["cb"]["min_viendo"] == 1, sv["cb"])
     comprueba("aparato, versión de Kodi y país", d["aparatos"] == {"android": 1} and d["kodi"] == {"21.1": 1}
               and d["paises"] == {"ES": 1}, (d["aparatos"], d["kodi"], d["paises"]))

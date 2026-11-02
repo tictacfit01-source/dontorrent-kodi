@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl116"
+BUILD = "dtbl117"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13476,12 +13476,15 @@ def _uso_cortos(e):
 
 
 def _uso_res(dg):
-    """'1920x1080' -> '1080' (lo que de verdad se ve, no la etiqueta)."""
+    """'1,920x1,080' -> '1080' (lo que de verdad se ve, no la etiqueta).
+    (dtbl117) Kodi manda los números CON separador de miles ("1,920x1,080",
+    "3,840x1,600"): antes no se leían y solo contaban los de 720p. Y se mira el
+    ANCHO: una peli panorámica en 1080p mide 1920x800, no 1080 de alto."""
     try:
-        h = int(str((dg or {}).get("res") or "").split("x")[1])
+        w = int(re.sub(r"\D", "", str((dg or {}).get("res") or "").split("x")[0]))
     except Exception:
         return ""
-    return "" if h <= 0 else "2160" if h >= 1600 else "1080" if h >= 1000 else "720" if h >= 700 else "sd"
+    return "" if w <= 0 else "2160" if w >= 3000 else "1080" if w >= 1700 else "720" if w >= 1200 else "sd"
 
 
 _USO_ORDENES = {"desde": 0}     # (dtbl116) órdenes de la web recibidas por este worker
@@ -14634,7 +14637,7 @@ function pinta(d){
   var nv=dias.filter(function(x){return x.nuevos!=null});
   var crece='<div class="fila" style="margin-top:0"><div><b>'+n(d.activos_7)+'</b><small>'+(nd<7?"Kodis distintos desde el "+esc(fecha(d.desde)):"Kodis distintos en 7 días")+'</small></div><div><b>'+n(medTeles)+'</b><small>teles al día viendo algo (media)</small></div><div><b>'+n(Math.round(totH))+'</b><small>horas vistas en total</small></div></div>'+
     '<p class="nota" style="margin:14px 0 4px">Teles que han visto algo, por día</p>'+grafico("dd",tv,[fecha(huecos[0].dia),"hoy"],fmtD)+
-    lineas([["Kodis nuevos hoy",nv.length?n(nv[nv.length-1].nuevos):'<small>desde el 2.º día</small>'],
+    lineas([["Kodis nuevos <small>(que nunca se habían encendido)</small>",cr.dias_medidos>=14&&nv.length?n(nv[nv.length-1].nuevos)+' <small>hoy</small>':'<small>a partir del '+esc(fecha(d.desde))+' + 14 días: antes, «nuevo» solo querría decir «no se encendió los días anteriores»</small>'],
             ["Fieles <small>(4 días o más de los últimos 7)</small>",n(cr.fieles)],
             ["Siguen viniendo <small>(de los que llegaron hace +7 días)</small>",cr.dias_medidos>=8?pct(cr.siguen,cr.llegaron_hace_7)+' <small>('+n(cr.siguen)+' de '+n(cr.llegaron_hace_7)+')</small>':'<small>a partir del '+esc(fecha(d.desde))+' + 8 días</small>'],
             ["Lo han dejado <small>(sin aparecer entre 8 y 30 días)</small>",cr.dias_medidos>=8?n(cr.se_fueron):'<small>a partir del '+esc(fecha(d.desde))+' + 8 días</small>']]);
