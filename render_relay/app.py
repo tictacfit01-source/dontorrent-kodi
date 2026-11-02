@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl113"
+BUILD = "dtbl114"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4271,6 +4271,8 @@ def kb_send():
     _kb_enqueue(code, ev)
     _kb_phone_seen(code)
     tele_on = _tele_conectada(code)
+    if query or ev.get("c") in ("open", "ok"):
+        _uso_toque_movil(code)
     if ev.get("c") == "play_ref":
         a = ev.get("a")
         f = str(body.get("f") or "").lower()[:4]
@@ -13479,6 +13481,22 @@ def _uso_res(dg):
     return "" if h <= 0 else "2160" if h >= 1600 else "1080" if h >= 1000 else "720" if h >= 700 else "sd"
 
 
+_USO_MOVIL_S = 180              # un vídeo que empieza hasta 3 min después de tocar el mando del móvil
+
+
+def _uso_toque_movil(code):
+    """(dtbl114) Se ha tocado algo en el mando del móvil (la lista espejo de la
+    tele, OK o una búsqueda): si en 3 min empieza un vídeo, lo eligió el móvil."""
+    try:
+        now = _t.time()
+        with _FileLock(_USO_PEND_FILE):
+            pend = _uso_pend_lee()
+            pend["w:" + code] = {"ts": now}
+            _uso_pend_guarda(pend, now)
+    except Exception:
+        pass
+
+
 def _uso_resuelve_ok(e, x, sg):
     """Un envío de la web que arrancó a los `sg` segundos."""
     f = x.get("f") or "otra"
@@ -13542,7 +13560,7 @@ def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy, np=None):
     # mismo capítulo, cuyo título ya se conocía y no "es nuevo".
     resueltos = []
     for c, x in pend.items():
-        if c.startswith("t:") or x.get("hecho") or c not in (np or {}):
+        if c[:2] in ("t:", "w:") or x.get("hecho") or c not in (np or {}):
             continue
         try:
             inicio = now - int((np[c] or {}).get("elapsed") or 0)
@@ -13561,7 +13579,7 @@ def _uso_muestra_mas(d, e, st, vivas, rep, now, hoy, np=None):
             _uso_pend_guarda(pend, now)
     # los envíos que no han arrancado a tiempo: "no arrancó"
     caducados = [c for c, x in pend.items()
-                 if not c.startswith("t:") and not x.get("hecho") and (now - float(x.get("ts") or 0)) > _USO_PEND_S]
+                 if c[:2] not in ("t:", "w:") and not x.get("hecho") and (now - float(x.get("ts") or 0)) > _USO_PEND_S]
     if caducados:
         with _FileLock(_USO_PEND_FILE):
             pend = _uso_pend_lee()
@@ -13706,13 +13724,14 @@ def _uso_arranco(code, now=None):
             if web:
                 x["hecho"] = "ok"
                 _uso_pend_guarda(pend, now)
+            movil = (not web) and (now - float((pend.get("w:" + code) or {}).get("ts") or 0)) <= _USO_MOVIL_S
         with _FileLock(_USO_FILE):
             d = _uso_lee()
             e = _uso_dia_e(d, hoy)
             if web:
                 _uso_resuelve_ok(e, x, max(0, int(now - float(x.get("ts") or now))))
             else:
-                _uso_suma(e, "pm", "mando")
+                _uso_suma(e, "pm", "movil" if movil else "mando")
             _uso_guarda(d)
         _USO_NUBE["cambios"] += 1
     except Exception:
@@ -14550,17 +14569,19 @@ function pinta(d){
   if(!pub)pub=vk.reduce(function(m,v){return v!=="?"&&(!m||vcmp(v,m)>0)?v:m},"");
   var aldia=vk.reduce(function(s,v){return s+(pub&&vcmp(v,pub)>=0?vers[v]:0)},0);
   vk.sort(function(x,y){return vcmp(y,x)});
-  var c=d.como||{},webN=c.web||0,teleN=c.mando||0;
+  var c=d.como||{},webN=c.web||0,movN=c.movil||0,teleN=c.mando||0,totN=webN+movN+teleN;
 
   // 1) AHORA
   var ahora='<div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+'</span></div>'+
     '<p class="linea">'+(a.en_pausa?n(a.en_pausa)+' en pausa · ':'')+n(a.kodis)+' Kodis encendidos</p>'+viendoHTML(a);
   // 2) HOY
-  var hoy=(d.dia_parcial?'<p class="aviso">Hoy empezó a medirse el detalle: «Lo normal por tele», «web o tele» y la calidad del servicio cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+
+  var hoy=(d.dia_parcial?'<p class="aviso">Hoy empezó a medirse el detalle: «lo normal por tele», cómo se eligen los vídeos (desde esta noche) y la calidad del servicio cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+
     '<div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles han visto algo</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas vistas</small></div><div><b>'+n(hoyE.pico)+'</b><small>a la vez como mucho'+(hoyE.pico_h?' ('+esc(hoyE.pico_h)+')':'')+'</small></div></div>'+
     lineas([["Lo normal que ve cada tele <small>(la mediana)</small>",d.med_min_tele?dur(d.med_min_tele):'<small>midiendo</small>'],
-            ["Elegido desde la web del móvil",n(webN)+(webN+teleN?' <small>('+pct(webN,webN+teleN)+')</small>':'')],
-            ["Elegido en la tele <small>(mando o siguiente capítulo)</small>",n(teleN)+(webN+teleN?' <small>('+pct(teleN,webN+teleN)+')</small>':'')]])+
+            ["Vídeos que empiezan, elegidos…","<small>"+n(totN)+" en total</small>"],
+            ["…en el catálogo de la web",n(webN)+(totN?' <small>('+pct(webN,totN)+')</small>':'')],
+            ["…con el mando del móvil <small>(la lista de la tele en el móvil)</small>",n(movN)+(totN?' <small>('+pct(movN,totN)+')</small>':'')],
+            ["…en la propia tele <small>(su mando, o el siguiente capítulo solo)</small>",n(teleN)+(totN?' <small>('+pct(teleN,totN)+')</small>':'')]])+
     '<p class="nota" style="margin:14px 0 4px">Teles viendo algo a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH);
   // 3) CRECIMIENTO
   var cr=d.crece||{};
@@ -14591,7 +14612,7 @@ function pinta(d){
       ["Tele viendo algo","Un Kodi reproduciendo un vídeo, sea de MejorWolf o de cualquier otro sitio."],
       ["Horas vistas","Suma de los minutos de vídeo de todas las teles (sin contar las pausas)."],
       ["Kodi","Cada instalación del addon tiene su código. Una casa con tres teles son tres Kodis."],
-      ["Elegido desde la web / en la tele","Cada vídeo que empieza: si se mandó desde el móvil, o se puso en la tele con el mando (o Kodi pasó solo al siguiente capítulo)."],
+      ["Elegido en el catálogo / con el mando del móvil / en la tele","Cada vídeo que empieza: si se mandó desde el catálogo de la web, si se eligió en la lista de la tele que sale en el móvil (en los 3 min anteriores se tocó algo ahí), o si se puso en la propia tele con su mando (o Kodi pasó solo al siguiente capítulo)."],
       ["Fiel","Un Kodi que se ha encendido al menos 4 de los últimos 7 días."],
       ["Lo más visto","Lo que se ha reproducido de verdad: cuántas teles distintas y cuántas horas. Nunca se guarda en qué casa."]]));
 

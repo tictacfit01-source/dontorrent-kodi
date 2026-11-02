@@ -382,6 +382,21 @@ try:
               and desp["como"].get("web", 0) == antes["como"].get("web", 0) + 1, (antes["servicio"]["cb"], desp["servicio"]["cb"]))
     comprueba("...y no se cuenta como fallo más tarde", (A._uso_pend_lee().get("616161") or {}).get("hecho") == "ok")
 
+    print("\n=== 6g) El mando del móvil (dtbl114) ===")
+    antes = cli.get("/uso/datos?k=" + llave).get_json()["como"]
+    cli.post("/kb/send", json={"code": "717171", "cmd": "open", "i": 3, "label": "Dune"})
+    A._uso_arranco("717171")
+    A._uso_arranco("727272")              # nadie tocó nada en el móvil: en la tele
+    desp = cli.get("/uso/datos?k=" + llave).get_json()["como"]
+    comprueba("tocar la lista en el móvil y empezar: 'móvil'; sin tocar nada: 'tele'",
+              desp.get("movil", 0) == antes.get("movil", 0) + 1 and desp.get("mando", 0) == antes.get("mando", 0) + 1,
+              (antes, desp))
+    comprueba("el toque del móvil no se toma por un envío pendiente", "w:717171" in A._uso_pend_lee()
+              and not A._uso_pend_lee()["w:717171"].get("hecho"))
+    A._uso_muestra(A._t.time() + 2000, forzar=True)
+    sv = cli.get("/uso/datos?k=" + llave).get_json()["servicio"]
+    comprueba("...ni acaba contado como 'no arrancó'", "otra" not in sv or sv["otra"]["ko"] == 0, sv)
+
     import inspect
     comprueba("cada worker escribe su propio temporal (kbnow y kbstatus)",
               "os.getpid()" in inspect.getsource(A._kbnow_save) and "os.getpid()" in inspect.getsource(A._kbstatus_save))
