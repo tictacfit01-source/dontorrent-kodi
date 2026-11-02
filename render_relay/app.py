@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl90"
+BUILD = "dtbl91"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14101,6 +14101,70 @@ def cb_embed_ruta():
     return jsonify({"ok": True, "u": e})
 
 
+# -- Las temporadas que existen (TMDB), para completar una serie (dtbl91) --------
+# Israel, 02-11: "The Bear T5 está en Cinubo pero en MejorWolf no aparece". Los
+# torrents van por detrás; aquí se dice qué capítulos se han EMITIDO (TMDB) y la
+# web añade, con su 📺, los que ninguna fuente torrent trae. Cinubo se consulta
+# solo al elegir uno (si no lo tiene, el cuadro lo dice).
+_CB_TEMPS = {}
+_CB_TEMPS_TTL = 12 * 3600
+
+
+def _cb_temps(tid):
+    """[{"s": n, "e": [1..k]}] con lo ya emitido (sin especiales). None si TMDB no
+    contesta."""
+    ya = _CB_TEMPS.get(tid)
+    if ya and (_t.time() - ya[1]) < _CB_TEMPS_TTL:
+        return ya[0]
+    if _tmdb_is_down():
+        return None
+    import datetime as _dtm
+    hoy = _dtm.date.today().isoformat()
+    try:
+        r = _TMDB_SESS.get("https://api.themoviedb.org/3/tv/%d" % tid,
+                           params={"api_key": _CAT_TMDB_KEY, "language": "es-ES"}, timeout=(3, 6))
+        if r.status_code != 200:
+            _tmdb_mark(False)
+            return None
+        d = r.json() or {}
+        _tmdb_mark(True)
+        ult = d.get("last_episode_to_air") or {}
+        u_s, u_e = int(ult.get("season_number") or 0), int(ult.get("episode_number") or 0)
+        out = []
+        for se in d.get("seasons") or []:
+            n = int(se.get("season_number") or 0)
+            k = int(se.get("episode_count") or 0)
+            if n <= 0 or k <= 0 or not se.get("air_date") or se["air_date"] > hoy:
+                continue
+            if u_s and n > u_s:
+                continue
+            if n == u_s and u_e:
+                k = min(k, u_e)            # la temporada en emisión: hasta el último emitido
+            out.append({"s": n, "e": list(range(1, min(k, 400) + 1))})
+        _CB_TEMPS[tid] = (out, _t.time())
+        if len(_CB_TEMPS) > 3000:
+            for kk in list(_CB_TEMPS)[:300]:
+                _CB_TEMPS.pop(kk, None)
+        return out
+    except Exception:
+        _tmdb_mark(False)
+        return None
+
+
+@app.get("/cbtemps")
+def cb_temps_ruta():
+    try:
+        tid = int(request.args.get("id") or 0)
+    except ValueError:
+        tid = 0
+    if tid <= 0:
+        return jsonify({"ok": False, "error": "faltan datos"}), 400
+    t = _cb_temps(tid)
+    if t is None:
+        return jsonify({"ok": False, "error": "no_disponible"})
+    return jsonify({"ok": True, "t": t})
+
+
 @app.post("/cb/sesion")
 def cb_sesion_alta():
     """El dueño da aquí sus cookies de Cinubo (solo con la llave de /uso)."""
@@ -17601,6 +17665,10 @@ function openSeries(x){SHOW=x.title;EPS={};OVDATA=null;OVSEASON=null;sel=x;$('ov
   if(!eps.length&&x.epsAlt&&x.epsAlt.length){OVDATA={d:{title:x.title,episodes:x.epsAlt,
     poster:x.poster,year:x.year,rating:x.rating,backdrop:x.backdrop,overview:x.overview,
     genres:x.genres},x:x};renderEpisodes();return;}
+  if(!eps.length&&x.tmdb_id){
+   // (dtbl91) sin capitulos torrent pero sabemos que serie es: los de streaming
+   OVDATA={d:{title:x.title,episodes:[],poster:x.poster,year:x.year,rating:x.rating,backdrop:x.backdrop,
+     overview:x.overview,genres:x.genres,dt_caida:d&&d.dt_caida},x:x};OVRETRY=x;renderEpisodes();return}
   if(!eps.length){OVRETRY=x;
    // DonTorrent caido: la verdad al momento (el relay ya no espera 24 s a
    // unas cajas que no pueden) y la salida a las otras fuentes.
@@ -17723,7 +17791,7 @@ var OVSEASON=null;      // temporada abierta en la ficha (ver las pestanas)
 function ovTemp(s){OVSEASON=s;renderEpisodes();
  try{var b=$('ov-body');if(b)b.scrollTop=0}catch(e){}}
 function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var _epi=0;
- var eps=(d&&d.episodes)||[];var poster=(d&&d.poster)||x.poster;
+ var eps=cbFunde((d&&d.episodes)||[],x);cbTemps(x);var poster=(d&&d.poster)||x.poster;
  var seasons={};eps.forEach(function(e){var s=e.season||0;(seasons[s]=seasons[s]||[]).push(e)});
  var keys=Object.keys(seasons).map(Number).sort(function(a,b){return a-b});
  var ph=poster?(' style="background-image:'+esc(cssUrl(poster))+'"'):'';
@@ -17767,7 +17835,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq" data-q="'+esc(e.quality)+'">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
-     ((x.tmdb_id&&e.season&&e.episode)?'<div class="cbep" onclick="event.stopPropagation();cbEp(\''+id+'\')" title="Streaming sin anuncios" aria-label="Streaming sin anuncios">📺</div>':'')+
+     ((x.tmdb_id&&e.season&&e.episode&&!e.cb)?'<div class="cbep" onclick="event.stopPropagation();cbEp(\''+id+'\')" title="Streaming sin anuncios" aria-label="Streaming sin anuncios">📺</div>':'')+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
  });$('ov-body').innerHTML=h;_seguirPinta();lazyEps();
  // Tráiler de la serie: si ya lo tenemos (de enrichItem) lo mostramos; si no,
@@ -17777,7 +17845,7 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
 // ---- Semillas + RAR por capitulo (DonTorrent), perezoso y cacheado ----
 var _epQ=[],_epActive=0,_epCache={};
 function lazyEps(){_epQ=[];var cd=(code.value||'').replace(/\D/g,'');var src=(OVDATA&&OVDATA.x&&(OVDATA.x.source||'dt'))||'dt';
- Object.keys(EPS).forEach(function(id){var e=EPS[id];if(!e)return;
+ Object.keys(EPS).forEach(function(id){var e=EPS[id];if(!e||e.cb)return;
   if(e.link){var u='/seeds?link='+encodeURIComponent(e.link)+(cd.length===6?('&code='+cd+'&src='+encodeURIComponent(src)):'');_epQ.push({id:id,key:'lk:'+e.link,url:u});}
   else if(e.content_id&&e.tabla&&(e.src||src)==='dt'){_epQ.push({id:id,key:'dt:'+e.tabla+':'+e.content_id,url:'/dtpacked?c='+encodeURIComponent(e.content_id)+'&tb='+encodeURIComponent(e.tabla)});}
   else{
@@ -17812,6 +17880,7 @@ function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(
  var allseen=eps.every(function(e){return isSeen(e.content_id)});
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
 function playEp(id){var e=EPS[id];if(!e)return;
+ if(e.cb){cbEp(id);return}            // solo en Cinubo (dtbl91): elegir servidor
  // `q`: la calidad de ESTE capitulo. Una serie mezcla calidades (el 1x01 de
  // Silo es 1080p aunque la tarjeta sea 4K), y el historial ensenaba la de la
  // tarjeta, que podia no ser la que se esta viendo.
@@ -17839,6 +17908,29 @@ function playEp(id){var e=EPS[id];if(!e)return;
 // y la calidad, elige uno y va a la tele. Sin semillas (no es torrent). Solo se
 // le pide a Cinubo el enlace del servidor ELEGIDO (su límite salta con ráfagas).
 var CBSEL=null;
+// ---- Lo que los torrents aún no tienen (dtbl91) ----------------------------
+// "The Bear T5 está en Cinubo y en MejorWolf no aparece": TMDB dice qué se ha
+// emitido; lo que no traiga ninguna fuente torrent se añade con «Streaming». Si
+// la temporada falta entera, entera; si está a medias, desde el último que hay
+// (en medio no: las etiquetas de los packs varían y saldrían repetidos).
+function cbTemps(x){if(!x||!x.tmdb_id||x._cbq)return;x._cbq=1;
+ var nada=function(){x._cbq=0;   // se puede reintentar
+  if(OVDATA&&OVDATA.x===x&&!((OVDATA.d&&OVDATA.d.episodes)||[]).length)
+   $('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron leer los episodios ahora mismo. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>'};
+ fetch('/cbtemps?id='+encodeURIComponent(x.tmdb_id)).then(function(r){return r.json()}).then(function(d){
+   if(!d||!d.ok||!d.t||!d.t.length){nada();return}x._cbt=d.t;
+   if(OVDATA&&OVDATA.x===x)renderEpisodes()}).catch(nada)}
+function cbFunde(eps,x){var t=x&&x._cbt;if(!t||!t.length)return eps;
+ var max={};
+ eps.forEach(function(e){var m=/(\d{1,2})x(\d{1,3})(?:\s*(?:al|a|-)\s*(?:\d{1,2}x)?(\d{1,3}))?/i.exec(e.label||'');
+  var s=e.season||(m?+m[1]:0),a=(m?+m[2]:0)||e.episode||0,b=(m&&m[3])?+m[3]:a;
+  if(!s)return;max[s]=Math.max(max[s]||0,a,b)});
+ var extra=[];
+ t.forEach(function(ts){var hasta=max[ts.s]||0;
+  ts.e.forEach(function(n){if(n<=hasta)return;
+   extra.push({season:ts.s,episode:n,label:ts.s+'x'+(n<10?'0':'')+n,cb:1,quality:'Streaming',
+    content_id:'cb:'+x.tmdb_id+':'+ts.s+'x'+n})})});
+ return extra.length?eps.concat(extra):eps}
 // ---- Novedades (dtbl90): un aviso corto para quien no sabe de servidores ----
 var NOV_V='cinubo1';
 function novPinta(){var b=$('nov-b');if(!b)return;var v='';try{v=localStorage.getItem('mw_nov')||''}catch(e){}

@@ -61,7 +61,7 @@ function fetch(u) {
 }
 const setTimeout2 = (f) => f();
 const CTX = new Function('$', 'esc', 'code', 'toast', 'avisaCodigo', 'mwBack', 'mwOpen', 'sendPlay', '_tituloBase', 'fetch', 'setTimeout',
-  codigo + '\nreturn {cbPinta, cbPlay, cbGemelos, set: function(c){CBSEL=c}};')(
+  codigo + '\nreturn {cbPinta, cbPlay, cbGemelos, cbFunde, set: function(c){CBSEL=c}};')(
   $, esc, code, toast, avisaCodigo, mwBack, mwOpen, sendPlay, _tituloBase, fetch, setTimeout2);
 
 console.log('\n=== 2) La lista ===');
@@ -83,6 +83,22 @@ comprueba('el resto, plegado y avisado', /<details class="cbmas"><summary>Más s
 CTX.set({ k: 'k', el: 'cbd-l', t: 'X', items: items.filter((x) => x.srv === 'POWVIDEO') });
 CTX.cbPinta('cbd-l');
 comprueba('si no hay ninguno seguro, los otros sin plegar', !/<details/.test($('cbd-l').innerHTML) && /Powvideo/.test($('cbd-l').innerHTML));
+
+console.log('\n=== 2b) Lo que los torrents aún no tienen (The Bear T5) ===');
+const T = [{ s: 1, e: [1, 2, 3, 4, 5, 6, 7, 8] }, { s: 4, e: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }, { s: 5, e: [1, 2, 3, 4, 5, 6, 7, 8] }];
+const X = { tmdb_id: 136315, _cbt: T };
+const tor = [{ season: 1, episode: 1, label: '1x01 al 1x03' }, { season: 1, episode: 4, label: '1x04' },
+  { season: 1, episode: 5, label: '1x05 al 1x08' }, { season: 4, episode: 1, label: '4x01' }, { season: 4, episode: 2, label: '4x02 al 4x06' }];
+const f = CTX.cbFunde(tor, X);
+const nuevos = f.filter((e) => e.cb).map((e) => e.label);
+comprueba('T1 completa en torrent (packs incluidos): nada añadido', !nuevos.some((l) => l.startsWith('1x')), nuevos);
+comprueba('T4 a medias (hasta el 6): se añaden 4x07-4x10', JSON.stringify(nuevos.filter((l) => l.startsWith('4x'))) === '["4x07","4x08","4x09","4x10"]', nuevos);
+comprueba('T5, que no tiene ningún torrent: entera', nuevos.filter((l) => l.startsWith('5x')).length === 8, nuevos);
+comprueba('los torrents siguen ahí, igual y delante', f.slice(0, tor.length).every((e, i) => e === tor[i]));
+comprueba('cada añadido es de streaming y con su propio id para "visto"',
+  f.filter((e) => e.cb).every((e) => e.quality === 'Streaming' && /^cb:136315:\d+x\d+$/.test(e.content_id)));
+comprueba('sin temporadas de TMDB: la lista tal cual', CTX.cbFunde(tor, { tmdb_id: 1 }) === tor);
+comprueba('serie sin ningún torrent: todo de streaming', CTX.cbFunde([], X).length === 26);
 
 console.log('\n=== 3) Al elegir ===');
 (async () => {
