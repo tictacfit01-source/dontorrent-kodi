@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl108"
+BUILD = "dtbl109"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4477,8 +4477,12 @@ def kb_now_push():
     if isinstance(np, dict):
         # (dtbl106) ¿empieza un vídeo nuevo? (antes nada, u otro título)
         nuevo = str(np.get("title", ""))[:120]
-        if nuevo and _uso_titulo_nuevo(code, nuevo, now):
-            _uso_arranco(code, now)
+        if nuevo:
+            es_nuevo, compartido = _uso_titulo_nuevo(code, nuevo, now)
+            if es_nuevo:
+                _uso_arranco(code, now)
+            if compartido:
+                _uso_compartido(code, now)
         d[code] = {"np": {"title": str(np.get("title", ""))[:120],
                           "elapsed": int(np.get("elapsed", 0) or 0),
                           "total": int(np.get("total", 0) or 0),
@@ -13225,7 +13229,7 @@ def _uso_huella(code):
 
 # huellas que se guardan por día: Kodis encendidos (c), con algo puesto (r),
 # con la web mirándolos (m) y conexiones (ip: la de casa, cifrada) (dtbl104)
-_USO_SETS = ("c", "r", "m", "ip")
+_USO_SETS = ("c", "r", "m", "ip", "du")    # du: códigos que usan varias teles a la vez
 _USO_CORTO_MIN = 15             # encendido menos que esto en el día: "solo un rato"
 # Diccionarios de cada día (dtbl104-106). forma: n = clave -> número;
 # s = clave -> texto corto; p = clave -> [a, b]; b = clave -> 5 números;
@@ -13318,7 +13322,7 @@ def _uso_valida(d):
         for k, (forma, tope) in _USO_DIC.items():
             if isinstance(e.get(k), dict):
                 x[k] = _uso_dic_valida(e[k], forma, tope)
-        for k in ("nc", "nr", "nm", "nip", "nk15", "pico", "tm", "mu"):
+        for k in ("nc", "nr", "nm", "nip", "ndu", "nk15", "pico", "tm", "mu"):
             try:
                 x[k] = max(0, int(e.get(k) or 0))
             except Exception:
@@ -13520,36 +13524,67 @@ _USO_VDIAG = {}
 
 
 def _uso_titulo_nuevo(code, titulo, now):
-    """¿Empieza un vídeo NUEVO en esa tele? Primero la memoria de este worker
-    (cero E/S en el 99 % de los avisos, que llegan cada 3 s); si no lo sabe,
-    el fichero común, bajo lock: así el otro worker no lo cuenta otra vez."""
-    ya = _USO_VISTO.get(code)
-    if ya and ya[0] == titulo and now - ya[1] < _USO_VISTO_S:
-        _USO_VISTO[code] = (titulo, now)
+    """¿Empieza un vídeo NUEVO en esa tele? Devuelve (nuevo, compartido).
+
+    Se recuerdan TODOS los títulos recientes de cada código, no solo el último:
+    el 02-11 un mismo código lo tenían 4 teles a la vez (una instalación de Kodi
+    copiada) y sus 4 títulos se turnaban cada 3 s -> cada aviso parecía nuevo.
+    `compartido`: los títulos se INTERCALAN (vuelve uno que ya estaba cuando
+    otro distinto ha llegado hace menos de 15 s): varias teles con un solo
+    código. Cambiar de peli deprisa no lo es: el título viejo ya no vuelve.
+    Primero la memoria de este worker (cero E/S casi siempre); si no lo sabe,
+    el fichero común, bajo lock, para que el otro worker no lo cuente otra vez."""
+    h = _hl.md5(titulo.encode("utf-8")).hexdigest()[:8]
+    m = _USO_VISTO.setdefault(code, {})
+    prev = m.get(h)
+    m[h] = now
+    if prev and now - prev < _USO_VISTO_S:
         _USO_VDIAG["mem"] = _USO_VDIAG.get("mem", 0) + 1
-        return False
-    _USO_VISTO[code] = (titulo, now)
+        return False, any(k != h and prev < v and now - v < 15 for k, v in m.items())
+    for k in [k for k, v in m.items() if now - v > _USO_VISTO_S]:
+        m.pop(k, None)
     if len(_USO_VISTO) > 3000:
-        for k in [k for k, v in _USO_VISTO.items() if now - v[1] > _USO_VISTO_S]:
-            _USO_VISTO.pop(k, None)
+        for c in [c for c, x in _USO_VISTO.items() if not x or now - max(x.values()) > _USO_VISTO_S]:
+            _USO_VISTO.pop(c, None)
     try:
         with _FileLock(_USO_PEND_FILE):
             pend = _uso_pend_lee()
-            x = pend.setdefault("t:" + code, {"ts": 0})
-            nuevo = not (x.get("t") == titulo and now - float(x.get("ts") or 0) < _USO_VISTO_S)
-            _h = lambda v: _hl.md5(str(v).encode("utf-8")).hexdigest()[:6]
-            _USO_VDIAG["nuevo" if nuevo else "fich"] = _USO_VDIAG.get("nuevo" if nuevo else "fich", 0) + 1
-            if nuevo:     # (diagnóstico) qué cambió: huellas, nunca el título ni el código
-                _USO_VDIAG.setdefault("ult", []).append(
-                    [_h(code)[:4], _h(titulo), _h(ya[0]) if ya else None,
-                     int(now - ya[1]) if ya else None, _h(x.get("t")) if x.get("t") else None,
-                     int(now - float(x.get("ts") or 0)) if x.get("ts") else None, os.getpid(), len(titulo)])
-                _USO_VDIAG["ult"] = _USO_VDIAG["ult"][-12:]
-            x.update(t=titulo[:120], ts=now)
+            x = pend.get("t:" + code)
+            tt = x.get("tt") if isinstance(x, dict) and isinstance(x.get("tt"), dict) else {}
+            tt = {k: float(v) for k, v in tt.items() if now - float(v or 0) < _USO_VISTO_S}
+            nuevo = h not in tt
+            compartido = (not nuevo) and any(k != h and tt[h] < v and now - v < 15 for k, v in tt.items())
+            tt[h] = now
+            if len(tt) > 12:
+                tt = dict(sorted(tt.items(), key=lambda kv: kv[1])[-12:])
+            pend["t:" + code] = {"ts": now, "tt": tt}
             _uso_pend_guarda(pend, now)
-        return nuevo
+        _USO_VDIAG["nuevo" if nuevo else "fich"] = _USO_VDIAG.get("nuevo" if nuevo else "fich", 0) + 1
+        if compartido:
+            _USO_VDIAG["compartido"] = _USO_VDIAG.get("compartido", 0) + 1
+        return nuevo, compartido
     except Exception:
-        return False
+        return False, False
+
+
+_USO_DU_YA = {}                 # por worker: code -> día ya apuntado
+
+
+def _uso_compartido(code, now):
+    """Un código que usan varias teles a la vez: se apunta una vez al día."""
+    hoy = _uso_es(now)[0]
+    if _USO_DU_YA.get(code) == hoy:
+        return
+    _USO_DU_YA[code] = hoy
+    try:
+        with _FileLock(_USO_FILE):
+            d = _uso_lee()
+            e = _uso_dia_e(d, hoy)
+            e["du"] = sorted(set(e.get("du") or []) | {_uso_huella(code)})
+            _uso_guarda(d)
+        _USO_NUBE["cambios"] += 1
+    except Exception:
+        pass
 
 
 def _uso_arranco(code, now=None):
@@ -14096,6 +14131,7 @@ def uso_datos():
                      "teles": _uso_cuenta(e, "r") if e else 0,
                      "webs": _uso_cuenta(e, "m") if e else 0,
                      "casas": _uso_cuenta(e, "ip") if e else 0,
+                     "compartidos": _uso_cuenta(e, "du") if e else 0,
                      "cortos": _uso_cortos(e) if e else 0,
                      "km_n": len((e or {}).get("km") or {}),
                      "fuentes": (e or {}).get("rf") or {},
@@ -14328,7 +14364,8 @@ function pinta(d){
     ["Casas distintas <small>(conexiones a internet)</small>",casasTxt],
     ["Kodis encendidos solo un rato <small>(menos de 15 min)</small>",cortosTxt],
     ["Lo normal que se ve cada tele <small>(la mediana)</small>",med],
-    ["Móviles que han abierto la web",n(hoyE.webs)]]);
+    ["Móviles que han abierto la web",n(hoyE.webs)],
+    ["Códigos que usan varias teles a la vez <small>(Kodi copiado)</small>",n(hoyE.compartidos)]]);
   // --- días: 14 huecos fijos, los que aún no tienen datos quedan vacíos ---
   var SL=14,porDia={};dias.forEach(function(x){porDia[x.dia]=x});
   var p0=d.hoy.split("-"),base=new Date(+p0[0],p0[1]-1,+p0[2]),huecos=[];
@@ -14362,6 +14399,7 @@ function pinta(d){
      ["Casa","Una conexión a internet distinta. Si alguien se lleva la tele a otra casa, cuenta dos."],
      ["Un rato","Encendido menos de 15 minutos en el día: probarlo, encenderlo sin ver nada…"],
      ["Fiel","Un Kodi que se ha encendido al menos 4 de los últimos 7 días."],
+     ["Código compartido","Varias teles con el mismo código porque se copió la instalación de Kodi. Cuentan como un solo Kodi y comparten mando: lo que se manda a ese código puede salir en cualquiera de ellas."],
      ["Lo más puesto","Cuántas teles distintas lo han puesto desde la web. Nunca se guarda cuál."]])+'</section>'+
    '<p class="nota">Las búsquedas y lo más puesto se suman entre todos: nunca se guarda qué tele ni qué casa. Sin códigos, y las conexiones se guardan cifradas (nunca la IP). Datos desde el '+esc(fecha(d.desde))+'.</p>';
   engancha("dh",fmtH,hr);engancha("dd",fmtD,tv);

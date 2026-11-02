@@ -292,6 +292,17 @@ try:
     cli.post("/kb/now", json={"code": "111111", "np": {"title": "Otra peli", "elapsed": 1, "total": 5000}})
     pm2 = cli.get("/uso/datos?k=" + llave).get_json()["como"]
     comprueba("otro título en la misma tele: sí cuenta", pm2.get("mando", 0) == pm.get("mando", 0) + 1, pm2)
+    # 4 teles con el MISMO código (Kodi copiado), cada una con lo suyo, avisando por turnos
+    pm = pm2
+    for vuelta in range(5):
+        for t in ("Uno", "Dos", "Tres", "Cuatro"):
+            cli.post("/kb/now", json={"code": "444444", "np": {"title": t, "elapsed": vuelta, "total": 5000}})
+        if vuelta == 2:
+            A._USO_VISTO.clear()      # el otro worker
+    d3 = cli.get("/uso/datos?k=" + llave).get_json()
+    comprueba("4 teles con un mismo código, turnándose 5 veces: 4 vídeos, no 20",
+              d3["como"].get("mando", 0) == pm.get("mando", 0) + 4, (pm, d3["como"]))
+    comprueba("...y se dice que ese código lo usan varias teles", d3["dias"][-1]["compartidos"] == 1, d3["dias"][-1])
     A._uso_muestra(A._t.time() + 900, forzar=True)
     sv = cli.get("/uso/datos?k=" + llave).get_json()["servicio"]
     comprueba("lo que recuerda los títulos no se toma por envíos que no arrancaron",
