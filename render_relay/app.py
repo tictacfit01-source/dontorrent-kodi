@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl86"
+BUILD = "dtbl87"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13890,9 +13890,14 @@ def _cb_get(path, json_=False, tope=20.0, referer=None):
     return _cb_pide(path=path, espera=tope)
 
 
+_CB_PERFIL = re.compile(r'href="https://cinubo\.com/@[A-Za-z0-9_.-]{2,40}"')
+
+
 def _cb_logueado(html):
-    """Las fichas de Cinubo solo existen con sesión: sin ella, a la portada."""
-    return bool(html) and "detail-page" in html
+    """¿Página vista CON sesión? Con ella, toda página enlaza al perfil del
+    dueño; sin ella, Cinubo manda a la portada. (Las de capítulo no llevan
+    "detail-page": con esa marca, el 02-11 todo salía "sesión caducada".)"""
+    return bool(html) and bool(_CB_PERFIL.search(html))
 
 
 _CB_LINK_RE = re.compile(r'data-link-playback="([^"]{20,4000})"')

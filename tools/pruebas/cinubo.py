@@ -84,7 +84,7 @@ try:
 
     print("\n=== 3) Los enlaces de una ficha ===")
     T = "https://cinubo.com/t/"
-    html = "<div class='detail-page'>" + "".join([
+    html = '<a href="https://cinubo.com/@israel126592">yo</a><div>' + "".join([
         fila(T + "eyJpdiI6IlpkQ3RhVlpKWDJtYkpx", "Vidara", "HD 1080p", "Español - España"),
         fila(T + "eyJpdiI6IkxBVElOT0xBVElOT0xB", "VOE", "HD 1080p", "Español - Latino"),
         fila(T + "eyJpdiI6IlNVQlNVQlNVQlNVQlNV", "LULUSTREAM", "HD 720p", "Español - Subtitulado"),
@@ -100,8 +100,10 @@ try:
               en and en[0]["r"] == "eyJpdiI6IlpkQ3RhVlpKWDJtYkpx", en[:1])
     comprueba("ni otra web ni una referencia con HTML dentro",
               all("<" not in x["r"] and "otra.web" not in x["r"] for x in en))
-    comprueba("logueado: con ficha sí, la portada no",
-              A._cb_logueado(html) and not A._cb_logueado("<html>portada</html>") and not A._cb_logueado(None))
+    comprueba("logueado: con el enlace al perfil sí (aunque no sea 'detail-page'); la portada no",
+              A._cb_logueado(html) and "detail-page" not in html
+              and not A._cb_logueado('<html>portada <form id="logout-form"></form></html>')
+              and not A._cb_logueado(None))
 
     print("\n=== 4) El servidor (iframe) y el captcha ===")
     resp = {}
@@ -167,7 +169,7 @@ try:
         A._CB["hora"] = []
         respuestas["/s/abc123/4x2"] = (200, html)
         txt, st = A._cb_pide(path="/s/abc123/4x2")
-        comprueba("la caja trae la página", st == 200 and "detail-page" in txt)
+        comprueba("la caja trae la página", st == 200 and "@israel126592" in txt)
         box, ev = cola[-1]
         comprueba("el trabajo es cbget, con la sesión y la ruta",
                   ev["op"] == "cbget" and ev["ck"] == BUENAS and ev["path"] == "/s/abc123/4x2", ev)
