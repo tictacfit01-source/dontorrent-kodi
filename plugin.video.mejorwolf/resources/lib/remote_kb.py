@@ -16,6 +16,12 @@ import requests
 # sondea cada ~0.3-0.5s, asi que esto ahorra muchisima CPU/red en el box y
 # evita que el reproductor sufra micro-cortes durante la peli.
 _SESSION = requests.Session()
+# (2.9.94) Marca de ESTE arranque de Kodi. El código vive en un fichero y, si
+# alguien copia un Kodi ya configurado, viaja con la copia: el 02-11 cuatro
+# teles tenían el mismo. La marca no viaja (es de la memoria de este proceso):
+# si el relay ve dos marcas vivas a la vez con un código, son dos teles, y a la
+# más nueva le da otro código libre.
+_ARRANQUE = "%012x" % random.getrandbits(48)
 
 try:
     import xbmcvfs
@@ -182,7 +188,7 @@ def push_status(version, cont=None, diag=None, dev=None):
     try:
         r = _SESSION.post(f"{base}/kb/status",
                           json={"code": get_code(), "v": version, "cont": cont,
-                                "diag": diag, "dev": dev},
+                                "diag": diag, "dev": dev, "bid": _ARRANQUE},
                           timeout=8)
         d = r.json()
         return d if isinstance(d, dict) else {}

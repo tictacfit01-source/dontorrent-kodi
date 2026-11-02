@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl109"
+BUILD = "dtbl110"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4560,6 +4560,38 @@ def kb_status_push():
             "elapsed": int(cont.get("elapsed", 0) or 0),
             "total": int(cont.get("total", 0) or 0),
         }
+    # (dtbl110, caja 2.9.94) ¿dos teles con este código? Cada arranque de Kodi
+    # trae su marca (bid). Si una marca MÁS ANTIGUA sigue latiendo después de
+    # aparecer la nuestra (45 s: más que un latido, para que una actualización
+    # del addon, con dos arranques solapados unos segundos, no lo parezca), no
+    # es un reinicio: es otra tele (un Kodi copiado).
+    # La más nueva recibe un código libre; la de siempre conserva el suyo.
+    repetido = ""
+    bid = re.sub(r"[^0-9a-f]", "", str(body.get("bid") or "").lower())[:16]
+    prev = d.get(code) or {}
+    bids = {b: v for b, v in (prev.get("bids") or {}).items()
+            if isinstance(v, list) and len(v) == 2 and now - float(v[1] or 0) < 120}
+    if bid:
+        yo = bids.get(bid) or [now, now]
+        yo[1] = now
+        bids[bid] = yo
+        otra = any(b != bid and float(v[0]) < float(yo[0]) and float(v[1]) > float(yo[0]) + 45
+                   for b, v in bids.items())
+        if otra:
+            for _ in range(50):
+                c2 = "%06d" % _rnd_uso.randint(0, 999999)
+                if c2 != code and c2 not in d and not _box_live(c2):
+                    repetido = c2
+                    break
+            if repetido:
+                bids.pop(bid, None)
+                try:
+                    _uso_compartido(code, now)
+                except Exception:
+                    pass
+        entry["bids"] = dict(sorted(bids.items(), key=lambda kv: kv[1][1])[-6:])
+    if repetido and prev:
+        entry = dict(prev, bids=entry.get("bids", {}))     # la de siempre manda en la ficha
     d[code] = entry
     _kbstatus_save(d)
     _caja_vista(code, now)
@@ -4569,7 +4601,10 @@ def kb_status_push():
         ultima = _ver_mas_nueva(entry["v"])
     except Exception:
         ultima = ""
-    return jsonify({"ok": True, "ultima": ultima} if ultima else {"ok": True})
+    res = {"ok": True, "ultima": ultima} if ultima else {"ok": True}
+    if repetido:
+        res.update(repetido=True, nuevo_codigo=repetido)
+    return jsonify(res)
 
 
 @app.get("/kb/status")

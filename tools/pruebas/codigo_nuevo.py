@@ -206,6 +206,46 @@ try:
         d0["ts"] -= 49 * 3600
         json.dump(d0, open(A._VER_MAX_FILE, "w"))
         comprueba("pasadas 48 h se olvida", late("400004", "2.9.81").get("ultima") == "2.9.81")
+
+        print("\n=== 6) Un Kodi copiado: dos teles con un código (dtbl110, caja 2.9.94) ===")
+        with open(A._KB_STATUS_FILE, "w") as fh:
+            json.dump({}, fh)
+
+        def lat(bid):
+            return cli.post("/kb/status", json={"code": "777777", "v": "2.9.94", "bid": bid}).get_json() or {}
+
+        def bids(**kw):
+            d = json.load(open(A._KB_STATUS_FILE))
+            ahora = time.time()
+            d["777777"]["bids"] = {b: [ahora - a, ahora - z] for b, (a, z) in kw.items()}
+            json.dump(d, open(A._KB_STATUS_FILE, "w"))
+
+        comprueba("una sola tele: nada raro", "repetido" not in lat("aaaa"))
+        bids(aaaa=(300, 100))        # se reinicia Kodi: la marca vieja dejó de latir hace 100 s
+        comprueba("Kodi reiniciado (la marca vieja ya no late): no es otra tele", "repetido" not in lat("bbbb"))
+        bids(aaaa=(300, 2), cccc=(60, 30))   # la vieja SIGUE latiendo después de llegar cccc
+        comprueba("la de siempre conserva el suyo", "repetido" not in lat("aaaa"))
+        js = lat("cccc")
+        comprueba("la copia recibe un código nuevo, libre y de 6 cifras",
+                  js.get("repetido") is True and len(js.get("nuevo_codigo", "")) == 6
+                  and js["nuevo_codigo"] != "777777", js)
+        comprueba("y la ficha de ese código sigue siendo la de la tele de siempre",
+                  "cccc" not in json.load(open(A._KB_STATUS_FILE))["777777"].get("bids", {}))
+        comprueba("sin marca (cajas viejas): como siempre",
+                  "repetido" not in (cli.post("/kb/status", json={"code": "777777", "v": "2.9.93"}).get_json() or {}))
+
+        print("\n=== 7) La caja copiada adopta el código que le dan ===")
+        rkb.set_code("777777")
+        AVISOS.clear()
+        comprueba("sin 'repetido' no hace nada", service._si_codigo_repetido({"ok": True}) is False
+                  and rkb.get_code() == "777777")
+        comprueba("con él: guarda el nuevo y lo dice en la tele",
+                  service._si_codigo_repetido({"repetido": True, "nuevo_codigo": "818181"}) is True
+                  and rkb.get_code() == "818181" and open(rkb._CODE_FILE).read().strip() == "818181"
+                  and any("818181" in a for a in AVISOS), AVISOS)
+        comprueba("un código raro se ignora", service._si_codigo_repetido({"repetido": True, "nuevo_codigo": "12"}) is False
+                  and rkb.get_code() == "818181")
+        comprueba("cada arranque de Kodi tiene su marca", len(rkb._ARRANQUE) == 12)
     finally:
         for f in FICH:
             try:

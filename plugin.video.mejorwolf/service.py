@@ -902,6 +902,26 @@ def _ver_t(v):
     return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:3])
 
 
+def _si_codigo_repetido(r):
+    """(2.9.94) El relay ha visto OTRA tele encendida con nuestro código (un
+    Kodi copiado): nos da uno libre. Se guarda y se dice en pantalla."""
+    nuevo = "".join(ch for ch in str((r or {}).get("nuevo_codigo") or "") if ch.isdigit())
+    if not ((r or {}).get("repetido") and len(nuevo) == 6):
+        return False
+    from resources.lib import remote_kb as rkb
+    if nuevo == rkb.get_code() or not rkb.set_code(nuevo):
+        return False
+    xbmc.log("[MejorWolf/service] codigo repetido con otra tele: nuevo codigo", xbmc.LOGINFO)
+    try:
+        import xbmcgui
+        xbmcgui.Dialog().notification(
+            "MejorWolf", "Esta tele tiene código nuevo: %s (había otra con el mismo)" % nuevo,
+            xbmcgui.NOTIFICATION_INFO, 20000)
+    except Exception:
+        pass
+    return True
+
+
 def _ponte_al_dia(ultima=None, ahora=None):
     """True si ha pedido a Kodi que mire las actualizaciones."""
     ahora = ahora or time.time()
@@ -1510,6 +1530,7 @@ def main():
                 r = rkb.push_status(_addon_ver, _read_continue_push(),
                                     _playback_diag(), _aparato())
                 _ponte_al_dia((r or {}).get("ultima"))
+                _si_codigo_repetido(r)
             except Exception:
                 pass
 
