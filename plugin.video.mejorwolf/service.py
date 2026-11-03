@@ -1574,6 +1574,14 @@ def main():
     # DonTorrent banee la IP de Render).
     threading.Thread(target=_prefetch_loop, args=(monitor,), daemon=True).start()
     threading.Thread(target=_wf_index_loop, args=(monitor,), daemon=True).start()  # indice WolfMax -> relay
+    # (2.9.97) acelerador del streaming: varios trozos a la vez por delante
+    try:
+        from resources.lib import turbo as _turbo
+        if _turbo.arranca():
+            _turbo.anuncia()
+    except Exception as e:
+        _turbo = None
+        xbmc.log("[MejorWolf/service] turbo: %s" % e, xbmc.LOGWARNING)
 
     last_ping = time.time()
     last_beat = 0.0        # ultimo latido de estado al relay
@@ -1612,6 +1620,11 @@ def main():
             except Exception:
                 pass
 
+    try:
+        if _turbo is not None:
+            _turbo.para()
+    except Exception:
+        pass
     xbmc.log("[MejorWolf/service] detenido", xbmc.LOGINFO)
 
 

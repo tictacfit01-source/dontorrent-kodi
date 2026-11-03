@@ -1116,6 +1116,18 @@ def cb_play(u, title=""):
     except cbm.NoSale as e:
         xbmc.log("[MejorWolf] cb_play: %s -> %s" % (u[:80], e), xbmc.LOGWARNING)
         url = ""
+    try:
+        # (2.9.97) los servidores limitan cada conexión: el acelerador de la
+        # caja baja varios trozos a la vez; si no puede, va directo como antes
+        if url:
+            from resources.lib import turbo
+
+            def _aviso(pc):
+                if progress:
+                    progress.update(pc, "MejorWolf", "Preparando el vídeo...")
+            url = turbo.envuelve(url, _aviso)
+    except Exception as e:
+        xbmc.log("[MejorWolf] cb_play turbo: %s" % e, xbmc.LOGWARNING)
     finally:
         try:
             if progress:
