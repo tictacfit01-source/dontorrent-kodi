@@ -1041,13 +1041,91 @@ def _secs_from_clock(s):
     return tot
 
 
+_LANZADO_FILE = "special://temp/mejorwolf_lanzado.txt"   # lo toca el addon al lanzar
+_NUESTRO_FILE = "special://temp/mejorwolf_nuestro.json"  # qué vídeo dimos por nuestro
+_LANZADO_MAX_S = 900        # un torrent puede tardar en arrancar: hasta 15 min
+_NUESTRO_CAMBIO_S = 60      # al arrancar, la ruta del vídeo puede cambiar (Elementum)
+_NUESTRO = {"on": False, "ok": False, "f": "", "t0": 0.0, "fin": 0.0}
+
+
+def _ruta(p):
+    import xbmcvfs
+    return xbmcvfs.translatePath(p)
+
+
+def _lanzado_ts():
+    import os
+    try:
+        return os.path.getmtime(_ruta(_LANZADO_FILE))
+    except Exception:
+        return 0.0
+
+
+def _nuestro_lee():
+    import json
+    try:
+        with open(_ruta(_NUESTRO_FILE), "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _nuestro_guarda(f, lt):
+    import json
+    try:
+        with open(_ruta(_NUESTRO_FILE), "w", encoding="utf-8") as fh:
+            json.dump({"f": f, "lt": lt}, fh)
+    except Exception:
+        pass
+
+
+def _es_nuestro():
+    """(2.9.95) ¿El vídeo que suena lo lanzó MejorWolf? Solo eso se cuenta y se
+    sube al relay: lo que se ve con otros addons (el fútbol, la tele) no es
+    asunto nuestro ni debe salir en ningún sitio.
+    El addon toca _LANZADO_FILE justo antes de entregar el vídeo a Kodi. Un vídeo
+    es nuestro si empieza con un lanzamiento reciente SIN gastar (cada uno vale
+    para un solo vídeo), o si es el mismo que ya dimos por nuestro (el servicio
+    se reinicia al actualizarse el addon con la peli a medias)."""
+    s = _NUESTRO
+    now = time.time()
+    if not xbmc.getCondVisibility("Player.HasVideo"):
+        if s["on"]:
+            s["on"], s["fin"] = False, now
+        return False
+    f = xbmc.getInfoLabel("Player.Filenameandpath") or ""
+    lt = _lanzado_ts()
+    g = _nuestro_lee()
+    glt = float(g.get("lt") or 0)
+    fresco = lt > glt and (now - lt) <= _LANZADO_MAX_S
+    if not s["on"]:
+        if fresco:
+            ok = True
+        elif f and f == g.get("f"):
+            ok = True                     # el mismo vídeo de antes (reinicio)
+        else:                             # un parpadeo al arrancar el nuestro
+            ok = s["ok"] and (now - s["fin"]) <= 20
+        s.update(on=True, ok=ok, f=f, t0=now)
+        if ok:
+            _nuestro_guarda(f, max(lt, glt))
+    elif f != s["f"]:
+        if fresco:                        # otro vídeo lanzado por nosotros
+            s.update(ok=True, t0=now)
+        elif now - s["t0"] > _NUESTRO_CAMBIO_S:
+            s.update(ok=False, t0=now)    # otro vídeo que no lanzamos
+        s["f"] = f
+        if s["ok"]:
+            _nuestro_guarda(f, max(lt, glt))
+    return s["ok"]
+
+
 def _get_now_playing():
     """Estado de reproduccion para 'Estas viendo'. Usa INFOLABELS (NO JSON-RPC):
     leen info ya cacheada por Kodi y NO bloquean el reproductor, asi que no
     provocan micro-cortes de audio/video durante la peli. Devuelve
     {title, elapsed, total, paused} o None si no hay video."""
     try:
-        if not xbmc.getCondVisibility("Player.HasVideo"):
+        if not _es_nuestro():         # (2.9.95) solo lo lanzado por MejorWolf
             return None
 
         def _int(s):
@@ -1079,7 +1157,7 @@ def _get_now_playing():
         else:
             label = file_title or title or "Reproduciendo"
         return {"title": label, "elapsed": elapsed, "total": total,
-                "paused": paused}
+                "paused": paused, "mw": 1}
     except Exception:
         return None
 
@@ -1256,7 +1334,7 @@ def _ensure_playback_settings():
 def _playback_diag():
     """Telemetria de reproduccion (solo si hay video) con INFOLABELS baratos +
     los ajustes ya cacheados. Para confirmar/diagnosticar con datos reales."""
-    if not xbmc.getCondVisibility("Player.HasVideo"):
+    if not xbmc.getCondVisibility("Player.HasVideo") or not _NUESTRO["ok"]:
         return None
     g = xbmc.getInfoLabel
     return {

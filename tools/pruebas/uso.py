@@ -59,9 +59,9 @@ try:
     now = A._t.time()
     CODIGOS = ["111111", "222222", "333333", "444444"]
     A._kbstatus_save({c: {"v": "2.9.90", "ts": now} for c in CODIGOS})
-    A._kbnow_save({"111111": {"np": {"title": "Peli secreta", "paused": False}, "ts": now},
-                   "222222": {"np": {"title": "Otra", "paused": False}, "ts": now},
-                   "333333": {"np": {"title": "Pausada", "paused": True}, "ts": now}})
+    A._kbnow_save({"111111": {"np": {"mw": 1, "title": "Peli secreta", "paused": False}, "ts": now},
+                   "222222": {"np": {"mw": 1, "title": "Otra", "paused": False}, "ts": now},
+                   "333333": {"np": {"mw": 1, "title": "Pausada", "paused": True}, "ts": now}})
     with open(A._KB_SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump({"111111": now, "444444": now}, f)
 
@@ -103,7 +103,7 @@ try:
     hoy = d["dias"][-1]
     comprueba("hoy: 4 Kodis, 3 teles con algo puesto, pico 2",
               (hoy["kodis"], hoy["teles"], hoy["pico"]) == (4, 3, 2), hoy)
-    A._kbnow_save({"111111": {"np": {"title": "x", "paused": False}, "ts": now + 70}})
+    A._kbnow_save({"111111": {"np": {"mw": 1, "title": "x", "paused": False}, "ts": now + 70}})
     A._uso_muestra(now + 70)
     hoy = cli.get("/uso/datos?k=" + llave).get_json()["dias"][-1]
     comprueba("la misma tele otra vez no suma otra tele", hoy["teles"] == 3 and hoy["kodis"] == 4, hoy)
@@ -231,7 +231,7 @@ try:
     st["222222"]["dev"] = {"pl": "android", "kv": "21.1"}
     st["222222"]["pais"] = "ES"
     A._kbstatus_save(st)
-    A._kbnow_save({"222222": {"np": {"title": "The Bear", "paused": False}, "ts": A._t.time() + 400}})
+    A._kbnow_save({"222222": {"np": {"mw": 1, "title": "The Bear", "paused": False}, "ts": A._t.time() + 400}})
     A._uso_muestra(A._t.time() + 400, forzar=True)
     d = cli.get("/uso/datos?k=" + llave).get_json()
     sv = d["servicio"]
@@ -291,7 +291,7 @@ try:
     antes_pm = dict(cli.get("/uso/datos?k=" + llave).get_json()["como"])
     A._USO_VISTO.clear()
     for i in range(6):
-        cli.post("/kb/now", json={"code": "111111", "np": {"title": "Peli larga", "elapsed": i * 3, "total": 5000}})
+        cli.post("/kb/now", json={"code": "111111", "np": {"mw": 1, "title": "Peli larga", "elapsed": i * 3, "total": 5000}})
         if i == 2:          # el fichero de "qué se ve" sale roto (dos workers a la vez)...
             open(A._KB_NOW_FILE, "w").write("{roto")
         if i == 4:          # ...y el otro worker, que no lo tiene en memoria
@@ -340,9 +340,9 @@ try:
             A._USO_VISTO.clear()      # el otro worker
     comprueba("4 teles con un mismo código, avisando por turnos: 4 vídeos, no 24", inicios == 4, inicios)
     comprueba("...y se ve que ese código lo usan varias teles", comp > 0, comp)
-    cli.post("/kb/now", json={"code": "444444", "np": {"title": "Uno", "elapsed": 700, "total": 5000}})
-    cli.post("/kb/now", json={"code": "444444", "np": {"title": "Dos", "elapsed": 700, "total": 5000}})
-    cli.post("/kb/now", json={"code": "444444", "np": {"title": "Uno", "elapsed": 703, "total": 5000}})
+    cli.post("/kb/now", json={"code": "444444", "np": {"mw": 1, "title": "Uno", "elapsed": 700, "total": 5000}})
+    cli.post("/kb/now", json={"code": "444444", "np": {"mw": 1, "title": "Dos", "elapsed": 700, "total": 5000}})
+    cli.post("/kb/now", json={"code": "444444", "np": {"mw": 1, "title": "Uno", "elapsed": 703, "total": 5000}})
     d3 = cli.get("/uso/datos?k=" + llave).get_json()
     comprueba("...y la página lo cuenta como código compartido", d3["dias"][-1]["compartidos"] == 1, d3["dias"][-1])
     A._uso_muestra(A._t.time() + 900, forzar=True)
@@ -377,7 +377,7 @@ try:
     st = A._kbstatus_load()
     st["616161"] = {"v": "2.9.94", "ts": A._t.time() + 60}
     A._kbstatus_save(st)
-    A._kbnow_save({"616161": {"np": {"title": "Silo", "elapsed": 40, "paused": False}, "ts": A._t.time() + 60}})
+    A._kbnow_save({"616161": {"np": {"mw": 1, "title": "Silo", "elapsed": 40, "paused": False}, "ts": A._t.time() + 60}})
     A._uso_muestra(A._t.time() + 60, forzar=True)
     desp = cli.get("/uso/datos?k=" + llave).get_json()
     comprueba("re-enviado y el vídeo va por el segundo 40 de los 60 desde el envío: arrancó (a los ~20 s)",
@@ -399,6 +399,22 @@ try:
     A._uso_muestra(A._t.time() + 2000, forzar=True)
     sv = cli.get("/uso/datos?k=" + llave).get_json()["servicio"]
     comprueba("...ni acaba contado como 'no arrancó'", "otra" not in sv or sv["otra"]["ko"] == 0, sv)
+
+    print("\n=== 6h) Solo lo lanzado por MejorWolf (dtbl118) ===")
+    t9 = A._t.time() + 2100
+    st = A._kbstatus_load()
+    st["919191"] = {"v": "2.9.94", "ts": t9}
+    A._kbstatus_save(st)
+    cli.post("/kb/now", json={"code": "919191", "np": {"title": "M+ LA LIGA 1 HD", "elapsed": 5, "total": 0}})
+    comprueba("una caja vieja con el fútbol de otro addon: el mando del móvil lo sigue viendo",
+              (A._kbnow_load().get("919191") or {}).get("np", {}).get("title") == "M+ LA LIGA 1 HD")
+    comprueba("...pero no es un vídeo nuevo nuestro", "t:919191" not in A._uso_pend_lee())
+    A._kbnow_save({"919191": {"np": {"title": "M+ LA LIGA 1 HD", "elapsed": 60, "paused": False}, "ts": t9}})
+    ah = A._uso_ahora(t9)
+    comprueba("no sale en 'Ahora mismo'", ah["viendo"] == 0 and not ah["lista"], ah)
+    A._uso_muestra(t9, forzar=True)
+    dd = cli.get("/uso/datos?k=" + llave).get_json()
+    comprueba("ni en lo más visto", "M+ LA LIGA 1 HD" not in json.dumps(dd, ensure_ascii=False))
 
     import inspect
     comprueba("cada worker escribe su propio temporal (kbnow y kbstatus)",

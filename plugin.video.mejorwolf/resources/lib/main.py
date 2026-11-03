@@ -1054,6 +1054,19 @@ def _check_elementum():
     return True
 
 
+def _marca_lanzado():
+    """(2.9.95) Deja constancia de que ESTE vídeo lo lanza MejorWolf: el servicio
+    solo cuenta y sube lo que empieza justo después (ver service._es_nuestro)."""
+    try:
+        import time
+        import xbmcvfs
+        p = xbmcvfs.translatePath("special://temp/mejorwolf_lanzado.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("%d" % int(time.time()))
+    except Exception:
+        pass
+
+
 def _set_np_title(title):
     """Guarda el titulo limpio de lo que se va a reproducir para que el panel
     'Estas viendo' del mando muestre el nombre real. Elementum no rellena
@@ -1124,6 +1137,7 @@ def cb_play(u, title=""):
         li.setContentLookup(False)
     except Exception:
         pass
+    _marca_lanzado()
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
 
@@ -1291,6 +1305,7 @@ def play(torrent_url, title=""):
     _set_continue(title, "pl", u=torrent_url)
     item = xbmcgui.ListItem(path=play_url)
     item.setProperty("IsPlayable", "true")
+    _marca_lanzado()
     xbmcplugin.setResolvedUrl(HANDLE, True, item)
 
 
@@ -1449,6 +1464,7 @@ def dt_play(content_id, tabla, page_url="", title=""):
         play_url = player.elementum_url(play_uri)
         item = xbmcgui.ListItem(path=play_url)
         item.setProperty("IsPlayable", "true")
+        _marca_lanzado()
         xbmcplugin.setResolvedUrl(HANDLE, True, item)
 
     except Exception as e:

@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl117"
+BUILD = "dtbl118"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4483,7 +4483,9 @@ def kb_now_push():
     if isinstance(np, dict):
         # (dtbl106) ¿empieza un vídeo nuevo? (antes nada, u otro título)
         nuevo = str(np.get("title", ""))[:120]
-        if nuevo:
+        # (dtbl118) solo cuenta lo lanzado por MejorWolf: la caja 2.9.95 lo marca
+        # ("mw") y ya no sube lo de otros addons; las viejas suben de todo.
+        if nuevo and np.get("mw"):
             try:
                 _el = int(np.get("elapsed", 0) or 0)
             except Exception:
@@ -4496,7 +4498,8 @@ def kb_now_push():
         d[code] = {"np": {"title": str(np.get("title", ""))[:120],
                           "elapsed": int(np.get("elapsed", 0) or 0),
                           "total": int(np.get("total", 0) or 0),
-                          "paused": bool(np.get("paused"))},
+                          "paused": bool(np.get("paused")),
+                          "mw": bool(np.get("mw"))},
                    "ts": now}
     else:
         d.pop(code, None)
@@ -13809,7 +13812,7 @@ def _uso_muestra(now=None, forzar=False):
                  if (now - float(e.get("ts", 0) or 0)) < 90]
         ips = [str(st[c].get("ih") or "") for c in vivas if st[c].get("ih")]
         np = {c: e.get("np") or {} for c, e in (_kbnow_load() or {}).items()
-              if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and e.get("np")}
+              if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and (e.get("np") or {}).get("mw")}
         moviles = [c for c, ts in (_kb_seen_load() or {}).items()
                    if (now - float(ts or 0)) < _KB_SEEN_TTL]
     except Exception:
@@ -14148,7 +14151,7 @@ def uso_alta():
 def _uso_ahora(now=None):
     now = _t.time() if now is None else now
     np = [e.get("np") or {} for e in (_kbnow_load() or {}).values()
-          if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and e.get("np")]
+          if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and (e.get("np") or {}).get("mw")]
     vivas = [e for e in (_kbstatus_load() or {}).values()
              if (now - float(e.get("ts", 0) or 0)) < 90]
     vers = {}
@@ -14188,7 +14191,7 @@ def uso_auditoria():
         vivos.append({"k": _uso_huella(c)[:5], "ip": str(e.get("ih") or "")[:5], "v": e.get("v"),
                       "edad": int(edad), "dev": e.get("dev"), "bids": len(e.get("bids") or {}),
                       "res": dg.get("res"), "cach": dg.get("cach"),
-                      "np": bool(x.get("np")) and (now - float(x.get("ts", 0) or 0)) < _KB_NOW_TTL})
+                      "np": bool((x.get("np") or {}).get("mw")) and (now - float(x.get("ts", 0) or 0)) < _KB_NOW_TTL})
     vivos.sort(key=lambda z: (z["ip"], z["k"]))
     d = _uso_lee()
     hoy = _uso_es(now)[0]
