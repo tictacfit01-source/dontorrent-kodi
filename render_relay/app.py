@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl118"
+BUILD = "dtbl119"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -11445,9 +11445,13 @@ def _vigia_ronda():
     out = _vigia_lee()
     now = int(_t.time())
     caidas = _fuentes_caidas()
-    for src in ("wf", "et", "dx"):
+    for src in ("wf", "et", "dx", "cb"):
         try:
-            if src in caidas:
+            if src == "cb":
+                juicio = _cb_vigia()        # cuentas, Telegram y dirección (dtbl119)
+                if juicio is None:          # sin caja con la que mirar: no se sabe
+                    continue
+            elif src in caidas:
                 juicio = {"n": 0, "problemas": ["caida (su web no responde)"], "caida": True}
             else:
                 items, por, b1 = _vigia_busca(src)
@@ -14423,6 +14427,10 @@ def uso_datos():
                      "hace_s": int(now - _USO_NUBE["subida_ts"]) if _USO_NUBE["subida_ts"] else None},
            "build": BUILD}
     out.update(out_mas)
+    try:
+        out["avisos"] = _cb_avisos()          # Cinubo: cuentas, dirección, Telegram (dtbl119)
+    except Exception:
+        out["avisos"] = []
     r = jsonify(out)
     r.headers["Cache-Control"] = "no-store"
     return r
@@ -14491,6 +14499,9 @@ details summary{min-height:44px;display:flex;align-items:center;color:var(--bar)
 .hbv small{color:var(--mut);font-size:12px}
 .graf button.vacio i{background:transparent}
 .aviso{background:rgba(255,196,0,.10);border:1px solid rgba(255,196,0,.25);color:#ffd970;border-radius:10px;padding:8px 10px;font-size:13px;margin:0 0 12px}
+.aviso.mwav-rojo{background:rgba(255,69,58,.12);border-color:rgba(255,69,58,.35);color:#ff8a80}
+.aviso.mwav-info{background:rgba(120,170,255,.10);border-color:rgba(120,170,255,.25);color:#b9d0ff}
+.aviso a{color:inherit;font-weight:600;white-space:nowrap}
 .ix{position:sticky;top:0;z-index:5;display:flex;gap:6px;overflow-x:auto;padding:8px 0 10px;margin:0 0 6px;background:var(--bg);scrollbar-width:none}
 .ix::-webkit-scrollbar{display:none}
 .ix a{flex:0 0 auto;min-height:36px;display:flex;align-items:center;padding:0 12px;border-radius:18px;background:var(--card);border:1px solid var(--stroke);color:var(--sub);font-size:14px;text-decoration:none}
@@ -14599,6 +14610,7 @@ function aparatosHTML(d){
    (Object.keys(pa).length?'<p class="nota" style="margin:14px 0 8px">País</p>'+barras(pa,pn,[]):'')+'</section>';
 }
 function defs(xs){return '<dl class="def">'+xs.map(function(x){return '<dt>'+x[0]+'</dt><dd>'+x[1]+'</dd>'}).join("")+'</dl>'}
+function avisosHTML(av){if(!av||!av.length)return "";return '<section class="card" id="s-avisos"><h2>Avisos</h2>'+av.map(function(a){return '<p class="aviso mwav-'+esc(a.n||"info")+'">'+esc(a.t||"")+(a.u?' <a href="'+esc(a.u)+'" target="_blank" rel="noopener">Ver ›</a>':'')+'</p>'}).join("")+'</section>'}
 function seccion(id,titulo,cuerpo,sub){return '<section class="card" id="'+id+'"><h2>'+titulo+'</h2>'+(sub?'<p class="nota" style="margin:-6px 0 12px">'+sub+'</p>':'')+cuerpo+'</section>'}
 function plegable(titulo,cuerpo){return '<details class="pl"><summary>'+titulo+'</summary><div class="plc">'+cuerpo+'</div></details>'}
 function pinta(d){
@@ -14670,6 +14682,7 @@ function pinta(d){
 
   $c.innerHTML=
    '<nav class="ix"><a href="#s-ahora">Ahora</a><a href="#s-hoy">Hoy</a><a href="#s-visto">Lo más visto</a><a href="#s-busca">Búsquedas</a><a href="#s-serv">Servicio</a><a href="#s-crece">Crecimiento</a><a href="#s-mas">Más</a></nav>'+
+   avisosHTML(d.avisos)+
    seccion("s-ahora","Ahora mismo",ahora)+
    seccion("s-hoy","Hoy",hoy)+
    seccion("s-visto","Lo más visto, 7 días",lista((d.semana||{}).vistos,"Aún no hay nada medido.",[1,2]),"Lo que se ha reproducido de verdad en las teles. Columnas: teles distintas · horas. Una serie junta sus capítulos.")+
@@ -14710,7 +14723,8 @@ document.addEventListener("visibilitychange",function(){if(!document.hidden)carg
 # La sesión: /tmp + copia CIFRADA en mw-sync /kv/cb (sus lecturas son públicas),
 # con claves derivadas del secreto de Render, como /uso. Nunca en el repo.
 # Cupo por hora para no quemar su cuenta: Cinubo da 429 y captcha si se abusa.
-_CB_BASE = "https://cinubo.com"
+_CB_DOM_DEF = "cinubo.com"
+_CB_BASE = "https://" + _CB_DOM_DEF     # la de siempre; la vigente la da _cb_dom()
 _CB_FILE = "/tmp/mw_cb.json"
 _CB_SYNC = "https://mw-sync.israeldm93.workers.dev/kv/cb"
 _CB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -14818,6 +14832,8 @@ def _cb_guarda_tmp(c, casa=None, otras=None):
 def _cb_empaqueta(c, kc, km, casa=None, otras=None):
     import base64
     d = {"c": c, "casa": _cb_casa_valida(casa), "otras": _cb_otras_valida(otras or [])}
+    if _cb_dom() != _CB_DOM_DEF:
+        d["dom"] = _cb_dom()          # si Cinubo se mudó, que sobreviva al despliegue
     return "c1." + base64.b64encode(_uso_cifra(_json.dumps(d).encode("utf-8"), kc, km)).decode("ascii")
 
 
@@ -14841,6 +14857,9 @@ def _cb_desempaqueta_casa(gz, kc, km, que="casa"):
         d = _json.loads(_uso_descifra(base64.b64decode(gz[3:]), kc, km).decode("utf-8"))
         if not isinstance(d, dict):
             return []
+        if que == "dom":
+            x = str(d.get("dom") or "")
+            return x if _CB_DOM_RE.match(x) else ""
         return _cb_otras_valida(d.get("otras")) if que == "otras" else _cb_casa_valida(d.get("casa"))
     except Exception:
         return []
@@ -14860,6 +14879,8 @@ def _cb_nube_lee():
             return {}
         _CB["casa_nube"] = _cb_desempaqueta_casa(gz, kc, km)
         _CB["otras_nube"] = _cb_desempaqueta_casa(gz, kc, km, "otras")
+        _CB["dom_nube"] = _cb_desempaqueta_casa(gz, kc, km, "dom")
+        _CB_DOM_CACHE.update(mt=None, d=None)
         return _cb_desempaqueta(gz, kc, km)
     except Exception:
         return None
@@ -14905,13 +14926,16 @@ def _cb_cookies():
 # medido el 02-11). Todo se le pide a una CAJA actualizada (2.9.91+), desde
 # casa: el trabajo "cbget" lleva la sesion y la caja no la guarda.
 _CB_VER_MIN = (2, 9, 91)
+_CB_VER_DOM = (2, 9, 96)        # desde esta, la caja va a la dirección que se le diga
 
 
 def _cb_cajas():
-    """Cajas vivas que saben hablar con Cinubo; primero las que no reproducen."""
+    """Cajas vivas que saben hablar con Cinubo; primero las que no reproducen.
+    Si Cinubo se ha mudado, solo las que saben ir a la dirección nueva."""
     try:
         d = _kbstatus_load()
-        vivas = [c for c in _live_boxes() if _ver_tupla((d.get(c) or {}).get("v")) >= _CB_VER_MIN]
+        vmin = _CB_VER_MIN if _cb_dom() == _CB_DOM_DEF else _CB_VER_DOM
+        vivas = [c for c in _live_boxes() if _ver_tupla((d.get(c) or {}).get("v")) >= vmin]
     except Exception:
         return []
     libres = set(_cajas_libres())
@@ -14941,14 +14965,18 @@ _CB_MALAS_S = 6 * 3600
 _CB_INTENTOS = 3
 
 
-def _cb_pide_una(box, c, path, q, pg, espera):
-    """(texto, status) por UNA caja; (None, 0) si no contesta."""
+def _cb_pide_una(box, c, path, q, pg, espera, info=None, dom=None):
+    """(texto, status) por UNA caja; (None, 0) si no contesta. En `info["h"]`,
+    la dirección a la que llegó la caja (cajas 2.9.96+)."""
     sem = _lend_acquire(box)
     if sem is None:
         return None, -1
     try:
         j = "cb" + os.urandom(5).hex()
         ev = {"c": "etjob", "job": j, "op": "cbget", "ck": c}
+        d_ = dom or _cb_dom()
+        if d_ != _CB_DOM_DEF:
+            ev["dom"] = d_
         if q:
             ev.update(q=q[:80], pg=int(pg))
         else:
@@ -14959,20 +14987,31 @@ def _cb_pide_una(box, c, path, q, pg, espera):
         _lend_release(sem)
     try:
         d = _json.loads((res or {}).get("html") or "")
+        if info is not None and d.get("h"):
+            info["h"] = str(d.get("h"))[:80].lower()
         return d.get("t") or "", int(d.get("st") or 0)
     except Exception:
         return None, 0
 
 
-def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None):
+def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None, info=None, dom=None):
     """(texto, status) de Cinubo por una caja (si una recibe 403, la siguiente).
-    (None, st) si no se pudo. `ck`: la cuenta (si no, la principal)."""
-    c = ck or _cb_cookies()
-    if not c:
+    (None, st) si no se pudo. `ck`: la cuenta (si no, la que está sana: la
+    principal, o una de reserva si la principal perdió la sesión). `dom`: otra
+    dirección (para probar una nueva; ck={} = sin sesión). En `info`: "h" (a
+    dónde llegó la caja) y "cid" (qué cuenta se usó)."""
+    c = ck if ck is not None else _cb_activa()
+    if not c and ck is None:
         _CB["ult_err"] = "sin sesion"
         return None, 0
+    if info is None:
+        info = {}
+    info["cid"] = _cb_cid(c)
     ahora = _t.time()
     cajas = [b for b in _cb_cajas() if (ahora - _CB_MALAS.get(b, 0)) > _CB_MALAS_S]
+    if dom and dom != _CB_DOM_DEF:
+        _kd = _kbstatus_load()
+        cajas = [b for b in cajas if _ver_tupla((_kd.get(b) or {}).get("v")) >= _CB_VER_DOM]
     if not cajas:
         _CB["ult_err"] = "sin caja"
         return None, 0
@@ -14982,7 +15021,7 @@ def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None):
         if not _cb_cupo():
             _CB["ult_err"] = "cupo"
             return None, 0
-        txt, st = _cb_pide_una(box, c, path, q, pg, espera)
+        txt, st = _cb_pide_una(box, c, path, q, pg, espera, info, dom)
         if st == 403:                       # a esta caja Cloudflare no la deja
             _CB_MALAS[box] = _t.time()
             _CB["cajas_403"] = _CB.get("cajas_403", 0) + 1
@@ -14993,6 +15032,10 @@ def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None):
         break
     _CB["ult_ms"] = int((_t.time() - t0) * 1000)
     _CB["ult_st"] = st
+    info["resp"] = txt is not None       # la caja contestó (aunque Cinubo no)
+    h = info.get("h") or ""
+    if h and h != (dom or _cb_dom()) and h != "www." + (dom or _cb_dom()) and not dom:
+        _cb_mudanza_vista(h)              # Cinubo nos ha llevado a otra dirección
     if st != 200:
         _CB["fallos"] += 1
         _CB["ult_err"] = "http %s" % st if st else "la caja no contesto"
@@ -15006,7 +15049,8 @@ def _cb_get(path, json_=False, tope=20.0, referer=None):
     return _cb_pide(path=path, espera=tope)
 
 
-_CB_PERFIL = re.compile(r'href="https://cinubo\.com/@[A-Za-z0-9_.-]{2,40}"')
+# Sin la dirección fija: si Cinubo se muda, su página sigue enlazando al perfil
+_CB_PERFIL = re.compile(r'href="https://[a-z0-9.-]{4,60}/@([A-Za-z0-9_.-]{2,40})"')
 
 
 def _cb_logueado(html):
@@ -15016,8 +15060,406 @@ def _cb_logueado(html):
     return bool(html) and bool(_CB_PERFIL.search(html))
 
 
+# ==== CINUBO AUTÓNOMO (dtbl119) ================================================
+# Israel, 03-11: "el sistema por streaming debe ser fiable, autónomo, robusto".
+# Tres cosas que antes nadie miraba hasta que fallaban delante de la gente:
+#  1) cada CUENTA tiene su salud (ok / sin_sesion / caida). Si la principal
+#     pierde la sesión, todo pasa SOLO a una de reserva; si vuelve, vuelve.
+#     Antes solo el /t/ rotaba: fichas, capítulos y búsqueda iban siempre por
+#     la principal, y sin ella Cinubo entero se quedaba en "sesión caducada".
+#  2) la DIRECCIÓN: si Cinubo se muda (nos redirige, o lo anuncia en su
+#     Telegram mientras la de siempre no responde), se prueba la nueva SIN
+#     sesión (¿es Cinubo?) y luego CON ella; si entra, se adopta y las cajas
+#     2.9.96+ van allí. Nunca se manda la sesión a una dirección que no parezca
+#     Cinubo.
+#  3) su TELEGRAM (t.me/cinubo): lo que publiquen en los últimos 3 días sale
+#     arriba en /uso, para el dueño. Ahí avisaron de la caída de sep-2026.
+# Nada de esto se ve en /catdiag público: va detrás de la llave de /uso.
+_CB_DOM_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?\.){1,3}[a-z]{2,12}$")
+_CB_DOM_FILE = "/tmp/mw_cbdom.json"
+_CB_SALUD_FILE = "/tmp/mw_cbsalud.json"
+_CB_TG_FILE = "/tmp/mw_cbtg.json"
+_CB_TG_URL = "https://t.me/s/cinubo"
+_CB_PRUEBA = "/s/nzp5nh/4x2"           # un capítulo que existe (Ted Lasso 4x02)
+_CB_MUD = {"t": 0.0}
+_CB_DOM_CACHE = {"mt": None, "d": None}
+# Lo que sale en sus mensajes y no es una dirección de Cinubo
+_CB_NO_DOM = ("t.me", "telegram.org", "telegram.me", "discord.gg", "discord.com", "privtr.ee",
+              "youtube.com", "youtu.be", "x.com", "twitter.com", "instagram.com", "tiktok.com",
+              "facebook.com", "google.com", "telesco.pe", "w3.org", "mega.nz", "mega.io",
+              "elchapuzasinformatico.com", "github.com", "reddit.com", "linktr.ee")
+
+
+def _cb_no_dom(h):
+    """¿Es una web conocida que no es Cinubo (o un subdominio suyo)?"""
+    return any(h == x or h.endswith("." + x) for x in _CB_NO_DOM)
+
+
+def _cb_jlee(f):
+    try:
+        with open(f, encoding="utf-8") as fh:
+            d = _json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cb_jguarda(f, d):
+    try:
+        tmp = "%s.%d.tmp" % (f, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(d, fh)
+        os.replace(tmp, f)
+    except Exception:
+        pass
+
+
+# -- La dirección ----------------------------------------------------------------
+def _cb_dom_info():
+    return _cb_jlee(_CB_DOM_FILE)
+
+
+def _cb_dom():
+    """La dirección vigente de Cinubo ("cinubo.com" si nunca se ha mudado)."""
+    try:
+        mt = os.path.getmtime(_CB_DOM_FILE)
+    except Exception:
+        mt = 0.0
+    if _CB_DOM_CACHE["mt"] == mt and _CB_DOM_CACHE["d"]:
+        return _CB_DOM_CACHE["d"]
+    d = str(_cb_dom_info().get("d") or "")
+    if not d:
+        d = str(_CB.get("dom_nube") or "")   # tras un despliegue: la de la copia
+    d = d if _CB_DOM_RE.match(d) else _CB_DOM_DEF
+    _CB_DOM_CACHE.update(mt=mt, d=d)
+    return d
+
+
+def _cb_dom_pon(d, por):
+    """Adopta la dirección nueva (y la guarda en la copia, para el siguiente
+    despliegue)."""
+    antes = _cb_dom()
+    _cb_jguarda(_CB_DOM_FILE, {"d": d, "por": por, "ts": _t.time(), "antes": antes})
+    _CB_DOM_CACHE.update(mt=None, d=None)
+    try:
+        _cb_nube_sube(_cb_cookies())
+    except Exception:
+        pass
+
+
+def _cb_parece_cinubo(txt):
+    """¿Es una página de Cinubo (con o sin sesión)? Su marco: la meta csrf de
+    Laravel y su nombre. Una página de un dominio aparcado o un aviso del
+    operador no lo es."""
+    if not txt or 'name="csrf-token"' not in txt:
+        return False
+    low = txt[:200000].lower()
+    return "cinubo" in low or "seriesly" in low
+
+
+def _cb_usuario(txt):
+    m = _CB_PERFIL.search(txt or "")
+    return m.group(1) if m else ""
+
+
+def _cb_dom_prueba(d, por):
+    """¿Es `d` la nueva casa de Cinubo? Primero SIN sesión (que parezca Cinubo);
+    luego con la cuenta sana. Si entra, se adopta. Si es Cinubo pero las cuentas
+    no entran, se apunta para avisar al dueño. -> "adoptada"|"sin_sesion"|"no"."""
+    d = (d or "").lower().strip(".")
+    if d.startswith("www."):
+        d = d[4:]
+    if not _CB_DOM_RE.match(d) or d == _cb_dom() or _cb_no_dom(d):
+        return "no"
+    txt, st = _cb_pide(path=_CB_PRUEBA, ck={}, dom=d, espera=15.0)
+    if st != 200 or not _cb_parece_cinubo(txt):
+        _CB["dom_probadas"] = dict(list((_CB.get("dom_probadas") or {}).items())[-6:],
+                                   **{d: {"ts": int(_t.time()), "r": "no es Cinubo (%s)" % st}})
+        return "no"
+    c = _cb_activa()
+    txt, st = _cb_pide(path=_CB_PRUEBA, ck=c, dom=d, espera=15.0) if c else (None, 0)
+    if st == 200 and _cb_logueado(txt):
+        _cb_dom_pon(d, por)
+        return "adoptada"
+    _cb_cand_pon({"d": d, "por": por, "ts": int(_t.time())})
+    return "sin_sesion"
+
+
+def _cb_cand():
+    """Una dirección que ES Cinubo pero donde las cuentas no entran (en fichero:
+    la ve también el otro worker, el que pinta /uso)."""
+    return _cb_dom_info().get("cand")
+
+
+def _cb_cand_pon(x):
+    d = _cb_dom_info()
+    if (d.get("cand") or None) == x:
+        return
+    if x:
+        d["cand"] = x
+    else:
+        d.pop("cand", None)
+    _cb_jguarda(_CB_DOM_FILE, d)
+    _CB_DOM_CACHE.update(mt=None, d=None)
+
+
+def _cb_mudanza_vista(h):
+    """La caja pidió a la dirección de siempre y Cinubo la llevó a otra: se
+    prueba en segundo plano (como mucho una vez cada 30 min)."""
+    if not _CB_DOM_RE.match(h or ""):
+        return
+    _CB["dom_visto"] = h
+    ahora = _t.time()
+    if ahora - _CB_MUD["t"] < 1800:
+        return
+    _CB_MUD["t"] = ahora
+    try:
+        _thr.Thread(target=_cb_dom_prueba, args=(h, "redireccion"), daemon=True).start()
+    except Exception:
+        pass
+
+
+# -- La salud de cada cuenta ---------------------------------------------------
+def _cb_salud_lee():
+    return _cb_jlee(_CB_SALUD_FILE)
+
+
+def _cb_salud_pon(cid, e, usuario=""):
+    """Apunta el estado de una cuenta ("ok"|"sin_sesion"|"caida"). Solo escribe
+    si cambia algo (o cada 10 min, para el "visto")."""
+    ahora = _t.time()
+    with _FileLock(_CB_SALUD_FILE):
+        d = _cb_salud_lee()
+        a = d.get(cid) or {}
+        if a.get("e") == e and (not usuario or a.get("u") == usuario) \
+                and ahora - float(a.get("ts") or 0) < 600:
+            return
+        n = {"e": e, "ts": ahora, "desde": a.get("desde") if a.get("e") == e else ahora,
+             "u": usuario or a.get("u") or ""}
+        d[cid] = n
+        _cb_jguarda(_CB_SALUD_FILE, d)
+
+
+def _cb_vivas():
+    """Las cuentas que no han perdido la sesión (si ninguna, todas: mejor
+    intentarlo que quedarse quieto)."""
+    cs = _cb_cuentas()
+    sal = _cb_salud_lee()
+    v = [c for c in cs if (sal.get(_cb_cid(c)) or {}).get("e") != "sin_sesion"]
+    return v or cs
+
+
+def _cb_activa():
+    """La cuenta con la que se pide todo lo que no es un /t/: la principal si
+    está sana; si no, la primera de reserva que lo esté."""
+    v = _cb_vivas()
+    return v[0] if v else {}
+
+
+def _cb_juzga_pagina(txt, st, info):
+    """El estado de una cuenta según la página que trajo. None = no se sabe
+    (la caja no contestó, 403 de Cloudflare a esa caja, Cinubo nos llevó a
+    otra dirección)."""
+    h = (info or {}).get("h") or ""
+    dom = _cb_dom()
+    if h and h not in (dom, "www." + dom):
+        return None
+    if st in (403, -1):
+        return None
+    if txt is None and not (info or {}).get("resp"):
+        return None                       # la caja no contestó: no se sabe
+    if st == 200 and _cb_logueado(txt):
+        return "ok"
+    if st == 200 and _cb_parece_cinubo(txt):
+        return "sin_sesion"
+    if st == 0 or st >= 500 or (st == 200 and not _cb_parece_cinubo(txt)):
+        return "caida"
+    return None
+
+
+# -- Su Telegram -------------------------------------------------------------------
+_CB_TG_POST = re.compile(r'data-post="cinubo/(\d{1,7})"')
+_CB_TG_FECHA = re.compile(r'datetime="([0-9T:+-]{19,25})"')
+_CB_TG_TXT = re.compile(r'tgme_widget_message_text[^>]*>(.*?)</div>', re.S)
+_CB_HOST_RE = re.compile(r"(?i)(?:https?://)?((?:[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?\.){1,3}[a-z]{2,12})(?=[/\s\"'<),.:;!?]|$)")
+_CB_TG_CLAVE = re.compile(r"(?i)dominio|direcci[oó]n|nueva url|nuevo enlace|ca[ií]d|mantenimiento|"
+                          r"migraci|cierre|cerramos|cerrar|sesi[oó]n|contrase|cuentas?\b|bloque|operador|"
+                          r"captcha|l[ií]mite|suspend|baneo|vuelve|de nuevo en l[ií]nea|incidente|corte|centro de datos|"
+                          r"fuera de servicio|no funciona")
+
+
+def _cb_tg_parsea(html_):
+    """[{id, ts, txt, dominios}] de la página pública del canal."""
+    import html as _h
+    import datetime as _dtm
+    out = []
+    for blk in (html_ or "").split("tgme_widget_message_wrap")[1:]:
+        mi = _CB_TG_POST.search(blk)
+        if not mi:
+            continue
+        mf = _CB_TG_FECHA.search(blk)
+        try:
+            ts = _dtm.datetime.fromisoformat(mf.group(1)).timestamp() if mf else 0
+        except Exception:
+            ts = 0
+        mt = _CB_TG_TXT.search(blk)
+        crudo = mt.group(1) if mt else ""
+        txt = _h.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"<br\s*/?>", "\n", crudo)))
+        txt = re.sub(r"[ \t]+", " ", txt).strip()
+        doms = []
+        for m in _CB_HOST_RE.finditer(crudo + " " + txt):
+            h = m.group(1).lower()
+            h = h[4:] if h.startswith("www.") else h
+            if _cb_no_dom(h) or h == _cb_dom() or h in doms:
+                continue
+            if re.search(r"\.(?:png|jpe?g|gif|webp|mp4|html?|php|js|css)$", h):
+                continue
+            doms.append(h)
+        out.append({"id": int(mi.group(1)), "ts": int(ts), "txt": txt[:600], "dominios": doms[:4]})
+    return out
+
+
+def _cb_tg_mira():
+    """Lee t.me/cinubo (su página pública) y guarda lo último. Una petición."""
+    d = _cb_jlee(_CB_TG_FILE)
+    try:
+        txt, st = _get_con_tope(_CB_TG_URL, 12.0, headers={"User-Agent": _CB_UA})
+    except Exception:
+        txt, st = None, 0
+    ahora = int(_t.time())
+    posts = _cb_tg_parsea(txt) if st == 200 else []
+    if not posts:
+        d["err"] = "http %s" % st if st != 200 else "sin mensajes"
+        d.setdefault("mal_desde", ahora)
+    else:
+        d.pop("err", None)
+        d.pop("mal_desde", None)
+        d["posts"] = sorted(posts, key=lambda p: p["id"])[-8:]
+        # las direcciones que han anunciado: candidatas si la de siempre cae
+        anun = d.get("anunciados") or {}
+        for p in posts:
+            for h in p["dominios"]:
+                anun[h] = max(int(anun.get(h) or 0), p["ts"])
+        d["anunciados"] = dict(sorted(anun.items(), key=lambda kv: -kv[1])[:10])
+    d["visto"] = ahora
+    _cb_jguarda(_CB_TG_FILE, d)
+    return d
+
+
+# -- El vigía de Cinubo (cada 3 h, con el de las fuentes) ------------------------
+def _cb_vigia():
+    """Una página con CADA cuenta (2 peticiones, lejos del captcha: no es /t/),
+    su Telegram y, si Cinubo no responde, las direcciones nuevas. None si no
+    hay caja con la que mirar (no se sabe: no es un '-')."""
+    tg = _cb_tg_mira()
+    cs = _cb_cuentas()
+    if not cs:
+        return {"n": 0, "problemas": ["no hay ninguna cuenta de Cinubo con sesion"]}
+    if not _cb_cajas():
+        return None
+    estados = []
+    for c in cs:
+        info = {}
+        txt, st = _cb_pide(path=_CB_PRUEBA, ck=c, info=info, espera=20.0)
+        e = _cb_juzga_pagina(txt, st, info)
+        if e is None:
+            continue
+        _cb_salud_pon(_cb_cid(c), e, _cb_usuario(txt) if e == "ok" else "")
+        estados.append(e)
+    if not estados:
+        return None
+    if "ok" in estados:
+        _cb_cand_pon(None)          # la dirección vigente funciona: nada pendiente
+    problemas = []
+    if all(e == "caida" for e in estados):
+        problemas.append("Cinubo no responde (su web caida o en mantenimiento)")
+        # ¿se ha mudado? lo que nos enseñó una redirección y lo que anunció en Telegram
+        cand = [_CB.get("dom_visto")] + list((tg.get("anunciados") or {}).keys())
+        if _cb_dom() != _CB_DOM_DEF:
+            cand.append(_CB_DOM_DEF)              # o ha vuelto a la de siempre
+        for d in [x for i, x in enumerate(cand) if x and x not in cand[:i]][:3]:
+            r = _cb_dom_prueba(d, "telegram" if d != _CB.get("dom_visto") else "redireccion")
+            if r == "adoptada":
+                problemas = []
+                break
+    malas = estados.count("sin_sesion")
+    if malas and malas == len(cs):
+        problemas.append("ninguna cuenta de Cinubo tiene sesion: hay que renovarla")
+    elif malas:
+        problemas.append("%d de %d cuentas de Cinubo sin sesion (las demas siguen)" % (malas, len(cs)))
+    if _cb_cand():
+        problemas.append("Cinubo esta en %s y las cuentas no entran alli" % _cb_cand().get("d"))
+    return {"n": estados.count("ok"), "problemas": problemas, "cuentas": len(cs)}
+
+
+# -- Para el dueño, arriba en /uso ---------------------------------------------------
+def _cb_avisos():
+    """[{n: rojo|amarillo|info, t, u?}] de Cinubo. Solo con la llave."""
+    out = []
+    ahora = _t.time()
+
+    def hace(ts):
+        s = max(0, ahora - float(ts or ahora))
+        return "%d min" % (s // 60) if s < 3600 else "%d h" % (s // 3600) if s < 172800 else "%d días" % (s // 86400)
+    cs = _cb_cuentas()
+    sal = _cb_salud_lee()
+    est = [(i, sal.get(_cb_cid(c)) or {}) for i, c in enumerate(cs)]
+    sin = [(i, s) for i, s in est if s.get("e") == "sin_sesion"]
+    nombre = lambda i, s: "«%s»" % s["u"] if s.get("u") else ("la principal" if i == 0 else "la de reserva %d" % i)
+    if not cs:
+        out.append({"n": "rojo", "t": "Cinubo: no hay ninguna cuenta con sesión. El streaming no funciona."})
+    elif sin and len(sin) == len(cs):
+        out.append({"n": "rojo", "t": "Cinubo: ninguna cuenta tiene sesión (desde hace %s). El streaming no "
+                    "funciona hasta renovarla: entra en Cinubo en incógnito con la cuenta de MejorWolf y "
+                    "pásale la cookie a Claude." % hace(min(s.get("desde") or ahora for i, s in sin))})
+    else:
+        for i, s in sin:
+            out.append({"n": "amarillo", "t": "Cinubo: la cuenta %s perdió la sesión hace %s. Las teles siguen "
+                        "con la otra, sin cortes; conviene renovarla (en incógnito) para tener reserva."
+                        % (nombre(i, s), hace(s.get("desde")))})
+    caidas = [s for i, s in est if s.get("e") == "caida"]
+    if cs and caidas and len(caidas) == len(cs):
+        out.append({"n": "rojo", "t": "Cinubo no responde desde hace %s (su web, no nosotros). Mira su "
+                    "Telegram abajo; si anuncian otra dirección, MejorWolf la prueba sola."
+                    % hace(min(s.get("desde") or ahora for s in caidas))})
+    di = _cb_dom_info()
+    if di.get("d") and ahora - float(di.get("ts") or 0) < 3 * 86400:
+        out.append({"n": "info", "t": "Cinubo se ha mudado a %s (visto por %s hace %s). MejorWolf ya va "
+                    "allí solo; las teles con la versión 2.9.96 o más." % (di["d"], "su redirección" if
+                    di.get("por") == "redireccion" else "su Telegram", hace(di.get("ts")))})
+    if _cb_cand():
+        dc = _cb_cand()
+        out.append({"n": "rojo", "t": "Cinubo está ahora en %s pero las cuentas no entran allí: hay que "
+                    "iniciar sesión en esa dirección (en incógnito) y pasarle la cookie a Claude." % dc["d"]})
+    tg = _cb_jlee(_CB_TG_FILE)
+    for p in reversed(tg.get("posts") or []):
+        if ahora - p.get("ts", 0) < 3 * 86400 and p.get("txt"):
+            imp = bool(_CB_TG_CLAVE.search(p["txt"])) or bool(p.get("dominios"))
+            out.append({"n": "amarillo" if imp else "info",
+                        "t": "Cinubo en Telegram, hace %s: %s" % (hace(p["ts"]), p["txt"][:280]),
+                        "u": "https://t.me/cinubo/%d" % p["id"]})
+    if tg.get("mal_desde") and ahora - tg["mal_desde"] > 86400:
+        out.append({"n": "info", "t": "No puedo leer el Telegram de Cinubo desde hace %s (%s)."
+                    % (hace(tg["mal_desde"]), tg.get("err") or "?")})
+    return out
+
+
+def _cb_salud_diag():
+    """Para /catdiag con llave: el estado de cada cuenta, sin nada de la sesión."""
+    sal = _cb_salud_lee()
+    tg = _cb_jlee(_CB_TG_FILE)
+    return {"cuentas": [{k: (sal.get(_cb_cid(c)) or {}).get(k) for k in ("e", "desde", "ts", "u")}
+                        for c in _cb_cuentas()],
+            "activa": next((i for i, c in enumerate(_cb_cuentas()) if c == _cb_activa()), None),
+            "dom": _cb_dom(), "dom_info": _cb_dom_info() or None, "dom_visto": _CB.get("dom_visto"),
+            "dom_cand": _cb_cand(), "dom_probadas": _CB.get("dom_probadas"),
+            "tg": {"visto": tg.get("visto"), "err": tg.get("err"), "ult": (tg.get("posts") or [{}])[-1].get("id"),
+                   "anunciados": tg.get("anunciados")}}
+
+
 _CB_LINK_RE = re.compile(r'data-link-playback="([^"]{20,4000})"')
-_CB_T_RE = re.compile(r"^https://cinubo\.com/t/([A-Za-z0-9=_%-]{20,600})$")
+# sin la dirección fija (dtbl119): tras una mudanza, los enlaces siguen valiendo
+_CB_T_RE = re.compile(r"^https://(?:www\.)?([a-z0-9.-]{4,60})/t/([A-Za-z0-9=_%-]{20,600})$")
 
 
 def _cb_enlaces_de(html):
@@ -15035,9 +15477,9 @@ def _cb_enlaces_de(html):
         if not lang.endswith("espana"):
             continue
         mt = _CB_T_RE.match(str(d.get("url") or ""))
-        if not mt:
+        if not mt or mt.group(1) not in (_cb_dom(), _CB_DOM_DEF):   # solo de Cinubo
             continue
-        out.append({"r": mt.group(1), "srv": str(inf.get("server") or "")[:24].upper(),
+        out.append({"r": mt.group(2), "srv": str(inf.get("server") or "")[:24].upper(),
                     "q": str(inf.get("quality") or "")[:16], "lang": "es"})
     return out
 
@@ -15144,12 +15586,23 @@ def _cb_enlaces(ruta):
     ya = _cb_cache_get("e", ruta, _CB_TTL_ENLACES)
     if ya is not None:
         return ya
-    txt, st = _cb_pide(path=ruta)
-    if txt is None:
-        return None
-    if not _cb_logueado(txt):
+    # Si la cuenta perdió la sesión, se apunta y se prueba SOLA con la siguiente
+    # sana: la persona ve sus servidores igual (dtbl119).
+    probadas = set()
+    while True:
+        info = {}
+        txt, st = _cb_pide(path=ruta, info=info)
+        if txt is None:
+            return None
+        e = _cb_juzga_pagina(txt, st, info)
+        if e:
+            _cb_salud_pon(info.get("cid") or "_", e, _cb_usuario(txt) if e == "ok" else "")
+        if _cb_logueado(txt):
+            break
         _CB["ult_err"] = "sesion caducada"
-        return None
+        probadas.add(info.get("cid"))
+        if e != "sin_sesion" or _cb_cid(_cb_activa()) in probadas:
+            return None             # no es la sesión, o ya no queda otra cuenta
     en = _cb_ordena([{"r": x["r"], "srv": x["srv"], "q": x["q"]} for x in _cb_enlaces_de(txt)])
     if not en:
         # vacía: se dice por qué (cuántos había en total) y solo vale 20 min:
@@ -15276,7 +15729,7 @@ _CB_MUERTO_RE = re.compile(r"(?i)video not found|file not found|file was deleted
 
 def _cb_vivo(url):
     try:
-        txt, st = _get_con_tope(url, 7.0, headers={"User-Agent": _CB_UA, "Referer": _CB_BASE + "/"}, todo=True)
+        txt, st = _get_con_tope(url, 7.0, headers={"User-Agent": _CB_UA, "Referer": "https://%s/" % _cb_dom()}, todo=True)
     except Exception:
         return True
     if st in (404, 410):
@@ -15296,7 +15749,7 @@ def cb_embed_ruta():
         return jsonify({"ok": True, "u": ya})
     if ya == "":
         return jsonify({"ok": False, "error": "muerto"})
-    cuentas = _cb_cuentas()
+    cuentas = _cb_vivas()
     if not cuentas:
         return jsonify({"ok": False, "error": "no_disponible", "motivo": "sin sesion"})
     # la que menos se ha usado primero, para repartir
@@ -15515,6 +15968,8 @@ def cb_sesion_alta():
     with _CB_LOCK:
         _CB.update(c=c)
     _cb_guarda_tmp(c, casa, otras)
+    _cb_jguarda(_CB_SALUD_FILE, {})     # sesiones nuevas: se juzgan de nuevo
+    _cb_cand_pon(None)
     sub = _bounded(lambda: _cb_nube_sube(c), 20.0, False)
     return jsonify({"ok": True, "n": len(c), "casa": len(_cb_casa()), "cuentas": len(_cb_cuentas()),
                     "nube": bool(sub)})
@@ -15792,7 +16247,7 @@ def catdiag():
                              "apartadas_403": len([1 for v in _CB_MALAS.values() if _t.time() - v < _CB_MALAS_S]),
                              "vacias": _CB.get("vacias", 0), "ult_vacia": _CB.get("ult_vacia"),
                              "esperas": _CB.get("esperas", 0), "muertos": _CB.get("muertos", 0),
-                             "cuentas": len(_cb_cuentas())}
+                             "cuentas": len(_cb_cuentas()), "salud": _cb_salud_diag()}
         except Exception:
             pass
     else:

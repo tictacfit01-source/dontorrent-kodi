@@ -36,27 +36,49 @@ class NoSale(Exception):
     """El servidor no da el vídeo (caído, cortado por el operador, cambiado)."""
 
 
-def _sesion(ck):
+# Si Cinubo se muda de dirección (lo anuncia en t.me/cinubo), el relay lo
+# descubre y lo manda en el trabajo ("dom"); sin él, la de siempre (2.9.96).
+_DOM = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?\.){1,3}[a-z]{2,12}$")
+
+
+def _dominio(ev):
+    d = str((ev or {}).get("dom") or "").strip().lower()
+    return d if _DOM.match(d) else "cinubo.com"
+
+
+def _sesion(ck, dom="cinubo.com"):
     s = requests.Session()
     s.headers.update({"User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9"})
     for k, v in (ck or {}).items():
         k, v = str(k), str(v)
         if _NOMBRE.match(k) and _VALOR.match(v):
-            s.cookies.set(k, v, domain=".cinubo.com", path="/")
+            s.cookies.set(k, v, domain="." + dom, path="/")
     return s
 
 
+def _host(r):
+    """A qué dirección se llegó de verdad (tras las redirecciones)."""
+    try:
+        return (urlparse(r.url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
 def pedir(ev):
-    """JSON {"st", "t"} con lo que contesta Cinubo. "" si la petición no vale."""
+    """JSON {"st", "t", "h"} con lo que contesta Cinubo ("h": la dirección a la
+    que se llegó; si no es la pedida, Cinubo se ha mudado). "" si no vale."""
     path = str(ev.get("path") or "")
     q = str(ev.get("q") or "").strip()[:80]
-    s = _sesion(ev.get("ck"))
+    dom = _dominio(ev)
+    BASE = "https://" + dom
+    s = _sesion(ev.get("ck"), dom)
     try:
         if q:
             r0 = s.get(BASE + "/", timeout=(6, 12))
             m = _CSRF.search(r0.text or "")
             if not m:
-                return json.dumps({"st": r0.status_code or 0, "t": ""})
+                return json.dumps({"st": r0.status_code or 0, "t": (r0.text or "")[:4000],
+                                   "h": _host(r0)})
             try:
                 pg = max(1, min(5, int(ev.get("pg") or 1)))
             except (TypeError, ValueError):
@@ -72,7 +94,7 @@ def pedir(ev):
             r = s.get(BASE + path, headers=cab, timeout=(6, 15))
         else:
             return ""
-        return json.dumps({"st": r.status_code, "t": (r.text or "")[:_TOPE_TXT]})
+        return json.dumps({"st": r.status_code, "t": (r.text or "")[:_TOPE_TXT], "h": _host(r)})
     except Exception:
         return json.dumps({"st": 0, "t": ""})
     finally:
