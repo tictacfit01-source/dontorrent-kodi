@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl120"
+BUILD = "dtbl121"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -15617,15 +15617,20 @@ def _cb_enlaces(ruta):
 
 
 # Los que la caja abre por si misma (resources/lib/cinubo.py), primero; el resto
-# depende de que la tele tenga ResolveURL. A igualdad, la mejor calidad.
-_CB_ABRE = {"VIDARA": 0, "LULUSTREAM": 1, "FIRESTREAM": 2, "VIDHIDE": 3}
+# depende de que la tele tenga ResolveURL. Entre ellos, la mejor calidad y, a
+# igual calidad, Lulustream delante (dtbl121): respeta los Range y su caché no
+# se daña, y da 4,2 Mbit/s por conexión frente a 1,6 de Vidara. Los Vidara
+# guardan en caché la primera respuesta de cada trozo aunque sea un pedazo: con
+# la caja 2.9.97 quedaron trozos dañados para todos (saltos de escena, 04-11).
+_CB_ABRE = {"LULUSTREAM": 0, "VIDARA": 1, "FIRESTREAM": 2, "VIDHIDE": 3}
 
 
 def _cb_ordena(en):
     def _q(x):
         m = re.search(r"(\d{3,4})p", x.get("q") or "", re.I)
         return -int(m.group(1)) if m else 0
-    return sorted(en, key=lambda x: (_CB_ABRE.get(x.get("srv"), 9), _q(x)))
+    return sorted(en, key=lambda x: (x.get("srv") not in _CB_ABRE, _q(x),
+                                     _CB_ABRE.get(x.get("srv"), 9)))
 
 
 _CB_REF = re.compile(r"^[A-Za-z0-9=_%-]{20,600}$")
@@ -15657,7 +15662,7 @@ def cb_enlaces():
     en = _cb_enlaces(ruta)
     if en is None:
         return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
-    return jsonify({"ok": True, "items": en})
+    return jsonify({"ok": True, "items": _cb_ordena(en)})   # también lo ya guardado
 
 
 # Medido el 02-11: la cuenta aguanta ~8 enlaces (/t/) en ~25 s; el 9º pide

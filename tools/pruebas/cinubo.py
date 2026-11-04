@@ -324,9 +324,9 @@ try:
         orden = A._cb_ordena([{"srv": "VOE", "q": "HD 1080p"}, {"srv": "LULUSTREAM", "q": "HD 720p"},
                                {"srv": "VIDARA", "q": "HD 720p"}, {"srv": "VIDARA", "q": "HD 1080p"},
                                {"srv": "POWVIDEO", "q": "HD 720p"}])
-        comprueba("orden: lo que la tele abre sola primero (Vidara, Lulustream); a igualdad, 1080p",
-                  [(x["srv"], x["q"]) for x in orden] == [("VIDARA", "HD 1080p"), ("VIDARA", "HD 720p"),
-                                                         ("LULUSTREAM", "HD 720p"), ("VOE", "HD 1080p"),
+        comprueba("orden: lo que la tele abre sola primero; la mejor calidad; a igualdad, Lulustream (dtbl121)",
+                  [(x["srv"], x["q"]) for x in orden] == [("VIDARA", "HD 1080p"), ("LULUSTREAM", "HD 720p"),
+                                                         ("VIDARA", "HD 720p"), ("VOE", "HD 1080p"),
                                                          ("POWVIDEO", "HD 720p")], orden)
         pub = cli.get("/catdiag").get_json()
         adm = cli.get("/catdiag?k=" + llave).get_json()
