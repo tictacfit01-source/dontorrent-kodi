@@ -81,6 +81,7 @@ class Sesion(object):
         self.t0 = time.time()
         self.bajado = 0
         self.esperas = 0             # veces que Kodi tuvo que esperar
+        self.danados = 0             # trozos que el servidor solo da a medias
         self.ultimo = time.time()    # última petición de Kodi
         self.http = requests.Session()
         self.http.headers.update(cab)
@@ -167,6 +168,9 @@ def _baja(ses, i, j):
                 # el servidor solo da un pedazo (caché envenenada por otro):
                 # se entrega lo que hay, sin inventar ni repetir nada
                 _log("trozo %d: el servidor solo da %s" % (i, cr))
+                ses.danados += 1
+                if ses.danados == 1:
+                    _avisa_danado()
                 if int(m.group(1)) != 0:
                     r.close()
                     raise IOError("pedazo que no empieza en 0")
@@ -215,6 +219,17 @@ def _baja(ses, i, j):
         if ses.trozos[i] is t:
             t.fallo = True
         ses.cv.notify_all()
+
+
+def _avisa_danado():
+    """Una vez por vídeo: que la persona sepa por qué salta y qué hacer."""
+    try:
+        import xbmcgui
+        xbmcgui.Dialog().notification(
+            "MejorWolf", "Este servidor tiene partes dañadas y dará saltos: mejor elige Lulustream",
+            xbmcgui.NOTIFICATION_WARNING, 12000)
+    except Exception:  # fuera de Kodi (pruebas)
+        pass
 
 
 def _obrero():
