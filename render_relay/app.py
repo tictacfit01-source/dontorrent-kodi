@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl121"
+BUILD = "dtbl122"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4614,6 +4614,15 @@ def kb_status_push():
         ultima = _ver_mas_nueva(entry["v"])
     except Exception:
         ultima = ""
+    # (dtbl122) y la PUBLICADA, aunque ninguna tele la tenga aún: si no, la
+    # primera en ponerse al día esperaba a las muchas horas de Kodi (04-11:
+    # "me está costando que se actualice"). Sin red aquí: la mira un hilo.
+    try:
+        pub = _ver_publicada_sin_esperar()
+        if pub and _ver_tupla(pub) > _ver_tupla(ultima):
+            ultima = pub
+    except Exception:
+        pass
     res = {"ok": True, "ultima": ultima} if ultima else {"ok": True}
     if repetido:
         res.update(repetido=True, nuevo_codigo=repetido)
@@ -4646,6 +4655,18 @@ def kb_status_get():
 # actualizan las teles (dtbl99). No la "más nueva entre las encendidas".
 _VER_PUB = {"v": "", "ts": 0.0}
 _VER_PUB_RE = re.compile(r'<addon\s+id="plugin\.video\.mejorwolf"[^>]*?\sversion="([0-9][0-9.]{0,15})"')
+
+
+_VER_PUB_HILO = {"t": 0.0}
+
+
+def _ver_publicada_sin_esperar():
+    """La publicada que ya se sabe; si está vieja, la refresca un hilo (como
+    mucho uno cada 2 min por worker) y no hace esperar al latido."""
+    if not (_VER_PUB["v"] and (_t.time() - _VER_PUB["ts"]) < 1800)             and _t.time() - _VER_PUB_HILO["t"] > 120:
+        _VER_PUB_HILO["t"] = _t.time()
+        _thr.Thread(target=_ver_publicada, daemon=True).start()
+    return _VER_PUB["v"]
 
 
 def _ver_publicada():

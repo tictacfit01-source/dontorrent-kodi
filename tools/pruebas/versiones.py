@@ -103,6 +103,21 @@ try:
     src = A._CAT_PAGE
     comprueba("la web lo pinta en Mis Kodis (liveDot con 'vieja')",
               "j.vieja" in src and "devold" in src and "liveDot(dot,dev.code,meta)" in src)
+
+    print("\n=== 4) El latido dice la PUBLICADA aunque ninguna tele la tenga (dtbl122) ===")
+    viejo_pub = dict(A._VER_PUB)
+    try:
+        A._VER_PUB.update(v="9.9.99", ts=time.time())
+        js = cli.post("/kb/status", json={"code": "222222", "v": "2.9.74"}).get_json() or {}
+        comprueba("la tele se entera de la 9.9.99 publicada", js.get("ultima") == "9.9.99", js)
+        A._VER_PUB.update(v="", ts=0.0)
+        A._VER_PUB_HILO["t"] = time.time()          # sin red en la prueba
+        t0 = time.time()
+        js = cli.post("/kb/status", json={"code": "222222", "v": "2.9.74"}).get_json() or {}
+        comprueba("sin saberla: el latido no espera y dice la más nueva vista",
+                  time.time() - t0 < 2 and js.get("ok") is True, js)
+    finally:
+        A._VER_PUB.update(viejo_pub)
 finally:
     for f in FICH:
         try:
