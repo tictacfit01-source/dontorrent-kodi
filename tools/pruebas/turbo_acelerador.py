@@ -25,7 +25,8 @@ from resources.lib import turbo  # noqa: E402
 N = 12
 TAM = 300000
 DATOS = [hashlib.sha256(b"t%d" % i).digest() * (TAM // 32) for i in range(N)]
-ESTADO = {"a_la_vez": 0, "max": 0, "corta": set(), "peticiones": 0, "lento": 0.0}
+ESTADO = {"a_la_vez": 0, "max": 0, "corta": set(), "peticiones": 0, "lento": 0.0, "rangos": 0}
+CACHE = {}   # como el nginx de 97bf1.com: la primera respuesta de cada trozo, para todos
 CERROJO = threading.Lock()
 
 
@@ -40,7 +41,7 @@ class Falso(BaseHTTPRequestHandler):
         if p == "/v/master.m3u8":
             return self._txt("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nbaja.m3u8\n"
                              "#EXT-X-STREAM-INF:BANDWIDTH=3000000\nalta.m3u8\n")
-        if p in ("/v/alta.m3u8", "/l/index.m3u8", "/d/live.m3u8"):
+        if p in ("/v/alta.m3u8", "/l/index.m3u8", "/d/live.m3u8", "/c/index.m3u8"):
             ext = "css" if p.startswith("/v/") else "ts"
             l = ["#EXTM3U", "#EXT-X-TARGETDURATION:10"]
             if p.startswith("/l/"):
@@ -56,14 +57,18 @@ class Falso(BaseHTTPRequestHandler):
             return self._bin(b"K" * 16, 200)
         if "/seg_" in p:
             i = int(p.split("seg_")[1][:3])
-            rango = p.startswith("/l/")
+            rango = p.startswith("/l/") or p.startswith("/c/")
             b = DATOS[i]
+            if self.headers.get("Range"):
+                ESTADO["rangos"] += 1
             with CERROJO:
                 ESTADO["peticiones"] += 1
                 ESTADO["a_la_vez"] += 1
                 ESTADO["max"] = max(ESTADO["max"], ESTADO["a_la_vez"])
             try:
                 rg = self.headers.get("Range")
+                if p.startswith("/c/"):
+                    rg = CACHE.setdefault(p, rg or "")   # envenenada si la 1a llevaba Range
                 if rango and rg:
                     a, _, z = rg.split("=")[1].partition("-")
                     a, z = int(a), min(int(z or len(b) - 1), len(b) - 1)
@@ -127,7 +132,6 @@ def main():
     srv = _H(("127.0.0.1", 0), Falso)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = "http://127.0.0.1:%d" % srv.server_address[1]
-    turbo.PIEZA = 64 * 1024
     port = turbo.arranca()
     ok(port > 0, "arranca en 127.0.0.1")
     turbo.anuncia()
@@ -158,7 +162,21 @@ def main():
     ok(requests.get(raiz + "/k0.key").content == b"K" * 16, "la clave llega bien")
     bien = all(requests.get("%s/%d.ts" % (raiz, i), timeout=30).content == DATOS[i] for i in range(N))
     ok(bien, "los trozos cortados a mitad se reanudan y llegan enteros")
-    ok(ESTADO["max"] >= 3, "partes en paralelo (máx %d)" % ESTADO["max"])
+    ok(ESTADO["max"] >= 3, "trozos en paralelo (máx %d)" % ESTADO["max"])
+
+    print("2b. Caché que guarda la primera respuesta (04-11, Vidara de 97bf1.com)")
+    ESTADO["rangos"] = 0
+    u = turbo.envuelve(base + "/c/index.m3u8")
+    raiz = u.rsplit("/", 1)[0]
+    bien = all(requests.get("%s/%d.ts" % (raiz, i), timeout=30).content == DATOS[i] for i in range(N))
+    ok(ESTADO["rangos"] == 0, "nunca pide un pedazo (Range): %d veces" % ESTADO["rangos"])
+    ok(bien, "cada trozo llega entero y sin repetir su principio")
+    CACHE["/c/seg_003.ts"] = "bytes=0-99999"     # envenenada por otro
+    u = turbo.envuelve(base + "/c/index.m3u8")
+    raiz = u.rsplit("/", 1)[0]
+    b3 = requests.get(raiz + "/3.ts", timeout=30).content
+    ok(b3 == DATOS[3][:100000], "si el servidor solo da un pedazo, se entrega ese, sin repetirlo (%d bytes)" % len(b3))
+    ok(requests.get(raiz + "/4.ts", timeout=30).content == DATOS[4], "y el siguiente sigue bien")
 
     print("3. Vidara cortado a mitad (sin Range: se salta lo ya guardado)")
     ESTADO["corta"] = {7}

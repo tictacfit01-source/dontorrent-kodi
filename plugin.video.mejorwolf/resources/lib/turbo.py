@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Acelerador del streaming (2.9.97).
+"""Acelerador del streaming (2.9.97; 2.9.98 sin Range).
 
 Medido el 03-11 (The Gentlemen 1x03, Cinubo): los servidores de vídeo limitan
 la velocidad POR CONEXIÓN. Vidara daba 1,6 Mbit/s por conexión y 9,2 con 4 a
@@ -9,9 +9,9 @@ servidores aunque la casa tenga 136 Mbit/s.
 
 Esto es un pequeño servidor en 127.0.0.1 que vive en el servicio de la caja.
 Kodi le pide la lista y los trozos a él; él baja por delante varios trozos a la
-vez (y, si el servidor deja pedir partes, cada trozo en varias partes) y se los
-va dando a Kodi según llegan. Si algo falla al montarlo, Kodi va directo, como
-antes: nunca es peor que no tenerlo.
+vez (cada uno entero: nunca con Range, ver _baja) y se los va dando a Kodi
+según llegan. Si algo falla al montarlo, Kodi va directo, como antes: nunca
+es peor que no tenerlo.
 """
 import base64
 import json
@@ -30,7 +30,6 @@ except ImportError:  # pragma: no cover
 import requests
 
 HILOS = 4                    # descargas a la vez (medido: 4 bastan para x3-x6)
-PIEZA = 1024 * 1024          # partes de 1 MB si el servidor admite Range
 DELANTE_MAX = 12             # trozos por delante (unos 2 min)
 BYTES_MAX = 64 * 1024 * 1024 # tope de memoria por delante (cajas de 1-2 GB)
 ESPERA_KODI = 45.0           # sin un byte en este tiempo -> se corta (Kodi salta)
@@ -143,53 +142,48 @@ _S = {"ses": None, "cv": threading.Condition(), "srv": None, "port": 0, "k": ""}
 
 
 def _baja(ses, i, j):
-    """Baja la parte j del trozo i (o el trozo entero si no admite Range)."""
+    """Baja el trozo i entero, SIN Range (j siempre 0).
+
+    04-11: el Vidara de otra máquina (nginx 97bf1.com) guarda en caché la
+    PRIMERA respuesta de cada trozo, con Range incluido, y luego la da a todos
+    sea cual sea la petición: al pedir partes de 1 MB, el trozo quedaba
+    envenenado con su primer MB y Kodi repetía unos segundos sin avanzar. Así
+    que nunca se pide un pedazo: la velocidad sale de bajar 4 trozos a la vez.
+    """
     t = ses.trozos[i]
     for vez in range(REINTENTOS):
         if not ses.vivo or ses.trozos[i] is not t:
             return
         try:
-            if j == 0 and t.rango is None:
-                r = ses.http.get(t.url, headers={"Range": "bytes=0-%d" % (PIEZA - 1)},
-                                 timeout=(6, 12), stream=True)
-                if r.status_code not in (200, 206):
+            r = ses.http.get(t.url, timeout=(6, 12), stream=True)
+            if r.status_code not in (200, 206):
+                r.close()
+                raise IOError("http %s" % r.status_code)
+            total = r.headers.get("Content-Length")
+            total = int(total) if total and str(total).isdigit() else None
+            cr = r.headers.get("Content-Range") or ""
+            m = re.match(r"bytes\s+(\d+)-(\d+)/(\d+)", cr)
+            if m and (int(m.group(1)) != 0 or int(m.group(2)) < int(m.group(3)) - 1):
+                # el servidor solo da un pedazo (caché envenenada por otro):
+                # se entrega lo que hay, sin inventar ni repetir nada
+                _log("trozo %d: el servidor solo da %s" % (i, cr))
+                if int(m.group(1)) != 0:
                     r.close()
-                    raise IOError("http %s" % r.status_code)
-                cr = r.headers.get("Content-Range") or ""
-                m = re.match(r"bytes\s+(\d+)-(\d+)/(\d+)", cr)
-                with ses.cv:
-                    if m and int(m.group(1)) == 0 and int(m.group(2)) < int(m.group(3)) - 1:
-                        t.rango = True
-                        t.total = int(m.group(3))
-                        n = (t.total + PIEZA - 1) // PIEZA
-                        t.partes = [bytearray() for _ in range(n)]
-                        t.hechas = [False] + [None] * (n - 1)
-                    else:
-                        # Vidara: ignora el Range y manda el trozo entero
-                        t.rango = False
-                        cl = (m and m.group(3)) or r.headers.get("Content-Length")
-                        t.total = int(cl) if cl and str(cl).isdigit() else None
-                        t.partes = [bytearray()]
-                        t.hechas = [False]
-                    ses.cv.notify_all()
-            else:
-                if t.rango:
-                    ini = j * PIEZA + len(t.partes[j])
-                    fin = min(t.total, (j + 1) * PIEZA) - 1
-                    if ini > fin:
-                        break
-                    r = ses.http.get(t.url, headers={"Range": "bytes=%d-%d" % (ini, fin)},
-                                     timeout=(6, 12), stream=True)
-                    if r.status_code != 206:
-                        r.close()
-                        raise IOError("http %s" % r.status_code)
-                else:
-                    r = ses.http.get(t.url, timeout=(6, 12), stream=True)
-                    if r.status_code not in (200, 206):
-                        r.close()
-                        raise IOError("http %s" % r.status_code)
-            # sin Range y es un reintento: lo ya guardado se salta
-            saltar = len(t.partes[j]) if (not t.rango and vez > 0) else 0
+                    raise IOError("pedazo que no empieza en 0")
+            with ses.cv:
+                if not t.partes:
+                    t.rango = False
+                    t.partes = [bytearray()]
+                    t.hechas = [False]
+                if t.total is None:
+                    t.total = total
+                ses.cv.notify_all()
+            # es un reintento: lo ya guardado se salta (y si la longitud no
+            # cuadra con la del primer intento, se empieza de cero)
+            saltar = len(t.partes[0])
+            if saltar and total is not None and t.total is not None and total != t.total:
+                r.close()
+                raise IOError("cambió de tamaño")
             try:
                 for c in r.iter_content(65536):
                     if not ses.vivo or ses.trozos[i] is not t:
@@ -201,24 +195,21 @@ def _baja(ses, i, j):
                         c = c[saltar:]
                         saltar = 0
                     with ses.cv:
-                        t.partes[j].extend(c)
+                        t.partes[0].extend(c)
                         ses.bajado += len(c)
                         ses.cv.notify_all()
             finally:
                 r.close()
-            if t.rango and len(t.partes[j]) < min(t.total, (j + 1) * PIEZA) - j * PIEZA:
-                raise IOError("corto")
-            if not t.rango and t.total and len(t.partes[j]) < t.total:
+            if t.total and len(t.partes[0]) < t.total:
                 raise IOError("corto")
             with ses.cv:
-                t.hechas[j] = True
-                if all(h is True for h in t.hechas):
-                    t.listo = True
+                t.hechas[0] = True
+                t.listo = True
                 ses.cv.notify_all()
             return
         except Exception as e:
             if vez == REINTENTOS - 1:
-                _log("trozo %d parte %d: %s" % (i, j, type(e).__name__))
+                _log("trozo %d: %s" % (i, type(e).__name__))
             time.sleep(0.8 * (vez + 1))
     with ses.cv:
         if ses.trozos[i] is t:
