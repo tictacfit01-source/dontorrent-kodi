@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl119"
+BUILD = "dtbl120"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -19819,13 +19819,17 @@ function cbCarga(o){var x=o.x,el=$(o.el);if(!el||!x||!x.tmdb_id)return;
   .catch(function(){if(CBSEL!==yo)return;yo.items=[];yo.err='red';cbPinta(o.el)})}
 function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
  if(!c.items.length){el.innerHTML=(elId==='cbd-l')?('<div class="cbmsg">'+(c.err?'Cinubo no contesta ahora mismo. Prueba en un rato.':'Cinubo no tiene este capítulo en castellano.')+'</div>'):'';return}
- // un botón por servidor+calidad (dos "Vidara 1080p" son dos subidas del mismo
- // capítulo: se ve uno; si falla, cbPlay prueba la otra). Arriba los que la tele
- // abre sola; el resto, plegado y avisado.
- var vistos={},bot=function(it,i){return '<button class="cbb" onclick="cbPlay('+i+')">▶ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+'</i></button>'},
+ // Arriba los que la tele abre sola; el resto, plegado y avisado.
+ // (dtbl120) De los que la tele abre sola se ve CADA subida, numerada si hay
+ // varias ("Vidara 1080p · 1", "· 2"): son copias en máquinas distintas y una
+ // puede ir mucho más rápida (03-11, The Gentlemen 1x03: se veía un solo Vidara,
+ // el lento). De los demás, uno por servidor+calidad; si falla, cbPlay prueba
+ // su gemelo.
+ var vistos={},tot={},bot=function(it,i,num){return '<button class="cbb" onclick="cbPlay('+i+')">▶ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+(num?' · '+num:'')+'</i></button>'},
   seg='',otros='',n=0;
- c.items.forEach(function(it,i){var k=it.srv+'|'+cbQ(it.q);if(vistos[k])return;vistos[k]=1;
-  if(CBABRE[it.srv]){seg+=bot(it,i);n++}else otros+=bot(it,i)});
+ c.items.forEach(function(it){var k=it.srv+'|'+cbQ(it.q);tot[k]=(tot[k]||0)+1});
+ c.items.forEach(function(it,i){var k=it.srv+'|'+cbQ(it.q);vistos[k]=(vistos[k]||0)+1;
+  if(CBABRE[it.srv]){seg+=bot(it,i,tot[k]>1?vistos[k]:0);n++}else if(vistos[k]===1)otros+=bot(it,i,0)});
  // (dtbl95) en la ficha de una peli: si el streaming que la tele abre sola tiene
  // MEJOR calidad que el torrent (1080p frente a 720p/HDTV), sube por encima del
  // botón del torrent. Israel: "si hay buena calidad a 1080p, que gane".

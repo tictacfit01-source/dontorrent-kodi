@@ -75,7 +75,11 @@ CTX.set({ k: 'k', el: 'cbd-l', t: 'Ted Lasso 1x10', items });
 CTX.cbPinta('cbd-l');
 const h = $('cbd-l').innerHTML;
 const botones = (h.match(/cbPlay\(\d+\)/g) || []);
-comprueba('sin repetidos: 5 botones para 7 enlaces', botones.length === 5, botones);
+comprueba('cada subida de los que la tele abre sola; los demás sin repetidos: 6 botones para 7 enlaces',
+  botones.length === 6 && botones.join() === 'cbPlay(0),cbPlay(1),cbPlay(2),cbPlay(3),cbPlay(4),cbPlay(6)', botones);
+comprueba('las dos subidas de Vidara 1080p, numeradas (dtbl120)',
+  /Vidara <i>1080p · 1<\/i>/.test(h) && /Vidara <i>1080p · 2<\/i>/.test(h), h);
+comprueba('una sola subida: sin número', /Lulustream <i>1080p<\/i>/.test(h) && /Lulustream <i>720p<\/i>/.test(h), h);
 comprueba('los que la tele abre sola, arriba y fuera del plegable',
   h.indexOf('Vidara') < h.indexOf('<details') && h.indexOf('Lulustream') < h.indexOf('<details'), h);
 comprueba('el resto, plegado y avisado', /<details class="cbmas"><summary>Más servidores \(pueden no abrir en la tele\)/.test(h)
