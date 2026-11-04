@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl122"
+BUILD = "dtbl123"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4546,6 +4546,10 @@ def kb_status_push():
               or request.remote_addr or "").strip()
         if ip:
             entry["ih"] = _uso_huella("ip:" + ip)
+            try:
+                _geo_apunta(entry["ih"], ip)     # (dtbl123) el mapa de /uso
+            except Exception:
+                pass
         pais = (request.headers.get("CF-IPCountry") or "").strip().upper()
         if re.match(r"^[A-Z]{2}$", pais) and pais != "XX":
             entry["pais"] = pais
@@ -14173,6 +14177,168 @@ def uso_alta():
     return jsonify({"ok": True, "k": llave})
 
 
+# ==== MAPA de /uso (dtbl123): dónde hay una tele viendo algo ===================
+# Render no trae la ciudad (solo CF-IPCountry), así que la ubicación APROXIMADA
+# de cada conexión la pregunta un hilo a servicios de geolocalización, en cadena
+# (si uno falla o limita, el siguiente). Nunca desde el latido: el latido solo
+# apunta la IP en memoria y sigue. Se guarda huella-de-conexión -> ciudad
+# (redondeada a la ciudad que dice el servicio): ni IPs ni códigos.
+_GEO_FILE = "/tmp/mw_geo.json"
+_GEO_TTL = 7 * 86400            # se vuelve a mirar cada semana
+_GEO_KO_S = 1800                # si nadie supo ubicarla, no se insiste en 30 min
+_GEO_PEND = {}                  # ih -> ip (solo en memoria, de este worker)
+_GEO_LOCK = _thr.Lock()
+_GEO_HILO = {"vivo": False}
+_GEO_KO = {}                    # ih -> ts del último intento fallido (memoria)
+
+
+def _geo_lee():
+    try:
+        with open(_GEO_FILE, "r", encoding="utf-8") as f:
+            d = _json.load(f) or {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _geo_guarda_uno(ih, la, lo, ciudad, pais=""):
+    with _GEO_LOCK:
+        d = _geo_lee()               # el otro worker también escribe: fundir
+        now = _t.time()
+        d = {k: v for k, v in d.items()
+             if isinstance(v, list) and len(v) >= 4 and now - float(v[3] or 0) < 30 * 86400}
+        d[ih] = [round(float(la), 2), round(float(lo), 2), str(ciudad or "")[:40], now,
+                 str(pais or "")[:2]]
+        if len(d) > 3000:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1][3])[-3000:])
+        try:
+            tmp = "%s.%d.tmp" % (_GEO_FILE, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _GEO_FILE)
+        except Exception:
+            pass
+
+
+def _geo_busca(ip):
+    """(lat, lon, ciudad, país) o None. Tres servicios, el primero que sepa."""
+    def _num(x):
+        try:
+            v = float(x)
+            return v if v == v else None
+        except Exception:
+            return None
+
+    def _ipwho(t):
+        j = _json.loads(t)
+        if j.get("success") is False:
+            return None
+        return _num(j.get("latitude")), _num(j.get("longitude")), j.get("city"), j.get("country_code")
+
+    def _ipinfo(t):
+        j = _json.loads(t)
+        la, _, lo = str(j.get("loc") or "").partition(",")
+        return _num(la), _num(lo), j.get("city"), j.get("country")
+
+    def _geojs(t):
+        j = _json.loads(t)
+        return _num(j.get("latitude")), _num(j.get("longitude")), j.get("city"), j.get("country_code")
+
+    q = urlquote(ip, safe="")
+    for url, lee in (("https://ipwho.is/" + q, _ipwho),
+                     ("https://ipinfo.io/" + q + "/json", _ipinfo),
+                     ("https://get.geojs.io/v1/ip/geo/" + q + ".json", _geojs)):
+        try:
+            txt, st = _get_con_tope(url, 6.0, headers={"Accept": "application/json",
+                                                       "User-Agent": "MejorWolf/1"})
+            if st != 200 or not txt:
+                continue
+            r = lee(txt)
+            if r and r[0] is not None and r[1] is not None and (r[0] or r[1]) \
+                    and -90 <= r[0] <= 90 and -180 <= r[1] <= 180:
+                return r
+        except Exception:
+            continue
+    return None
+
+
+def _geo_hilo():
+    try:
+        while True:
+            with _GEO_LOCK:
+                if not _GEO_PEND:
+                    _GEO_HILO["vivo"] = False
+                    return
+                ih, ip = _GEO_PEND.popitem()
+            r = _geo_busca(ip)
+            if r:
+                _geo_guarda_uno(ih, r[0], r[1], r[2], r[3])
+                _GEO_KO.pop(ih, None)
+            else:
+                _GEO_KO[ih] = _t.time()
+            _t.sleep(1.5)            # sin ráfagas: los servicios gratis limitan
+    except Exception:
+        with _GEO_LOCK:
+            _GEO_HILO["vivo"] = False
+
+
+def _geo_apunta(ih, ip):
+    """Desde el latido: ¿hace falta ubicar esta conexión? Sin red aquí."""
+    if not ih or not ip or os.environ.get("MW_SIN_GEO") == "1":
+        return
+    try:
+        import ipaddress as _ipa
+        a = _ipa.ip_address(ip)
+        if a.is_private or a.is_loopback or a.is_reserved or a.is_link_local:
+            return
+    except Exception:
+        return
+    now = _t.time()
+    if now - _GEO_KO.get(ih, 0) < _GEO_KO_S:
+        return
+    v = _geo_lee().get(ih)
+    if isinstance(v, list) and len(v) >= 4 and now - float(v[3] or 0) < _GEO_TTL:
+        return
+    with _GEO_LOCK:
+        if len(_GEO_PEND) < 200:
+            _GEO_PEND[ih] = ip
+        if _GEO_HILO["vivo"]:
+            return
+        _GEO_HILO["vivo"] = True
+    try:
+        _thr.Thread(target=_geo_hilo, daemon=True, name="mw-geo").start()
+    except Exception:
+        with _GEO_LOCK:
+            _GEO_HILO["vivo"] = False
+
+
+def _uso_mapa(now=None):
+    """Puntos del mapa: por ciudad, cuántas teles viendo, en pausa y Kodis
+    encendidos. Ni códigos ni títulos."""
+    now = _t.time() if now is None else now
+    st = _kbstatus_load() or {}
+    nw = {c: (e.get("np") or {}) for c, e in (_kbnow_load() or {}).items()
+          if (now - float(e.get("ts", 0) or 0)) < _KB_NOW_TTL and (e.get("np") or {}).get("mw")}
+    geo = _geo_lee()
+    pts, sin = {}, {"viendo": 0, "kodis": 0}
+    codigos = {c for c, e in st.items() if (now - float(e.get("ts", 0) or 0)) < 90} | set(nw)
+    for c in codigos:
+        np_ = nw.get(c)
+        est = "v" if np_ and not np_.get("paused") else ("p" if np_ else "k")
+        g = geo.get((st.get(c) or {}).get("ih") or "")
+        if not (isinstance(g, list) and len(g) >= 4):
+            sin["kodis"] += 1
+            if est == "v":
+                sin["viendo"] += 1
+            continue
+        k = (g[0], g[1])
+        p = pts.setdefault(k, {"la": g[0], "lo": g[1], "c": g[2] or "", "pa": (g[4] if len(g) > 4 else "") or "",
+                                "v": 0, "p": 0, "k": 0})
+        p[est] += 1
+    return {"puntos": sorted(pts.values(), key=lambda p: (-p["v"], -p["p"], -p["k"])),
+            "sin_ubicar": sin}
+
+
 def _uso_ahora(now=None):
     now = _t.time() if now is None else now
     np = [e.get("np") or {} for e in (_kbnow_load() or {}).values()
@@ -14449,7 +14615,11 @@ def uso_datos():
            "build": BUILD}
     out.update(out_mas)
     try:
-        out["avisos"] = _cb_avisos()          # Cinubo: cuentas, dirección, Telegram (dtbl119)
+        out["mapa"] = _uso_mapa(now)
+    except Exception:
+        out["mapa"] = {"puntos": [], "sin_ubicar": {"viendo": 0, "kodis": 0}, "error": True}
+    try:
+        out["avisos"] = _cb_avisos()         # Cinubo: cuentas, dirección, Telegram (dtbl119)
     except Exception:
         out["avisos"] = []
     r = jsonify(out)
@@ -14534,6 +14704,37 @@ details summary{min-height:44px;display:flex;align-items:center;color:var(--bar)
 .plc{padding:0 0 14px}
 .tsv{font-size:13px}.nw{white-space:nowrap}.tsv th,.tsv td{padding:7px 3px}
 .def{margin:0}.def dt{font-size:14px;font-weight:600;margin-top:10px}.def dt:first-child{margin-top:0}.def dd{margin:2px 0 0;color:var(--sub);font-size:14px}
+.mwmap-h{position:relative;height:min(60vh,380px);border-radius:12px;overflow:hidden;background:#0b0d14;border:1px solid var(--stroke)}
+.mwmap-m{position:absolute;inset:0;background:#0b0d14}
+.mwmap-f{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;margin:0}
+.mwmap-h .leaflet-container{background:#0b0d14;font:inherit}
+.mwmap-h .leaflet-bar{border:1px solid var(--stroke);border-radius:12px;overflow:hidden;box-shadow:none}
+.mwmap-h .leaflet-bar a,.mwmap-h.leaflet-touch .leaflet-bar a{width:44px;height:44px;line-height:44px;font-size:20px;background:rgba(17,19,26,.92);color:var(--txt);border-bottom:1px solid var(--stroke)}
+.mwmap-h .leaflet-bar a:last-child{border-bottom:0}
+.mwmap-h .leaflet-control-attribution{background:rgba(6,7,12,.72);color:var(--mut);font-size:10px}
+.mwmap-h .leaflet-control-attribution a{color:var(--sub)}
+.mwmap-h .leaflet-popup-content-wrapper,.mwmap-h .leaflet-popup-tip{background:#1a1d26;color:var(--txt);box-shadow:0 6px 24px rgba(0,0,0,.5)}
+.mwmap-h .leaflet-popup-content{margin:10px 14px;font-size:14px;line-height:1.45}
+.mwmap-h .leaflet-popup-content small{color:var(--sub)}
+.mwmap-i{background:none;border:0}
+.mwmap-p{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;display:flex;align-items:center;justify-content:center}
+.mwmap-p b{font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
+.mwmap-v{width:18px;height:18px;background:#30d158;box-shadow:0 0 6px 2px rgba(48,209,88,.9),0 0 24px 8px rgba(48,209,88,.40)}
+.mwmap-v.mwmap-n{width:24px;height:24px}
+.mwmap-v b{color:#03200b}
+.mwmap-v::after{content:"";position:absolute;inset:-2px;border-radius:50%;border:2px solid rgba(48,209,88,.85);animation:mwmap-late 2.2s ease-out infinite}
+@keyframes mwmap-late{0%{transform:scale(1);opacity:.9}100%{transform:scale(3.4);opacity:0}}
+.mwmap-a{width:14px;height:14px;background:#ffb340;box-shadow:0 0 10px 3px rgba(255,179,64,.45)}
+.mwmap-a.mwmap-n{width:20px;height:20px}
+.mwmap-a b{color:#2a1a00}
+.mwmap-k{width:8px;height:8px;background:#5d6679;box-shadow:0 0 0 3px rgba(93,102,121,.22)}
+@media (prefers-reduced-motion:reduce){.mwmap-v::after{animation:none;opacity:0}}
+.mwmap-ley{display:flex;flex-wrap:wrap;gap:6px 16px;margin:12px 0 0;color:var(--sub);font-size:13px}
+.mwmap-ley span{display:flex;align-items:center;gap:7px}
+.mwmap-ley i{display:inline-block;width:10px;height:10px;border-radius:50%}
+.mwmap-ley .mwmap-lv{background:#30d158;box-shadow:0 0 6px rgba(48,209,88,.8)}
+.mwmap-ley .mwmap-la{background:#ffb340}
+.mwmap-ley .mwmap-lk{background:#5d6679;width:8px;height:8px}
 </style></head><body><main id="m">
 <h1>Uso de MejorWolf</h1>
 <p class="sub" id="st">Cargando…</p>
@@ -14634,6 +14835,74 @@ function defs(xs){return '<dl class="def">'+xs.map(function(x){return '<dt>'+x[0
 function avisosHTML(av){if(!av||!av.length)return "";return '<section class="card" id="s-avisos"><h2>Avisos</h2>'+av.map(function(a){return '<p class="aviso mwav-'+esc(a.n||"info")+'">'+esc(a.t||"")+(a.u?' <a href="'+esc(a.u)+'" target="_blank" rel="noopener">Ver ›</a>':'')+'</p>'}).join("")+'</section>'}
 function seccion(id,titulo,cuerpo,sub){return '<section class="card" id="'+id+'"><h2>'+titulo+'</h2>'+(sub?'<p class="nota" style="margin:-6px 0 12px">'+sub+'</p>':'')+cuerpo+'</section>'}
 function plegable(titulo,cuerpo){return '<details class="pl"><summary>'+titulo+'</summary><div class="plc">'+cuerpo+'</div></details>'}
+// --- MAPA (dtbl123): el mapa vive fuera de #c (que se repinta cada 30 s) y se
+// vuelve a colgar en su hueco; los puntos se actualizan sin cerrar el que esté abierto.
+var MAPA={el:null,m:null,pts:{},carga:0,cola:[],visto:false};
+var LF="https://unpkg.com/leaflet@1.9.4/dist/leaflet.";
+function mapaLib(cb){
+  if(window.L&&window.L.map)return cb();
+  if(MAPA.carga===2)return;
+  MAPA.cola.push(cb);if(MAPA.carga===1)return;MAPA.carga=1;
+  var css=document.createElement("link");css.rel="stylesheet";css.href=LF+"css";css.integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";css.crossOrigin="";document.head.appendChild(css);
+  var s=document.createElement("script");s.src=LF+"js";s.integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";s.crossOrigin="";
+  s.onload=function(){MAPA.carga=0;var c=MAPA.cola;MAPA.cola=[];c.forEach(function(f){try{f()}catch(e){}})};
+  s.onerror=function(){MAPA.carga=2;MAPA.cola=[];var h=document.getElementById("mapa-hueco");if(h)h.innerHTML=mapaFallo()};
+  document.head.appendChild(s);
+}
+function mapaFallo(){return '<p class="nota mwmap-f">No se pudo cargar el mapa (el servidor de mapas no contesta). La lista de abajo sigue al día.</p>'}
+function sitio(x){return x.c?esc(x.c)+(x.pa?' <small>'+esc(pais(x.pa))+'</small>':''):(x.pa?esc(pais(x.pa)):'Sin ciudad')}
+function estados(x){return [x.v?n(x.v)+' viendo':'',x.p?n(x.p)+' en pausa':'',x.k?n(x.k)+(x.k==1?' Kodi encendido':' Kodis encendidos'):''].filter(Boolean).join(' · ')}
+function mapaSec(mp){
+  mp=mp||{};var P=mp.puntos||[],su=mp.sin_ubicar||{},v=0,p=0,sv=0;
+  P.forEach(function(x){v+=x.v;p+=x.p;if(x.v)sv++});
+  var act=P.filter(function(x){return x.v||x.p});
+  var res=v?'<b>'+n(v)+'</b> '+(v==1?'tele viendo algo':'teles viendo algo')+' en '+n(sv)+(sv==1?' sitio':' sitios'):'Ahora mismo no se está viendo nada'+(p?'':' en ningún sitio');
+  if(p)res+=' · '+n(p)+' en pausa';
+  var sin=su.kodis?'<p class="nota" style="margin:6px 0 0">'+n(su.kodis)+(su.kodis==1?' Kodi aún sin ubicar':' Kodis aún sin ubicar')+(su.viendo?' ('+n(su.viendo)+' viendo algo)':'')+' <small>· se ubican en su siguiente latido</small></p>':'';
+  var fila=function(x){return '<div><dt>'+sitio(x)+'</dt><dd>'+estados(x)+'</dd></div>'};
+  var lug=act.length?'<dl class="lst">'+act.slice(0,8).map(fila).join("")+'</dl>'+(act.length>8?'<details><summary>Ver '+(act.length-8)+' sitios más</summary><dl class="lst">'+act.slice(8).map(fila).join("")+'</dl></details>':''):'';
+  return seccion("s-mapa","Mapa en directo",'<div id="mapa-hueco" class="mwmap-h"></div>'+
+    '<div class="mwmap-ley"><span><i class="mwmap-lv"></i>Viendo algo</span><span><i class="mwmap-la"></i>En pausa</span><span><i class="mwmap-lk"></i>Kodi encendido</span></div>'+
+    '<p class="linea">'+res+'</p>'+sin+lug,"Una luz por cada sitio donde hay un Kodi con MejorWolf. Ubicación aproximada: la ciudad de la conexión, nunca la dirección.");
+}
+function mapaIcono(x){
+  var e=x.v?"v":(x.p?"a":"k"),num=x.v||x.p||0;
+  return L.divIcon({className:"mwmap-i",iconSize:[44,44],iconAnchor:[22,22],popupAnchor:[0,-8],
+    html:'<span class="mwmap-p mwmap-'+e+(num>1?' mwmap-n':'')+'">'+(num>1?'<b>'+num+'</b>':'')+'</span>'});
+}
+function mapaPinta(mp){
+  var h=document.getElementById("mapa-hueco");if(!h)return;
+  if(MAPA.carga===2){h.innerHTML=mapaFallo();return}
+  if(!MAPA.el){MAPA.el=document.createElement("div");MAPA.el.className="mwmap-m"}
+  h.appendChild(MAPA.el);
+  var P=(mp&&mp.puntos)||[];
+  mapaLib(function(){
+    if(!document.body.contains(MAPA.el))return;
+    if(!MAPA.m){
+      MAPA.m=L.map(MAPA.el,{zoomControl:true,minZoom:2,maxZoom:12,worldCopyJump:true,zoomSnap:0.5}).setView([40.0,-3.6],5);
+      // Esri gris oscuro: sin clave (CARTO pasó a pedirla: "API KEY REQUIRED" en cada mosaico)
+      var ES="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_";
+      L.tileLayer(ES+"Base/MapServer/tile/{z}/{y}/{x}",{maxNativeZoom:16,maxZoom:12,
+        attribution:'Mapa &copy; Esri, HERE, Garmin, &copy; OpenStreetMap'}).addTo(MAPA.m);
+      L.tileLayer(ES+"Reference/MapServer/tile/{z}/{y}/{x}",{maxNativeZoom:16,maxZoom:12,opacity:.8}).addTo(MAPA.m);
+      MAPA.m.attributionControl.setPrefix(false);
+      if(L.Browser.touch)h.classList.add("leaflet-touch");
+    }else MAPA.m.invalidateSize(false);
+    var vivos={};
+    P.forEach(function(x){
+      var k=x.la+","+x.lo,mk=MAPA.pts[k],z=x.v?1000:(x.p?500:0);vivos[k]=1;
+      var pop='<b>'+sitio(x)+'</b><br>'+estados(x),firma=x.v+"|"+x.p+"|"+x.k;
+      if(!mk){mk=L.marker([x.la,x.lo],{icon:mapaIcono(x),zIndexOffset:z,keyboard:false}).bindPopup(pop,{closeButton:false}).addTo(MAPA.m);mk._mw=firma;MAPA.pts[k]=mk;return}
+      if(mk._mw!==firma){mk.setIcon(mapaIcono(x));mk.setZIndexOffset(z);mk.setPopupContent(pop);mk._mw=firma}
+    });
+    Object.keys(MAPA.pts).forEach(function(k){if(!vivos[k]){MAPA.m.removeLayer(MAPA.pts[k]);delete MAPA.pts[k]}});
+    // la primera vez: si hay teles viendo algo fuera de la vista, encuadrarlas
+    if(!MAPA.visto&&P.length){MAPA.visto=true;
+      var act=P.filter(function(x){return x.v||x.p});
+      if(act.length){var b=L.latLngBounds(act.map(function(x){return [x.la,x.lo]}));
+        if(!MAPA.m.getBounds().contains(b))MAPA.m.fitBounds(b.pad(0.3),{maxZoom:6})}}
+  });
+}
 function pinta(d){
   var a=d.ahora;
   var ahoraH=new Date();$st.textContent="Solo lo ves tú · actualizado a las "+String(ahoraH.getHours()).padStart(2,"0")+":"+String(ahoraH.getMinutes()).padStart(2,"0");
@@ -14702,17 +14971,19 @@ function pinta(d){
       ["Lo más visto","Lo que se ha reproducido de verdad: cuántas teles distintas y cuántas horas. Nunca se guarda en qué casa."]]));
 
   $c.innerHTML=
-   '<nav class="ix"><a href="#s-ahora">Ahora</a><a href="#s-hoy">Hoy</a><a href="#s-visto">Lo más visto</a><a href="#s-busca">Búsquedas</a><a href="#s-serv">Servicio</a><a href="#s-crece">Crecimiento</a><a href="#s-mas">Más</a></nav>'+
+   '<nav class="ix"><a href="#s-ahora">Ahora</a><a href="#s-mapa">Mapa</a><a href="#s-hoy">Hoy</a><a href="#s-visto">Lo más visto</a><a href="#s-busca">Búsquedas</a><a href="#s-serv">Servicio</a><a href="#s-crece">Crecimiento</a><a href="#s-mas">Más</a></nav>'+
    avisosHTML(d.avisos)+
    seccion("s-ahora","Ahora mismo",ahora)+
+   mapaSec(d.mapa)+
    seccion("s-hoy","Hoy",hoy)+
    seccion("s-visto","Lo más visto, 7 días",lista((d.semana||{}).vistos,"Aún no hay nada medido.",[1,2]),"Lo que se ha reproducido de verdad en las teles. Columnas: teles distintas · horas. Una serie junta sus capítulos.")+
    buscaSec(d)+
    servicioHTML(d)+
    seccion("s-crece","Crecimiento",crece)+
    seccion("s-mas","Más detalles",detalles)+
-   '<p class="nota">Nunca se guarda qué ve cada casa: sin códigos, y las conexiones se guardan cifradas (nunca la IP). Datos desde el '+esc(fecha(d.desde))+'.</p>';
+   '<p class="nota">Nunca se guarda qué ve cada casa: sin códigos, y las conexiones se guardan cifradas (nunca la IP; para el mapa, solo su ciudad aproximada). Datos desde el '+esc(fecha(d.desde))+'.</p>';
   engancha("dh",fmtH,hr);engancha("dd",fmtD,tv);
+  try{mapaPinta(d.mapa)}catch(e){}
 }
 function buscaSec(d){var s=d.semana||{};
   return seccion("s-busca","Lo que busca la gente, 7 días",
