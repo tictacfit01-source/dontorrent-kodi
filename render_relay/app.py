@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl123"
+BUILD = "dtbl124"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -14879,23 +14879,29 @@ function mapaPinta(mp){
   mapaLib(function(){
     if(!document.body.contains(MAPA.el))return;
     if(!MAPA.m){
-      MAPA.m=L.map(MAPA.el,{zoomControl:true,minZoom:2,maxZoom:12,worldCopyJump:true,zoomSnap:0.5}).setView([40.0,-3.6],5);
+      // Tope de zoom a nivel ciudad (9): la IP solo sabe la ciudad, así que no
+      // se deja acercar a la calle para no aparentar una precisión que no hay.
+      MAPA.m=L.map(MAPA.el,{zoomControl:true,minZoom:2,maxZoom:9,worldCopyJump:true,zoomSnap:0.5}).setView([40.0,-3.6],5);
       // Esri gris oscuro: sin clave (CARTO pasó a pedirla: "API KEY REQUIRED" en cada mosaico)
       var ES="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_";
-      L.tileLayer(ES+"Base/MapServer/tile/{z}/{y}/{x}",{maxNativeZoom:16,maxZoom:12,
+      L.tileLayer(ES+"Base/MapServer/tile/{z}/{y}/{x}",{maxNativeZoom:16,maxZoom:9,
         attribution:'Mapa &copy; Esri, HERE, Garmin, &copy; OpenStreetMap'}).addTo(MAPA.m);
-      L.tileLayer(ES+"Reference/MapServer/tile/{z}/{y}/{x}",{maxNativeZoom:16,maxZoom:12,opacity:.8}).addTo(MAPA.m);
+      L.tileLayer(ES+"Reference/MapServer/tile/{z}/{y}/{x}",{maxNativeZoom:16,maxZoom:9,opacity:.8}).addTo(MAPA.m);
       MAPA.m.attributionControl.setPrefix(false);
       if(L.Browser.touch)h.classList.add("leaflet-touch");
     }else MAPA.m.invalidateSize(false);
-    var vivos={};
+    var vivos={};MAPA.cir=MAPA.cir||{};
     P.forEach(function(x){
       var k=x.la+","+x.lo,mk=MAPA.pts[k],z=x.v?1000:(x.p?500:0);vivos[k]=1;
-      var pop='<b>'+sitio(x)+'</b><br>'+estados(x),firma=x.v+"|"+x.p+"|"+x.k;
+      var col=x.v?"#30d158":(x.p?"#ffb340":"#5d6679");
+      // "zona aproximada": la IP solo da la ciudad; el círculo (~6 km) lo muestra
+      if(!MAPA.cir[k])MAPA.cir[k]=L.circle([x.la,x.lo],{radius:6000,stroke:false,fillColor:col,fillOpacity:.10,interactive:false}).addTo(MAPA.m);
+      else MAPA.cir[k].setStyle({fillColor:col});
+      var pop='<b>'+sitio(x)+'</b><br>'+estados(x)+'<br><small>zona aproximada (por la conexión)</small>',firma=x.v+"|"+x.p+"|"+x.k;
       if(!mk){mk=L.marker([x.la,x.lo],{icon:mapaIcono(x),zIndexOffset:z,keyboard:false}).bindPopup(pop,{closeButton:false}).addTo(MAPA.m);mk._mw=firma;MAPA.pts[k]=mk;return}
       if(mk._mw!==firma){mk.setIcon(mapaIcono(x));mk.setZIndexOffset(z);mk.setPopupContent(pop);mk._mw=firma}
     });
-    Object.keys(MAPA.pts).forEach(function(k){if(!vivos[k]){MAPA.m.removeLayer(MAPA.pts[k]);delete MAPA.pts[k]}});
+    Object.keys(MAPA.pts).forEach(function(k){if(!vivos[k]){MAPA.m.removeLayer(MAPA.pts[k]);delete MAPA.pts[k];if(MAPA.cir[k]){MAPA.m.removeLayer(MAPA.cir[k]);delete MAPA.cir[k]}}});
     // la primera vez: si hay teles viendo algo fuera de la vista, encuadrarlas
     if(!MAPA.visto&&P.length){MAPA.visto=true;
       var act=P.filter(function(x){return x.v||x.p});
