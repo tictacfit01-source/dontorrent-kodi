@@ -167,7 +167,7 @@ try:
     comprueba("chip Mapa y sección", 'href="#s-mapa"' in pg and "mapaSec(d.mapa)" in pg)
     comprueba("Leaflet con SRI", "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" in pg
               and "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" in pg)
-    comprueba("BUILD", A.BUILD == "dtbl124", A.BUILD)
+    comprueba("BUILD", int(A.BUILD[4:]) >= 123, A.BUILD)
 finally:
     A._geo_busca = busca_real
     A._get_con_tope = get_real

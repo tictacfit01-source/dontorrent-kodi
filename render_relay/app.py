@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl124"
+BUILD = "dtbl125"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -5848,7 +5848,7 @@ def _cat_parse_items(html):
         elif am and am.group(1).strip():
             title, score = am.group(1).strip(), 1
         else:
-            title, score = rest.rstrip("/").split("/")[-1].replace("-", " "), 0
+            title, score = _dt_slug_apos(rest.rstrip("/").split("/")[-1].replace("-", " ")), 0
         title = _re_dt.sub(r"\s+", " ", title).strip()
         if not title:
             continue
@@ -5905,6 +5905,16 @@ def _cat_parse_items(html):
                 it["dtpath"] = e["fpath"]   # ficha con slug -> año real (desambigua homonimos)
         out.append(it)
     return out
+
+
+_DT_APOS_RE = _re_dt.compile(r"(?<=[A-Za-z])39(?=[A-Za-z])")
+
+
+def _dt_slug_apos(s):
+    """El slug de DonTorrent convierte el apostrofo (&#39;) en '39':
+    'A Dog's Perfect Christmas' -> /pelicula/31199/A-Dog39s-Perfect-Christmas.
+    Un '39' pegado a letras por ambos lados no es un numero de verdad."""
+    return _DT_APOS_RE.sub("'", s or "")
 
 
 def _dt_mutila(s):
@@ -10417,6 +10427,11 @@ def seedsknown():
             continue
     if viejas:
         _seeds_refresca(viejas)
+    # (dtbl125) lo que no supimos contestar, al aprendiz (ver _apr_busc_apunta)
+    try:
+        _apr_busc_apunta([k for k in claves if k not in out])
+    except Exception:
+        pass
     return jsonify({"s": out, "r": rar})
 
 
@@ -10972,6 +10987,83 @@ def _apr_caja():
     return libres[_APR_RR[0] % len(libres)]
 
 
+# (dtbl125) LO QUE LA GENTE TIENE DELANTE. El aprendiz solo miraba el Inicio,
+# asi que una busqueda ("dune") ensenaba sus tarjetas sin semillas para siempre
+# salvo que alguien abriera cada ficha. Ahora /seedsknown apunta las claves que
+# no supo contestar y el aprendiz las atiende ANTES que el resto del Inicio.
+# No cambia CUANTO se pide (mismas pausas, mismo cupo de WolfMax, mismo PoW
+# espaciado de DonTorrent): solo el ORDEN. Va en un fichero porque la web la
+# sirve cualquiera de los dos workers y el aprendiz corre en el del turno.
+_APR_BUSC_FILE = "/tmp/mw_aprbusc.json"
+_APR_BUSC_TTL = 1800          # lo de hace mas de media hora ya no lo mira nadie
+_APR_BUSC_MAX = 40
+
+
+def _apr_busc_item(k):
+    """De una clave de la web (sgKey) al item que entiende _apr_clave."""
+    if k.startswith("dt:"):
+        tb, _, cid = k[3:].partition(":")
+        if tb == "peliculas" and cid.isdigit():
+            return {"source": "dt", "tabla": tb, "content_id": cid,
+                    "kind": "movie", "title": ""}
+        return None
+    if k.startswith("u:http"):
+        from urllib.parse import urlparse as _up
+        u = k[2:]
+        host = (_up(u).hostname or "").lower()
+        if "divxtotal" in host:
+            return {"source": "dx", "url": u, "kind": "movie", "title": ""}
+        if "wolfmax" in host:
+            return {"source": "wf", "url": u, "kind": "movie", "title": ""}
+    return None
+
+
+def _apr_busc_lee():
+    try:
+        with open(_APR_BUSC_FILE, encoding="utf-8") as f:
+            d = _json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _apr_busc_apunta(claves):
+    """Claves sin semillas que acaba de pedir una pantalla. Barato: solo
+    escribe si hay alguna nueva."""
+    if not claves or os.environ.get("MW_APRENDIZ", "1") == "0":
+        return
+    try:
+        now = _t.time()
+        d = {k: v for k, v in _apr_busc_lee().items()
+             if isinstance(v, (int, float)) and (now - v) < _APR_BUSC_TTL}
+        nuevas = 0
+        for k in claves[:20]:
+            if k not in d and _apr_busc_item(k):
+                d[k] = now
+                nuevas += 1
+        if not nuevas:
+            return
+        if len(d) > _APR_BUSC_MAX:
+            d = dict(sorted(d.items(), key=lambda kv: -kv[1])[:_APR_BUSC_MAX])
+        tmp = _APR_BUSC_FILE + ".%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _APR_BUSC_FILE)
+    except Exception:
+        pass
+
+
+def _apr_items_buscados(now):
+    """Lo apuntado, lo mas reciente primero."""
+    out = []
+    for k, ts in sorted(_apr_busc_lee().items(), key=lambda kv: -(kv[1] or 0)):
+        if isinstance(ts, (int, float)) and (now - ts) < _APR_BUSC_TTL:
+            it = _apr_busc_item(k)
+            if it:
+                out.append(it)
+    return out
+
+
 def _apr_items_inicio():
     """Las PELICULAS del Inicio (Estrenos y Cine, en el orden en que se ven),
     con todas sus versiones: DonTorrent de la cache de /catbrowse y WolfMax y
@@ -11306,7 +11398,11 @@ def _apr_ronda():
     if (now - _WF_CRUCE_T[0]) >= 600:
         _WF_CRUCE_T[0] = now
         _bounded(_wf_cruce_dt, 20.0, 0)
-    pend, viejos = _apr_pendientes(_apr_items_inicio(), now)
+    try:
+        _busc = _apr_items_buscados(now)
+    except Exception:
+        _busc = []
+    pend, viejos = _apr_pendientes(_busc + _apr_items_inicio(), now)
     # (dtbl82) los capitulos de las Series 4K, a turnos con los del Inicio: el
     # Inicio casi nunca se queda sin nada de DonTorrent (semillas que caducan,
     # fichas nuevas) y, solo detras, no les llegaba nunca la vez (medido en
@@ -11986,7 +12082,7 @@ def _dt_title_fix(cur, dt_title, serie=False):
     def _loose(s):
         # Mismo destrozo que hace el slug de DonTorrent (vocal acentuada FUERA)
         # y ademas sin la puntuacion que el slug tampoco conserva.
-        return _re_dt.sub(r"[^a-z0-9]+", "", _dt_mutila(s).lower())
+        return _re_dt.sub(r"[^a-z0-9]+", "", _dt_mutila(_dt_slug_apos(s)).lower())
 
     if serie:
         base = cand.split(" - ")[0].strip()
@@ -17027,7 +17123,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 /* El mando NO tiene que llenar la pantalla: con 520 px los botones se
    estiraban en los moviles grandes (124x56 px para un icono de 18). Un ancho
    de mando de verdad, centrado, y el mismo aire entre todos los bloques. */
-.rmwrap{--aire:14px;padding:10px 18px 46px;max-width:400px;margin:0 auto}
+.rmwrap{--aire:14px;padding:10px 18px calc(88px + env(safe-area-inset-bottom));max-width:400px;margin:0 auto}
 .rnp{margin:6px 0 var(--aire,14px)}
 .rnp .nplab{font-size:11px;color:var(--sub);font-weight:700;letter-spacing:.5px;margin-bottom:6px}
 .rnp .npttl{font-size:18px;font-weight:700;line-height:1.3;margin-bottom:12px}
@@ -17041,6 +17137,12 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .rb.play{width:82px;height:82px;background:linear-gradient(145deg,#3dd46a,#27c257);border-color:transparent;box-shadow:0 8px 22px rgba(48,209,88,.4);color:#06140a;font-size:30px}
 .rb.stop{color:#ff453a;font-size:22px}
 .rb.sk{font-size:15px;font-weight:700;line-height:1}.rb.sk small{font-size:10px;opacity:.75}
+/* (dtbl125) A 320 px los cuatro no cabian (316 px en 284) y flex los APLASTABA
+   de ancho sin tocar el alto: ovalos. Ahora no encogen nunca y escalan con el
+   ancho de pantalla, siempre redondos. */
+.media{gap:clamp(8px,3vw,14px)}
+.rb{flex:none;width:clamp(52px,16vw,64px);height:clamp(52px,16vw,64px)}
+.rb.play{width:clamp(66px,21vw,82px);height:clamp(66px,21vw,82px)}
 .row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;
  margin:0 0 var(--aire,14px)}
 @media(max-width:360px){.row3{gap:8px}}
@@ -17323,7 +17425,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .hitem .hs{font-size:11.5px;color:var(--sub);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .hitem .hsrc{font-weight:700;font-size:10.5px;padding:1px 7px;border-radius:999px;background:rgba(255,255,255,.08)}
 .hitem .hsrc.dt{color:#0a84ff}.hitem .hsrc.et{color:#ff9f0a}
-.hitem .hsrc.dx{color:#30d158}.hitem .hsrc.wf{color:#bf5af2}
+.hitem .hsrc.dx{color:#30d158}.hitem .hsrc.wf{color:#bf5af2}.hitem .hsrc.cb{color:#ff375f}
 .hitem .hb{flex:0 0 auto;display:flex;gap:7px}
 .hitem button{border:0;border-radius:12px;padding:10px 13px;font-size:15px;cursor:pointer;
  background:rgba(255,255,255,.08);color:var(--txt)}
@@ -17401,6 +17503,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  cursor:pointer;margin:0 0 12px;box-shadow:0 6px 18px rgba(48,209,88,.22);
  transition:transform .12s ease-out}
 .ovseguir:active{transform:scale(.98)}
+/* (dtbl125) Ficha de serie con las proporciones de la de pelicula: lo principal
+   a todo el ancho y lo secundario en rejilla de dos columnas iguales (antes
+   cada boton media lo que su texto y a 320 px salian tres escalones). */
+.ovseguir{width:100%;justify-content:center;min-height:52px}
+.ovactions{gap:10px}
+.ovactions .ovfav{flex:1 1 calc(50% - 5px);justify-content:center;text-align:center;
+ margin-top:0;min-width:0;line-height:1.25;padding:8px 12px}
 .ovseguir b{font-weight:800}
 .ovseguir span{font-weight:600;opacity:.75;font-size:13px}
 </style></head><body>
@@ -17420,11 +17529,11 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <!-- Nace oculta: la app siempre arranca en el Inicio, que tiene su propia
       barra de fuentes. setView la ensena en Mis listas y en el Historial. -->
  <div class="srclegend" style="display:none">
-  <span><i style="background:#4a9eff"></i>DonTorrent</span>
-  <span><i style="background:#ff9f6e"></i>EliteTorrent</span>
-  <span><i style="background:#34d36a"></i>DivxTotal</span>
-  <span><i style="background:#c77dff"></i>WolfMax</span>
-  <span><i style="background:#ff375f"></i>Cinubo</span>
+  <span data-s="dt"><i style="background:#4a9eff"></i>DonTorrent</span>
+  <span data-s="et"><i style="background:#ff9f6e"></i>EliteTorrent</span>
+  <span data-s="dx"><i style="background:#34d36a"></i>DivxTotal</span>
+  <span data-s="wf"><i style="background:#c77dff"></i>WolfMax</span>
+  <span data-s="cb"><i style="background:#ff375f"></i>Cinubo</span>
  </div>
  <div id="shared" class="shared"><div class="shared-in">
   <div><div class="shared-lab">Te han compartido</div><div class="shared-t" id="shared-t"></div></div>
@@ -18025,11 +18134,23 @@ function setView(v){CURVIEW=v;
  // dos cosas a la vez es decir dos veces lo mismo y robar una linea de pantalla
  // en un movil. En Mis listas y en el Historial no hay nada que explique que es
  // "DT" o "WF", asi que ahi se queda.
- try{var _lg=document.querySelector('.srclegend');
-  if(_lg)_lg.style.display=(v==='lista'||v==='hist')?'':'none';}catch(e){}}
+ legAjusta();}
+// (dtbl125) La leyenda solo explica lo que hay en pantalla: en el Historial
+// cada fila ya dice su fuente con palabras, y en Mis listas sale solo si hay
+// tarjetas y solo con las fuentes que aparecen (antes salian las cinco sobre
+// una lista vacia, con "Cinubo" huerfano en la segunda linea a 360 px).
+function legAjusta(){try{var _lg=document.querySelector('.srclegend');if(!_lg)return;
+ var hay={},n=0;
+ if(CURVIEW==='lista')(LISTS.lista||[]).forEach(function(x){var s=x&&(x.source||'dt');if(s&&!hay[s]){hay[s]=1;n++}});
+ _lg.querySelectorAll('span[data-s]').forEach(function(sp){sp.style.display=hay[sp.getAttribute('data-s')]?'':'none'});
+ _lg.style.display=n?'':'none';}catch(e){}}
 function goView(v){
  if(v==='inicio'){if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
- mwOpen('tab',null,function(){setView('inicio')});setView(v);}
+ mwOpen('tab',null,function(){setView('inicio')});setView(v);
+ // (dtbl125) Buscar = escribir: con el campo vacio, el cursor ya dentro (antes
+ // habia que tocar otra vez). Con una busqueda hecha no, que el teclado
+ // taparia los resultados al volver a la pestana.
+ if(v==='buscar')try{var _q=$('q');if(_q&&!_q.value)_q.focus()}catch(e){}}
 function chip(kind,intento){document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.dataset.k===kind)});
  // el Inicio vuelve donde lo dejaste (antes siempre a Estrenos)
  try{localStorage.setItem('mw_chip',kind)}catch(e){}
@@ -18608,7 +18729,7 @@ function histKey(h){return (h.ref&&(h.ref.u||((h.ref.c||'')+':'+(h.ref.tb||'')))
 function histSnap(ref){
  if(!ref||!ref.t)return null;
  var x=sel||{};
- return {t:ref.t,ref:ref,ts:Date.now(),src:x.source||'dt',q:ref.q||x.quality||'',
+ return {t:ref.t,ref:ref,ts:Date.now(),src:(ref.a==='st'?'cb':(x.source||'dt')),q:ref.q||x.quality||'',
          poster:x.poster||'',kind:x.kind||'movie'};}
 function histPush(e){
  if(!e)return;
@@ -18641,7 +18762,7 @@ function renderHist(){
   if(bar)bar.textContent='';if(bt)bt.style.display='none';return}
  if(bar)bar.textContent=hist.length+(hist.length===1?' título':' títulos');
  if(bt)bt.style.display='';
- var SL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax'};
+ var SL={dt:'DonTorrent',dx:'DivxTotal',et:'EliteTorrent',wf:'WolfMax',cb:'Streaming'};
  el.className='';
  el.innerHTML=hist.map(function(h,i){
   var ph=h.poster?(' style="background-image:'+esc(cssUrl(h.poster))+'"'):'';
@@ -19090,8 +19211,8 @@ function renderFavs(_mantenFiltro){
   g.innerHTML=LFILTRO?('Nada con \u00ab'+esc(LFILTRO)+'\u00bb en esta lista.')
    :(favs.length?('\u00ab'+esc(lstNombre(LSTSEL))+'\u00bb est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo y elige esta lista.')
     :'Tu lista est\u00e1 vac\u00eda. Toca el coraz\u00f3n en cualquier t\u00edtulo.');
-  if(b)b.style.display='none';return}
- if(b)b.style.display='';renderGrid(g,'lista');applyView();
+  if(b)b.style.display='none';legAjusta();return}
+ if(b)b.style.display='';renderGrid(g,'lista');applyView();legAjusta();
  pickEngancha();
  // si al repintar ya no queda nada marcado (se movio todo), se sale del modo
  if(PICK){var vivos=0;for(var i=0;i<LISTS.lista.length;i++)if(PICKED[fk(LISTS.lista[i])])vivos++;
