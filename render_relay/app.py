@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl126"
+BUILD = "dtbl127"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17656,7 +17656,7 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
 .card .m .tl{position:static;display:flex;flex-direction:row;flex-wrap:wrap;gap:2px 9px;margin-top:2px;align-items:center}
 .card .m .tl:empty{display:none}
 .card .q{background:none;padding:0;border-radius:0;font-size:12px;font-weight:600;color:var(--sub)}
-.card .q.top{color:var(--amb)}
+.card .q.mwq4k{color:var(--amb)}
 .card .gseed{background:none!important;border:0!important;padding:0;font-size:12px;font-weight:600;backdrop-filter:none}
 .card .gseed.s-ok{color:var(--green)}
 .card .gseed.s-low{color:#e8c46a}
@@ -17805,6 +17805,14 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
 .navrow2{margin:10px 0 0;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .navrow2 .pill{font-size:13px}
 @media (prefers-reduced-motion:reduce){.portada img,.pt-txt{animation:none}}
+/* (dtbl127) mando: el aviso de "tele apagada" a la izquierda, como el resto del
+   texto (con el tiempo vacio, space-between lo mandaba a la derecha), y los
+   botones de avance con su circulo: sin el, -10 y el stop flotaban sueltos */
+.nprow span:empty{display:none}
+.nprow .npf{font-weight:500;color:var(--sub);line-height:1.4}
+.rb.sk,.rb.stop{background:rgba(241,236,228,.06)}
+.rb.sk:active,.rb.stop:active{background:rgba(241,236,228,.14)}
+.rb.stop svg{width:18px;height:18px}
 /* sobre portadas claras el texto tiene que seguir leyendose */
 .pt-or,.pt-d{text-shadow:0 1px 12px rgba(0,0,0,.65)}
 .pt-or{color:#d4ccd9}
@@ -19548,7 +19556,7 @@ function cardHTML(x,list,i){
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
  // (dtbl126) calidad, semillas y RAR van en el pie de la tarjeta, no encima
  // de la caratula (badgeCard/sgBadge siguen buscando .tl, este donde este)
- var q='<div class="tl">'+(x.quality?('<span class="q'+(/4k|2160|uhd/i.test(x.quality)?' top':'')+'">'+esc(x.quality)+'</span>'):'')+'</div>';
+ var q='<div class="tl">'+(x.quality?('<span class="q'+(/4k|2160|uhd/i.test(x.quality)?' mwq4k':'')+'">'+esc(x.quality)+'</span>'):'')+'</div>';
  // Las series de EliteTorrent/WolfMax llegan agrupadas con sus capítulos
  // dentro: decir cuántos trae evita la duda de "¿esto es la serie entera?".
  var _nc=(x.eps&&x.eps.length)||0;
@@ -20672,7 +20680,7 @@ function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){c
    $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');
    $('rm-prog').style.width=pct+'%';$('rm-pp').innerHTML=np.paused?SVG_PLAY:SVG_PAUSE;}
   else{bar.classList.remove('on');var _fb2=$('fab');if(_fb2)_fb2.style.display='';if($('remote').classList.contains('on')){var _off=d&&d.tele===false;
-   $('rm-t').textContent=_off?'📴 Tu tele no está conectada':'Preparando en la tele…';$('rm-time').textContent='';
+   $('rm-t').textContent=_off?'Tu tele no está conectada':'Preparando en la tele…';$('rm-time').textContent='';
    $('rm-fin').textContent=!_off?'':((Date.now()-lastPlayTs<600000)?'Enciéndela y abre Kodi: lo que has mandado empezará solo.':'Enciéndela y abre Kodi para usar el mando.');}}
   // Sondeo AGIL (3s) solo si hay algo en marcha o el mando esta abierto (el usuario
   // espera ver arrancar). IDLE navegando el catalogo -> 12s: menos bateria, menos
