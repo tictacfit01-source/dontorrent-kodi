@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl127"
+BUILD = "dtbl128"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17890,7 +17890,6 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
    <button class="vtog" id="vtog" onclick="toggleView()" style="display:none">☰ Vista lista</button></div>
   <div id="lista-grid" class="msg"></div>
  </section>
- <div class="appfoot">MejorWolf · <a href="/kb/clasico">Mando clásico</a></div>
 </div>
 <div class="npbar" id="npbar" onclick="openRemote()">
  <div class="np-prog-wrap"><div class="np-prog" id="np-prog"></div></div>
