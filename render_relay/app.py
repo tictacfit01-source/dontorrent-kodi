@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl128"
+BUILD = "dtbl129"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -20322,14 +20322,27 @@ function _seguirHTML(){
  // OJO: EPS se llena mas abajo, al pintar los capitulos; por eso este boton se
  // rellena DESPUES (ver el final de renderEpisodes).
  return '<button class="ovseguir" id="ov-seguir" style="display:none" onclick="seguirViendo()"></button>';}
+// (dtbl129) "Seguir por..." sigue COMO viste el ultimo capitulo de esta serie:
+// si fue por streaming, el siguiente tambien (se abren sus servidores, igual
+// que con el boton 📺); si fue por torrent o no hay nada, el de siempre. Solo
+// LEE el historial: no guarda nada nuevo.
+function _seguirModo(){
+ var p=(SHOW||'')+' ';if(p.length<2)return '';
+ for(var i=0;i<hist.length;i++){var h=hist[i],t=(h&&h.t)||'';
+  if(t.indexOf(p)!==0||!/^\d{1,2}x\d/.test(t.slice(p.length)))continue;
+  return (h.src==='cb'||(h.ref&&h.ref.a==='st'))?'st':'tor'}
+ return ''}
+function _seguirSt(e){var x=OVDATA&&OVDATA.x;
+ return !e.cb&&_seguirModo()==='st'&&!!(x&&x.tmdb_id&&e.season&&e.episode)}
 function _seguirPinta(){
  var b=$('ov-seguir');if(!b)return;
  var e=_primerSinVer();
  if(!e){b.style.display='none';return}
  var vistos=_todosLosEps().filter(function(z){return isSeen(z.content_id)}).length;
+ var q=_seguirSt(e)?'Streaming':e.quality;
  b.style.display='';
  b.innerHTML='\u25b6 <b>'+(vistos?'Seguir por ':'Empezar por ')+esc(e.label)+'</b>'+
-  (e.quality?(' <span>'+esc(e.quality)+'</span>'):'');}
+  (q?(' <span>'+esc(q)+'</span>'):'');}
 function seguirViendo(){
  var e=_primerSinVer();if(!e)return;
  // puede estar en otra temporada (no pintada): se le da un hueco en EPS para
@@ -20337,6 +20350,7 @@ function seguirViendo(){
  var id=null;
  for(var k in EPS)if(EPS[k]===e){id=k;break}
  if(!id){id='eseguir';EPS[id]=e}
+ if(_seguirSt(e)){cbEp(id);return}
  playEp(id);}
 // Completa la ficha por detras con lo que tenga la caja (ver openSeries).
 // Solo para fuentes-box (WolfMax/EliteTorrent), que son las que publican una
