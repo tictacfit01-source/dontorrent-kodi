@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl125"
+BUILD = "dtbl126"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -334,7 +334,7 @@ _MANIFEST_JSON = """{
  "name":"MejorWolf","short_name":"MejorWolf",
  "description":"Tu cine y series en casa",
  "start_url":"/","scope":"/","display":"standalone","orientation":"portrait",
- "background_color":"#06070c","theme_color":"#06070c",
+ "background_color":"#1a1720","theme_color":"#1a1720",
  "icons":[
   {"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}
  ],
@@ -351,7 +351,7 @@ _MANIFEST_JSON = """{
 # dia unos 6 MB.
 _COMPARTIR_MAX = 15 * 1024 * 1024
 
-_SW_JS = """var C='mw-shell-v18';
+_SW_JS = """var C='mw-shell-v19';
 // Android "Compartir -> MejorWolf" (dtbl78): Chrome manda el archivo por POST a
 // /compartir. Se guarda AQUI, en el movil (no en el servidor), y se abre la app
 // con ?compartido=1: la pagina lo recoge, recupera para que titulo y que tele
@@ -16863,7 +16863,10 @@ _CAT_PAGE = r"""<!doctype html><html lang="es"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <title>MejorWolf</title>
-<meta name="theme-color" content="#06070c">
+<meta name="theme-color" content="#1a1720">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&display=swap" rel="stylesheet">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon-512.png">
@@ -17512,19 +17515,312 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  margin-top:0;min-width:0;line-height:1.25;padding:8px 12px}
 .ovseguir b{font-weight:800}
 .ovseguir span{font-weight:600;opacity:.75;font-size:13px}
+/* =====================================================================
+   PIEL "SALA DE PROYECCION" (dtbl126). Israel eligio esta estetica el 06-11
+   sobre una maqueta: el movil es la cabina y la tele la pantalla. Va AL FINAL
+   y solo sobrescribe aspecto: la estructura y los datos no cambian.
+   Fondo terciopelo de butaca, texto blanco calido, UN acento ambar (la luz del
+   proyector) para lo que pone algo en la tele, y una sola familia (Archivo):
+   titulos muy estrechos, como los creditos de una pelicula.
+   ===================================================================== */
+:root{--bg:#1a1720;--palco:#221e2a;--telon:#2d2836;--card:rgba(241,236,228,.05);
+ --stroke:rgba(241,236,228,.09);--txt:#f1ece4;--sub:#a69eb0;--apagado:#7d7589;
+ --amb:#edc27a;--amb2:#f3d398;--ambtxt:#231a0c;--blue:#edc27a;--blue2:#f0cb8b;--green:#93c48d;
+ --navh:62px;--seg-ab:env(safe-area-inset-bottom,0px);--seg-ar:env(safe-area-inset-top,0px)}
+html,body{background:var(--bg);color:var(--txt);font-family:Archivo,-apple-system,system-ui,Segoe UI,Roboto,sans-serif;
+ -webkit-font-smoothing:antialiased}
+body{background:var(--bg)}
+button,input{font-family:inherit}
+button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px solid var(--amb);outline-offset:2px}
+.wrap{padding:0 16px calc(var(--navh) + 96px + var(--seg-ab))}
+/* lo que antes era azul y ahora es ambar: texto oscuro encima */
+.devsave,.search button,.chip.on,.mwd-ok,.novok,.tmpb.on,.lstc.on,.selmv,.ls-done,.wfd-b.pri,
+.dtc-b,.jump .jbtn,.np-pp,.sh-alts .altb.on,.card.picked .tick,.shared-btn{background:var(--amb)!important;
+ color:var(--ambtxt)!important;border-color:var(--amb)!important;box-shadow:none}
+.wfd-b.pri small{color:rgba(35,26,12,.75)}
+.mwd-ok.peligro{background:#e2655a!important;color:#fff!important;border-color:#e2655a!important}
+.sheet .box,.mwd .box{background:var(--palco);border-color:var(--stroke)}
+.msg a,.sh-more,.appfoot a,.seasmark,.lstc.add{color:var(--amb)}
+.spin{border-color:rgba(241,236,228,.25);border-top-color:var(--txt)}
+
+/* ---------- cabecera ---------- */
+.top{position:sticky;top:0;z-index:22;height:calc(60px + var(--seg-ar));margin:0 -16px;
+ padding:var(--seg-ar) 18px 0;transition:background .25s,box-shadow .25s}
+.top.solida{background:rgba(26,23,32,.88);-webkit-backdrop-filter:blur(18px) saturate(1.3);
+ backdrop-filter:blur(18px) saturate(1.3);box-shadow:0 1px 0 var(--stroke)}
+.brand{font-stretch:68%;font-weight:800;font-size:23px;letter-spacing:.01em;gap:9px}
+.brand .d{width:22px;height:22px;background:none;border-radius:0;font-size:0}
+.brand .d svg{width:22px;height:22px;display:block}
+.devbtn{height:36px;max-width:170px;border-radius:18px;padding:0 12px 0 11px;font-size:14px;font-weight:600;
+ background:rgba(26,23,32,.55);border:0;box-shadow:inset 0 0 0 1px var(--stroke);gap:8px;letter-spacing:0}
+.devbtn::before{content:"";width:7px;height:7px;border-radius:50%;flex:none;background:var(--apagado)}
+.devbtn.tv-on::before{background:var(--green);box-shadow:0 0 0 3px rgba(147,196,141,.18)}
+.devbtn.tv-off::before{background:#d9776b}
+
+/* ---------- barra inferior (antes, pestanas arriba) ---------- */
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:26;margin:0;border:0;border-radius:0;
+ padding:0 6px var(--seg-ab);height:calc(var(--navh) + var(--seg-ab));
+ display:grid;grid-template-columns:repeat(5,1fr);
+ background:rgba(26,23,32,.94);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);
+ box-shadow:0 -1px 0 var(--stroke)}
+.tab,.tab.on{background:none!important;color:var(--apagado);border-radius:0;padding:0!important;
+ font-size:11px!important;font-weight:600;letter-spacing:0!important;display:flex;flex-direction:column;
+ align-items:center;justify-content:center;gap:4px;min-height:44px}
+.tab svg{width:23px;height:23px;display:block}
+.tab.on{color:var(--txt)}
+.tab.mando{color:var(--txt)}
+.tab.mando .mbola{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;
+ background:var(--telon);box-shadow:inset 0 0 0 1px var(--stroke);margin-top:-2px}
+.tab.mando .mbola svg{width:21px;height:21px}
+.fab,.rm-close{display:none!important}
+
+/* ---------- mini reproductor: lo que suena en la tele ---------- */
+.npbar{left:10px;right:10px;bottom:calc(var(--navh) + var(--seg-ab) + 8px);max-width:560px;margin:0 auto;
+ border-radius:14px;border:0;background:var(--telon);box-shadow:0 0 0 1px var(--stroke),0 16px 40px -10px rgba(0,0,0,.6);
+ overflow:hidden}
+.np-prog-wrap{position:absolute;left:14px;right:14px;bottom:0;height:2px;background:rgba(241,236,228,.08)}
+.np-prog{background:var(--amb)}
+.np-row{padding:10px 8px 10px 16px;min-height:60px}
+.np-t{white-space:normal;overflow:hidden}
+.np-t b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.np-t small{display:block;font-size:12px;color:var(--sub);font-weight:500;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.np-pp{width:44px;height:44px;background:none!important;color:var(--txt)!important}
+.toast{bottom:calc(var(--navh) + var(--seg-ab) + 84px);background:var(--txt);color:var(--bg);border:0;
+ font-weight:600;border-radius:10px}
+
+/* ---------- portada del Inicio ---------- */
+.portada{position:relative;margin:calc(-60px - var(--seg-ar)) -16px 0;height:min(116vw,560px);overflow:hidden;display:none}
+.portada.on{display:block}
+.portada img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:60% 25%;
+ animation:ptEnc 1s ease-out both}
+.portada::before{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+ background:radial-gradient(120% 70% at 70% 0%,rgba(237,194,122,.10),transparent 60%),
+ linear-gradient(180deg,rgba(26,23,32,.6) 0%,rgba(26,23,32,0) 22%,rgba(26,23,32,.25) 50%,var(--bg) 97%)}
+.pt-txt{position:absolute;left:18px;right:18px;bottom:4px;z-index:2;animation:ptSube .6s .25s ease-out both}
+.pt-or{font-size:13px;color:var(--sub);font-weight:500;margin-bottom:4px}
+.pt-t{margin:0;font-stretch:62%;font-weight:850;font-size:clamp(50px,16vw,84px);line-height:.88;
+ text-wrap:balance;text-shadow:0 2px 30px rgba(0,0,0,.35);cursor:pointer;
+ display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.pt-d{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;margin:12px 0 16px;font-size:14px;color:var(--sub)}
+.pt-d b{color:var(--txt);font-weight:600}
+.pt-d .amb{color:var(--amb);font-weight:600}
+.pt-acc{display:flex;gap:10px}
+.pt-ver{flex:1;height:52px;border:0;border-radius:12px;background:var(--amb);color:var(--ambtxt);font-size:16px;
+ font-weight:700;display:flex;align-items:center;justify-content:center;gap:10px;cursor:pointer;
+ box-shadow:0 10px 30px -8px rgba(237,194,122,.45)}
+.pt-ver:active{transform:scale(.98)}
+.pt-ver svg{width:15px;height:15px}
+.pt-c{width:52px;height:52px;flex:none;border:0;border-radius:12px;background:rgba(241,236,228,.07);
+ box-shadow:inset 0 0 0 1px var(--stroke);color:var(--txt);display:grid;place-items:center;cursor:pointer}
+.pt-c .hsvg{width:21px;height:21px;stroke:var(--txt)}
+.pt-c .hsvg.on{fill:var(--amb);stroke:var(--amb)}
+@keyframes ptEnc{from{opacity:0;filter:brightness(.4)}to{opacity:1;filter:none}}
+@keyframes ptSube{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+/* ---------- Estrenos / Cine / Series: pestanas subrayadas ---------- */
+.chips{gap:26px;margin:0 -16px 0;padding:20px 18px 0;box-shadow:0 1px 0 var(--stroke);
+ position:sticky;top:calc(60px + var(--seg-ar));z-index:15;background:var(--bg)}
+.chip,.chip.on{border:0;background:none!important;border-radius:0;padding:0 0 12px!important;font-size:17px!important;
+ font-weight:600;font-stretch:90%;color:var(--apagado)!important;position:relative;box-shadow:none}
+.chip.on{color:var(--txt)!important}
+.chip.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px;background:var(--txt)}
+.fnt{gap:18px;margin:0 -16px;padding:12px 18px 2px}
+.fnb,.fnb.on{border:0;background:none!important;padding:0;height:34px;font-size:13px;font-weight:600;color:var(--apagado)!important}
+.fnb.on{color:var(--txt)!important}
+.fnb b{width:6px;height:6px}
+.fnb i{font-weight:600;opacity:.6}
+.novb{margin:14px 0 4px;border:0;background:rgba(241,236,228,.05);box-shadow:inset 0 0 0 1px var(--stroke);
+ border-radius:12px;font-size:13.5px;color:var(--sub)}
+.novb b{color:var(--txt)}
+.novb .novv{color:var(--amb)}
+.novdot{background:var(--amb)}
+.dtav{margin:12px 0 0}
+
+/* ---------- rejilla: 3 columnas, carátula limpia y pie de foto ---------- */
+.grid,.skgrid{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:22px 12px;margin-top:14px}
+@media(min-width:520px){.grid,.skgrid{grid-template-columns:repeat(4,minmax(0,1fr))!important}}
+.card,.skcard{background:none;border:0;border-radius:0;overflow:visible}
+.card:active{transform:none}
+.card .ph{border-radius:6px;overflow:hidden;background:var(--palco);
+ box-shadow:0 0 0 1px rgba(241,236,228,.05),0 12px 24px -14px rgba(0,0,0,.7)}
+.card .ph:active{transform:scale(.97)}
+.skph{border-radius:6px;background:var(--palco)}
+.skln{background:var(--palco);margin:9px 0 0}
+.card .m{padding:9px 0 0}
+.card .t{font-size:13.5px;font-weight:600;line-height:1.25}
+.card .y{font-size:12px;color:var(--apagado);margin-top:3px;font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:6px;min-width:0}
+.card .y .sdot{width:6px;height:6px;border-radius:50%;flex:none}
+.sdot.s-dt{background:#86aaf0}.sdot.s-wf{background:#bb9de9}.sdot.s-dx{background:#8bcb9e}
+.sdot.s-et{background:#eba584}.sdot.s-cb{background:#ea8fa3}
+/* calidad, semillas y RAR: texto en el pie, no sellos sobre la carátula */
+.card .m .tl{position:static;display:flex;flex-direction:row;flex-wrap:wrap;gap:2px 9px;margin-top:2px;align-items:center}
+.card .m .tl:empty{display:none}
+.card .q{background:none;padding:0;border-radius:0;font-size:12px;font-weight:600;color:var(--sub)}
+.card .q.top{color:var(--amb)}
+.card .gseed{background:none!important;border:0!important;padding:0;font-size:12px;font-weight:600;backdrop-filter:none}
+.card .gseed.s-ok{color:var(--green)}
+.card .gseed.s-low{color:#e8c46a}
+.card .gseed.s-zero{color:#e08a80}
+.card .rartag{background:none;color:#eba584;padding:0;font-size:12px;font-weight:600}
+.card .kindtag{position:static;background:none;border:0;padding:0;font-size:12px;font-weight:500;color:var(--apagado);margin-top:1px}
+.card .kindtag.k-movie{display:none}
+.card .srctag{display:none}
+.card .noimg{color:var(--sub);font-size:12px}
+/* guardada en una lista: cinta ambar con corazon, y el borde ambar */
+.card .fav{display:none;top:0;right:8px;width:24px;height:31px;border-radius:0;background:var(--amb);
+ clip-path:polygon(0 0,100% 0,100% 100%,50% 80%,0 100%);place-items:start center;padding-top:6px;
+ filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))}
+.card .fav::after{inset:-8px -10px}
+.card .fav .hsvg{width:12px;height:12px;fill:var(--ambtxt);stroke:var(--ambtxt);stroke-width:1}
+.card .fav:has(.hsvg.on){display:grid}
+.card:has(.fav .hsvg.on) .ph{box-shadow:0 0 0 1.5px rgba(237,194,122,.75),0 12px 24px -14px rgba(0,0,0,.7)}
+.grid.lv .card{gap:12px}
+.grid.lv .ph{border-radius:5px}
+.grid.lv .m{padding:4px 0}
+.card.picked .ph{outline-color:var(--amb)}
+
+/* ---------- buscar, listas, historial ---------- */
+.search{margin:14px 0 14px}
+.search input{background:var(--palco);border:0;box-shadow:inset 0 0 0 1px var(--stroke);border-radius:14px;height:52px}
+.search input:focus{box-shadow:inset 0 0 0 1px rgba(237,194,122,.5)}
+.search button{border-radius:14px}
+.recb,.lstc,.lstb,.vtog,.tmpb{background:rgba(241,236,228,.05);border-color:var(--stroke)}
+.srcp{background:rgba(241,236,228,.04);border-color:var(--stroke)}
+.srcp-bar i{background:var(--amb);box-shadow:none}
+.srcp-f.dt{--c:#86aaf0}.srcp-f.et{--c:#eba584}.srcp-f.dx{--c:#8bcb9e}.srcp-f.wf{--c:#bb9de9}.srcp-f.cb{--c:#ea8fa3}
+.srclegend{margin:12px 0 0}
+.lstbar{padding-top:14px}
+.histbar{margin-top:14px}
+.hitem{background:rgba(241,236,228,.04);border-color:var(--stroke)}
+.hitem button.play{background:var(--amb);color:var(--ambtxt)}
+.hitem .hsrc.dt{color:#86aaf0}.hitem .hsrc.et{color:#eba584}.hitem .hsrc.dx{color:#8bcb9e}
+.hitem .hsrc.wf{color:#bb9de9}.hitem .hsrc.cb{color:#ea8fa3}
+.selbar{background:rgba(237,194,122,.10);border-color:rgba(237,194,122,.35)}
+.ls-row.on{border-color:var(--amb);background:rgba(237,194,122,.10)}
+.ls-row.on .lsk{background:var(--amb);border-color:var(--amb);color:var(--ambtxt)}
+.devrow.on{border-color:var(--amb);background:rgba(237,194,122,.10)}
+.devdot.on{background:var(--green);box-shadow:0 0 6px rgba(147,196,141,.6)}
+.devin:focus,.mwd-in:focus,.lfiltro input:focus{border-color:rgba(237,194,122,.6)}
+.appfoot{padding-bottom:4px}
+
+/* ---------- ficha de pelicula (hoja) ---------- */
+.sheet{background:rgba(8,6,12,.62)}
+.sheet .box{border-top:0;border-radius:18px 18px 0 0}
+.sheet#sheet .box::before{content:"";display:block;position:sticky;top:0;z-index:3;height:0}
+.sh-hero{min-height:230px;border-radius:18px 18px 0 0;background-color:var(--palco)}
+.sh-hero .grad{border-radius:18px 18px 0 0;background:linear-gradient(180deg,rgba(34,30,42,.15) 0%,rgba(34,30,42,.55) 55%,var(--palco) 100%)}
+.sh-hero .row{padding:120px 18px 12px;gap:16px}
+.sh-pst{width:92px;border-radius:6px;border:0;box-shadow:0 12px 24px -10px rgba(0,0,0,.7)}
+.sheet .sh-htext h3{font-stretch:62%;font-weight:850;font-size:38px;line-height:.92;text-shadow:none;text-wrap:balance}
+.sheet .sh-htext .sy{color:var(--sub);font-weight:500;margin-top:8px}
+.sh-body{padding:14px 18px calc(22px + var(--seg-ab))}
+.seedtag{background:none!important;border:0!important;padding:0;font-size:14px}
+.seedtag.s-ok{color:var(--green)}.seedtag.s-low{color:#e8c46a}.seedtag.s-zero{color:#e08a80}
+.gtag{background:none;border:0;box-shadow:inset 0 0 0 1px var(--stroke);color:var(--sub);font-weight:500}
+.sh-ov{color:#d7d0dc;font-size:15px;line-height:1.6}
+.rar{color:#eba584}
+.btn{border-radius:12px;font-weight:700}
+.btn.play{background:var(--amb);color:var(--ambtxt);height:54px;padding:0;margin-top:14px;
+ box-shadow:0 10px 30px -10px rgba(237,194,122,.5)}
+.btnrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px;margin-top:10px}
+.btnrow .btn{margin:0;min-height:56px;padding:8px 6px;font-size:13px;font-weight:600;line-height:1.25;
+ background:rgba(241,236,228,.05);border:0;color:var(--sub)}
+.btnrow .btn[style*="none"]{display:none}
+.btn.cancel{color:var(--apagado);font-weight:600;font-size:14px;margin-top:6px}
+/* versiones: una lista para elegir, no pastillas */
+.sh-alts{flex-direction:column;gap:0;margin:14px 0 6px;border-radius:12px;box-shadow:inset 0 0 0 1px var(--stroke);overflow:hidden}
+.sh-alts>.altq{order:-1;opacity:1!important;font-size:13px;font-weight:600;color:var(--sub);padding:12px 14px 4px;align-self:flex-start!important}
+.sh-alts .altb,.sh-alts .altb.on{width:100%;min-height:52px;border:0!important;border-radius:0;background:none!important;
+ color:var(--txt)!important;justify-content:space-between;padding:0 14px;font-size:15px;font-weight:600}
+.sh-alts .altb+.altb{box-shadow:0 -1px 0 var(--stroke)}
+.sh-alts .altb::before{content:"";width:18px;height:18px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--apagado);flex:none;margin-right:12px}
+.sh-alts .altb.on::before{box-shadow:inset 0 0 0 1.5px var(--amb),inset 0 0 0 5px var(--palco),inset 0 0 0 9px var(--amb)}
+.sh-alts .altb .altq{margin-left:auto;font-weight:700;opacity:1;color:var(--sub)}
+.sh-alts .altb.on .altq{color:var(--amb)}
+.cbt{color:var(--sub)}
+.cbb{background:rgba(241,236,228,.05);border-color:var(--stroke)}
+
+/* ---------- ficha de serie ---------- */
+.ov{background:var(--bg)}
+.ovbar{background:rgba(26,23,32,.88);border-bottom:0;box-shadow:0 1px 0 var(--stroke);padding-top:calc(14px + var(--seg-ar))}
+.ovback{color:var(--amb)}
+.ovhero{background-color:var(--palco);min-height:220px}
+.ovhero .grad{background:linear-gradient(180deg,rgba(26,23,32,.1) 0%,rgba(26,23,32,.55) 55%,var(--bg) 100%)}
+.ovhero-row{padding:120px 16px 14px}
+.ovposter{border-radius:6px;border:0}
+.ovh-t{font-stretch:62%;font-weight:850;font-size:36px;line-height:.92;text-wrap:balance}
+.ovh-y{color:var(--sub)}
+.ovseguir{background:var(--amb);color:var(--ambtxt);border-radius:12px;box-shadow:0 10px 30px -10px rgba(237,194,122,.5)}
+/* Guardar, Compartir y Trailer: una fila de columnas iguales (la que este
+   oculta no ocupa sitio), igual que en la ficha de pelicula */
+.ovactions,.btnrow{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);grid-template-columns:none;gap:8px}
+.ovactions .ovfav{flex:none;background:rgba(241,236,228,.05);border:0;color:var(--sub);min-height:56px;border-radius:12px;
+ font-size:13px;line-height:1.25;padding:8px 6px}
+.seas{color:var(--sub);text-transform:none;letter-spacing:0;font-size:14px;font-weight:600}
+.seasmark{background:none;border-color:var(--stroke)}
+.ep{background:rgba(241,236,228,.04);border-color:var(--stroke);border-radius:12px}
+.epq{background:rgba(241,236,228,.07);color:var(--sub)}
+.epq[data-q="4K"]{background:rgba(237,194,122,.14);color:var(--amb);box-shadow:none}
+.epq[data-q="1080p"]{background:rgba(134,170,240,.12);color:#a9c1f2}
+.ep-seed{background:none!important;border:0!important;padding:0}
+.ep-seed.s-ok{color:var(--green)}
+.ep .eye,.ep .cbep{background:rgba(241,236,228,.05);border-color:var(--stroke)}
+.ep.seen::before{background:var(--green)}
+.ep.seen .eye{color:var(--green);border-color:rgba(147,196,141,.45);background:rgba(147,196,141,.10)}
+.tmpb.vista{color:var(--green)}
+
+/* ---------- el mando ---------- */
+.remote{background:var(--bg)}
+.rmwrap{max-width:420px;padding:8px 18px calc(36px + var(--seg-ab));text-align:left}
+.rnp .nplab{display:none}
+.rnp .npttl{font-stretch:68%;font-weight:800;font-size:30px;line-height:1;margin:10px 0 6px}
+.nprow{margin-top:8px;color:var(--sub)}
+.nprow .npf{color:var(--txt)}
+.rmbar{height:4px;background:rgba(241,236,228,.1)}
+.rmbar>i{background:var(--txt)}
+.media{margin:20px 0 0;gap:clamp(14px,6vw,30px)}
+.rb,.rb.sk,.rb.stop{background:none;border:0;color:var(--txt)}
+.rb:active{background:rgba(241,236,228,.08)}
+.rb.stop{color:#e08a80}
+.rb.play{background:var(--txt);color:var(--bg);box-shadow:none}
+.jump{margin:22px 0 0;height:54px;padding:0 6px 0 16px;border-radius:14px;align-items:center;gap:10px;
+ background:rgba(241,236,228,.05);box-shadow:inset 0 0 0 1px var(--stroke)}
+.jump:focus-within{box-shadow:inset 0 0 0 1px rgba(237,194,122,.5)}
+.jump::before{content:"Ir al minuto";font-size:14px;color:var(--sub);white-space:nowrap}
+.jump input{background:none;border:0;padding:0;height:100%;font-size:20px;font-weight:700;text-align:right;
+ font-variant-numeric:tabular-nums;color:var(--txt)}
+.jump input::placeholder{font-size:16px;font-weight:500;color:var(--apagado)}
+.jump .jbtn{min-width:0;height:42px;padding:0 18px;border-radius:10px}
+.row3{margin:10px 0 0;gap:8px}
+.padwrap{margin:22px 0 4px}
+.pad{width:min(236px,68vw);height:min(236px,68vw);border:0;background:radial-gradient(circle at 50% 40%,#353042,#28232f 70%);
+ box-shadow:inset 0 0 0 1px var(--stroke),0 20px 40px -18px rgba(0,0,0,.8)}
+.arrow{color:var(--sub);font-size:0}
+.arrow svg{width:18px;height:18px}
+.ok{width:40%;height:40%;background:var(--telon);border:0;box-shadow:0 0 0 1px var(--stroke),0 8px 18px rgba(0,0,0,.4);font-size:15px;letter-spacing:0}
+.pill{height:52px;border:0;border-radius:12px;background:rgba(241,236,228,.05);font-size:13px;font-weight:600;color:var(--sub);gap:7px}
+.pill svg{width:19px;height:19px;color:var(--txt);flex:none}
+.rsub .pill span{font-size:13px;letter-spacing:0;font-weight:600}
+@media(max-width:360px){.pill{font-size:12px;height:50px}.rsub .pill span{font-size:12px}.pill svg{width:17px;height:17px}}
+.navrow2{margin:10px 0 0;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.navrow2 .pill{font-size:13px}
+@media (prefers-reduced-motion:reduce){.portada img,.pt-txt{animation:none}}
+/* sobre portadas claras el texto tiene que seguir leyendose */
+.pt-or,.pt-d{text-shadow:0 1px 12px rgba(0,0,0,.65)}
+.pt-or{color:#d4ccd9}
+.portada::after{content:"";position:absolute;left:0;right:0;bottom:0;height:72%;z-index:1;pointer-events:none;
+ background:linear-gradient(180deg,rgba(26,23,32,0),rgba(26,23,32,.62) 32%,rgba(26,23,32,.88) 62%,var(--bg))}
+/* los campos de texto: el anillo ambar ya dice "estas dentro", sin doble borde */
+.search input:focus-visible,.jump input:focus-visible,.devin:focus-visible,.mwd-in:focus-visible,.lfiltro input:focus-visible{outline:0}
+.search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;width:18px;height:18px;cursor:pointer;
+ background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M6 6l12 12M18 6L6 18' stroke='%23a69eb0' stroke-width='2.2' stroke-linecap='round'/></svg>") center/contain no-repeat}
 </style></head><body>
 <div class="wrap">
  <div class="top">
-  <div class="brand"><span class="d">🐺</span> MejorWolf</div>
+  <div class="brand"><span class="d"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4l4 5h8l4-5v10l-8 7-8-7z" fill="#edc27a"/><circle cx="9" cy="13" r="1.3" fill="#1a1720"/><circle cx="15" cy="13" r="1.3" fill="#1a1720"/></svg></span>MejorWolf</div>
   <button id="devbtn" class="devbtn" type="button" onclick="openDevs()" title="Mis Kodis (guarda varios códigos con nombre)">
    <span id="devname">código</span><span class="devcar">▾</span></button>
   <input id="code" type="hidden">
- </div>
- <div class="tabs">
-  <button id="tab-inicio" class="tab on" onclick="goView('inicio')">Inicio</button>
-  <button id="tab-buscar" class="tab" onclick="goView('buscar')">Buscar</button>
-  <button id="tab-lista" class="tab" onclick="goView('lista')">Mis listas</button>
-  <button id="tab-hist" class="tab" onclick="goView('hist')">Historial</button>
  </div>
  <!-- Nace oculta: la app siempre arranca en el Inicio, que tiene su propia
       barra de fuentes. setView la ensena en Mis listas y en el Historial. -->
@@ -17541,6 +17837,7 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
   <button class="shared-x" onclick="closeShared()">&times;</button>
  </div></div>
  <section id="pane-inicio" class="pane">
+  <div id="portada" class="portada"></div>
   <div class="chips">
    <button class="chip on" data-k="estrenos" onclick="chip('estrenos')">Estrenos</button>
    <button class="chip" data-k="peliculas" onclick="chip('peliculas')">Cine</button>
@@ -17592,6 +17889,13 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
  <div class="np-row"><div class="np-t" id="np-t"></div>
   <button class="np-pp" id="np-pp" onclick="event.stopPropagation();pp()"><svg width="15" height="15" viewBox="0 0 24 24"><rect x="6" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.4" fill="currentColor"/></svg></button></div>
 </div>
+<nav class="tabs" aria-label="Secciones">
+ <button id="tab-inicio" class="tab on" onclick="goView('inicio')"><svg viewBox="0 0 24 24" fill="none"><path d="M4 10.5L12 4l8 6.5V20h-5.5v-5.5h-5V20H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Inicio</span></button>
+ <button id="tab-buscar" class="tab" onclick="goView('buscar')"><svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Buscar</span></button>
+ <button class="tab mando" onclick="openRemote()" aria-label="Abrir el mando"><span class="mbola"><svg viewBox="0 0 24 24" fill="none"><rect x="7" y="2.5" width="10" height="19" rx="3" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="7" r="1.4" fill="currentColor"/><path d="M9.8 11.5h4.4M9.8 14.5h4.4M9.8 17.5h4.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span></button>
+ <button id="tab-lista" class="tab" onclick="goView('lista')"><svg viewBox="0 0 24 24" fill="none"><path d="M12 20.3l-1.1-1C5.9 14.9 3 12.3 3 9.1 3 6.6 5 4.6 7.5 4.6c1.4 0 2.8.7 3.7 1.7L12 7.2l.8-.9c.9-1 2.3-1.7 3.7-1.7C19 4.6 21 6.6 21 9.1c0 3.2-2.9 5.8-7.9 10.2z" stroke="currentColor" stroke-width="1.7"/></svg><span>Mis listas</span></button>
+ <button id="tab-hist" class="tab" onclick="goView('hist')"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Historial</span></button>
+</nav>
 <div class="sheet mwd" id="mwdlg" onclick="if(event.target===this)mwdNo()">
  <div class="box">
   <div class="mwd-t" id="mwd-t"></div>
@@ -17671,9 +17975,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <div class="btnrow">
     <button class="btn fav" id="sh-fav" onclick="sheetFav()">♡ Guardar en una lista</button>
     <button class="btn trailer" id="sh-trailer" style="display:none" onclick="openTrailer()">🎬 Tráiler</button>
+    <button class="btn share" onclick="shareSheet()">📤 Compartir</button>
    </div>
-   <button class="btn share" onclick="shareSheet()">📤 Compartir enlace</button>
-   <button class="btn cancel" onclick="closeSheet()">Cancelar</button>
+   <button class="btn cancel" onclick="closeSheet()">Cerrar</button>
   </div>
  </div>
 </div>
@@ -17698,29 +18002,29 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
    <div class="rb sk" onclick="cmd('seek_fwd')">+30<small>s</small></div>
   </div>
   <div class="jump">
-   <input id="rm-min" type="number" min="0" inputmode="numeric" placeholder="ir al minuto exacto...">
-   <div class="jbtn" onclick="seekTo()">Saltar a</div>
+   <input id="rm-min" type="number" min="0" inputmode="numeric" placeholder="45" aria-label="Ir al minuto">
+   <div class="jbtn" onclick="seekTo()">Ir</div>
   </div>
   <div class="row3">
-   <div class="pill" onclick="cmd('voldown')">🔉</div>
-   <div class="pill" onclick="cmd('mute')">🔇</div>
-   <div class="pill" onclick="cmd('volup')">🔊</div>
+   <div class="pill" onclick="cmd('voldown')"><svg viewBox="0 0 24 24" fill="none"><path d="M4 9.5h3L11 6v12l-4-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M15 12h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Bajar</span></div>
+   <div class="pill" onclick="cmd('mute')"><svg viewBox="0 0 24 24" fill="none"><path d="M4 9.5h3L11 6v12l-4-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M15 9.5l5 5m0-5l-5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Silencio</span></div>
+   <div class="pill" onclick="cmd('volup')"><svg viewBox="0 0 24 24" fill="none"><path d="M4 9.5h3L11 6v12l-4-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M15 12h5M17.5 9.5v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Subir</span></div>
   </div>
   <div class="row3 rsub">
-   <div class="pill" onclick="cmd('subs')" title="Quitar o poner los subtitulos">💬 <span>Subtítulos</span></div>
-   <div class="pill" onclick="cmd('subsnext')" title="Otra pista de subtitulos">🔄 <span>Otro sub</span></div>
-   <div class="pill" onclick="cmd('audionext')" title="Otra pista de audio">🗣️ <span>Audio</span></div>
+   <div class="pill" onclick="cmd('subs')" title="Quitar o poner los subtitulos"><svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5" stroke="currentColor" stroke-width="1.7"/><path d="M7 13.5h4M13 13.5h4M7 10.5h2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Subtítulos</span></div>
+   <div class="pill" onclick="cmd('subsnext')" title="Otra pista de subtitulos"><svg viewBox="0 0 24 24" fill="none"><path d="M5 9a7 7 0 0 1 12-3M19 15a7 7 0 0 1-12 3M17 3v3h-3M7 21v-3h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Otro sub</span></div>
+   <div class="pill" onclick="cmd('audionext')" title="Otra pista de audio"><svg viewBox="0 0 24 24" fill="none"><path d="M5 10v4M9 7v10M13 4v16M17 8v8M21 11v2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Audio</span></div>
   </div>
   <div class="padwrap"><div class="pad">
-   <div class="arrow up" onclick="cmd('up')">▲</div>
-   <div class="arrow left" onclick="cmd('left')">◀</div>
+   <div class="arrow up" onclick="cmd('up')" aria-label="Arriba"><svg viewBox="0 0 18 18"><path d="M4 11l5-5 5 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+   <div class="arrow left" onclick="cmd('left')" aria-label="Izquierda"><svg viewBox="0 0 18 18"><path d="M11 4L6 9l5 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
    <div class="ok" onclick="cmd('ok')">OK</div>
-   <div class="arrow right" onclick="cmd('right')">▶</div>
-   <div class="arrow down" onclick="cmd('down')">▼</div>
+   <div class="arrow right" onclick="cmd('right')" aria-label="Derecha"><svg viewBox="0 0 18 18"><path d="M7 4l5 5-5 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+   <div class="arrow down" onclick="cmd('down')" aria-label="Abajo"><svg viewBox="0 0 18 18"><path d="M4 7l5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
   </div></div>
   <div class="navrow2">
-   <div class="pill" onclick="cmd('home')">🏠 Inicio</div>
-   <div class="pill" onclick="cmd('back')">↩ Atrás</div>
+   <div class="pill" onclick="cmd('home')"><svg viewBox="0 0 24 24" fill="none"><path d="M4 10.5L12 4l8 6.5V20h-5.5v-5.5h-5V20H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Inicio</span></div>
+   <div class="pill" onclick="cmd('back')"><svg viewBox="0 0 24 24" fill="none"><path d="M9 7L4 12l5 5M4.5 12H15a5 5 0 0 1 0 10h-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Atrás</span></div>
   </div>
  </div>
  <button class="rm-close" onclick="closeRemote()">✕ Cerrar</button>
@@ -18134,7 +18438,7 @@ function setView(v){CURVIEW=v;
  // dos cosas a la vez es decir dos veces lo mismo y robar una linea de pantalla
  // en un movil. En Mis listas y en el Historial no hay nada que explique que es
  // "DT" o "WF", asi que ahi se queda.
- legAjusta();}
+ legAjusta();try{cabSolida()}catch(e){}}
 // (dtbl125) La leyenda solo explica lo que hay en pantalla: en el Historial
 // cada fila ya dice su fuente con palabras, y en Mis listas sale solo si hay
 // tarjetas y solo con las fuentes que aparecen (antes salian las cinco sobre
@@ -19242,7 +19546,9 @@ function cardHTML(x,list,i){
  var _alt=imgOrig(x.poster);
  var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" data-t="'+esc(x.title)+'"'+(_alt?(' data-alt="'+esc(_alt)+'"'):'')+' onerror="imgFallo(this)" src="'+esc(x.poster)+'">'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
- var q='<div class="tl">'+(x.quality?('<span class="q">'+esc(x.quality)+'</span>'):'')+'</div>';
+ // (dtbl126) calidad, semillas y RAR van en el pie de la tarjeta, no encima
+ // de la caratula (badgeCard/sgBadge siguen buscando .tl, este donde este)
+ var q='<div class="tl">'+(x.quality?('<span class="q'+(/4k|2160|uhd/i.test(x.quality)?' top':'')+'">'+esc(x.quality)+'</span>'):'')+'</div>';
  // Las series de EliteTorrent/WolfMax llegan agrupadas con sus capítulos
  // dentro: decir cuántos trae evita la duda de "¿esto es la serie entera?".
  var _nc=(x.eps&&x.eps.length)||0;
@@ -19253,24 +19559,67 @@ function cardHTML(x,list,i){
  // 720p, y "Neagley" (una temporada) salia como "2 temporadas" (dtbl59).
  var _tn=[];(x.temps||[]).forEach(function(t){var n=+(t&&t.n)||0;if(_tn.indexOf(n)<0)_tn.push(n)});
  var _tp=_tn.length,_ts='';
- if(_tp>1)_ts=' · '+_tp+' temporadas';
- else if(_tp===1&&_tn[0]>1)_ts=' · T'+_tn[0];
- var kt='<div class="kindtag">'+kindLabel(x.kind)+(_nc?(' · '+_nc+' cap.'):_ts)+'</div>';
+ if(_tp>1)_ts=_tp+' temporadas';
+ else if(_tp===1&&_tn[0]>1)_ts='Temporada '+_tn[0];
+ var kt='<div class="kindtag'+(x.kind==='serie'?'':' k-movie')+'">'+(x.kind==='serie'?(_nc?(_nc+(_nc===1?' capítulo':' capítulos')):(_ts||'Serie')):kindLabel(x.kind))+'</div>';
  var SL={dt:'DT',et:'ET',dx:'DX',wf:'WF',cb:'📺'};var s=x.source||'dt';
  var src='<div class="srctag s-'+s+'">'+(SL[s]||s.toUpperCase())+'</div>';
  // data-i = su sitio en la LISTA (no en la pantalla). Lo que llega tarde -el
  // poster, el badge de RAR, la calidad- se estampa buscando por este atributo:
  // por posicion se equivocaba de tarjeta en cuanto algo cambiaba de orden o se
  // filtraba, y eso no da error, solo pone el dato en la peli de al lado.
- return '<div class="card" data-i="'+i+'" style="--i:'+(i%12)+'"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+q+kt+src+
+ var SLN={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax',cb:'Streaming'};
+ return '<div class="card" data-i="'+i+'" style="--i:'+(i%12)+'"><div class="ph" onclick="openItem(\''+list+'\','+i+')">'+img+noimg+
     '<div class="fav" onclick="favTap(\''+list+'\','+i+',event)">'+heartSVG(isFav(x))+'</div></div>'+
-    '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y">'+star(x)+'</div></div></div>';}
+    '<div class="m" onclick="openItem(\''+list+'\','+i+')"><div class="t">'+esc(x.title)+'</div><div class="y"><span class="sdot s-'+s+'" title="'+esc(SLN[s]||'')+'"></span>'+star(x)+'</div>'+q+kt+'</div></div>';}
 // El filtro por fuente del Inicio se aplica AQUI y no tocando LISTS.inicio: asi
 // los indices de las tarjetas siguen siendo los de la lista completa y no hay
 // que rehacer nada al quitar el filtro (ni se pierden las versiones alternativas).
 function renderGrid(el,list){var items=LISTS[list];var h='<div class="grid">';
  for(var i=0;i<items.length;i++){if(list==='inicio'&&!iniVisible(items[i]))continue;h+=cardHTML(items[i],list,i)}
- h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0)}
+ h+='</div>';el.className='';el.innerHTML=h;lazyRar(el,list,0);
+ if(list==='inicio')try{portadaPinta()}catch(e){}}
+// ===== LA PORTADA DEL INICIO (dtbl126) ===================================
+// Lo primero de la pestana, a pantalla completa, con su boton de verlo. Solo
+// pinta: guardar va por guardarEn (elegir lista) y ver, por play/openCard,
+// los mismos caminos que la ficha.
+var PORT=null;
+var PT_PLAY='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z" fill="currentColor"/></svg>';
+function teleNom(){var t=(($('devname')||{}).textContent||'').trim();return (!t||t==='código')?'la tele':t}
+function portadaPinta(){var el=$('portada');if(!el)return;
+ var L=LISTS.inicio||[],x=null;
+ for(var i=0;i<L.length&&i<14;i++){var c=L[i];
+  if(c&&(c.backdrop||c.poster)&&(c.source||'dt')!=='cb'&&iniVisible(c)){x=c;break}}
+ if(!x){PORT=null;el.classList.remove('on');el.innerHTML='';cabSolida();return}
+ if(PORT===x&&el.innerHTML){cabSolida();return}
+ PORT=x;
+ var SLN={dt:'DonTorrent',wf:'WolfMax',dx:'DivxTotal',et:'EliteTorrent'},k=INI.kind;
+ var or=(k==='series'?'La serie más reciente':(k==='peliculas'?'La película más reciente':'El estreno más reciente'))+
+  (SLN[x.source||'dt']?(' en '+SLN[x.source||'dt']):'');
+ var d=[];if(x.year)d.push('<b>'+esc(x.year)+'</b>');
+ if(x.quality)d.push('<span'+(/4k|2160|uhd/i.test(x.quality)?' class="amb"':'')+'>'+esc(x.quality)+'</span>');
+ if(x.rating)d.push('<span>★ '+String(Math.round(x.rating*10)/10).replace('.',',')+'</span>');
+ var sk=sgKey(x);if(sk&&typeof _sgCache[sk]==='number')d.push(seedTag(_sgCache[sk]));
+ var img=String(x.backdrop||x.poster||'').replace('/t/p/original/','/t/p/w1280/');
+ el.innerHTML='<img alt="" src="'+esc(img)+'" onerror="this.style.display=\'none\'">'+
+  '<div class="pt-txt"><div class="pt-or">'+esc(or)+'</div>'+
+  '<h1 class="pt-t" onclick="portadaInfo()">'+esc(x.title)+'</h1><div class="pt-d">'+d.join('')+'</div>'+
+  '<div class="pt-acc"><button class="pt-ver" onclick="portadaVer()">'+PT_PLAY+
+  (x.kind==='serie'?'Ver capítulos':('Ver en '+esc(teleNom())))+'</button>'+
+  '<button class="pt-c" onclick="portadaFav(this)" aria-label="Guardar en una lista">'+heartSVG(isFav(x))+'</button>'+
+  '<button class="pt-c" onclick="portadaInfo()" aria-label="Ver la ficha"><svg width="21" height="21" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 11v5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="7.8" r="1.2" fill="currentColor"/></svg></button></div></div>';
+ el.classList.add('on');cabSolida()}
+function portadaVer(){var x=PORT;if(!x)return;if(x.kind==='serie'){openCard(x);return}sel=x;play()}
+function portadaInfo(){if(PORT)openCard(PORT)}
+function portadaFav(b){var x=PORT;if(!x)return;
+ guardarEn(x,function(){heartPaint(b,isFav(x));
+  var i=(LISTS.inicio||[]).indexOf(x);if(i>=0)try{repaintCard($('inicio-grid'),'inicio',i)}catch(e){}})}
+// La cabecera es transparente sobre la portada y se vuelve solida al bajar
+// (o en cualquier otra pestana).
+function cabSolida(){var t=document.querySelector('.top');if(!t)return;var p=$('portada');
+ var sobre=(typeof CURVIEW==='undefined'||CURVIEW==='inicio')&&p&&p.classList.contains('on');
+ t.classList.toggle('solida',!sobre||window.scrollY>40)}
+window.addEventListener('scroll',cabSolida,{passive:true});
 function appendGrid(el,list,from){var g=el.querySelector('.grid');if(!g){renderGrid(el,list);return}var items=LISTS[list],h='';
  for(var i=from;i<items.length;i++){if(list==='inicio'&&!iniVisible(items[i]))continue;h+=cardHTML(items[i],list,i)}
  g.insertAdjacentHTML('beforeend',h);lazyRar(el,list,from)}
@@ -19390,7 +19739,7 @@ function altsInner(x){
  all.sort(function(a,b){var d=srcScore(b)-srcScore(a);if(d)return d;
   return (altKey(a)<altKey(b))?-1:1});
  var kx=altKey(x);
- return '<span class="altq" style="align-self:center">También en:</span>'+
+ return '<span class="altq" style="align-self:center">Elige versión</span>'+
   all.map(function(a){var k=altKey(a);
    return '<button class="altb'+(k===kx?' on':'')+'" onclick="pickAlt(\''+esc(k)+'\')">'+
    esc(ALTLBL[a.source||'dt']||'?')+(a.quality?('<span class="altq">'+esc(a.quality)+'</span>'):'')+'</button>'}).join('');}
@@ -20314,9 +20663,10 @@ function applyPP(){var a=$('np-pp');if(a)a.innerHTML=npPaused?NP_PLAY:NP_PAUSE;v
 function pp(){npPaused=!npPaused;applyPP();cmd('playpause');}
 function pollNow(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){clearTimeout(npTimer);npTimer=setTimeout(pollNow,4000);return}
  fetch('/kb/now?code='+cd).then(function(r){return r.json()}).then(function(d){var np=d&&d.np;var bar=$('npbar');
+  try{var _db=$('devbtn');_db.classList.toggle('tv-on',!!(np&&np.title)||!!(d&&d.tele===true));_db.classList.toggle('tv-off',!(np&&np.title)&&!!(d&&d.tele===false))}catch(e){}
   if(np&&np.title){bar.classList.add('on');npPaused=!!np.paused;var _fb=$('fab');if(_fb)_fb.style.display='none';var pct=np.total?Math.min(100,Math.round(np.elapsed/np.total*100)):0;
    var fin='';if(!np.paused&&np.total>0)fin=clk(new Date(Date.now()+(np.total-np.elapsed)*1000));
-   $('np-t').textContent=np.title+(fin?(' · Finaliza '+fin):'');
+   $('np-t').innerHTML='<b>'+esc(np.title)+'</b><small>'+esc(teleNom())+(np.paused?', en pausa':(fin?(', acaba a las '+fin):''))+'</small>';
    $('np-prog').style.width=pct+'%';$('np-pp').innerHTML=np.paused?NP_PLAY:NP_PAUSE;
    $('rm-t').textContent=np.title;$('rm-time').textContent=fmt(np.elapsed)+(np.total?(' / '+fmt(np.total)):'');
    $('rm-fin').textContent=np.paused?'En pausa':(np.total>0?('Finaliza a las '+fin):'');

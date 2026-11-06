@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -95,7 +96,10 @@ try:
 
     print("\n=== 2) El service worker que se sirve ===")
     sw = cli.get("/sw.js").get_data(as_text=True)
-    comprueba("cache nueva (v18): los moviles cogen el manifest nuevo", "mw-shell-v18" in sw and "mw-shell-v17" not in sw)
+    # (dtbl126) v19: el manifest con los colores de la sala; lo que importa es que
+    # la cache sea de la v18 en adelante (la que trae el compartir)
+    _v = re.search(r"mw-shell-v(\d+)", sw)
+    comprueba("cache nueva (v18+): los moviles cogen el manifest nuevo", bool(_v) and int(_v.group(1)) >= 18)
     comprueba("recoge el POST a /compartir y abre la app con ?compartido",
               "'/compartir'" in sw and "compartido=" in sw and "req.formData()" in sw)
     comprueba("al activarse no borra lo compartido pendiente", "k!=='mw-compartido'" in sw)
