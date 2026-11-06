@@ -35,6 +35,11 @@ BYTES_MAX = 64 * 1024 * 1024 # tope de memoria por delante (cajas de 1-2 GB)
 ESPERA_KODI = 45.0           # sin un byte en este tiempo -> se corta (Kodi salta)
 REINTENTOS = 4
 LIBRE = 180.0                # sin que Kodi pida nada: se suelta la memoria
+# (2.9.102) ...pero la sesion NO se cierra: con la tele en PAUSA Kodi no pide
+# nada, y al cerrarla, al reanudar se veian los ~15-30 s que Kodi tenia en su
+# memoria y la reproduccion se cortaba (06-11, reproducido en el Kodi del PC
+# con 4 min de pausa). Ahora se duerme: suelta lo bajado salvo lo inmediato y
+# deja de bajar hasta que Kodi vuelva a pedir. Se cierra al montar otra.
 
 
 def _log(msg):
@@ -83,12 +88,15 @@ class Sesion(object):
         self.esperas = 0             # veces que Kodi tuvo que esperar
         self.danados = 0             # trozos que el servidor solo da a medias
         self.ultimo = time.time()    # última petición de Kodi
+        self.dormida = False         # en pausa larga: sin bajar ni guardar
         self.http = requests.Session()
         self.http.headers.update(cab)
 
     # ---- qué bajar ahora: lo primero sin pedir dentro de la ventana
     def siguiente_tarea(self):
         """(trozo_idx, parte_idx) o None. Llamar con self.cv cogido."""
+        if self.dormida:
+            return None
         delante = 0
         for i in range(self.pos, min(len(self.trozos), self.pos + DELANTE_MAX)):
             t = self.trozos[i]
@@ -127,6 +135,14 @@ class Sesion(object):
         # obrero lo nota en el siguiente bloque y lo deja.
         for i, t in enumerate(self.trozos):
             if (i < self.pos - 1 or i >= self.pos + DELANTE_MAX + 2) and (t.partes or t.pedido):
+                self.trozos[i] = _Trozo(t.url)
+
+    def duerme(self):
+        """Pausa larga: fuera la memoria salvo los 2 trozos que Kodi pedira al
+        reanudar. Llamar con self.cv cogido."""
+        self.dormida = True
+        for i, t in enumerate(self.trozos):
+            if not (self.pos <= i <= self.pos + 2) and (t.partes or t.pedido):
                 self.trozos[i] = _Trozo(t.url)
 
     def cierra(self):
@@ -237,10 +253,11 @@ def _obrero():
         with _S["cv"]:
             ses = _S["ses"]
             tarea = None
-            if ses is not None and ses.vivo and time.time() - ses.ultimo > LIBRE:
-                _resumen(ses)
-                ses.cierra()
-                _S["ses"] = None
+            if (ses is not None and ses.vivo and not ses.dormida
+                    and time.time() - ses.ultimo > LIBRE):
+                with ses.cv:
+                    ses.duerme()
+                _log("sesión %s dormida (Kodi no pide nada: pausa)" % ses.sid)
                 continue
             if ses is not None and ses.vivo:
                 with ses.cv:
@@ -429,6 +446,10 @@ class _Manejador(BaseHTTPRequestHandler):
         if i >= len(ses.trozos):
             return self._envia(404)
         ses.ultimo = time.time()
+        if ses.dormida:
+            with ses.cv:
+                ses.dormida = False
+            _log("sesión %s despierta en el trozo %d" % (ses.sid, i))
         if i not in (ses.pos, ses.pos + 1):
             _log("salto %d -> %d" % (ses.pos, i))
         with ses.cv:
