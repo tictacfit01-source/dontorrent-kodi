@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl129"
+BUILD = "dtbl130"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -18431,11 +18431,26 @@ document.addEventListener('touchcancel',function(){if(MWD){mwDragEnd(MWD.el,1);M
 // Pestanas: estar en Buscar / Mi lista es tambien un "sitio del que se vuelve".
 // Una sola entrada en la pila por mucho que se salte entre pestanas.
 var CURVIEW='inicio';
-function setView(v){CURVIEW=v;
+// (dtbl130) El scroll es UNO para las cuatro pestanas: antes, al cambiar, la
+// nueva salia a la altura a la que estaba la anterior, y al pulsar Inicio te
+// quedabas a media pagina. Ahora cada pestana recuerda donde la dejaste (volver
+// con el gesto de atras te deja ahi), y PULSAR Inicio sube siempre arriba, como
+// en cualquier app; pulsar la pestana en la que ya estas, tambien.
+var VSCROLL={},_VARRIBA=0;
+function _vSube(suave){try{if(suave)window.scrollTo({top:0,behavior:'smooth'});else window.scrollTo(0,0)}catch(e){window.scrollTo(0,0)}}
+function setView(v){var _de=CURVIEW,_ar=_VARRIBA;_VARRIBA=0;
+ if(_de!==v)VSCROLL[_de]=window.pageYOffset||0;
+ CURVIEW=v;
  ['inicio','buscar','lista','hist'].forEach(function(k){
   var pa=$('pane-'+k),tb=$('tab-'+k);
   if(pa)pa.classList.toggle('hidden',k!==v);
   if(tb)tb.classList.toggle('on',k===v)});
+ // el navegador, al volver atras en el historial, pone SU scroll despues de
+ // esto: se repite un instante despues para que mande el nuestro
+ var _y=_ar?0:(VSCROLL[v]||0);
+ if(_de===v){if(_ar)_vSube(true)}
+ else{try{window.scrollTo(0,_y)}catch(e){}
+  setTimeout(function(){if(CURVIEW===v)try{window.scrollTo(0,_y)}catch(e){}},30)}
  if(v==='lista')renderFavs();
  if(v==='hist')renderHist();
  if(v==='buscar')try{recPinta()}catch(e){}
@@ -18456,7 +18471,8 @@ function legAjusta(){try{var _lg=document.querySelector('.srclegend');if(!_lg)re
  _lg.querySelectorAll('span[data-s]').forEach(function(sp){sp.style.display=hay[sp.getAttribute('data-s')]?'':'none'});
  _lg.style.display=n?'':'none';}catch(e){}}
 function goView(v){
- if(v==='inicio'){if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
+ if(v==='inicio'){_VARRIBA=1;if(mwHas('tab')){mwBack('tab');return}setView('inicio');return}
+ if(v===CURVIEW)_VARRIBA=1;
  mwOpen('tab',null,function(){setView('inicio')});setView(v);
  // (dtbl125) Buscar = escribir: con el campo vacio, el cursor ya dentro (antes
  // habia que tocar otra vez). Con una busqueda hecha no, que el teclado
