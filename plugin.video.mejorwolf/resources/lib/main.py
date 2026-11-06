@@ -793,14 +793,19 @@ def _detail_dt(url, kind, title):
             mtype = "movie"
 
         item_info = dict(info_base, title=label, mediatype=mtype)
+        # (2.9.100) el titulo de un capitulo lleva la SERIE: antes viajaba solo
+        # "04x05" y en la tele, en "Continuar" y en /uso salia "Serie sin nombre"
+        t_play = label
         if has_episodes and dl.get("season") is not None:
             item_info["season"]  = dl["season"]
             item_info["episode"] = dl.get("episode", 0)
+            item_info["tvshowtitle"] = movie_label
+            t_play = ("%s %s" % (movie_label, dl.get("label", ""))).strip()
 
         xbmcplugin.addDirectoryItem(
             HANDLE,
             _u(action="dt_play", content_id=dl["content_id"],
-               tabla=dl["tabla"], page_url=url, t=label),
+               tabla=dl["tabla"], page_url=url, t=t_play),
             _li(label, info=item_info, art=art, playable=True),
             isFolder=False,
         )
@@ -998,9 +1003,14 @@ def _detail_wf(url, kind, title):
                 label = f"{label} - {extras}"
             mtype = "movie"
         info = dict(info_base, title=label, mediatype=mtype)
+        t_play = label
+        if has_episodes:      # (2.9.100) con la serie delante, ver _detail_dt
+            info["tvshowtitle"] = movie_label
+            if movie_label.lower() not in label.lower():
+                t_play = "%s %s" % (movie_label, label)
         xbmcplugin.addDirectoryItem(
             HANDLE,
-            _u(action="play", torrent=dl["torrent_url"], t=label),
+            _u(action="play", torrent=dl["torrent_url"], t=t_play),
             _li(label, info=info, art=art, playable=True),
             isFolder=False,
         )
@@ -1116,6 +1126,7 @@ def cb_play(u, title=""):
     except cbm.NoSale as e:
         xbmc.log("[MejorWolf] cb_play: %s -> %s" % (u[:80], e), xbmc.LOGWARNING)
         url = ""
+    no_conecta = False
     try:
         # (2.9.97) los servidores limitan cada conexión: el acelerador de la
         # caja baja varios trozos a la vez; si no puede, va directo como antes
@@ -1128,6 +1139,8 @@ def cb_play(u, title=""):
             url = turbo.envuelve(url, _aviso)
     except Exception as e:
         xbmc.log("[MejorWolf] cb_play turbo: %s" % e, xbmc.LOGWARNING)
+        if type(e).__name__ == "NoConecta":
+            url, no_conecta = "", True
     finally:
         try:
             if progress:
@@ -1135,7 +1148,9 @@ def cb_play(u, title=""):
         except Exception:
             pass
     if not url:
-        _error("Ese servidor no da el vídeo ahora. Elige otro en la web.")
+        _error("Ese servidor no conecta ahora (pasa en días de fútbol). "
+               "Elige otro, mejor Lulustream." if no_conecta else
+               "Ese servidor no da el vídeo ahora. Elige otro en la web.")
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
     xbmc.log("[MejorWolf] cb_play: %s" % url.split("|")[0][:120], xbmc.LOGINFO)

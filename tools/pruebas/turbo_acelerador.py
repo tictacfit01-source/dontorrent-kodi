@@ -207,6 +207,18 @@ def main():
     print("5. Lo que no se acelera va directo")
     ok(turbo.envuelve(base + "/d/live.m3u8") == base + "/d/live.m3u8", "en directo -> directo")
     ok(turbo.envuelve("https://x/video.mp4|A=b") == "https://x/video.mp4|A=b", "mp4 -> directo")
+
+    print("5b. Servidor que no conecta (días de fútbol) -> aviso claro, no 'Error creating demuxer'")
+    try:
+        turbo.envuelve("http://127.0.0.1:1/v/alta.m3u8")
+        ok(False, "conexión rechazada -> NoConecta")
+    except turbo.NoConecta:
+        ok(True, "conexión rechazada -> NoConecta")
+    try:
+        r5 = turbo.envuelve(base + "/no/existe.m3u8")
+        ok(r5 == base + "/no/existe.m3u8", "servidor que contesta con error -> directo, sin NoConecta")
+    except turbo.NoConecta:
+        ok(False, "servidor que contesta con error -> directo, sin NoConecta")
     turbo.para()
     ok(turbo.envuelve(base + "/v/alta.m3u8") == base + "/v/alta.m3u8", "servicio parado -> directo")
 

@@ -533,7 +533,12 @@ def anuncia():
         pass
 
 
-COLCHON = 25.0               # antes de dárselo a Kodi: unos 25 s ya bajados
+class NoConecta(Exception):
+    """El servidor de vídeo no acepta la conexión (días de fútbol: bloqueo de
+    IPs). Ir directo tampoco valdría: Kodi solo diría "Error creating demuxer"."""
+
+
+COLCHON = 25.0              # antes de dárselo a Kodi: unos 25 s ya bajados
 COLCHON_MAX = 30.0           # ... pero sin esperar más de esto
 
 
@@ -574,7 +579,12 @@ def envuelve(url, aviso=None):
                         pass
                 time.sleep(0.5)
             return j["u"]
-        _log("directo: %s" % j.get("e"))
+        e = str(j.get("e") or "")
+        _log("directo: %s" % e)
+        if e.startswith(("ConnectTimeout", "ConnectionError")):
+            raise NoConecta(e)
+    except NoConecta:
+        raise
     except Exception as e:
         _log("directo: %s" % type(e).__name__)
     return url
