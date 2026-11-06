@@ -57,6 +57,25 @@ M._detail_dt("https://dontorrent/peli/x", "movie", "Parthenope")
 t = titulos()
 comprueba("Pelicula: como siempre", t == ["Parthenope (2024) [1080p]"], t)  # noqa: F821
 
+# 4) (2.9.101) streaming: el mando debe decir lo que suena, no lo ULTIMO que
+#    fue por torrent. 06-11: "En el corazon de la bestia" por streaming y en el
+#    mando "Silicon Valley 1x01" (el fichero del titulo era el de antes).
+NPF = os.path.join(PERFIL, "np_prueba.txt")                                    # noqa: F821
+M.xbmcvfs.translatePath = lambda p: NPF if p.endswith("mejorwolf_np.txt") else p
+M._set_np_title("Silicon Valley 1x01")
+import resources.lib.cinubo as _cbm                                           # noqa: E402
+import resources.lib.turbo as _turbo                                          # noqa: E402
+_cbm.resolver = lambda u: "https://servidor/v.m3u8"
+_turbo.envuelve = lambda url, aviso=None: url
+_ListItem.setMimeType = lambda self, *a: None                                  # noqa: F821
+_ListItem.setContentLookup = lambda self, *a: None                             # noqa: F821
+M._marca_lanzado = lambda: None
+M.cb_play("https://lulustream/e/x", "En el corazón de la bestia")
+np_t = io.open(NPF, encoding="utf-8").read() if os.path.exists(NPF) else ""
+comprueba("Streaming: el mando dice lo que suena", np_t == "En el corazón de la bestia", np_t)  # noqa: F821
+M._set_np_title("")
+comprueba("Sin titulo: fuera el de antes", not os.path.exists(NPF))           # noqa: F821
+
 print("\n---- VEREDICTO ----")
 print("TODO OK: los capitulos elegidos en Kodi llevan el nombre de la serie" if not fallos  # noqa: F821
       else "%d FALLOS" % fallos)  # noqa: F821

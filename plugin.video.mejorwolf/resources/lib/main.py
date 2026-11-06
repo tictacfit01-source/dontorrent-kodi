@@ -1085,9 +1085,16 @@ def _set_np_title(title):
     try:
         import xbmcvfs
         clean = re.sub(r"\s*\[[^\]]*\]\s*$", "", title or "").strip()
-        if not clean:
-            return
         p = xbmcvfs.translatePath("special://temp/mejorwolf_np.txt")
+        if not clean:
+            # (2.9.101) sin titulo, fuera el de antes: mejor el que de Kodi
+            # que el de otra cosa
+            try:
+                import os
+                os.remove(p)
+            except Exception:
+                pass
+            return
         with open(p, "w", encoding="utf-8") as f:
             f.write(clean)
     except Exception:
@@ -1164,6 +1171,10 @@ def cb_play(u, title=""):
         li.setContentLookup(False)
     except Exception:
         pass
+    # (2.9.101) el titulo tambien al poner streaming: sin esto el mando seguia
+    # ensenando el de lo ULTIMO que fue por torrent (06-11: "En el corazon de
+    # la bestia" por streaming y en el mando "Silicon Valley 1x01")
+    _set_np_title(title)
     _marca_lanzado()
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
