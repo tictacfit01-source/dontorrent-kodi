@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl140"
+BUILD = "dtbl141"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17404,7 +17404,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .vp-x svg,.vp-fs svg{width:20px;height:20px}
 .vp-tt{min-width:0;flex:1}
 .vp-t{font-stretch:68%;font-weight:800;font-size:22px;line-height:1.05;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vp-q{font-size:12px;font-weight:600;letter-spacing:.05em;color:var(--amb,#edc27a);margin-top:2px}
+.vp-q{font-size:12px;font-weight:600;letter-spacing:.05em;color:var(--amb,#edc27a);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vp-fin{color:#f1ece4;opacity:.82;font-weight:500}
 .vp-mid{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:clamp(28px,10vw,72px)}
 .vp-sk{width:56px;height:56px}
 .vp-sk svg{width:30px;height:30px}
@@ -18219,7 +18220,7 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
  <div class="vp-ui">
   <div class="vp-top">
    <button class="vp-x" onclick="mwBack('vp')" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg></button>
-   <div class="vp-tt"><div class="vp-t" id="vp-t"></div><div class="vp-q" id="vp-q"></div></div>
+   <div class="vp-tt"><div class="vp-t" id="vp-t"></div><div class="vp-q"><span id="vp-q"></span><span class="vp-fin" id="vp-fin"></span></div></div>
   </div>
   <div class="vp-mid">
    <button class="vp-sk" onclick="vpSalta(-10)" aria-label="Atrás 10 segundos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4.5 12a7.5 7.5 0 1 0 2.3-5.4"/><path d="M6.6 2.8v4h4"/><text x="12" y="15.6" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg></button>
@@ -21169,7 +21170,17 @@ function vpPantalla(){var e=$('vp'),v=$('vp-v');
   if(rf){var p=rf.call(e,{navigationUI:'hide'});if(p&&p.then)p.then(vpGira,function(){});return}
   if(v.webkitEnterFullscreen)v.webkitEnterFullscreen()}catch(x){}   // iPhone: el suyo
  vpUi(1)}
-function vpPinta(t,d,b){$('vp-a').textContent=fmt(t);$('vp-b').textContent=d?fmt(d):'0:00';
+// (dtbl141) "Finaliza a las 23:47" (Israel): la hora de ahora + lo que queda.
+// En pausa se va corriendo (se repinta cada 15 s); al arrastrar la barra,
+// la hora a la que acabaría desde ahí.
+function vpFin(t,d){var el=$('vp-fin');if(!el)return;var v=$('vp-v');
+ if(t==null){t=v.currentTime||0;d=VP.dur}
+ if(!d||!isFinite(d)||d<60||!VP.ok){el.textContent='';return}
+ var f=new Date(Date.now()+Math.max(0,d-t)*1000/((v.playbackRate>0&&v.playbackRate)||1));
+ var h=('0'+f.getHours()).slice(-2)+':'+('0'+f.getMinutes()).slice(-2);
+ el.textContent=($('vp-q').textContent?' · ':'')+'Finaliza a las '+h}
+setInterval(function(){if(VP.on)vpFin()},15000);
+function vpPinta(t,d,b){vpFin(t,d);$('vp-a').textContent=fmt(t);$('vp-b').textContent=d?fmt(d):'0:00';
  var f=d?Math.max(0,Math.min(1,t/d)):0;$('vp-pos').style.width=(f*100)+'%';$('vp-knob').style.left=(f*100)+'%';
  $('vp-buf').style.width=(d?Math.min(100,b/d*100):0)+'%'}
 function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length;i++)if(v.buffered.start(i)<=t+1)b=Math.max(b,v.buffered.end(i))}catch(e){}return b}
