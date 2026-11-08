@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl137"
+BUILD = "dtbl138"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -16068,6 +16068,22 @@ def _cb_cache_pon(tabla, clave, valor, ts=None):
 _CB_LINK_POST = re.compile(r"^/[psa]/[a-z0-9]{4,12}$")
 
 
+def _cb_busquedas(titulo):
+    """(dtbl138) Qué buscar en Cinubo para un título. El de las fuentes torrent
+    trae apellidos que Cinubo no conoce: "El señor de los anillos: La comunidad
+    del anillo (V. Extendida FullBluRay)" daba 0 resultados y la peli quedaba
+    como "no la tiene" 12 h. Sin paréntesis/corchetes; y si no sale, lo de
+    antes de los dos puntos (la saga), que trae todas sus partes."""
+    t = re.sub(r"\s+", " ", str(titulo or "")).strip()
+    limpio = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]?", " ", t)
+    limpio = re.sub(r"\s+", " ", limpio).strip(" -·:")
+    out = [(limpio or t, (1, 2))]       # el título, aunque sea corto ("Up")
+    for v, pags in ((limpio.split(":")[0].strip(), (1,)),):
+        if len(_cb_norm_q(v)) >= 3 and all(_cb_norm_q(v) != _cb_norm_q(o) for o, _ in out):
+            out.append((v, pags))
+    return out
+
+
 def _cb_ficha(tmdb, kind, titulo):
     """La ficha de Cinubo ('/p/xxx', '/s/xxx' o '/a/xxx') de un titulo, por su
     tmdb_id (el mismo que usa MejorWolf: sin adivinar por el nombre). "" si
@@ -16079,24 +16095,25 @@ def _cb_ficha(tmdb, kind, titulo):
     if ya == "" and _cb_cache_get("f", clave, _CB_TTL_NOESTA) == "":
         return ""
     tipos = ("movie",) if kind == "movie" else ("serie", "anime")
-    for pg in (1, 2):
-        txt, st = _cb_pide(q=titulo, pg=pg)
-        if txt is None:
-            return None
-        try:
-            d = _json.loads(txt)
-        except Exception:
-            return None
-        for p in d.get("posts") or []:
+    for q, pags in _cb_busquedas(titulo):
+        for pg in pags:
+            txt, st = _cb_pide(q=q, pg=pg)
+            if txt is None:
+                return None
             try:
-                if int(p.get("tmdb_id") or 0) == int(tmdb) and p.get("type") in tipos \
-                        and _CB_LINK_POST.match(str(p.get("link") or "")):
-                    _cb_cache_pon("f", clave, p["link"])
-                    return p["link"]
-            except (TypeError, ValueError):
-                continue
-        if not (d.get("pagination") or {}).get("has_more"):
-            break
+                d = _json.loads(txt)
+            except Exception:
+                return None
+            for p in d.get("posts") or []:
+                try:
+                    if int(p.get("tmdb_id") or 0) == int(tmdb) and p.get("type") in tipos \
+                            and _CB_LINK_POST.match(str(p.get("link") or "")):
+                        _cb_cache_pon("f", clave, p["link"])
+                        return p["link"]
+                except (TypeError, ValueError):
+                    continue
+            if not (d.get("pagination") or {}).get("has_more"):
+                break
     _cb_cache_pon("f", clave, "")
     return ""
 
