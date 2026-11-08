@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl136"
+BUILD = "dtbl137"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -20587,7 +20587,8 @@ var OVRETRY=null;
 // "Empezar por 2x01" con la T1 entera vista, y desaparecia estando en una
 // temporada vista aunque quedaran capitulos en otra).
 function _todosLosEps(){
- var eps=((OVDATA&&OVDATA.d&&OVDATA.d.episodes)||[]).slice();
+ // (dtbl137) con los capitulos solo en streaming (cbFunde), como se pintan
+ var eps=OVDATA?cbFunde((OVDATA.d&&OVDATA.d.episodes)||[],OVDATA.x).slice():[];
  eps.sort(function(a,b){return ((a.season||0)-(b.season||0))||((a.episode||0)-(b.episode||0))});
  return eps;}
 function _primerSinVer(){
@@ -20624,7 +20625,7 @@ function seguirViendo(){
  // puede estar en otra temporada (no pintada): se le da un hueco en EPS para
  // que playEp lo resuelva igual que a cualquier otro capitulo
  var id=null;
- for(var k in EPS)if(EPS[k]===e){id=k;break}
+ for(var k in EPS)if(EPS[k]===e||(EPS[k]&&e.content_id&&EPS[k].content_id===e.content_id)){id=k;break}
  if(!id){id='eseguir';EPS[id]=e}
  if(_seguirSt(e)){cbEp(id);return}
  playEp(id);}
@@ -20786,7 +20787,11 @@ function markSeen(id){var e=EPS[id];if(!e)return;toggleSeen(e.content_id);var ro
  if(row){var sn=isSeen(e.content_id);row.classList.toggle('seen',sn);var ey=row.querySelector('.eye');if(ey)ey.innerHTML=sn?EYE_ON:EYE_OFF;}
  // el boton "Seguir por..." apunta al primero sin ver: hay que recalcularlo
  try{_seguirPinta()}catch(e2){}}
-function markSeason(s){if(!OVDATA)return;var eps=(OVDATA.d.episodes||[]).filter(function(e){return (e.season||0)===s});
+// (dtbl137) One Piece, 08-11: "Marcar toda vista" no hacía nada. Miraba solo los
+// capítulos de torrent; los de «Streaming» (cbFunde) se quedaban fuera, y con
+// una temporada solo en streaming la lista vacía "ya estaba toda vista".
+function markSeason(s){if(!OVDATA)return;var eps=cbFunde((OVDATA.d&&OVDATA.d.episodes)||[],OVDATA.x).filter(function(e){return (e.season||0)===s});
+ if(!eps.length)return;
  var allseen=eps.every(function(e){return isSeen(e.content_id)});
  eps.forEach(function(e){var cur=isSeen(e.content_id);if(allseen&&cur)toggleSeen(e.content_id);else if(!allseen&&!cur)toggleSeen(e.content_id)});renderEpisodes();}
 function playEp(id){var e=EPS[id];if(!e)return;
