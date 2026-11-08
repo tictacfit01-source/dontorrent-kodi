@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl133"
+BUILD = "dtbl134"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -13416,12 +13416,14 @@ _USO_CORTO_MIN = 15             # encendido menos que esto en el día: "solo un 
 #   dv/pa: aparato y país de cada Kodi (hoy y ayer) -> dvn/kvn/pan, cuentas
 #   vt: lo que se pone (título sin capítulo) -> huellas de Kodi; vtn, cuentas
 #   bq: búsquedas -> [veces, veces sin nada]
+#   vq/vqv: (dtbl134) minutos vistos / vídeos empezados en el propio móvil, por servidor
 _USO_DIC = {"km": ("n", 5000), "rm": ("n", 5000), "rf": ("n", 20), "rq": ("n", 20),
             "rk": ("n", 4), "ok": ("n", 20), "ko": ("n", 20), "cb": ("n", 20),
             "ta": ("p", 20), "tb": ("b", 20), "pm": ("n", 4), "rs": ("n", 8),
             "bf": ("p", 20), "dv": ("s", 5000), "pa": ("s", 5000), "dvn": ("n", 40),
             "kvn": ("n", 40), "pan": ("n", 80), "vt": ("l", 400), "vtn": ("n", 400),
-            "bq": ("p", 400), "lim": ("n", 60), "vm": ("n", 400), "ki": ("s", 5000)}
+            "bq": ("p", 400), "lim": ("n", 60), "vm": ("n", 400), "ki": ("s", 5000),
+            "vq": ("n", 20), "vqv": ("n", 20)}
 _USO_BQ_DIAS = 35               # las búsquedas se guardan 5 semanas
 _USO_TT = (15, 30, 60, 120)     # cortes de "segundos hasta arrancar"
 _USO_DIA_ARRANQUE = "2026-11-02"   # el detalle (casas, fuentes, servicio...) se midió desde la tarde
@@ -13962,6 +13964,12 @@ def _uso_muestra(now=None, forzar=False):
             e["pico"], e["pico_h"] = len(rep), hhmm
         e["hp"][hora] = max(e["hp"][hora], len(rep))
         e["tm"] = e.get("tm", 0) + len(rep)       # minutos de tele (uno por muestra)
+        try:                                      # (dtbl134) y en el móvil, por servidor
+            for x in _vpnow_vivos(now).values():
+                if not x.get("pausa"):
+                    _uso_suma(e, "vq", str(x.get("srv") or "?")[:20])
+        except Exception:
+            pass
         e["mu"] = e.get("mu", 0) + 1              # minutos con el relay mirando
         for c in vivas:
             h = _uso_huella(c)
@@ -14435,6 +14443,78 @@ def _uso_mapa(now=None):
             "sin_ubicar": sin}
 
 
+# (dtbl134) Lo que se ve en el PROPIO móvil ("Aquí", dtbl131) también sale en
+# /uso. El reproductor de la web late cada 30 s mientras está abierto; si deja
+# de latir (cerrado, sin red, el móvil bloqueado) desaparece solo. Por sesión
+# de reproducción un id al azar: ni código, ni IP, ni nada guardado en el móvil.
+_VP_NOW_FILE = "/tmp/mw_vp_now.json"
+_VP_NOW_TTL = 75
+
+
+def _vpnow_load():
+    try:
+        with open(_VP_NOW_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _vpnow_save(d):
+    try:
+        tmp = "%s.%d.tmp" % (_VP_NOW_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(d, f)
+        os.replace(tmp, _VP_NOW_FILE)
+    except Exception:
+        pass
+
+
+def _vpnow_vivos(now=None):
+    now = _t.time() if now is None else now
+    return {k: v for k, v in (_vpnow_load() or {}).items()
+            if isinstance(v, dict) and (now - float(v.get("ts", 0) or 0)) < _VP_NOW_TTL}
+
+
+@app.post("/vp/latido")
+def vp_latido():
+    body = request.get_json(silent=True, force=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False}), 400
+    lid = str(body.get("id") or "")
+    if not re.match(r"^[0-9a-f]{16}$", lid):
+        return jsonify({"ok": False}), 400
+    now = _t.time()
+
+    def _n(x):
+        try:
+            return max(0, min(86400, int(float(x or 0))))
+        except Exception:
+            return 0
+    t = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f<>]", "", str(body.get("t") or ""))).strip()[:140]
+    srv = re.sub(r"[^A-Za-z0-9 ]", "", str(body.get("srv") or "")).strip()[:20] or "?"
+    pausa, fin, ini = bool(body.get("pausa")), bool(body.get("fin")), bool(body.get("ini"))
+    with _FileLock(_VP_NOW_FILE):
+        d = _vpnow_vivos(now)
+        if fin:
+            d.pop(lid, None)
+        elif lid in d or len(d) < 300:
+            d[lid] = {"t": t, "srv": srv, "pos": _n(body.get("pos")), "dur": _n(body.get("dur")),
+                      "pausa": pausa, "ts": now}
+        else:
+            ini = False
+        _vpnow_save(d)
+    if ini and not fin:          # un vídeo que empieza en el móvil, por servidor
+        try:
+            with _FileLock(_USO_FILE):
+                du = _uso_lee()
+                _uso_suma(_uso_dia_e(du, _uso_es(now)[0]), "vqv", srv)
+                _uso_guarda(du)
+            _USO_NUBE["cambios"] += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True})
+
+
 def _uso_ahora(now=None):
     now = _t.time() if now is None else now
     np = [e.get("np") or {} for e in (_kbnow_load() or {}).values()
@@ -14452,8 +14532,19 @@ def _uso_ahora(now=None):
                      "min": int(x.get("elapsed") or 0) // 60, "de": int(x.get("total") or 0) // 60,
                      "pausa": bool(x.get("paused"))} for x in np),
                    key=lambda z: (z["pausa"], z["t"].lower()))
+    try:
+        vp = list(_vpnow_vivos(now).values())
+    except Exception:
+        vp = []
+    lista += sorted(({"t": _uso_titulo(re.sub(r"\b\d{1,2}x\d{1,3}\b", "", x.get("t") or "")) or "Sin título",
+                      "cap": (re.search(r"\b(\d{1,2}x\d{1,3})\b", str(x.get("t") or "")) or [None, ""])[1],
+                      "min": int(x.get("pos") or 0) // 60, "de": int(x.get("dur") or 0) // 60,
+                      "pausa": bool(x.get("pausa")), "aqui": 1, "srv": x.get("srv") or ""} for x in vp),
+                    key=lambda z: (z["pausa"], z["t"].lower()))
     return {"viendo": sum(1 for x in np if not x.get("paused")),
             "en_pausa": sum(1 for x in np if x.get("paused")),
+            "movil": sum(1 for x in vp if not x.get("pausa")),
+            "movil_pausa": sum(1 for x in vp if x.get("pausa")),
             "kodis": len(vivas), "webs": moviles, "versiones": vers, "lista": lista}
 
 
@@ -14695,6 +14786,7 @@ def uso_datos():
                "kodi": _cuenta_dic(eh.get("dv"), 1) if eh.get("dv") else (eh.get("kvn") or {}),
                "paises": _cuenta_dic(eh.get("pa"), 0) if eh.get("pa") else (eh.get("pan") or {}),
                "semana": _uso_semana(d, base), "crece": _uso_crece(d, base),
+               "aqui": {"min": eh.get("vq") or {}, "vistos": eh.get("vqv") or {}},
                "cab": sorted(_USO_CAB)}
     out = {"ok": True, "ahora": _uso_ahora(now), "hoy": hoy, "publicada": publicada,
            "dia_parcial": hoy == _USO_DIA_ARRANQUE,
@@ -14886,9 +14978,13 @@ function lista(xs,vacio,cols){if(!xs||!xs.length)return '<p class="nota">'+vacio
   var h=function(r,i){return '<tr><td>'+(i+1)+'. '+esc(r[0])+'</td>'+cols.map(function(c){return '<td>'+n(r[c])+'</td>'}).join("")+'</tr>'};
   var top=xs.slice(0,10).map(h).join(""),resto=xs.slice(10).map(function(r,i){return h(r,i+10)}).join("");
   return '<table><tbody>'+top+'</tbody></table>'+(resto?'<details><summary>Ver '+(xs.length-10)+' más</summary><table><tbody>'+resto+'</tbody></table></details>':'');}
+function aquiTxt(q){q=q||{};var s=function(o){return Object.keys(o||{}).reduce(function(t,k){return t+(+o[k]||0)},0)};
+  var v=s(q.vistos),m=s(q.min);if(!v&&!m)return '<small>nada hoy</small>';
+  var por=Object.keys(q.min||{}).sort(function(a,b){return q.min[b]-q.min[a]}).map(function(k){return esc(k)+' '+dur(q.min[k])}).join(', ');
+  return n(v)+' <small>vídeos · '+dur(m)+(por?' ('+por+')':'')+'</small>'}
 function viendoHTML(a){var l=a.lista||[];if(!l.length)return '';
   return '<p class="nota" style="margin:14px 0 6px">Qué se está viendo <small>(sin decir en qué casa)</small></p><table class="tsv"><tbody>'+
-   l.map(function(x){return '<tr><td>'+esc(x.t)+(x.cap?' <small class="tag">'+esc(x.cap)+'</small>':'')+(x.pausa?' <small class="tag">pausa</small>':'')+'</td><td class="nw">'+(x.de?n(x.min)+'/'+n(x.de)+' min':n(x.min)+' min')+'</td></tr>'}).join("")+'</tbody></table>';}
+   l.map(function(x){return '<tr><td>'+(x.aqui?'📱 ':'')+esc(x.t)+(x.cap?' <small class="tag">'+esc(x.cap)+'</small>':'')+(x.aqui?' <small class="tag">en el móvil'+(x.srv?' · '+esc(x.srv):'')+'</small>':'')+(x.pausa?' <small class="tag">pausa</small>':'')+'</td><td class="nw">'+(x.de?n(x.min)+'/'+n(x.de)+' min':n(x.min)+' min')+'</td></tr>'}).join("")+'</tbody></table>';}
 function servicioHTML(d){
   var sv=d.servicio||{},ks=Object.keys(sv);
   if(!ks.length)return '<section class="card" id="s-serv"><h2>Calidad del servicio, hoy</h2><p class="nota">Aún no hay envíos medidos hoy.</p></section>';
@@ -15031,13 +15127,15 @@ function pinta(d){
 
   // 1) AHORA
   var ahora='<div class="hero"><b>'+n(a.viendo)+'</b><span>'+(a.viendo==1?"tele viendo algo":"teles viendo algo")+'</span></div>'+
-    '<p class="linea">'+(a.en_pausa?n(a.en_pausa)+' en pausa · ':'')+n(a.kodis)+' Kodis encendidos</p>'+viendoHTML(a);
+    '<p class="linea">'+(a.en_pausa?n(a.en_pausa)+' en pausa · ':'')+n(a.kodis)+' Kodis encendidos'+
+    ((a.movil||a.movil_pausa)?' · 📱 '+n(a.movil)+' viendo en el móvil'+(a.movil_pausa?' ('+n(a.movil_pausa)+' en pausa)':''):'')+'</p>'+viendoHTML(a);
   // 2) HOY
   var hoy=(d.dia_parcial?'<p class="aviso">Hoy empezó a medirse el detalle: «lo normal por tele», cómo se eligen los vídeos (desde esta noche) y la calidad del servicio cuentan desde esta tarde. Desde mañana, días completos.</p>':'')+
     '<div class="fila" style="margin-top:0"><div><b>'+n(hoyE.teles)+'</b><small>teles han visto algo</small></div><div><b>'+String(hoyE.horas||0).replace(".",",")+'</b><small>horas vistas</small></div><div><b>'+n(hoyE.pico)+'</b><small>a la vez como mucho'+(hoyE.pico_h?' ('+esc(hoyE.pico_h)+')':'')+'</small></div></div>'+
     lineas([["Lo normal que ve cada tele <small>(la mediana)</small>",d.med_min_tele?dur(d.med_min_tele):'<small>midiendo</small>'],
             ["Vídeos puestos desde la web",n(webN+movN)+(totN?' <small>('+pct(webN+movN,totN)+')</small>':'')],
-            ["Vídeos puestos en la propia tele <small>(con su mando, o el siguiente capítulo que Kodi pone solo)</small>",n(teleN)+(totN?' <small>('+pct(teleN,totN)+')</small>':'')]])+
+            ["Vídeos puestos en la propia tele <small>(con su mando, o el siguiente capítulo que Kodi pone solo)</small>",n(teleN)+(totN?' <small>('+pct(teleN,totN)+')</small>':'')],
+            ["Vistos en el propio móvil <small>(«📱 Aquí», sin tele)</small>",aquiTxt(d.aqui)]])+
     '<p class="nota" style="margin:14px 0 4px">Teles viendo algo a la vez, por horas</p>'+grafico("dh",hr,["00 h","23 h"],fmtH);
   // 3) CRECIMIENTO
   var cr=d.crece||{};
@@ -15067,6 +15165,7 @@ function pinta(d){
     plegable("Qué significa cada número",defs([
       ["Tele viendo algo","Un Kodi reproduciendo un vídeo, sea de MejorWolf o de cualquier otro sitio."],
       ["Horas vistas","Suma de los minutos de vídeo de todas las teles (sin contar las pausas)."],
+      ["Visto en el móvil","El streaming que se ve en el propio móvil o tablet con «📱 Aquí», sin tele. Va aparte: no cuenta en las teles ni en las horas de tele."],
       ["Kodi","Cada instalación del addon tiene su código. Una casa con tres teles son tres Kodis."],
       ["Puesto desde la web / en la tele","Cada vídeo que empieza: desde la web, si se mandó a la tele o se tocó algo en la web en los 3 min anteriores; en la tele, si se puso con su propio mando (o Kodi pasó solo al siguiente capítulo)."],
       ["Fiel","Un Kodi que se ha encendido al menos 4 de los últimos 7 días."],
@@ -20894,7 +20993,8 @@ function vpHlsJs(cb){if(window.Hls)return cb();var s=document.getElementById('vp
  var n=0;(function mira(){if(window.Hls||++n>120)return cb();setTimeout(mira,100)})()}
 function vpEsApple(){var u=navigator.userAgent||'';return /iPhone|iPad|iPod/.test(u)||(/Macintosh/.test(u)&&'ontouchend' in document)}
 function vpAbre(t,q,k){var e=$('vp'),v=$('vp-v');
- VP.on=1;VP.id++;VP.ok=0;VP.k=k||'';VP.dur=0;VP.g=0;
+ VP.on=1;VP.id++;VP.ok=0;VP.k=k||'';VP.dur=0;VP.g=0;VP.tit=t||'';VP.srv='';VP.latT=0;VP.latIni=0;
+ VP.lid=vpLid();
  vpAudioPrepara();try{if(VP.ac&&VP.ac.state!=='running')VP.ac.resume()}catch(x){}
  $('vp-t').textContent=t||'';$('vp-q').textContent=q?(q+' · sin anuncios'):'';
  $('vp-pp').innerHTML=SVG_PAUSE;vpPinta(0,0,0);
@@ -20909,7 +21009,17 @@ function vpAbre(t,q,k){var e=$('vp'),v=$('vp-v');
  vpHlsJs(function(){});                       // se va bajando mientras Cinubo contesta
  try{if('mediaSession' in navigator&&window.MediaMetadata)navigator.mediaSession.metadata=new MediaMetadata({title:t||'',artist:'MejorWolf'})}catch(x){}}
 function vpGira(){try{screen.orientation.lock('landscape').catch(function(){})}catch(x){}}
-function vpCarga(emb,nom,fallo){var id=VP.id;vpMsg('Conectando con '+nom+'…');
+// (dtbl134) el latido: lo que se ve aquí sale en /uso (solo título, servidor y
+// por dónde va, con un id al azar por sesión; nada de quién ni dónde)
+function vpLid(){var h='';try{var a=new Uint8Array(8);crypto.getRandomValues(a);for(var i=0;i<8;i++)h+=('0'+a[i].toString(16)).slice(-2)}catch(e){}
+ while(h.length<16)h+=Math.floor(Math.random()*16).toString(16);return h.slice(0,16)}
+function vpLatido(fin){if(!VP.lid||(!fin&&!VP.ok))return;if(fin&&!VP.latIni)return;
+ var v=$('vp-v'),o={id:VP.lid,t:VP.tit,srv:VP.srv,pos:Math.floor(v.currentTime||0),dur:Math.floor(VP.dur||0),pausa:!!v.paused};
+ if(fin)o.fin=1;else if(!VP.latIni){o.ini=1;VP.latIni=1}
+ VP.latT=Date.now();VP.latP=o.pausa;var b=JSON.stringify(o);
+ try{if(fin&&navigator.sendBeacon&&navigator.sendBeacon('/vp/latido',new Blob([b],{type:'application/json'})))return}catch(e){}
+ try{fetch('/vp/latido',{method:'POST',headers:{'Content-Type':'application/json'},body:b,keepalive:true}).catch(function(){})}catch(e){}}
+function vpCarga(emb,nom,fallo){var id=VP.id;VP.srv=nom||'';vpMsg('Conectando con '+nom+'…');
  fetch(VPW+'/r?u='+encodeURIComponent(emb)).then(function(r){return r.json()}).then(function(d){
    if(id!==VP.id||!VP.on)return;
    if(!(d&&d.ok&&d.play))return fallo((d&&d.error)||'no');
@@ -20939,7 +21049,7 @@ function vpEmpieza(src,fallo){var v=$('vp-v'),id=VP.id,rec=0,acabado=0;vpSuelta(
 function vpSuelta(){var v=$('vp-v');clearTimeout(VP.startT);
  if(VP.hls){try{VP.hls.destroy()}catch(e){}VP.hls=null}
  try{v.onerror=null;v.pause();v.removeAttribute('src');v.load()}catch(e){}}
-function vpCierraYa(){VP.on=0;VP.id++;vpGuarda();vpSuelta();VP.ok=0;
+function vpCierraYa(){vpLatido(1);VP.lid='';VP.on=0;VP.id++;vpGuarda();vpSuelta();VP.ok=0;
  try{if(VP.ac&&VP.ac.state==='running')VP.ac.suspend()}catch(x){}
  var e=$('vp');e.classList.remove('on','ui','carga','err');document.body.classList.remove('vp-abierto');
  try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(function(){})
@@ -20980,14 +21090,16 @@ function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length
  var ult=0;
  v.addEventListener('playing',function(){if(VP.g!==VP.id)return;
   if(!VP.ok){VP.ok=1;clearTimeout(VP.startT);vpReanuda()}
+  if(Date.now()-VP.latT>4000||VP.latP)vpLatido();
   e.classList.remove('carga');$('vp-load').hidden=true;$('vp-pp').innerHTML=SVG_PAUSE;$('vp-pp').setAttribute('aria-label','Pausa');vpUi(1);vpSueno(1)});
- v.addEventListener('pause',function(){if(!VP.on)return;$('vp-pp').innerHTML=SVG_PLAY;$('vp-pp').setAttribute('aria-label','Reproducir');vpUi(1,1);vpGuarda();vpSueno(0)});
+ v.addEventListener('pause',function(){if(!VP.on)return;vpLatido();$('vp-pp').innerHTML=SVG_PLAY;$('vp-pp').setAttribute('aria-label','Reproducir');vpUi(1,1);vpGuarda();vpSueno(0)});
  v.addEventListener('waiting',function(){if(VP.on&&VP.ok){$('vp-msg').textContent='';$('vp-load').hidden=false}});
  v.addEventListener('canplay',function(){if(VP.ok&&!v.paused)$('vp-load').hidden=true});
  v.addEventListener('timeupdate',function(){if(!VP.on||VP.drag)return;var d=v.duration;VP.dur=isFinite(d)?d:0;
-  vpPinta(v.currentTime,VP.dur,vpBuf(v));if(Date.now()-ult>8000){ult=Date.now();vpGuarda()}});
+  vpPinta(v.currentTime,VP.dur,vpBuf(v));if(Date.now()-ult>8000){ult=Date.now();vpGuarda()}
+  if(VP.ok&&Date.now()-VP.latT>30000)vpLatido()});
  v.addEventListener('progress',function(){if(VP.on&&!VP.drag)vpPinta(v.currentTime,VP.dur,vpBuf(v))});
- v.addEventListener('ended',function(){if(!VP.on)return;vpGuarda(1);$('vp-pp').innerHTML=SVG_PLAY;vpUi(1,1);vpSueno(0)});
+ v.addEventListener('ended',function(){if(!VP.on)return;vpGuarda(1);vpLatido();$('vp-pp').innerHTML=SVG_PLAY;vpUi(1,1);vpSueno(0)});
  // tocar la imagen: aparecen o se van los mandos (tocar un botón no cuenta)
  // deslizar arriba/abajo: izquierda brillo, derecha volumen (el centro, para tocar)
  var G=null;
@@ -21029,6 +21141,7 @@ function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length
  document.addEventListener('fullscreenchange',function(){if(!document.fullscreenElement){try{screen.orientation.unlock()}catch(x){}}});
  // al irse a otra app, se guarda por dónde iba
  document.addEventListener('visibilitychange',function(){if(document.hidden&&VP.on)vpGuarda()});
+ setInterval(function(){if(VP.on&&VP.ok&&!document.hidden&&Date.now()-VP.latT>30000)vpLatido()},10000);
 })();
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
