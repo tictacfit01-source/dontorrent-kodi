@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl132"
+BUILD = "dtbl133"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -15878,6 +15878,33 @@ def _cb_enlaces_de(html):
     return out
 
 
+def _cb_otros_idiomas(html):
+    """(dtbl133) Los idiomas que Cinubo SÍ tiene cuando no hay castellano de
+    España: la web dice "aún no está en castellano (solo latino...)" en vez de
+    callarse (Israel, 08-11, La Odisea)."""
+    import html as _h
+    vistos = []
+    for m in _CB_LINK_RE.finditer(html or ""):
+        try:
+            d = _json.loads(_h.unescape(m.group(1)))
+        except Exception:
+            continue
+        lang = str((d.get("info") or {}).get("language") or "").replace("ñ", "n").lower()
+        if not lang or lang.endswith("espana"):
+            continue
+        if "latino" in lang:
+            n = "latino"
+        elif "sub" in lang or "vose" in lang:
+            n = "subtitulada"
+        elif "ingl" in lang or "english" in lang or "original" in lang:
+            n = "versión original"
+        else:
+            n = re.sub(r"[^a-z ]", "", lang)[:20].strip()
+        if n and n not in vistos:
+            vistos.append(n)
+    return vistos[:4]
+
+
 _CB_IFRAME_RE = re.compile(r'<iframe[^>]+src="(https://[^"]{8,300})"', re.I)
 
 
@@ -16005,6 +16032,7 @@ def _cb_enlaces(ruta):
         _CB["ult_vacia"] = {"ruta": ruta[:40], "bytes": len(txt or ""),
                             "enlaces": (txt or "").count("data-link-playback")}
         _cb_cache_pon("e", ruta, [], _t.time() - _CB_TTL_ENLACES + 1200)
+        _cb_cache_pon("e", ruta + "|otros", _cb_otros_idiomas(txt), _t.time() - _CB_TTL_ENLACES + 1200)
         return en
     _cb_cache_pon("e", ruta, en)
     return en
@@ -16056,6 +16084,8 @@ def cb_enlaces():
     en = _cb_enlaces(ruta)
     if en is None:
         return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
+    if not en:   # (dtbl133) sin castellano: en qué idiomas sí está
+        return jsonify({"ok": True, "items": [], "otros": _cb_cache_get("e", ruta + "|otros", _CB_TTL_ENLACES) or []})
     return jsonify({"ok": True, "items": _cb_ordena(en)})   # también lo ya guardado
 
 
@@ -17231,6 +17261,9 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .vp-gi-ic{display:flex}.vp-gi-ic svg{width:22px;height:22px}
 .vp-gi-bar{width:6px;height:min(150px,34vh);border-radius:3px;background:rgba(241,236,228,.22);position:relative;overflow:hidden}
 .vp-gi-bar i{position:absolute;left:0;right:0;bottom:0;height:0;background:var(--amb,#edc27a)}
+.vp-gi-bar b{position:absolute;left:-3px;right:-3px;height:2px;margin-bottom:-1px;background:#f1ece4;opacity:.75}
+.vp-gi.mas .vp-gi-bar i{background:linear-gradient(to top,var(--amb,#edc27a) 0,var(--amb,#edc27a) var(--cien,70%),#fff3d6 var(--cien,70%))}
+.vp-gi.mas .vp-gi-n{color:var(--amb,#edc27a)}
 .vp-gi-n{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
 #vp:not(.ui){cursor:none}
 #vp-v{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
@@ -18009,7 +18042,7 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
 <div id="vp" aria-label="Reproductor">
  <video id="vp-v" playsinline webkit-playsinline preload="auto"></video>
  <div id="vp-dim"></div>
- <div class="vp-gi" id="vp-gi"><div class="vp-gi-ic" id="vp-gi-ic"></div><div class="vp-gi-bar"><i id="vp-gi-f"></i></div><div class="vp-gi-n" id="vp-gi-n"></div></div>
+ <div class="vp-gi" id="vp-gi"><div class="vp-gi-ic" id="vp-gi-ic"></div><div class="vp-gi-bar"><i id="vp-gi-f"></i><b id="vp-gi-100"></b></div><div class="vp-gi-n" id="vp-gi-n"></div></div>
  <div class="vp-load" id="vp-load"><span class="spin"></span><div class="vp-msg" id="vp-msg"></div></div>
  <div class="vp-ui">
   <div class="vp-top">
@@ -19868,7 +19901,7 @@ function pickAlt(clave){
 // COMPARTIDO reconstruido (abrir directo la peli/serie, sin buscar).
 function openCard(x){if(!x)return;sel=x;if(x.kind==='serie'){openSeries(x);return}
  var SL={dt:'DonTorrent',et:'EliteTorrent',dx:'DivxTotal',wf:'WolfMax4K',cb:'Streaming'};var s2=x.source||'dt';
- var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2])sy+=' · '+SL[s2];
+ var sy=star(x);if(x.quality)sy+=(sy?' · ':'')+x.quality;if(SL[s2]&&SL[s2]!==x.quality)sy+=' · '+SL[s2];
  var pst=$('sh-poster');if(x.poster){pst.style.backgroundImage=cssUrl(x.poster);pst.classList.remove('hidden')}else{pst.style.backgroundImage='';pst.classList.add('hidden')}
  ZPOSTER=x.poster||'';
  $('sh-t').textContent=x.title;$('sh-y').textContent=sy;
@@ -20702,10 +20735,19 @@ function cbCarga(o){var x=o.x,el=$(o.el);if(!el||!x||!x.tmdb_id)return;
  var qs='/cbenlaces?id='+encodeURIComponent(x.tmdb_id)+'&kind='+(x.kind==='serie'?'serie':'movie')+
   '&t='+encodeURIComponent(_tituloBase(x.title||''))+(o.s?('&s='+o.s+'&e='+o.e):'');
  fetch(qs).then(function(r){return r.json()}).then(function(d){if(CBSEL!==yo)return;
-   yo.items=(d&&d.ok&&d.items)||[];yo.err=(d&&!d.ok)?(d.motivo||d.error||'no'):'';cbPinta(o.el)})
+   yo.items=(d&&d.ok&&d.items)||[];yo.otros=(d&&d.otros)||[];yo.err=(d&&!d.ok)?(d.motivo||d.error||'no'):'';cbPinta(o.el)})
   .catch(function(){if(CBSEL!==yo)return;yo.items=[];yo.err='red';cbPinta(o.el)})}
 function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
- if(!c.items.length){el.innerHTML=(elId==='cbd-l')?('<div class="cbmsg">'+(c.err?'Cinubo no contesta ahora mismo. Prueba en un rato.':'Cinubo no tiene este capítulo en castellano.')+'</div>'):'';return}
+ // (dtbl133) sin servidores se DICE por qué, también en la ficha de lo que solo
+ // está en streaming (La Odisea, 08-11: la ficha se quedaba muda). En la ficha
+ // de algo con torrent no hace falta: ahí está el botón de siempre.
+ if(!c.items.length){var solo=elId==='cbd-l'||(elId==='sh-cb'&&sel&&sel.source==='cb'),
+   peli=c.k&&c.k.indexOf('movie')===0,que=peli?'Esta película':'Este capítulo',
+   ot=(c.otros||[]).join(', ').replace(/, ([^,]*)$/,' y $1');
+  el.innerHTML=!solo?'':('<div class="cbmsg">'+(c.err?'Cinubo no contesta ahora mismo. Prueba en un rato.':
+   ('🗣️ <b>'+que+' aún no está en castellano.</b> '+(ot?'De momento solo está en '+esc(ot)+'. ':'')+'Vuelve a mirar más adelante.'))+'</div>');
+  if(elId==='sh-cb'&&solo)$('sh-seeds').innerHTML='<span class="seedtag">📺 Streaming · '+(c.err?'Cinubo no contesta':'aún no en castellano')+'</span>';
+  return}
  // Arriba los que la tele abre sola; el resto, plegado y avisado.
  // (dtbl120) De los que la tele abre sola se ve CADA subida, numerada si hay
  // varias ("Vidara 1080p · 1", "· 2"): son copias en máquinas distintas y una
@@ -20804,15 +20846,40 @@ var VP={on:0,id:0,hls:null,ok:0,k:'',dur:0,drag:0,hideT:0,startT:0,wl:null,g:0,l
 var VPSOL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
 var VPVOL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>';
 var VPMUDO='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M17 9.5l5 5M22 9.5l-5 5"/></svg>';
-function vpGi(lado,val,ic){var g=$('vp-gi');g.classList.remove('izq','der');g.classList.add(lado==='luz'?'izq':'der','on');
- $('vp-gi-ic').innerHTML=ic;$('vp-gi-f').style.height=Math.round(val*100)+'%';$('vp-gi-n').textContent=Math.round(val*100);
+// (dtbl133) Israel: "al máximo no es el máximo del dispositivo y eso no puede ser".
+// Una web no puede tocar ni la retroiluminación ni el volumen del sistema; lo
+// que sí puede: por ENCIMA del 100 %, aclarar la imagen (hasta 140 %) y
+// reforzar el sonido con Web Audio (hasta 200 %, con limitador para que no
+// distorsione), como el 200 % de VLC. La rayita blanca marca el 100 %.
+var VPLUZMAX=1.4,VPVOLMAX=2;
+function vpGi(lado,val,max,ic){var g=$('vp-gi');g.classList.remove('izq','der');g.classList.add(lado==='luz'?'izq':'der','on');
+ var cien=Math.round(100/max)+'%';g.style.setProperty('--cien',(val>1?Math.round(100/val):100)+'%');
+ g.classList.toggle('mas',val>1.005);$('vp-gi-100').style.bottom=max>1?cien:'100%';$('vp-gi-100').style.display=max>1?'':'none';
+ $('vp-gi-ic').innerHTML=ic;$('vp-gi-f').style.height=Math.round(val/max*100)+'%';$('vp-gi-n').textContent=Math.round(val*100);
  clearTimeout(VP.giT)}
-function vpLuz(b){VP.luz=Math.max(.15,Math.min(1,b));$('vp-dim').style.opacity=String((1-VP.luz)*.85);
- vpGi('luz',(VP.luz-.15)/.85,VPSOL)}
-function vpVol(x){var v=$('vp-v');x=Math.max(0,Math.min(1,x));try{v.volume=x;v.muted=x===0}catch(e){}
- if(Math.abs((v.volume||0)-x)>.02){   // iPhone/iPad: el volumen solo con los botones
+function vpLuz(b){var v=$('vp-v');VP.luz=Math.max(.15,Math.min(VPLUZMAX,b));
+ $('vp-dim').style.opacity=String(VP.luz<1?(1-VP.luz)*.85:0);
+ v.style.filter=VP.luz>1.005?('brightness('+VP.luz.toFixed(2)+')'):'';
+ vpGi('luz',VP.luz,VPLUZMAX,VPSOL)}
+// El refuerzo pasa el sonido por Web Audio. Solo con hls.js (el vídeo es un blob
+// propio: sin CORS de por medio) y nunca en Apple (con su HLS nativo saldría
+// mudo). El contexto se crea al abrir el reproductor, dentro del toque.
+function vpPuedeReforzar(){return !!(VP.hls&&(window.AudioContext||window.webkitAudioContext)&&!vpEsApple())}
+function vpAudioPrepara(){if(VP.ac||!(window.AudioContext||window.webkitAudioContext)||vpEsApple())return;
+ try{VP.ac=new (window.AudioContext||window.webkitAudioContext)()}catch(e){VP.ac=null}}
+function vpRefuerzo(g){var v=$('vp-v');
+ if(!VP.gn){if(g<=1.001)return true;if(!VP.ac||!vpPuedeReforzar()||VP.ac.state!=='running')return false;
+  try{var ac=VP.ac,src=ac.createMediaElementSource(v),gn=ac.createGain(),cp=ac.createDynamicsCompressor();
+   cp.threshold.value=-4;cp.knee.value=6;cp.ratio.value=20;cp.attack.value=.003;cp.release.value=.25;
+   src.connect(gn);gn.connect(cp);cp.connect(ac.destination);VP.gn=gn}catch(e){return false}}
+ try{VP.gn.gain.value=Math.max(1,g)}catch(e){}return true}
+function vpVolMax(){return VP.ac&&(VP.gn||vpPuedeReforzar())?VPVOLMAX:1}
+function vpVol(x){var v=$('vp-v'),max=vpVolMax();x=Math.max(0,Math.min(max,x));
+ try{v.volume=Math.min(1,x);v.muted=x===0}catch(e){}
+ if(Math.abs((v.volume||0)-Math.min(1,x))>.02){   // iPhone/iPad: el volumen solo con los botones
   if(!VP.avisoVol){VP.avisoVol=1;toast('Para el volumen, usa los botones del lateral',3000)}return}
- vpGi('vol',x,x===0?VPMUDO:VPVOL)}
+ if(!vpRefuerzo(x)){max=1;x=Math.min(1,x)}
+ VP.vol=x;vpGi('vol',x,max,x===0?VPMUDO:VPVOL)}
 function cbDonde(){var v='';try{v=localStorage.getItem('mw_cbdonde')||''}catch(e){}
  if(v==='tv'||v==='aqui')return v;
  // sin Kodi apuntado, lo natural es verlo aquí
@@ -20828,6 +20895,7 @@ function vpHlsJs(cb){if(window.Hls)return cb();var s=document.getElementById('vp
 function vpEsApple(){var u=navigator.userAgent||'';return /iPhone|iPad|iPod/.test(u)||(/Macintosh/.test(u)&&'ontouchend' in document)}
 function vpAbre(t,q,k){var e=$('vp'),v=$('vp-v');
  VP.on=1;VP.id++;VP.ok=0;VP.k=k||'';VP.dur=0;VP.g=0;
+ vpAudioPrepara();try{if(VP.ac&&VP.ac.state!=='running')VP.ac.resume()}catch(x){}
  $('vp-t').textContent=t||'';$('vp-q').textContent=q?(q+' · sin anuncios'):'';
  $('vp-pp').innerHTML=SVG_PAUSE;vpPinta(0,0,0);
  e.classList.add('on','carga');e.classList.remove('err');document.body.classList.add('vp-abierto');
@@ -20872,6 +20940,7 @@ function vpSuelta(){var v=$('vp-v');clearTimeout(VP.startT);
  if(VP.hls){try{VP.hls.destroy()}catch(e){}VP.hls=null}
  try{v.onerror=null;v.pause();v.removeAttribute('src');v.load()}catch(e){}}
 function vpCierraYa(){VP.on=0;VP.id++;vpGuarda();vpSuelta();VP.ok=0;
+ try{if(VP.ac&&VP.ac.state==='running')VP.ac.suspend()}catch(x){}
  var e=$('vp');e.classList.remove('on','ui','carga','err');document.body.classList.remove('vp-abierto');
  try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(function(){})
   else if(document.webkitFullscreenElement&&document.webkitExitFullscreen)document.webkitExitFullscreen()}catch(x){}
@@ -20893,6 +20962,7 @@ function vpSueno(si){try{if(si&&!VP.wl&&navigator.wakeLock)navigator.wakeLock.re
 function vpUi(si,fijo){var e=$('vp');clearTimeout(VP.hideT);e.classList.toggle('ui',!!si);
  if(si&&!fijo)VP.hideT=setTimeout(function(){var v=$('vp-v');if(!v.paused&&!VP.drag&&VP.ok)e.classList.remove('ui')},3200)}
 function vpPP(){var v=$('vp-v');if(!VP.ok&&!v.src&&!VP.hls)return;
+ try{if(VP.gn&&VP.ac&&VP.ac.state!=='running')VP.ac.resume()}catch(x){}
  if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){})}else v.pause();vpUi(1)}
 function vpSalta(s){var v=$('vp-v');if(!VP.ok||!v.duration)return;
  v.currentTime=Math.max(0,Math.min(v.duration-1,(v.currentTime||0)+s));vpUi(1)}
@@ -20928,11 +20998,11 @@ function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length
  e.addEventListener('touchmove',function(ev){if(!G||!ev.touches||!ev.touches.length)return;
   var t=ev.touches[0],dy=t.clientY-G.y,dx=t.clientX-G.x;
   if(!G.on){if(Math.abs(dy)>12&&Math.abs(dy)>Math.abs(dx)*1.3){G.on=1;G.y=t.clientY;dy=0;
-    G.v0=G.lado==='luz'?VP.luz:(v.muted?0:v.volume);e.classList.remove('ui')}
+    G.v0=G.lado==='luz'?VP.luz:(v.muted?0:(VP.gn&&VP.vol>1?VP.vol:v.volume));e.classList.remove('ui')}
    else if(Math.abs(dx)>16){G=null;return}else return}
   if(ev.cancelable)ev.preventDefault();
   var d=-dy/Math.max(200,(window.innerHeight||600)*.7);
-  if(G.lado==='luz')vpLuz(G.v0+d*.85);else vpVol(G.v0+d)},{passive:false});
+  if(G.lado==='luz')vpLuz(G.v0+d*(VPLUZMAX-.15));else vpVol(G.v0+d*vpVolMax())},{passive:false});
  var finG=function(){if(G&&G.on){VP.gesto=Date.now();clearTimeout(VP.giT);
    VP.giT=setTimeout(function(){$('vp-gi').classList.remove('on')},700)}G=null};
  e.addEventListener('touchend',finG);e.addEventListener('touchcancel',finG);
