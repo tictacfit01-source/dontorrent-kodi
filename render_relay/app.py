@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl130"
+BUILD = "dtbl131"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17214,6 +17214,49 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .cbb:active{transform:scale(.96)}
 .cbmsg{font-size:13px;color:var(--sub);line-height:1.5}
 .cbmas{margin-top:10px}
+/* (dtbl131) Dónde verlo: en la tele o aquí mismo (móvil, tablet, ordenador) */
+.cbdonde{display:flex;gap:4px;padding:4px;margin:0 0 10px;border-radius:13px;background:rgba(241,236,228,.05);border:1px solid var(--stroke)}
+.cbdonde button{flex:1;min-height:44px;border:0;border-radius:10px;background:transparent;color:var(--sub);font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.cbdonde button.on{background:var(--amb,#edc27a);color:var(--ambtxt,#231a0c)}
+/* (dtbl131) El reproductor de la web: pantalla completa, nada más que la película */
+#vp{position:fixed;inset:0;z-index:60;background:#000;display:none;color:#f1ece4;-webkit-user-select:none;user-select:none;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+#vp.on{display:block}
+#vp:not(.ui){cursor:none}
+#vp-v{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.vp-ui{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity .22s;
+ background:linear-gradient(to bottom,rgba(14,11,16,.78),rgba(14,11,16,0) 26%,rgba(14,11,16,0) 64%,rgba(14,11,16,.86))}
+#vp.ui .vp-ui{opacity:1;pointer-events:auto}
+.vp-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;
+ padding:max(14px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left))}
+.vp-x,.vp-sk,.vp-fs{flex:none;width:44px;height:44px;border-radius:50%;border:1px solid rgba(241,236,228,.14);background:rgba(20,16,24,.62);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);color:inherit;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+.vp-x svg,.vp-fs svg{width:20px;height:20px}
+.vp-tt{min-width:0;flex:1}
+.vp-t{font-stretch:68%;font-weight:800;font-size:22px;line-height:1.05;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vp-q{font-size:12px;font-weight:600;letter-spacing:.05em;color:var(--amb,#edc27a);margin-top:2px}
+.vp-mid{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:clamp(28px,10vw,72px)}
+.vp-sk{width:56px;height:56px}
+.vp-sk svg{width:30px;height:30px}
+.vp-pp{width:76px;height:76px;border-radius:50%;border:0;box-shadow:0 4px 24px rgba(0,0,0,.45);background:var(--amb,#edc27a);color:var(--ambtxt,#231a0c);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+.vp-pp svg{width:36px;height:36px}
+.vp-x:active,.vp-sk:active,.vp-pp:active,.vp-fs:active{transform:scale(.9)}
+.vp-bot{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:10px;
+ padding:0 max(16px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+.vp-tm{flex:none;font-size:13px;font-variant-numeric:tabular-nums;min-width:46px;text-align:center;opacity:.92}
+.vp-bar{flex:1;height:44px;position:relative;cursor:pointer;touch-action:none}
+.vp-bar::before,.vp-bar i{content:'';position:absolute;left:0;top:50%;height:4px;margin-top:-2px;border-radius:2px}
+.vp-bar::before{right:0;background:rgba(241,236,228,.22)}
+#vp-buf{background:rgba(241,236,228,.4);width:0}
+#vp-pos{background:var(--amb,#edc27a);width:0}
+.vp-bar b{position:absolute;top:50%;left:0;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:var(--amb,#edc27a);box-shadow:0 0 0 5px rgba(237,194,122,.22)}
+.vp-bar.drag b{transform:scale(1.25)}
+.vp-load{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;pointer-events:none}
+.vp-load[hidden]{display:none}
+.vp-load .spin{width:34px;height:34px;border-width:3px;border-color:rgba(241,236,228,.18);border-top-color:var(--amb,#edc27a)}
+.vp-msg{font-size:15px;line-height:1.45;max-width:340px;color:#f1ece4;text-shadow:0 1px 8px #000}
+#vp.err .vp-load .spin,#vp.carga .vp-mid,#vp.err .vp-mid{display:none}
+#vp.carga .vp-bot,#vp.err .vp-bot{visibility:hidden}
+@media (max-height:420px){.vp-t{font-size:19px}.vp-pp{width:64px;height:64px}.vp-sk{width:50px;height:50px}}
+.vp-abierto .toast{z-index:62}
 .novb{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:44px;margin:-4px 0 13px;padding:8px 14px;border-radius:12px;border:1px solid rgba(64,156,255,.35);background:rgba(64,156,255,.10);color:var(--txt);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
 .novb .novv{flex:none;color:#7dbbff;font-weight:600;position:relative;padding-right:4px}
 .novdot{position:absolute;top:-6px;right:-8px;width:8px;height:8px;border-radius:50%;background:#ff453a;display:none}
@@ -17950,6 +17993,27 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
   <div class="mwd-t" id="cbd-t"></div>
   <div class="cbbox" id="cbd-l"></div>
   <div class="mwd-b"><button class="mwd-x" onclick="mwBack('cbdlg')">Cerrar</button></div>
+ </div>
+</div>
+<div id="vp" aria-label="Reproductor">
+ <video id="vp-v" playsinline webkit-playsinline preload="auto"></video>
+ <div class="vp-load" id="vp-load"><span class="spin"></span><div class="vp-msg" id="vp-msg"></div></div>
+ <div class="vp-ui">
+  <div class="vp-top">
+   <button class="vp-x" onclick="mwBack('vp')" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg></button>
+   <div class="vp-tt"><div class="vp-t" id="vp-t"></div><div class="vp-q" id="vp-q"></div></div>
+  </div>
+  <div class="vp-mid">
+   <button class="vp-sk" onclick="vpSalta(-10)" aria-label="Atrás 10 segundos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4.5 12a7.5 7.5 0 1 0 2.3-5.4"/><path d="M6.6 2.8v4h4"/><text x="12" y="15.6" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg></button>
+   <button class="vp-pp" id="vp-pp" onclick="vpPP()" aria-label="Pausa"></button>
+   <button class="vp-sk" onclick="vpSalta(10)" aria-label="Adelante 10 segundos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M19.5 12a7.5 7.5 0 1 1-2.3-5.4"/><path d="M17.4 2.8v4h-4"/><text x="12" y="15.6" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg></button>
+  </div>
+  <div class="vp-bot">
+   <span class="vp-tm" id="vp-a">0:00</span>
+   <div class="vp-bar" id="vp-bar"><i id="vp-buf"></i><i id="vp-pos"></i><b id="vp-knob"></b></div>
+   <span class="vp-tm" id="vp-b">0:00</span>
+   <button class="vp-fs" onclick="vpPantalla()" aria-label="Pantalla completa"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+  </div>
  </div>
 </div>
 <div class="sheet" id="lsheet" onclick="if(event.target===this)closeLS()">
@@ -20635,11 +20699,18 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
  // puede ir mucho más rápida (03-11, The Gentlemen 1x03: se veía un solo Vidara,
  // el lento). De los demás, uno por servidor+calidad; si falla, cbPlay prueba
  // su gemelo.
+ // (dtbl131) "Aquí": solo los que el reproductor de la web abre (mw-video);
+ // los demás ni se enseñan, para no ofrecer un botón que no va a funcionar.
+ var aqui=cbDonde()==='aqui',abre=aqui?CBAQUI:CBABRE;
  var vistos={},tot={},bot=function(it,i,num){return '<button class="cbb" onclick="cbPlay('+i+')">▶ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+(num?' · '+num:'')+'</i></button>'},
   seg='',otros='',n=0;
  c.items.forEach(function(it){var k=it.srv+'|'+cbQ(it.q);tot[k]=(tot[k]||0)+1});
  c.items.forEach(function(it,i){var k=it.srv+'|'+cbQ(it.q);vistos[k]=(vistos[k]||0)+1;
-  if(CBABRE[it.srv]){seg+=bot(it,i,tot[k]>1?vistos[k]:0);n++}else if(vistos[k]===1)otros+=bot(it,i,0)});
+  if(abre[it.srv]){seg+=bot(it,i,tot[k]>1?vistos[k]:0);n++}else if(!aqui&&vistos[k]===1)otros+=bot(it,i,0)});
+ var donde='<div class="cbdonde" role="group" aria-label="Dónde verlo">'+
+  '<button class="'+(aqui?'':'on')+'" onclick="cbPonDonde(\'tv\',\''+elId+'\')">📺 En la tele</button>'+
+  '<button class="'+(aqui?'on':'')+'" onclick="cbPonDonde(\'aqui\',\''+elId+'\')">📱 Aquí</button></div>';
+ if(aqui&&!seg)seg='<div class="cbmsg">Ninguno de estos servidores se puede ver aquí: mándalo a la tele.</div>';
  // (dtbl95) en la ficha de una peli: si el streaming que la tele abre sola tiene
  // MEJOR calidad que el torrent (1080p frente a 720p/HDTV), sube por encima del
  // botón del torrent. Israel: "si hay buena calidad a 1080p, que gane".
@@ -20650,7 +20721,7 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
   var pb=$('sheet').querySelector('.btn.play');
   if(pb&&pb.parentNode){if(mejor)pb.parentNode.insertBefore(el,pb);else pb.parentNode.insertBefore(el,pb.nextSibling)}}
  el.innerHTML='<div class="cbt">'+(mejor?'⭐ <b>Mejor calidad en streaming</b> <span>· castellano · sin anuncios</span>':'📺 Streaming sin anuncios <span>· castellano · sin semillas</span>')+'</div>'+
-  (seg?('<div class="cbr">'+seg+'</div>'):'')+
+  donde+(seg?('<div class="cbr">'+seg+'</div>'):'')+
   (otros?((seg?'<details class="cbmas"><summary>Más servidores (pueden no abrir en la tele)</summary>':'')+'<div class="cbr">'+otros+'</div>'+(seg?'</details>':'')):'')}
 var CBABRE={VIDARA:1,LULUSTREAM:1,FIRESTREAM:1,VIDHIDE:1};   // los que la tele abre sola (2.9.92)
 // las demás subidas del mismo servidor y calidad, por si la elegida falla
@@ -20662,22 +20733,35 @@ function cbEp(id){var e=EPS[id],x=OVDATA&&OVDATA.x;if(!e||!x)return;
  cbCarga({x:x,el:'cbd-l',t:t,s:e.season,e:e.episode,dlg:1})}
 // (dtbl102) si el enlace elegido está muerto o no da servidor: sus gemelos y
 // luego los demás servidores que la tele abre, sin que la persona haga nada.
-function cbSiguientes(c,i){var a=c.items[i],g=cbGemelos(c,i),vis={};vis[i]=1;g.forEach(function(j){vis[j]=1});
- var mas=c.items.map(function(x,j){return j}).filter(function(j){return !vis[j]&&CBABRE[c.items[j].srv]&&(j!==i)});
+function cbSiguientes(c,i,aqui){var a=c.items[i],g=cbGemelos(c,i),vis={},ab=aqui?CBAQUI:CBABRE;vis[i]=1;g.forEach(function(j){vis[j]=1});
+ var mas=c.items.map(function(x,j){return j}).filter(function(j){return !vis[j]&&ab[c.items[j].srv]&&(j!==i)});
  return g.concat(mas).slice(0,2)}   // (dtbl103) como mucho 2 más: nada de ráfagas
 function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
- var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}
- if(resto===undefined)resto=cbSiguientes(c,i);vez=vez||0;
- if(!vez)toast('Abriendo '+cbNom(it.srv)+'…');
+ // (dtbl131) "Aquí": el reproductor se abre YA, dentro del toque (si no, el
+ // navegador no deja pantalla completa ni sonido), y Cinubo contesta detrás.
+ var aqui=cbDonde()==='aqui',av=aqui?vpMsg:toast,cadena=resto!==undefined;
+ if(!aqui){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){avisaCodigo();return}}
+ if(aqui&&resto===undefined)vpAbre(c.t,cbQ(it.q),c.k);
+ if(resto===undefined)resto=cbSiguientes(c,i,aqui);vez=vez||0;
+ var vivo=function(){return CBSEL===c&&(!aqui||VP.on)},id=VP.id;
+ if(!vez||aqui)av('Abriendo '+cbNom(it.srv)+'…');
  fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){
+   if(aqui&&(!VP.on||VP.id!==id))return;      // ya lo cerró o eligió otro
    // (dtbl101) Cinubo va con mucha gente: se espera lo que diga el relay y se
    // reintenta SOLO (hasta 3 veces). La persona no tiene que hacer nada.
    if(d&&d.error==='espera'&&vez<3&&(d.s||0)<=120){var sg=Math.max(3,Math.min(90,d.s||30));
-    toast('⏳ Cinubo va con mucha gente: lo pongo en la tele en '+sg+' s',Math.min(sg*1000,8000));
-    setTimeout(function(){if(CBSEL===c)cbPlay(i,resto,vez+1)},sg*1000);return}
+    av('⏳ Cinubo va con mucha gente: '+(aqui?'empieza':'lo pongo en la tele')+' en '+sg+' s',Math.min(sg*1000,8000));
+    setTimeout(function(){if(vivo())cbPlay(i,resto,vez+1)},sg*1000);return}
    if(!(d&&d.ok&&d.u)&&d&&d.error!=='espera'&&resto.length){var nx=c.items[resto[0]];
-    toast((d.error==='muerto'?'Ese enlace ya no existe':cbNom(it.srv)+' no responde')+': pruebo con '+cbNom(nx&&nx.srv)+'…',4000);
-    setTimeout(function(){if(CBSEL===c)cbPlay(resto[0],resto.slice(1),vez)},3000);return}
+    av((d.error==='muerto'?'Ese enlace ya no existe':cbNom(it.srv)+' no responde')+': pruebo con '+cbNom(nx&&nx.srv)+'…',4000);
+    setTimeout(function(){if(vivo())cbPlay(resto[0],resto.slice(1),vez)},aqui?1200:3000);return}
+   if(d&&d.ok&&d.u&&aqui){
+    // si este servidor no arranca (o se corta y no se recupera), el siguiente,
+    // por donde iba: la persona no tiene que hacer nada
+    vpCarga(d.u,cbNom(it.srv),function(por){if(!vivo())return;
+      if(resto.length){var nx=c.items[resto[0]];vpMsg(cbNom(it.srv)+' no va bien: pruebo con '+cbNom(nx&&nx.srv)+'…');
+       setTimeout(function(){if(vivo())cbPlay(resto[0],resto.slice(1),vez)},1200)}
+      else vpFallo(VPNADA)});return}
    if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
     if($('wfdlg').classList.contains('on')){dl=true;mwBack('wfdlg')}
     // (dtbl96) como el torrent: a la tele y el mando abierto. sendPlay cierra
@@ -20686,9 +20770,152 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
     setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)},null,function(r){if(!r)return;
       if(r.tele===false){toast('📴 Tu tele no está conectada. Enciéndela y abre Kodi: empezará sola',5500);return}
       toast('▶ En la tele');setTimeout(function(){openRemote();setTimeout(pollNow,1200)},450)})},dl?220:0);return}
-   toast(d&&d.error==='espera'?('Cinubo está saturado ahora mismo: prueba en '+Math.max(2,Math.round((d.s||120)/60))+' min o elige otra fuente'):
+   if(aqui&&cadena&&!(d&&d.error==='espera')){vpFallo(VPNADA);return}
+   (aqui?vpFallo:toast)(d&&d.error==='espera'?('Cinubo está saturado ahora mismo: prueba en '+Math.max(2,Math.round((d.s||120)/60))+' min o elige otra fuente'):
     (d&&d.error==='muerto'?'Ese enlace ya no existe en Cinubo: elige otro servidor':(cbNom(it.srv)+' no contesta ahora: elige otro servidor')),6000)})
-  .catch(function(){toast('No se pudo conectar: prueba otra vez')})}
+  .catch(function(){if(aqui&&(!VP.on||VP.id!==id))return;(aqui?vpFallo:toast)('No se pudo conectar: prueba otra vez')})}
+// ====== (dtbl131) VER AQUÍ: el streaming en el propio móvil o tablet ======
+// Israel, 08-11: "que se reproduzca a pantalla completa el contenido; si pulsas
+// la pantalla, la típica barra para saber por dónde va y la pausa". Sin
+// anuncios: nada del reproductor del servidor, solo el vídeo. El navegador no
+// puede poner las cabeceras que piden los servidores (Lulustream: Referer) ni
+// leer el /api/stream de Vidara: lo hace el worker mw-video (video-worker/), que
+// además no tiene el límite por conexión (Vidara 1,6 Mbit/s directo, 14-35 por
+// el worker; medido el 08-11).
+var CBAQUI={VIDARA:1,LULUSTREAM:1,FIRESTREAM:1,VIDHIDE:1};   // los que mw-video abre
+var VPW='https://mw-video.israeldm93.workers.dev';
+var VPNADA='Ninguno de estos servidores abre ahora mismo. Prueba en un rato, o mándalo a la tele.';
+var HLSJS='https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
+var VP={on:0,id:0,hls:null,ok:0,k:'',dur:0,drag:0,hideT:0,startT:0,wl:null,g:0};
+function cbDonde(){var v='';try{v=localStorage.getItem('mw_cbdonde')||''}catch(e){}
+ if(v==='tv'||v==='aqui')return v;
+ // sin Kodi apuntado, lo natural es verlo aquí
+ return ((code.value||'').replace(/\D/g,'').length===6)?'tv':'aqui'}
+function cbPonDonde(w,elId){try{localStorage.setItem('mw_cbdonde',w)}catch(e){}cbPinta(elId)}
+function vpMsg(t){var l=$('vp-load');if(!l)return;$('vp-msg').textContent=t||'';
+ $('vp').classList.remove('err');l.hidden=!t&&VP.ok}
+function vpFallo(t){if(!VP.on)return;vpSuelta();VP.ok=0;$('vp-msg').textContent=t;$('vp-load').hidden=false;
+ $('vp').classList.add('err');$('vp').classList.remove('carga');vpUi(1,1)}
+function vpHlsJs(cb){if(window.Hls)return cb();var s=document.getElementById('vp-hlsjs');
+ if(!s){s=document.createElement('script');s.id='vp-hlsjs';s.src=HLSJS;s.async=true;document.head.appendChild(s)}
+ var n=0;(function mira(){if(window.Hls||++n>120)return cb();setTimeout(mira,100)})()}
+function vpEsApple(){var u=navigator.userAgent||'';return /iPhone|iPad|iPod/.test(u)||(/Macintosh/.test(u)&&'ontouchend' in document)}
+function vpAbre(t,q,k){var e=$('vp'),v=$('vp-v');
+ VP.on=1;VP.id++;VP.ok=0;VP.k=k||'';VP.dur=0;VP.g=0;
+ $('vp-t').textContent=t||'';$('vp-q').textContent=q?(q+' · sin anuncios'):'';
+ $('vp-pp').innerHTML=SVG_PAUSE;vpPinta(0,0,0);
+ e.classList.add('on','carga');e.classList.remove('err');document.body.classList.add('vp-abierto');
+ vpMsg('Preparando…');vpUi(1,1);
+ mwOpen('vp',null,vpCierraYa);
+ // dentro del toque: pantalla completa (Android, iPad, ordenador) y el vídeo
+ // "desbloqueado" para poder sonar luego (iPhone)
+ try{var rf=e.requestFullscreen||e.webkitRequestFullscreen;
+  if(rf){var p=rf.call(e,{navigationUI:'hide'});if(p&&p.then)p.then(vpGira,function(){})}}catch(x){}
+ try{v.muted=false;var pp=v.play();if(pp&&pp.catch)pp.catch(function(){})}catch(x){}
+ vpHlsJs(function(){});                       // se va bajando mientras Cinubo contesta
+ try{if('mediaSession' in navigator&&window.MediaMetadata)navigator.mediaSession.metadata=new MediaMetadata({title:t||'',artist:'MejorWolf'})}catch(x){}}
+function vpGira(){try{screen.orientation.lock('landscape').catch(function(){})}catch(x){}}
+function vpCarga(emb,nom,fallo){var id=VP.id;vpMsg('Conectando con '+nom+'…');
+ fetch(VPW+'/r?u='+encodeURIComponent(emb)).then(function(r){return r.json()}).then(function(d){
+   if(id!==VP.id||!VP.on)return;
+   if(!(d&&d.ok&&d.play))return fallo((d&&d.error)||'no');
+   vpHlsJs(function(){if(id===VP.id&&VP.on)vpEmpieza(d.play,fallo)})})
+  .catch(function(){if(id===VP.id&&VP.on)fallo('red')})}
+function vpEmpieza(src,fallo){var v=$('vp-v'),id=VP.id,rec=0,acabado=0;vpSuelta();VP.ok=0;
+ var nat=!!(v.canPlayType&&v.canPlayType('application/vnd.apple.mpegurl'));
+ var conHls=!!(window.Hls&&Hls.isSupported())&&!(nat&&vpEsApple());
+ var mal=function(por){if(acabado||id!==VP.id)return;acabado=1;clearTimeout(VP.startT);vpGuarda();vpSuelta();fallo(por)};
+ // si en 40 s no ha arrancado, el siguiente servidor (Vidhide tarda hasta 26 s la 1ª vez)
+ clearTimeout(VP.startT);VP.startT=setTimeout(function(){if(!VP.ok)mal('lento')},40000);
+ VP.g=id;
+ if(conHls){var h=new Hls({maxBufferLength:60,maxMaxBufferLength:120,backBufferLength:30,
+    fragLoadingMaxRetry:6,levelLoadingMaxRetry:4,manifestLoadingMaxRetry:2,startFragPrefetch:true});
+  VP.hls=h;
+  h.on(Hls.Events.ERROR,function(ev,dt){if(!dt||!dt.fatal||id!==VP.id)return;
+   if(dt.type===Hls.ErrorTypes.MEDIA_ERROR&&rec<2){rec++;h.recoverMediaError();return}
+   if(dt.type===Hls.ErrorTypes.NETWORK_ERROR&&VP.ok&&rec<4){rec++;setTimeout(function(){if(id===VP.id&&VP.hls===h)h.startLoad()},1500);return}
+   mal(dt.details||'hls')});
+  h.loadSource(src);h.attachMedia(v)}
+ else if(nat){v.src=src;v.load()}
+ else{fallo('navegador');return}
+ v.onerror=function(){if(!conHls)mal('video')};
+ var pp=v.play();if(pp&&pp.catch)pp.catch(function(){
+  // el navegador no deja empezar solo: que lo empiece la persona con el ▶
+  if(id!==VP.id)return;$('vp').classList.remove('carga');$('vp-pp').innerHTML=SVG_PLAY;vpMsg('');$('vp-load').hidden=true;vpUi(1,1)})}
+function vpSuelta(){var v=$('vp-v');clearTimeout(VP.startT);
+ if(VP.hls){try{VP.hls.destroy()}catch(e){}VP.hls=null}
+ try{v.onerror=null;v.pause();v.removeAttribute('src');v.load()}catch(e){}}
+function vpCierraYa(){VP.on=0;VP.id++;vpGuarda();vpSuelta();VP.ok=0;
+ var e=$('vp');e.classList.remove('on','ui','carga','err');document.body.classList.remove('vp-abierto');
+ try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(function(){})
+  else if(document.webkitFullscreenElement&&document.webkitExitFullscreen)document.webkitExitFullscreen()}catch(x){}
+ try{screen.orientation.unlock()}catch(x){}
+ vpSueno(0)}
+// --- por dónde iba (en este aparato): al volver a abrirlo sigue ahí -----------
+function vpPosLee(){try{return JSON.parse(localStorage.getItem('mw_vppos')||'{}')||{}}catch(e){return {}}}
+function vpGuarda(fin){if(!VP.k||!VP.ok)return;var v=$('vp-v'),t=v.currentTime||0,d=v.duration||0;
+ try{var o=vpPosLee();
+  if(fin||(d&&t>d-120)||t<30)delete o[VP.k];else o[VP.k]={t:Math.floor(t),d:Math.floor(d),w:Date.now()};
+  var ks=Object.keys(o).sort(function(a,b){return o[b].w-o[a].w});ks.slice(80).forEach(function(k){delete o[k]});
+  localStorage.setItem('mw_vppos',JSON.stringify(o))}catch(e){}}
+function vpReanuda(){var o=vpPosLee()[VP.k],v=$('vp-v');
+ if(o&&o.t>30&&(!v.duration||o.t<v.duration-120)){try{v.currentTime=o.t}catch(e){}toast('Sigo por donde ibas ('+fmt(o.t)+')',3000)}}
+// --- la pantalla no se apaga mientras suena ----------------------------------
+function vpSueno(si){try{if(si&&!VP.wl&&navigator.wakeLock)navigator.wakeLock.request('screen').then(function(w){VP.wl=w},function(){});
+ else if(!si&&VP.wl){VP.wl.release();VP.wl=null}}catch(e){}}
+// --- los mandos: aparecen al tocar y se van solos ------------------------------
+function vpUi(si,fijo){var e=$('vp');clearTimeout(VP.hideT);e.classList.toggle('ui',!!si);
+ if(si&&!fijo)VP.hideT=setTimeout(function(){var v=$('vp-v');if(!v.paused&&!VP.drag&&VP.ok)e.classList.remove('ui')},3200)}
+function vpPP(){var v=$('vp-v');if(!VP.ok&&!v.src&&!VP.hls)return;
+ if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){})}else v.pause();vpUi(1)}
+function vpSalta(s){var v=$('vp-v');if(!VP.ok||!v.duration)return;
+ v.currentTime=Math.max(0,Math.min(v.duration-1,(v.currentTime||0)+s));vpUi(1)}
+function vpPantalla(){var e=$('vp'),v=$('vp-v');
+ try{if(document.fullscreenElement||document.webkitFullscreenElement){(document.exitFullscreen||document.webkitExitFullscreen).call(document);return}
+  var rf=e.requestFullscreen||e.webkitRequestFullscreen;
+  if(rf){var p=rf.call(e,{navigationUI:'hide'});if(p&&p.then)p.then(vpGira,function(){});return}
+  if(v.webkitEnterFullscreen)v.webkitEnterFullscreen()}catch(x){}   // iPhone: el suyo
+ vpUi(1)}
+function vpPinta(t,d,b){$('vp-a').textContent=fmt(t);$('vp-b').textContent=d?fmt(d):'0:00';
+ var f=d?Math.max(0,Math.min(1,t/d)):0;$('vp-pos').style.width=(f*100)+'%';$('vp-knob').style.left=(f*100)+'%';
+ $('vp-buf').style.width=(d?Math.min(100,b/d*100):0)+'%'}
+function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length;i++)if(v.buffered.start(i)<=t+1)b=Math.max(b,v.buffered.end(i))}catch(e){}return b}
+(function(){var e=$('vp'),v=$('vp-v'),bar=$('vp-bar');if(!e||!v||!bar||!v.addEventListener)return;
+ var ult=0;
+ v.addEventListener('playing',function(){if(VP.g!==VP.id)return;
+  if(!VP.ok){VP.ok=1;clearTimeout(VP.startT);vpReanuda()}
+  e.classList.remove('carga');$('vp-load').hidden=true;$('vp-pp').innerHTML=SVG_PAUSE;$('vp-pp').setAttribute('aria-label','Pausa');vpUi(1);vpSueno(1)});
+ v.addEventListener('pause',function(){if(!VP.on)return;$('vp-pp').innerHTML=SVG_PLAY;$('vp-pp').setAttribute('aria-label','Reproducir');vpUi(1,1);vpGuarda();vpSueno(0)});
+ v.addEventListener('waiting',function(){if(VP.on&&VP.ok){$('vp-msg').textContent='';$('vp-load').hidden=false}});
+ v.addEventListener('canplay',function(){if(VP.ok&&!v.paused)$('vp-load').hidden=true});
+ v.addEventListener('timeupdate',function(){if(!VP.on||VP.drag)return;var d=v.duration;VP.dur=isFinite(d)?d:0;
+  vpPinta(v.currentTime,VP.dur,vpBuf(v));if(Date.now()-ult>8000){ult=Date.now();vpGuarda()}});
+ v.addEventListener('progress',function(){if(VP.on&&!VP.drag)vpPinta(v.currentTime,VP.dur,vpBuf(v))});
+ v.addEventListener('ended',function(){if(!VP.on)return;vpGuarda(1);$('vp-pp').innerHTML=SVG_PLAY;vpUi(1,1);vpSueno(0)});
+ // tocar la imagen: aparecen o se van los mandos (tocar un botón no cuenta)
+ e.addEventListener('click',function(ev){if(!VP.on)return;
+  if(ev.target.closest&&ev.target.closest('button,.vp-bar'))return;
+  if(e.classList.contains('err')||e.classList.contains('carga')){vpUi(1,1);return}
+  vpUi(!e.classList.contains('ui'))});
+ // la barra: tocar o arrastrar para ir a otro momento
+ var fr=function(x){var r=bar.getBoundingClientRect();return Math.max(0,Math.min(1,(x-r.left)/Math.max(1,r.width)))};
+ var mueve=function(x){var f=fr(x);vpPinta(f*VP.dur,VP.dur,vpBuf(v));return f};
+ bar.addEventListener('pointerdown',function(ev){if(!VP.ok||!VP.dur)return;VP.drag=1;bar.classList.add('drag');
+  try{bar.setPointerCapture(ev.pointerId)}catch(x){}mueve(ev.clientX);clearTimeout(VP.hideT);ev.preventDefault()});
+ bar.addEventListener('pointermove',function(ev){if(VP.drag)mueve(ev.clientX)});
+ var suelta=function(ev){if(!VP.drag)return;VP.drag=0;bar.classList.remove('drag');
+  var f=fr(ev.clientX);try{v.currentTime=f*VP.dur}catch(x){}vpUi(1)};
+ bar.addEventListener('pointerup',suelta);bar.addEventListener('pointercancel',function(){VP.drag=0;bar.classList.remove('drag');vpUi(1)});
+ // teclado (ordenador): espacio, flechas
+ document.addEventListener('keydown',function(ev){if(!VP.on||!VP.ok)return;
+  if(ev.key===' '||ev.key==='k'){ev.preventDefault();vpPP()}
+  else if(ev.key==='ArrowLeft'){ev.preventDefault();vpSalta(-10)}
+  else if(ev.key==='ArrowRight'){ev.preventDefault();vpSalta(10)}});
+ // si sale de la pantalla completa en Android, se vuelve a girar sola
+ document.addEventListener('fullscreenchange',function(){if(!document.fullscreenElement){try{screen.orientation.unlock()}catch(x){}}});
+ // al irse a otra app, se guarda por dónde iba
+ document.addEventListener('visibilitychange',function(){if(document.hidden&&VP.on)vpGuarda()});
+})();
 function seekTo(){var cd=(code.value||'').replace(/\D/g,'');if(cd.length!==6){toast('Pon tu código');return}
  var v=($('rm-min').value||'').trim();if(v===''){toast('Pon un minuto');return}var mn=parseInt(v,10);if(isNaN(mn)||mn<0){toast('Minuto no válido');return}
  fetch('/kb/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:cd,cmd:'seekto',min:mn})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){toast('Saltando al minuto '+mn);$('rm-min').value='';setTimeout(pollNow,700)}else{toast('Error: '+((d&&d.error)||'?'))}}).catch(function(){toast('No se pudo')})}

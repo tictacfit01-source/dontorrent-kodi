@@ -1,0 +1,10 @@
+name = "mw-video"
+main = "worker.js"
+compatibility_date = "2026-09-13"
+account_id = "987c72d4823ef1e12ceae82a879807ee"
+workers_dev = true
+
+# El streaming de Cinubo en el propio móvil (dtbl127). Aislado de mw-relay y
+# mw-sync: si algo va mal aquí, no toca ni las búsquedas ni las copias.
+# Secreto (NO va aquí, el repo es público): npx --yes wrangler@4.149.0 secret put CLAVE
+# Desplegar: cd video-worker && npx --yes wrangler@4.149.0 deploy

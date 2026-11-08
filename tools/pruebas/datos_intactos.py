@@ -53,6 +53,16 @@ TOCA = re.compile(r"localStorage|saveFavs\(|lstSave\(|histSave\(|saveDevs\(|save
                   r"favs\.splice|hist\s*=|hist\.unshift|hist\.splice|LST\s*=|LST\.push|"
                   r"seen\.splice|seen\.unshift")
 CLAVES = re.compile(r"localStorage\.(getItem|setItem|removeItem)\('([^']+)'")
+# Claves NUEVAS revisadas a mano: comodidades de cada aparato que no tocan
+# listas, historial, Kodis ni vistos. Se añaden aquí solo tras pensarlo.
+#   mw_cbdonde: "En la tele" o "Aquí" (dtbl131)
+#   mw_vppos:   por dónde iba en el reproductor de la web (dtbl131)
+NUEVAS_OK = {"mw_cbdonde", "mw_vppos"}
+FUNC_NUEVAS_OK = {"cbDonde", "cbPonDonde", "vpGuarda", "vpPosLee"}
+
+
+def _sin_nuevas(lineas):
+    return [l for l in lineas if not any(k in l for k in NUEVAS_OK)]
 
 
 def main():
@@ -73,7 +83,7 @@ def main():
             fallos += 1
 
     print("1. Las mismas claves de localStorage, usadas igual")
-    cv, cn = sorted(CLAVES.findall(jv)), sorted(CLAVES.findall(jn))
+    cv, cn = sorted(CLAVES.findall(jv)), sorted(c for c in CLAVES.findall(jn) if c[1] not in NUEVAS_OK)
     ok(cv == cn, "%d usos de %d claves" % (len(cv), len(set(k for _, k in cv))))
     if cv != cn:
         print("     antes-ahora:", sorted(set(cv) - set(cn)), " ahora-antes:", sorted(set(cn) - set(cv)))
@@ -88,14 +98,14 @@ def main():
     ok(not malas, "%d funciones vigiladas sin un solo cambio" % len(vigiladas))
     for n in malas:
         print("     cambiada o desaparecida:", n)
-    nuevas = sorted(n for n, t in fn.items() if n not in fv and TOCA.search(t))
+    nuevas = sorted(n for n, t in fn.items() if n not in fv and n not in FUNC_NUEVAS_OK and TOCA.search(t))
     ok(not nuevas, "ninguna funcion NUEVA escribe en lo guardado")
     for n in nuevas:
         print("     nueva:", n)
 
     print("3. Las lineas que cargan lo guardado al arrancar, identicas")
     lv = sorted(l.strip() for l in jv.splitlines() if not l.startswith("function ") and CLAVES.search(l))
-    ln = sorted(l.strip() for l in jn.splitlines() if not l.startswith("function ") and CLAVES.search(l))
+    ln = sorted(_sin_nuevas(l.strip() for l in jn.splitlines() if not l.startswith("function ") and CLAVES.search(l)))
     ok(lv == ln, "%d lineas" % len(lv))
 
     print("\n---- VEREDICTO ----")
