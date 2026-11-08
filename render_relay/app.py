@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl131"
+BUILD = "dtbl132"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17219,8 +17219,19 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .cbdonde button{flex:1;min-height:44px;border:0;border-radius:10px;background:transparent;color:var(--sub);font:inherit;font-size:14px;font-weight:600;cursor:pointer}
 .cbdonde button.on{background:var(--amb,#edc27a);color:var(--ambtxt,#231a0c)}
 /* (dtbl131) El reproductor de la web: pantalla completa, nada más que la película */
-#vp{position:fixed;inset:0;z-index:60;background:#000;display:none;color:#f1ece4;-webkit-user-select:none;user-select:none;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+#vp{position:fixed;inset:0;z-index:60;background:#000;display:none;color:#f1ece4;-webkit-user-select:none;user-select:none;touch-action:manipulation;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
 #vp.on{display:block}
+/* (dtbl132) deslizar en vertical: izquierda brillo (oscurece la imagen: una web no llega al brillo del aparato),
+   derecha volumen (en iPhone/iPad Apple no lo deja: se avisa de los botones) */
+#vp-dim{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none}
+.vp-gi{position:absolute;top:50%;transform:translateY(-50%);width:52px;display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px 0;border-radius:999px;background:rgba(20,16,24,.66);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid rgba(241,236,228,.14);opacity:0;transition:opacity .2s;pointer-events:none}
+.vp-gi.on{opacity:1}
+.vp-gi.izq{left:max(9%,env(safe-area-inset-left))}
+.vp-gi.der{right:max(9%,env(safe-area-inset-right))}
+.vp-gi-ic{display:flex}.vp-gi-ic svg{width:22px;height:22px}
+.vp-gi-bar{width:6px;height:min(150px,34vh);border-radius:3px;background:rgba(241,236,228,.22);position:relative;overflow:hidden}
+.vp-gi-bar i{position:absolute;left:0;right:0;bottom:0;height:0;background:var(--amb,#edc27a)}
+.vp-gi-n{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
 #vp:not(.ui){cursor:none}
 #vp-v{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
 .vp-ui{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity .22s;
@@ -17997,6 +18008,8 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
 </div>
 <div id="vp" aria-label="Reproductor">
  <video id="vp-v" playsinline webkit-playsinline preload="auto"></video>
+ <div id="vp-dim"></div>
+ <div class="vp-gi" id="vp-gi"><div class="vp-gi-ic" id="vp-gi-ic"></div><div class="vp-gi-bar"><i id="vp-gi-f"></i></div><div class="vp-gi-n" id="vp-gi-n"></div></div>
  <div class="vp-load" id="vp-load"><span class="spin"></span><div class="vp-msg" id="vp-msg"></div></div>
  <div class="vp-ui">
   <div class="vp-top">
@@ -20786,7 +20799,20 @@ var CBAQUI={VIDARA:1,LULUSTREAM:1,FIRESTREAM:1,VIDHIDE:1};   // los que mw-video
 var VPW='https://mw-video.israeldm93.workers.dev';
 var VPNADA='Ninguno de estos servidores abre ahora mismo. Prueba en un rato, o mándalo a la tele.';
 var HLSJS='https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
-var VP={on:0,id:0,hls:null,ok:0,k:'',dur:0,drag:0,hideT:0,startT:0,wl:null,g:0};
+var VP={on:0,id:0,hls:null,ok:0,k:'',dur:0,drag:0,hideT:0,startT:0,wl:null,g:0,luz:1,gesto:0,giT:0,avisoVol:0};
+// (dtbl132) brillo y volumen deslizando en vertical (pantallas táctiles)
+var VPSOL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+var VPVOL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>';
+var VPMUDO='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M17 9.5l5 5M22 9.5l-5 5"/></svg>';
+function vpGi(lado,val,ic){var g=$('vp-gi');g.classList.remove('izq','der');g.classList.add(lado==='luz'?'izq':'der','on');
+ $('vp-gi-ic').innerHTML=ic;$('vp-gi-f').style.height=Math.round(val*100)+'%';$('vp-gi-n').textContent=Math.round(val*100);
+ clearTimeout(VP.giT)}
+function vpLuz(b){VP.luz=Math.max(.15,Math.min(1,b));$('vp-dim').style.opacity=String((1-VP.luz)*.85);
+ vpGi('luz',(VP.luz-.15)/.85,VPSOL)}
+function vpVol(x){var v=$('vp-v');x=Math.max(0,Math.min(1,x));try{v.volume=x;v.muted=x===0}catch(e){}
+ if(Math.abs((v.volume||0)-x)>.02){   // iPhone/iPad: el volumen solo con los botones
+  if(!VP.avisoVol){VP.avisoVol=1;toast('Para el volumen, usa los botones del lateral',3000)}return}
+ vpGi('vol',x,x===0?VPMUDO:VPVOL)}
 function cbDonde(){var v='';try{v=localStorage.getItem('mw_cbdonde')||''}catch(e){}
  if(v==='tv'||v==='aqui')return v;
  // sin Kodi apuntado, lo natural es verlo aquí
@@ -20893,7 +20919,25 @@ function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length
  v.addEventListener('progress',function(){if(VP.on&&!VP.drag)vpPinta(v.currentTime,VP.dur,vpBuf(v))});
  v.addEventListener('ended',function(){if(!VP.on)return;vpGuarda(1);$('vp-pp').innerHTML=SVG_PLAY;vpUi(1,1);vpSueno(0)});
  // tocar la imagen: aparecen o se van los mandos (tocar un botón no cuenta)
+ // deslizar arriba/abajo: izquierda brillo, derecha volumen (el centro, para tocar)
+ var G=null;
+ e.addEventListener('touchstart',function(ev){G=null;if(!VP.on||!VP.ok||!ev.touches||ev.touches.length!==1)return;
+  if(ev.target.closest&&ev.target.closest('button,.vp-bar'))return;
+  var t=ev.touches[0],w=window.innerWidth||1,lado=t.clientX<w*.4?'luz':(t.clientX>w*.6?'vol':'');if(!lado)return;
+  G={lado:lado,x:t.clientX,y:t.clientY,on:0}},{passive:true});
+ e.addEventListener('touchmove',function(ev){if(!G||!ev.touches||!ev.touches.length)return;
+  var t=ev.touches[0],dy=t.clientY-G.y,dx=t.clientX-G.x;
+  if(!G.on){if(Math.abs(dy)>12&&Math.abs(dy)>Math.abs(dx)*1.3){G.on=1;G.y=t.clientY;dy=0;
+    G.v0=G.lado==='luz'?VP.luz:(v.muted?0:v.volume);e.classList.remove('ui')}
+   else if(Math.abs(dx)>16){G=null;return}else return}
+  if(ev.cancelable)ev.preventDefault();
+  var d=-dy/Math.max(200,(window.innerHeight||600)*.7);
+  if(G.lado==='luz')vpLuz(G.v0+d*.85);else vpVol(G.v0+d)},{passive:false});
+ var finG=function(){if(G&&G.on){VP.gesto=Date.now();clearTimeout(VP.giT);
+   VP.giT=setTimeout(function(){$('vp-gi').classList.remove('on')},700)}G=null};
+ e.addEventListener('touchend',finG);e.addEventListener('touchcancel',finG);
  e.addEventListener('click',function(ev){if(!VP.on)return;
+  if(Date.now()-VP.gesto<450)return;          // acaba de deslizar: no es un toque
   if(ev.target.closest&&ev.target.closest('button,.vp-bar'))return;
   if(e.classList.contains('err')||e.classList.contains('carga')){vpUi(1,1);return}
   vpUi(!e.classList.contains('ui'))});
