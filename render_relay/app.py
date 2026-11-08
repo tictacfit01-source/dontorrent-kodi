@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl138"
+BUILD = "dtbl139"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -21082,10 +21082,11 @@ function vpAbre(t,q,k){var e=$('vp'),v=$('vp-v');
  e.classList.add('on','carga');e.classList.remove('err');document.body.classList.add('vp-abierto');
  vpMsg('Preparando…');vpUi(1,1);
  mwOpen('vp',null,vpCierraYa);
- // dentro del toque: pantalla completa (Android, iPad, ordenador) y el vídeo
- // "desbloqueado" para poder sonar luego (iPhone)
- try{var rf=e.requestFullscreen||e.webkitRequestFullscreen;
-  if(rf){var p=rf.call(e,{navigationUI:'hide'});if(p&&p.then)p.then(vpGira,function(){})}}catch(x){}
+ // (dtbl139) Ya NO entra solo en pantalla completa: Chrome de Android pone su
+ // aviso "para salir, arrastra desde arriba" CADA vez y ninguna web lo puede
+ // quitar (Israel, 08-11: "siempre sale"). El reproductor ya ocupa toda la
+ // pantalla y gira con el móvil (dtbl136); el ⛶ sigue ahí para quitar barras.
+ // Dentro del toque: el vídeo "desbloqueado" para poder sonar luego (iPhone)
  try{v.muted=false;var pp=v.play();if(pp&&pp.catch)pp.catch(function(){})}catch(x){}
  vpHlsJs(function(){});                       // se va bajando mientras Cinubo contesta
  try{if('mediaSession' in navigator&&window.MediaMetadata)navigator.mediaSession.metadata=new MediaMetadata({title:t||'',artist:'MejorWolf'})}catch(x){}}
