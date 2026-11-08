@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl135"
+BUILD = "dtbl136"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -333,7 +333,7 @@ _ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
 _MANIFEST_JSON = """{
  "name":"MejorWolf","short_name":"MejorWolf",
  "description":"Tu cine y series en casa",
- "start_url":"/","scope":"/","display":"standalone","orientation":"portrait",
+ "start_url":"/","scope":"/","display":"standalone","orientation":"any",
  "background_color":"#1a1720","theme_color":"#1a1720",
  "icons":[
   {"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}
@@ -18015,6 +18015,50 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
 .search input:focus-visible,.jump input:focus-visible,.devin:focus-visible,.mwd-in:focus-visible,.lfiltro input:focus-visible{outline:0}
 .search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;width:18px;height:18px;cursor:pointer;
  background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M6 6l12 12M18 6L6 18' stroke='%23a69eb0' stroke-width='2.2' stroke-linecap='round'/></svg>") center/contain no-repeat}
+/* ===== (dtbl136) tablets y horizontal ======================================
+   Israel: "que se adapte a tablets, en horizontal y sin problemas". Hasta aquí
+   todo era una columna de móvil de 760 px: en una tablet tumbada quedaban dos
+   bandas vacías, y en un móvil tumbado la portada tapaba la pantalla entera.
+   Más columnas cuanto más ancho, la portada a la altura que haya, la barra de
+   abajo agrupada en el centro y la ficha de serie con un ancho que se lee. */
+@media (min-width:700px){
+ .grid,.skgrid{grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:14px}
+ .wrap{max-width:1180px}
+ .pt-txt{right:auto;left:24px;width:min(620px,calc(100% - 48px))}
+ .tabs{grid-template-columns:repeat(5,minmax(0,128px));justify-content:center}
+ #ov-body,.ovbar{max-width:1000px;margin-left:auto;margin-right:auto}
+ .ovbar{max-width:none;padding-left:max(14px,calc((100% - 1000px)/2 + 14px));padding-right:max(14px,calc((100% - 1000px)/2 + 14px))}
+ .ovhero{margin:-14px 0 14px;border-radius:0 0 18px 18px;overflow:hidden}
+}
+@media (min-width:960px){
+ .portada{height:min(52vw,600px,calc(100vh - var(--navh) - 90px));min-height:380px}
+ .pt-t{font-size:clamp(56px,6.4vw,92px)}
+ .sheet .box{max-width:860px}
+}
+@media (min-width:1180px){
+ .grid,.skgrid{grid-template-columns:repeat(6,minmax(0,1fr))!important}
+}
+@media (min-width:1500px){
+ .wrap{max-width:1440px}
+ .grid,.skgrid{grid-template-columns:repeat(7,minmax(0,1fr))!important}
+}
+/* móvil tumbado (o tablet pequeña): poca altura. La portada cabe con su botón
+   por encima de la barra; el título, más contenido; las fichas no se cortan */
+@media (orientation:landscape) and (max-height:560px){
+ :root{--navh:54px}
+ .portada{height:calc(100vh - var(--navh) - var(--seg-ab));height:calc(100svh - var(--navh) - var(--seg-ab));min-height:250px;max-height:440px}
+ .pt-txt{right:auto;width:min(540px,64%);left:max(18px,env(safe-area-inset-left))}
+ .pt-t{font-size:clamp(34px,11vh,54px);-webkit-line-clamp:2}
+ .pt-d{margin:8px 0 10px}
+ .tab svg{width:21px;height:21px}
+ .tab,.tab.on{gap:2px}
+ .tab.mando .mbola{width:38px;height:38px}
+ .sheet .box{max-height:96vh}
+ .sh-hero{min-height:0}.sh-hero .row{padding:34px 18px 10px}
+ .ovhero{min-height:0}.ovhero-row{padding-top:28px!important}
+ .top{padding-left:max(18px,env(safe-area-inset-left));padding-right:max(18px,env(safe-area-inset-right))}
+ .wrap{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+}
 </style></head><body>
 <div class="wrap">
  <div class="top">
