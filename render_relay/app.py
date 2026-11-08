@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl134"
+BUILD = "dtbl135"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -16177,8 +16177,8 @@ def cb_enlaces():
     ficha = _cb_ficha(tmdb, kind, titulo)
     if ficha is None:
         return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
-    if not ficha:
-        return jsonify({"ok": True, "items": []})
+    if not ficha:   # (dtbl135) Cinubo no tiene ese título: otra cosa que "sin castellano"
+        return jsonify({"ok": True, "items": [], "noesta": 1})
     ruta = ficha if kind == "movie" else "%s/%dx%d" % (ficha, tp, ep)
     en = _cb_enlaces(ruta)
     if en is None:
@@ -16476,6 +16476,13 @@ def cb_temps_ruta():
         tid = 0
     if tid <= 0:
         return jsonify({"ok": False, "error": "faltan datos"}), 400
+    # (dtbl135) La Patrulla Canina, 08-11: TMDB decía emitidos 1x27..14x19, la web
+    # los ponía como «Streaming» y Cinubo no tiene la serie (solo las películas).
+    # Con el título, antes se mira si Cinubo la tiene; si no se puede mirar
+    # (Cinubo o las cajas sin contestar), como antes: mejor de más que esconder.
+    tit = str(request.args.get("t") or "").strip()[:80]
+    if tit and _cb_ficha(tid, "serie", tit) == "":
+        return jsonify({"ok": True, "t": [], "noesta": 1})
     t = _cb_temps(tid)
     if t is None:
         return jsonify({"ok": False, "error": "no_disponible"})
@@ -20803,7 +20810,12 @@ function cbTemps(x){if(!x||!x.tmdb_id||x._cbq)return;x._cbq=1;
  var nada=function(){x._cbq=0;   // se puede reintentar
   if(OVDATA&&OVDATA.x===x&&!((OVDATA.d&&OVDATA.d.episodes)||[]).length)
    $('ov-body').innerHTML=altsHTML(x)+'<div class="msg">No se pudieron leer los episodios ahora mismo. <a href="javascript:void(0)" onclick="openSeries(OVRETRY)">Reintentar</a></div>'};
- fetch('/cbtemps?id='+encodeURIComponent(x.tmdb_id)).then(function(r){return r.json()}).then(function(d){
+ fetch('/cbtemps?id='+encodeURIComponent(x.tmdb_id)+'&t='+encodeURIComponent(_tituloBase(x.title||''))).then(function(r){return r.json()}).then(function(d){
+   // (dtbl135) Cinubo no tiene la serie: ningún capítulo «Streaming» de relleno
+   if(d&&d.ok&&d.noesta){x._cbt=[];
+    if(OVDATA&&OVDATA.x===x&&!((OVDATA.d&&OVDATA.d.episodes)||[]).length)
+     $('ov-body').innerHTML=altsHTML(x)+'<div class="msg">Todavía no hay capítulos de esta serie en castellano: ni en torrent ni en streaming.</div>';
+    return}
    if(!d||!d.ok||!d.t||!d.t.length){nada();return}x._cbt=d.t;
    if(OVDATA&&OVDATA.x===x)renderEpisodes()}).catch(nada)}
 function cbFunde(eps,x){var t=x&&x._cbt;if(!t||!t.length)return eps;
@@ -20834,7 +20846,7 @@ function cbCarga(o){var x=o.x,el=$(o.el);if(!el||!x||!x.tmdb_id)return;
  var qs='/cbenlaces?id='+encodeURIComponent(x.tmdb_id)+'&kind='+(x.kind==='serie'?'serie':'movie')+
   '&t='+encodeURIComponent(_tituloBase(x.title||''))+(o.s?('&s='+o.s+'&e='+o.e):'');
  fetch(qs).then(function(r){return r.json()}).then(function(d){if(CBSEL!==yo)return;
-   yo.items=(d&&d.ok&&d.items)||[];yo.otros=(d&&d.otros)||[];yo.err=(d&&!d.ok)?(d.motivo||d.error||'no'):'';cbPinta(o.el)})
+   yo.items=(d&&d.ok&&d.items)||[];yo.otros=(d&&d.otros)||[];yo.noesta=!!(d&&d.noesta);yo.err=(d&&!d.ok)?(d.motivo||d.error||'no'):'';cbPinta(o.el)})
   .catch(function(){if(CBSEL!==yo)return;yo.items=[];yo.err='red';cbPinta(o.el)})}
 function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
  // (dtbl133) sin servidores se DICE por qué, también en la ficha de lo que solo
@@ -20843,9 +20855,12 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
  if(!c.items.length){var solo=elId==='cbd-l'||(elId==='sh-cb'&&sel&&sel.source==='cb'),
    peli=c.k&&c.k.indexOf('movie')===0,que=peli?'Esta película':'Este capítulo',
    ot=(c.otros||[]).join(', ').replace(/, ([^,]*)$/,' y $1');
+  // (dtbl135) si Cinubo ni siquiera tiene el título, se dice eso (La Patrulla
+  // Canina: la serie no está, solo las películas), no "aún no en castellano"
   el.innerHTML=!solo?'':('<div class="cbmsg">'+(c.err?'Cinubo no contesta ahora mismo. Prueba en un rato.':
+   c.noesta?('📭 <b>'+(peli?'Esta película':'Esta serie')+' no está en streaming.</b> Cinubo no la tiene de momento.'):
    ('🗣️ <b>'+que+' aún no está en castellano.</b> '+(ot?'De momento solo está en '+esc(ot)+'. ':'')+'Vuelve a mirar más adelante.'))+'</div>');
-  if(elId==='sh-cb'&&solo)$('sh-seeds').innerHTML='<span class="seedtag">📺 Streaming · '+(c.err?'Cinubo no contesta':'aún no en castellano')+'</span>';
+  if(elId==='sh-cb'&&solo)$('sh-seeds').innerHTML='<span class="seedtag">📺 Streaming · '+(c.err?'Cinubo no contesta':c.noesta?'no disponible':'aún no en castellano')+'</span>';
   return}
  // Arriba los que la tele abre sola; el resto, plegado y avisado.
  // (dtbl120) De los que la tele abre sola se ve CADA subida, numerada si hay
