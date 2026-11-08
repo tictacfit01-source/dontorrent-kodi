@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl139"
+BUILD = "dtbl140"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -333,7 +333,7 @@ _ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
 _MANIFEST_JSON = """{
  "name":"MejorWolf","short_name":"MejorWolf",
  "description":"Tu cine y series en casa",
- "start_url":"/","scope":"/","display":"standalone","orientation":"any",
+ "start_url":"/","scope":"/","display":"standalone",
  "background_color":"#1a1720","theme_color":"#1a1720",
  "icons":[
   {"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}
@@ -351,7 +351,7 @@ _MANIFEST_JSON = """{
 # dia unos 6 MB.
 _COMPARTIR_MAX = 15 * 1024 * 1024
 
-_SW_JS = """var C='mw-shell-v19';
+_SW_JS = """var C='mw-shell-v20';
 // Android "Compartir -> MejorWolf" (dtbl78): Chrome manda el archivo por POST a
 // /compartir. Se guarda AQUI, en el movil (no en el servidor), y se abre la app
 // con ?compartido=1: la pagina lo recoge, recupera para que titulo y que tele
@@ -400,7 +400,12 @@ self.addEventListener('fetch',function(e){
  var url=new URL(req.url);
  if(url.pathname.indexOf('/preview')===0)return;
  if(req.mode==='navigate'){e.respondWith(navResp(req));return;}
- if(url.pathname==='/manifest.webmanifest'||url.pathname==='/icon.svg'||url.pathname==='/icon-512.png'){
+ // (dtbl140) el manifest, de la RED primero: guardado para siempre, la tablet
+ // de Israel instaló la app con el de antes ("portrait") y no giraba
+ if(url.pathname==='/manifest.webmanifest'){
+  e.respondWith(fetch(req,{cache:'no-cache'}).then(function(rr){if(rr&&rr.ok){var cp=rr.clone();caches.open(C).then(function(c){c.put(req,cp)})}return rr}).catch(function(){return caches.match(req)}));return;
+ }
+ if(url.pathname==='/icon.svg'||url.pathname==='/icon-512.png'){
   e.respondWith(caches.match(req).then(function(r){return r||fetch(req).then(function(rr){if(rr&&rr.ok){var cp=rr.clone();caches.open(C).then(function(c){c.put(req,cp)})}return rr})}));
  }
 });
@@ -524,7 +529,7 @@ def compartir_sin_sw():
 @app.get("/manifest.webmanifest")
 def manifest():
     return Response(_MANIFEST_JSON, mimetype="application/manifest+json",
-                    headers={"Cache-Control": "max-age=86400"})
+                    headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/sw.js")
