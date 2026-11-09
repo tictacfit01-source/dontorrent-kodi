@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl141"
+BUILD = "dtbl142"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -68,6 +68,31 @@ def _gzip_response(resp):
         resp.headers["Content-Encoding"] = "gzip"
         resp.headers["Content-Length"] = str(len(gz))
         resp.headers.add("Vary", "Accept-Encoding")
+    except Exception:
+        pass
+    return resp
+
+
+# === Lo ajeno no se ejecuta con nuestro nombre (dtbl142) ===================
+# /relay y compania devuelven el HTML de OTRAS webs tal cual, desde este mismo
+# dominio. Abierto en un navegador (basta un enlace), ese HTML corria con los
+# permisos de la web de MejorWolf: podia leer el localStorage del movil (el
+# codigo de la tele, la sesion de Google, las listas). Y `host_allowed` mira si
+# el nombre CONTIENE "dontorrent", "wolfmax4k"... (los dominios rotan), asi que
+# cualquiera podia registrar "dontorrent.loquesea.dev" y servir su pagina.
+# Con `sandbox` el navegador trata esa respuesta como un documento sin origen y
+# sin scripts. Las cajas (requests), los fetch() y las <img> ni se enteran: la
+# cabecera solo cuenta cuando la respuesta se abre como PAGINA.
+_AJENO_RUTAS = ("/relay", "/dtfetch", "/dtsearch", "/dxsearch", "/wfsearch")
+
+
+@app.after_request
+def _ajeno_sin_permisos(resp):
+    try:
+        p = request.path or ""
+        if p in _AJENO_RUTAS or p.startswith("/repo/"):
+            resp.headers["Content-Security-Policy"] = "sandbox"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
     except Exception:
         pass
     return resp
@@ -304,7 +329,8 @@ def _serve_page(html):
     if etag in (request.headers.get("If-None-Match") or ""):
         r = Response(status=304)
     else:
-        r = Response(html, mimetype="text/html; charset=utf-8")
+        # mimetype sin charset: Flask ya lo anade (salia "charset=utf-8" dos veces)
+        r = Response(html, mimetype="text/html")
     r.headers["Cache-Control"] = "no-cache, must-revalidate"
     r.headers["ETag"] = etag
     return r
@@ -588,6 +614,10 @@ def repo_proxy(filepath):
     GET /repo/addons.xml.md5
     GET /repo/plugin.video.mejorwolf/plugin.video.mejorwolf-2.4.2.zip
     """
+    # (dtbl142) solo lo que cuelga de /repo: con ".." se salia de la carpeta y
+    # este dominio servia cualquier fichero de cualquier repositorio de GitHub.
+    if ".." in filepath or "\\" in filepath or "%" in filepath:
+        return Response("not found", status=404, mimetype="text/plain")
     url = f"{_REPO_BASE}/{filepath}"
     try:
         r = requests.get(url, timeout=30, stream=False,
@@ -623,9 +653,11 @@ def repo_proxy(filepath):
 def relay():
     target = request.args.get("u", "")
     if not target:
-        return Response("missing u", status=400)
+        return Response("missing u", status=400, mimetype="text/plain")
     if not host_allowed(target):
-        return Response("Host not allowed: " + target, status=403)
+        # text/plain: devolvia `target` tal cual dentro de un text/html
+        return Response("Host not allowed: " + target, status=403,
+                        mimetype="text/plain")
 
     fwd = dict(BROWSER_HEADERS)
     cookie = request.headers.get("cookie")
@@ -18082,6 +18114,22 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
  .top{padding-left:max(18px,env(safe-area-inset-left));padding-right:max(18px,env(safe-area-inset-right))}
  .wrap{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
 }
+/* ===== (dtbl142) nada tocable por debajo de 44 px =========================
+   Medido a 360 px: Estrenos/Cine/Series tenian 31 px de alto (Cine, 33 de
+   ancho), el filtro de fuentes 34, el boton de la tele 36, las listas 38 y
+   "Leer más" 14. Se agranda la ZONA que responde al dedo, no lo que se ve: el
+   aire que habia alrededor pasa a ser del boton y cada texto se queda en su
+   sitio (comprobado comparando capturas de antes y despues). */
+.chips{gap:10px;padding:7px 10px 0}
+.chip,.chip.on{padding:13px 8px 12px!important}
+.chip.on::after{left:8px;right:8px}
+.fnt{padding:7px 18px 0;margin-bottom:-3px}
+.fnb,.fnb.on{height:44px}
+.devbtn{position:relative}
+.devbtn::after{content:"";position:absolute;left:-4px;right:-4px;top:-5px;bottom:-5px}
+.lstc,.lstb{position:relative}
+.lstc::after,.lstb::after{content:"";position:absolute;left:0;right:0;top:-3px;bottom:-3px}
+.sh-more{padding:17px 18px 12px 0;margin:-17px 0 -8px}
 </style></head><body>
 <div class="wrap">
  <div class="top">
@@ -19833,6 +19881,9 @@ function toggleView(){localStorage.setItem('mw_lv',localStorage.getItem('mw_lv')
 // tarjeta se quedaba en un rectangulo gris MUDO, sin decir siquiera que peli
 // era. Ahora cae al nombre, como ya hacia el mando clasico.
 function imgFallo(im){try{
+ // (dtbl142) con srcset manda el srcset: si lo que fallo fue el tamano
+ // pequeno, se quita y el navegador vuelve a por el src de siempre.
+ if(im.hasAttribute('srcset')){im.removeAttribute('srcset');im.removeAttribute('sizes');return;}
  // PLAN B antes de rendirse: las caratulas propias de las fuentes van por un
  // CDN que las encoge (rapido), pero si ese CDN falla todavia tenemos la
  // imagen original. Una sola vez, y luego ya si el titulo.
@@ -19848,9 +19899,18 @@ function imgOrig(u){try{
  var i=u.indexOf('url=');if(i<0)return '';
  var o=decodeURIComponent(u.slice(i+4));
  return (o.indexOf('http')===0?o:('https://'+o));}catch(e){return ''}}
+// (dtbl142) EL TAMANO DE LA CARATULA LO ELIGE EL NAVEGADOR. Desde dtbl126 la
+// rejilla es de 3 columnas: una caratula ocupa ~100 px de CSS (300 reales en
+// un movil de 3x) y se bajaba a 500 px de ancho. Medido: 120 KB contra 63 KB
+// la de 342. Con srcset cada pantalla baja la que necesita: 342 en casi todos
+// los moviles, 500 en los muy grandes y en tablets. `sizes` dice cuanto ocupa
+// una tarjeta en cada rejilla (3, 4, 5, 6 y 7 columnas), tirando por lo alto.
+var PSIZES='(min-width:1500px) 200px, (min-width:1180px) 16vw, (min-width:700px) 19vw, (min-width:520px) 24vw, 31vw';
+function pSet(u){u=String(u||'');if(u.indexOf('//image.tmdb.org/t/p/w500/')<0)return '';
+ return ' srcset="'+esc(u.replace('/t/p/w500/','/t/p/w342/'))+' 342w, '+esc(u)+' 500w" sizes="'+PSIZES+'"';}
 function cardHTML(x,list,i){
  var _alt=imgOrig(x.poster);
- var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" data-t="'+esc(x.title)+'"'+(_alt?(' data-alt="'+esc(_alt)+'"'):'')+' onerror="imgFallo(this)" src="'+esc(x.poster)+'">'):'';
+ var img=x.poster?('<img class="pimg" loading="lazy" decoding="async" alt="" data-t="'+esc(x.title)+'"'+(_alt?(' data-alt="'+esc(_alt)+'"'):'')+' onerror="imgFallo(this)"'+pSet(x.poster)+' src="'+esc(x.poster)+'">'):'';
  var noimg=x.poster?'':('<div class="noimg">'+esc(x.title)+'</div>');
  // (dtbl126) calidad, semillas y RAR van en el pie de la tarjeta, no encima
  // de la caratula (badgeCard/sgBadge siguen buscando .tl, este donde este)

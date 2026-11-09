@@ -119,7 +119,7 @@ try:
 
     print("\n=== 5) La tarjeta cuenta temporadas DISTINTAS ===")
     node = shutil.which("node")
-    m = re.search(r"( // Temporadas DISTINTAS:.*?else if\(_tp===1&&_tn\[0\]>1\)_ts=' · T'\+_tn\[0\];)",
+    m = re.search(r"( // Temporadas DISTINTAS:.*?else if\(_tp===1&&_tn\[0\]>1\)_ts='Temporada '\+_tn\[0\];)",
                   A._CAT_PAGE, re.S)
     comprueba("el trozo esta en la pagina", bool(m))
     if node and m:
@@ -137,8 +137,8 @@ try:
             r = json.loads(out.stdout.strip().splitlines()[-1])
         except Exception:
             r = out.stderr
-        comprueba("la misma temporada en HDTV y 720p no son '2 temporadas'; T1+T2 si; solo la T2, 'T2'",
-                  r == ["", " · 2 temporadas", " · T2", "", ""], r)
+        comprueba("la misma temporada en HDTV y 720p no son '2 temporadas'; T1+T2 si; solo la T2, 'Temporada 2'",
+                  r == ["", "2 temporadas", "Temporada 2", "", ""], r)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
     for f in FICH:
