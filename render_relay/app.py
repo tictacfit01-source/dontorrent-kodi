@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl142"
+BUILD = "dtbl143"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -4210,13 +4210,72 @@ def _rate_ok(ip):
     return True
 
 
+def _ip_cliente():
+    """(dtbl143) La IP de quien pregunta. La ULTIMA de X-Forwarded-For es el
+    borde de Render, la misma para todo el mundo (medido: 26 Kodis = 3 casas):
+    un limite contado con ella era un limite compartido por todos. La pone
+    Cloudflare en CF-Connecting-IP y el cliente no la puede falsear (la primera
+    de X-Forwarded-For si). Comprobado en /uso/datos -> cab: llega."""
+    return (request.headers.get("CF-Connecting-IP")
+            or request.headers.get("X-Forwarded-For", "").split(",")[0]
+            or request.remote_addr or "?").strip()
+
+
+# (dtbl143) NADIE PUEDE BARRER LOS CODIGOS. /kb/status, /kb/now y /kb/list
+# contestaban a cualquier codigo sin limite: un script que probara del 000000
+# al 999999 encontraba las ~26 teles en unas horas, y con ellas que estaban
+# viendo y la posibilidad de mandarles ordenes. Se cuentan, por IP, los codigos
+# DISTINTOS que no existen: un movil pregunta siempre por los mismos 1-3 (aunque
+# su tele lleve horas apagada es UN codigo), un barrido por miles. Pasado el
+# tope, esa IP no recibe nada durante 10 min, tampoco de los que si existen.
+_SONDEO = {}
+_SONDEO_MAX = 40
+_SONDEO_WIN = 600.0
+
+
+def _sondeo_ok(code, existe):
+    try:
+        ip = _ip_cliente()
+        now = _t.time()
+        e = _SONDEO.get(ip)
+        if e and now - e["t0"] > _SONDEO_WIN:
+            e = None
+        if e is None:
+            e = {"t0": now, "c": set()}
+            _SONDEO[ip] = e
+        if len(e["c"]) >= _SONDEO_MAX:
+            return False
+        if not existe:
+            e["c"].add(code)
+        if len(_SONDEO) > 2000:            # poda solo lo caducado
+            for k, v in list(_SONDEO.items()):
+                if now - v["t0"] > _SONDEO_WIN:
+                    _SONDEO.pop(k, None)
+        return True
+    except Exception:
+        return True                         # ante la duda, no se corta a nadie
+
+
+def _codigo_existe(code):
+    """Hay (o hubo en los ultimos 10 min) una tele con ese codigo. Recien
+    desplegado /tmp esta vacio: entonces todo cuenta como existente."""
+    try:
+        if _t.time() - _KB_ARRANQUE < 120:
+            return True
+        return code in _kbstatus_load()
+    except Exception:
+        return True
+
+
+def _sondeo_corta():
+    return jsonify({"ok": False, "error": "demasiados códigos distintos"}), 429
+
+
 @app.post("/kb/send")
 def kb_send():
-    # El ULTIMO valor de X-Forwarded-For lo añade el proxy de Render (fiable);
-    # los anteriores los pone el cliente y son FALSEABLES -> con el primero, un
-    # atacante rotaba el header y se saltaba el rate-limit.
-    ip = (request.headers.get("X-Forwarded-For", "")
-          or request.remote_addr or "?").split(",")[-1].strip()
+    # (dtbl143) por la IP del cliente; antes la ultima de X-Forwarded-For, que
+    # es el borde de Render y la comparten todos (ver _ip_cliente).
+    ip = _ip_cliente()
     if not _rate_ok(ip):
         return jsonify({"ok": False, "error": "demasiadas peticiones"}), 429
     try:
@@ -4495,6 +4554,8 @@ def kb_list_get():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
         return jsonify({"items": [], "ts": 0})
+    if not _sondeo_ok(code, _codigo_existe(code)):
+        return _sondeo_corta()
     _kb_phone_seen(code)
     d = _kblist_load()
     entry = d.get(code) or {}
@@ -4550,6 +4611,8 @@ def kb_now_get():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
         return jsonify({"np": None})
+    if not _sondeo_ok(code, _codigo_existe(code)):
+        return _sondeo_corta()
     _kb_phone_seen(code)
     d = _kbnow_load()
     entry = d.get(code) or {}
@@ -4676,6 +4739,8 @@ def kb_status_get():
     code = re.sub(r"\D", "", request.args.get("code", ""))[:6]
     if len(code) != 6:
         return jsonify({"connected": False})
+    if not _sondeo_ok(code, _codigo_existe(code)):
+        return _sondeo_corta()
     _kb_phone_seen(code)
     d = _kbstatus_load()
     entry = d.get(code)
