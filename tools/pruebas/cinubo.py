@@ -472,6 +472,39 @@ try:
     finally:
         A._cb_cajas, A._kb_enqueue, A._catjob_wait, A._lend_acquire, A._lend_release = reales
         A._cb_vivo = real_vivo
+    # (dtbl145) El reproductor del móvil avisa de un enlace borrado: el relay no
+    # se fía, pregunta al worker y solo si lo ve borrado lo aparta para todos.
+    print("\n=== aviso de enlace borrado (/cbembed/muerto) ===")
+    real_w = A._cb_vivo_worker
+    try:
+        cli = A.app.test_client()
+        REF = "eyJpdiI6Ik1VRVJUT01VRVJUT01VRVJUTyJ9"
+        A._cb_cache_pon("i", REF, "https://luluvid.com/e/borrado1")
+        A._cb_vivo_worker = lambda u, tope=5.0: True          # el worker lo ve vivo
+        r = cli.post("/cbembed/muerto?r=" + REF).get_json()
+        comprueba("aviso falso (el worker lo ve vivo): no se aparta",
+                  r == {"ok": True, "muerto": False} and A._cb_cache_get("i", REF, A._CB_TTL_EMBED), r)
+        A._cb_vivo_worker = lambda u, tope=5.0: False         # borrado de verdad
+        r = cli.post("/cbembed/muerto?r=" + REF).get_json()
+        comprueba("borrado de verdad: apartado para todos",
+                  r.get("muerto") is True and A._cb_cache_get("i", REF, A._CB_TTL_EMBED) == "", r)
+        e = cli.get("/cbembed?r=" + REF).get_json()
+        comprueba("la siguiente persona recibe 'muerto' sin gastar Cinubo", e.get("error") == "muerto", e)
+        comprueba("referencia rara: 400", cli.post("/cbembed/muerto?r=<x>").status_code == 400)
+        # _cb_vivo: Render no puede ver la página -> decide el worker
+        real_get = A._get_con_tope
+        try:
+            A._get_con_tope = lambda *a, **k: ("<html>reto</html>", 403)
+            A._cb_vivo_worker = lambda u, tope=5.0: False
+            comprueba("Render ve un 403 y el worker lo ve borrado: muerto", A._cb_vivo("https://luluvid.com/e/x") is False)
+            A._cb_vivo_worker = lambda u, tope=5.0: True
+            comprueba("Render ve un 403 y el worker no sabe/vivo: vivo", A._cb_vivo("https://luluvid.com/e/x") is True)
+            A._get_con_tope = lambda *a, **k: ("File is no longer available as it expired or has been deleted.", 200)
+            comprueba("Render ve la página de borrado: muerto", A._cb_vivo("https://luluvid.com/e/x") is False)
+        finally:
+            A._get_con_tope = real_get
+    finally:
+        A._cb_vivo_worker = real_w
 finally:
     for f in FICH:
         try:

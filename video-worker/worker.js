@@ -84,10 +84,19 @@ function desempaqueta(src) {
 const origen = u => { const x = new URL(u); return x.protocol + "//" + x.host; };
 class NoSale extends Error {}
 
+// (dtbl145) Un vídeo BORRADO no es "no sé sacarlo": se dice "muerto" para que la
+// web pase al siguiente y el relay lo aparte para todos. Los Simpson 7x03, 10-11:
+// el Lulustream (luluvid.com) decía "File is no longer available as it expired or
+// has been deleted" y esto contestaba "sin m3u8". Mismo patrón que _CB_MUERTO_RE.
+const MUERTO = /video not found|file not found|file was deleted|no longer available|has been deleted|has been removed|archivo no encontrado|video no encontrado|not found<\/title>/i;
+
 async function pagina(url) {
   const r = await fetch(url, { headers: { "User-Agent": UA, Referer: "https://cinubo.com/" }, redirect: "follow" });
+  if (r.status === 404 || r.status === 410) throw new NoSale("muerto");
   if (r.status !== 200) throw new NoSale("http " + r.status);
-  return { txt: await r.text(), url: r.url };
+  const txt = await r.text();
+  if (MUERTO.test(txt.slice(0, 20000))) throw new NoSale("muerto");
+  return { txt, url: r.url };
 }
 
 async function resolver(emb) {
@@ -100,6 +109,7 @@ async function resolver(emb) {
       headers: { "User-Agent": UA, "Content-Type": "application/json", Referer: emb, Origin: o },
       body: JSON.stringify({ filecode: cod, device: "web", codecs: {} }),
     });
+    if (r.status === 404 || r.status === 410) throw new NoSale("muerto");
     if (r.status !== 200) throw new NoSale("http " + r.status);
     const su = String(((await r.json()) || {}).streaming_url || "");
     if (!su.startsWith("https://")) throw new NoSale("sin streaming_url");

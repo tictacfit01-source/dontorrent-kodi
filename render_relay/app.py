@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl144"
+BUILD = "dtbl145"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -16443,14 +16443,34 @@ _CB_MUERTO_RE = re.compile(r"(?i)video not found|file not found|file was deleted
                            r"has been removed|archivo no encontrado|video no encontrado|not found</title>")
 
 
-def _cb_vivo(url):
+# (dtbl145) Si Render no puede ver la página (reto de Cloudflare, 403, se corta),
+# se pregunta al worker mw-video, que la mira desde Cloudflare: Los Simpson 7x03,
+# 10-11, el Lulustream estaba BORRADO, Render lo dio por vivo y el móvil se quedó
+# en "ninguno abre". El worker solo contesta "muerto" si lo ve borrado de verdad.
+_VPW = "https://mw-video.israeldm93.workers.dev"
+
+
+def _cb_vivo_worker(url, tope=5.0):
+    """False si mw-video ve el vídeo BORRADO; True en cualquier otro caso
+    (vivo, o no se sabe: entonces que lo diga el reproductor)."""
     try:
-        txt, st = _get_con_tope(url, 7.0, headers={"User-Agent": _CB_UA, "Referer": "https://%s/" % _cb_dom()}, todo=True)
+        from urllib.parse import quote as _q
+        txt, st = _get_con_tope(_VPW + "/r?u=" + _q(url, safe=""), tope, todo=True)
+        return (_json.loads(txt or "{}") or {}).get("error") != "muerto"
     except Exception:
         return True
+
+
+def _cb_vivo(url):
+    try:
+        txt, st = _get_con_tope(url, 6.0, headers={"User-Agent": _CB_UA, "Referer": "https://%s/" % _cb_dom()}, todo=True)
+    except Exception:
+        return _cb_vivo_worker(url)
     if st in (404, 410):
         return False
-    return not (st == 200 and _CB_MUERTO_RE.search((txt or "")[:20000]))
+    if st != 200:
+        return _cb_vivo_worker(url)
+    return not _CB_MUERTO_RE.search((txt or "")[:20000])
 
 
 @app.get("/cbembed")
@@ -16496,12 +16516,32 @@ def cb_embed_ruta():
             _CB["esperas"] = _CB.get("esperas", 0) + 1
             return jsonify({"ok": False, "error": "espera", "s": min(minimo, 90)})
         return jsonify({"ok": False, "error": "no_disponible", "motivo": err})
-    if not _bounded(lambda: _cb_vivo(e), 9.0, True):
+    if not _bounded(lambda: _cb_vivo(e), 12.0, True):
         _CB["muertos"] = _CB.get("muertos", 0) + 1
         _cb_cache_pon("i", ref, "")
         return jsonify({"ok": False, "error": "muerto"})
     _cb_cache_pon("i", ref, e)
     return jsonify({"ok": True, "u": e})
+
+
+@app.post("/cbembed/muerto")
+def cb_embed_muerto_ruta():
+    """(dtbl145) El reproductor del móvil se encontró borrado un enlace que el
+    relay tenía por bueno (guardado hasta 12 h, o Render no pudo verlo). No se
+    cree a quien avisa: se pregunta al worker y, si de verdad está borrado, se
+    aparta para todos (la siguiente persona ni lo intenta)."""
+    ref = str(request.args.get("r") or "")
+    if not _CB_REF.match(ref):
+        return jsonify({"ok": False, "error": "referencia"}), 400
+    u = _cb_cache_get("i", ref, _CB_TTL_EMBED)
+    if not u:
+        return jsonify({"ok": True, "muerto": u == ""})
+    if _bounded(lambda: _cb_vivo_worker(u, 6.0), 8.0, True):
+        return jsonify({"ok": True, "muerto": False})
+    _CB["muertos"] = _CB.get("muertos", 0) + 1
+    _CB["muertos_aviso"] = _CB.get("muertos_aviso", 0) + 1
+    _cb_cache_pon("i", ref, "")
+    return jsonify({"ok": True, "muerto": True})
 
 
 # -- Las temporadas que existen (TMDB), para completar una serie (dtbl91) --------
@@ -21141,11 +21181,15 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
   seg='',otros='',n=0;
  c.items.forEach(function(it){var k=it.srv+'|'+cbQ(it.q);tot[k]=(tot[k]||0)+1});
  c.items.forEach(function(it,i){var k=it.srv+'|'+cbQ(it.q);vistos[k]=(vistos[k]||0)+1;
-  if(abre[it.srv]){seg+=bot(it,i,tot[k]>1?vistos[k]:0);n++}else if(!aqui&&vistos[k]===1)otros+=bot(it,i,0)});
+  if(abre[it.srv]){seg+=bot(it,i,tot[k]>1?vistos[k]:0);n++}
+  else if(vistos[k]===1)otros+=aqui?('<button class="cbb" onclick="cbWeb('+i+')">↗ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+'</i></button>'):bot(it,i,0)});
  var donde='<div class="cbdonde" role="group" aria-label="Dónde verlo">'+
   '<button class="'+(aqui?'':'on')+'" onclick="cbPonDonde(\'tv\',\''+elId+'\')">📺 En la tele</button>'+
   '<button class="'+(aqui?'on':'')+'" onclick="cbPonDonde(\'aqui\',\''+elId+'\')">📱 Aquí</button></div>';
- if(aqui&&!seg)seg='<div class="cbmsg">Ninguno de estos servidores se puede ver aquí: mándalo a la tele.</div>';
+ // (dtbl145) Los Simpson 7x03: solo Lulustream (borrado) se abría aquí, y los
+ // Powvideo que SÍ funcionaban (con su captcha) ni se enseñaban. Ahora salen
+ // como "en su web": con anuncios, pero se puede ver.
+ if(aqui&&!seg)seg='<div class="cbmsg">Ninguno de estos servidores se puede ver aquí sin anuncios.'+(otros?' Ábrelo en su web (abajo) o mándalo a la tele.':' Mándalo a la tele.')+'</div>';
  // (dtbl95) en la ficha de una peli: si el streaming que la tele abre sola tiene
  // MEJOR calidad que el torrent (1080p frente a 720p/HDTV), sube por encima del
  // botón del torrent. Israel: "si hay buena calidad a 1080p, que gane".
@@ -21157,7 +21201,21 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
   if(pb&&pb.parentNode){if(mejor)pb.parentNode.insertBefore(el,pb);else pb.parentNode.insertBefore(el,pb.nextSibling)}}
  el.innerHTML='<div class="cbt">'+(mejor?'⭐ <b>Mejor calidad en streaming</b> <span>· castellano · sin anuncios</span>':'📺 Streaming sin anuncios <span>· castellano · sin semillas</span>')+'</div>'+
   donde+(seg?('<div class="cbr">'+seg+'</div>'):'')+
-  (otros?((seg?'<details class="cbmas"><summary>Más servidores (pueden no abrir en la tele)</summary>':'')+'<div class="cbr">'+otros+'</div>'+(seg?'</details>':'')):'')}
+  (otros?((seg&&n?'<details class="cbmas"><summary>'+(aqui?'En su web (con anuncios y a veces un captcha)':'Más servidores (pueden no abrir en la tele)')+'</summary>':'')+'<div class="cbr">'+otros+'</div>'+(seg&&n?'</details>':'')):'')}
+// (dtbl145) Abrir la página del propio servidor en otra pestaña: para los que el
+// reproductor de aquí no puede abrir (Powvideo y Streamplay piden un captcha que
+// tiene que resolver una persona). La pestaña se abre YA, dentro del toque (si
+// no, el navegador la bloquea), y se lleva al servidor cuando Cinubo contesta.
+function cbWeb(i){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;var w=null;
+ try{w=window.open('about:blank','_blank')}catch(e){w=null}
+ toast('Abriendo '+cbNom(it.srv)+' en su web…',3000);
+ var mal=function(t){try{if(w&&!w.closed)w.close()}catch(e){}toast(t,5000)};
+ fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.ok&&d.u){if(w&&!w.closed)w.location.href=d.u;else location.href=d.u;return}
+   mal(d&&d.error==='muerto'?'Ese enlace ya no existe: prueba otro':
+     d&&d.error==='espera'?('Cinubo va con mucha gente: prueba en '+Math.max(1,Math.round((d.s||60)/60))+' min'):
+     (cbNom(it.srv)+' no contesta ahora: prueba otro'))})
+  .catch(function(){mal('No se pudo conectar: prueba otra vez')})}
 var CBABRE={VIDARA:1,LULUSTREAM:1,FIRESTREAM:1,VIDHIDE:1};   // los que la tele abre sola (2.9.92)
 // las demás subidas del mismo servidor y calidad, por si la elegida falla
 function cbGemelos(c,i){var a=c.items[i],k=a.srv+'|'+cbQ(a.q);
@@ -21194,9 +21252,13 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
     // si este servidor no arranca (o se corta y no se recupera), el siguiente,
     // por donde iba: la persona no tiene que hacer nada
     vpCarga(d.u,cbNom(it.srv),function(por){if(!vivo())return;
-      if(resto.length){var nx=c.items[resto[0]];vpMsg(cbNom(it.srv)+' no va bien: pruebo con '+cbNom(nx&&nx.srv)+'…');
+      // (dtbl145) borrado en el servidor: que el relay lo compruebe y lo aparte
+      // para todos (lo tenía guardado por bueno hasta 12 h)
+      if(por==='muerto')try{fetch('/cbembed/muerto?r='+encodeURIComponent(it.r),{method:'POST'}).catch(function(){})}catch(e){}
+      var que=por==='muerto'?'Ese enlace de '+cbNom(it.srv)+' lo han borrado':cbNom(it.srv)+' no va bien';
+      if(resto.length){var nx=c.items[resto[0]];vpMsg(que+': pruebo con '+cbNom(nx&&nx.srv)+'…');
        setTimeout(function(){if(vivo())cbPlay(resto[0],resto.slice(1),vez)},1200)}
-      else vpFallo(VPNADA)});return}
+      else vpFallo(por==='muerto'?que+'.'+(cbOtrosWeb(c)||' No queda otro servidor que se pueda ver aquí.'):VPNADA+cbOtrosWeb(c))});return}
    if(d&&d.ok&&d.u){var dl=$('cbdlg').classList.contains('on');if(dl)mwBack('cbdlg');
     if($('wfdlg').classList.contains('on')){dl=true;mwBack('wfdlg')}
     // (dtbl96) como el torrent: a la tele y el mando abierto. sendPlay cierra
@@ -21205,7 +21267,7 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
     setTimeout(function(){sendPlay({a:'st',u:d.u,t:c.t,q:cbQ(it.q)},null,function(r){if(!r)return;
       if(r.tele===false){toast('📴 Tu tele no está conectada. Enciéndela y abre Kodi: empezará sola',5500);return}
       toast('▶ En la tele');setTimeout(function(){openRemote();setTimeout(pollNow,1200)},450)})},dl?220:0);return}
-   if(aqui&&cadena&&!(d&&d.error==='espera')){vpFallo(VPNADA);return}
+   if(aqui&&cadena&&!(d&&d.error==='espera')){vpFallo(VPNADA+cbOtrosWeb(c));return}
    (aqui?vpFallo:toast)(d&&d.error==='espera'?('Cinubo está saturado ahora mismo: prueba en '+Math.max(2,Math.round((d.s||120)/60))+' min o elige otra fuente'):
     (d&&d.error==='muerto'?'Ese enlace ya no existe en Cinubo: elige otro servidor':(cbNom(it.srv)+' no contesta ahora: elige otro servidor')),6000)})
   .catch(function(){if(aqui&&(!VP.on||VP.id!==id))return;(aqui?vpFallo:toast)('No se pudo conectar: prueba otra vez')})}
@@ -21220,6 +21282,9 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
 var CBAQUI={VIDARA:1,LULUSTREAM:1,FIRESTREAM:1,VIDHIDE:1};   // los que mw-video abre
 var VPW='https://mw-video.israeldm93.workers.dev';
 var VPNADA='Ninguno de estos servidores abre ahora mismo. Prueba en un rato, o mándalo a la tele.';
+// (dtbl145) si hay servidores que solo se ven en su web, se dice dónde están
+function cbOtrosWeb(c){return c&&c.items&&c.items.some(function(x){return !CBAQUI[x.srv]})?
+ ' Cierra y mira «En su web»: hay más servidores, con anuncios.':''}
 var HLSJS='https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
 var VP={on:0,id:0,hls:null,ok:0,k:'',dur:0,drag:0,hideT:0,startT:0,wl:null,g:0,luz:1,gesto:0,giT:0,avisoVol:0};
 // (dtbl132) brillo y volumen deslizando en vertical (pantallas táctiles)
