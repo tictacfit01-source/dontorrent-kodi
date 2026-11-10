@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl143"
+BUILD = "dtbl144"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -16186,6 +16186,46 @@ def _cb_busquedas(titulo):
     return out
 
 
+_CB_NOMBRES = {}
+
+
+def _cb_nombres_tmdb(tmdb, kind):
+    """(dtbl144) Los nombres que TMDB da a un id (en castellano y el original).
+    Los Simpson, 10-11: DonTorrent tiene una tarjeta "Los Simpsons"; con ese
+    titulo el buscador de Cinubo no trae la serie, se apunto "no la tiene" 12 h
+    para el tmdb 456 y la ficha buena ("Los Simpson") perdio para todos las 37
+    temporadas de streaming. El titulo de una fuente no basta para decir que no
+    esta. [] si TMDB no da nombre; None si no se pudo preguntar."""
+    k = ("movie" if kind == "movie" else "tv", int(tmdb))
+    if k in _CB_NOMBRES:
+        return _CB_NOMBRES[k]
+    if _tmdb_is_down():
+        return None
+    try:
+        r = _TMDB_SESS.get("https://api.themoviedb.org/3/%s/%d" % k,
+                           params={"api_key": _CAT_TMDB_KEY, "language": "es-ES"}, timeout=(3, 6))
+        if r.status_code == 404:
+            out = []
+        elif r.status_code != 200:
+            _tmdb_mark(False)
+            return None
+        else:
+            _tmdb_mark(True)
+            d = r.json() or {}
+            out = []
+            for c in ("name", "title", "original_name", "original_title"):
+                v = re.sub(r"\s+", " ", str(d.get(c) or "")).strip()[:80]
+                if len(_cb_norm_q(v)) >= 2 and all(_cb_norm_q(v) != _cb_norm_q(o) for o in out):
+                    out.append(v)
+        if len(_CB_NOMBRES) > 3000:
+            _CB_NOMBRES.clear()
+        _CB_NOMBRES[k] = out
+        return out
+    except Exception:
+        _tmdb_mark(False)
+        return None
+
+
 def _cb_ficha(tmdb, kind, titulo):
     """La ficha de Cinubo ('/p/xxx', '/s/xxx' o '/a/xxx') de un titulo, por su
     tmdb_id (el mismo que usa MejorWolf: sin adivinar por el nombre). "" si
@@ -16194,10 +16234,39 @@ def _cb_ficha(tmdb, kind, titulo):
     ya = _cb_cache_get("f", clave, _CB_TTL_FICHA)
     if ya:
         return ya
-    if ya == "" and _cb_cache_get("f", clave, _CB_TTL_NOESTA) == "":
+    # (dtbl144) el "no lo tiene" va en su clave propia y nueva: los apuntados
+    # antes (con un solo titulo) no valen, ver _cb_nombres_tmdb.
+    if _cb_cache_get("f", "no2:" + clave, _CB_TTL_NOESTA) == "":
         return ""
     tipos = ("movie",) if kind == "movie" else ("serie", "anime")
-    for q, pags in _cb_busquedas(titulo):
+    vistos = set()
+    for q, pags in _cb_busquedas(titulo) + [(None, (1,))]:
+        if q is None:
+            # Nada con el titulo de la fuente: antes de decir "no la tiene", con
+            # el nombre que le da TMDB (es el que usa Cinubo).
+            mas = _cb_nombres_tmdb(tmdb, kind)
+            if mas is None:
+                return None             # no se pudo mirar: no se esconde nada
+            for q in mas:
+                if _cb_norm_q(q) in vistos:
+                    continue
+                txt, st = _cb_pide(q=q, pg=1)
+                if txt is None:
+                    return None
+                try:
+                    d = _json.loads(txt)
+                except Exception:
+                    return None
+                vistos.add(_cb_norm_q(q))
+                for p in d.get("posts") or []:
+                    try:
+                        if int(p.get("tmdb_id") or 0) == int(tmdb) and p.get("type") in tipos                                 and _CB_LINK_POST.match(str(p.get("link") or "")):
+                            _cb_cache_pon("f", clave, p["link"])
+                            return p["link"]
+                    except (TypeError, ValueError):
+                        continue
+            break
+        vistos.add(_cb_norm_q(q))
         for pg in pags:
             txt, st = _cb_pide(q=q, pg=pg)
             if txt is None:
@@ -16216,7 +16285,7 @@ def _cb_ficha(tmdb, kind, titulo):
                     continue
             if not (d.get("pagination") or {}).get("has_more"):
                 break
-    _cb_cache_pon("f", clave, "")
+    _cb_cache_pon("f", "no2:" + clave, "")
     return ""
 
 

@@ -273,8 +273,28 @@ try:
         comprueba("la segunda vez, de la caché (sin caja)",
                   A._cb_ficha(97546, "serie", "ted lasso") == "/s/nzp5nh" and len(cola) == n0)
         respuestas["q:nada:1"] = (200, json.dumps({"posts": [], "pagination": {}}))
+        nombres_real = A._cb_nombres_tmdb
+        A._cb_nombres_tmdb = lambda tmdb, kind: []
         comprueba("si no lo tiene: vacío (y se recuerda)", A._cb_ficha(5, "movie", "nada") == ""
-                  and A._cb_cache_get("f", "movie:5", A._CB_TTL_NOESTA) == "")
+                  and A._cb_cache_get("f", "no2:movie:5", A._CB_TTL_NOESTA) == "")
+        # (dtbl144) Los Simpson: la tarjeta "Los Simpsons" de DonTorrent no la encuentra
+        # en Cinubo; no puede dejar apuntado "no la tiene" para la serie entera.
+        simp = {"posts": [{"tmdb_id": 456, "type": "serie", "link": "/s/simp01"}], "pagination": {}}
+        respuestas["q:Los Simpsons:1"] = (200, json.dumps({"posts": [{"tmdb_id": 9, "type": "movie", "link": "/p/otra01"}], "pagination": {}}))
+        respuestas["q:Los Simpson:1"] = (200, json.dumps(simp))
+        respuestas["q:The Simpsons:1"] = (200, json.dumps(simp))
+        A._cb_nombres_tmdb = lambda tmdb, kind: ["Los Simpson", "The Simpsons"]
+        comprueba("con el título torcido de una fuente, la encuentra por el nombre de TMDB",
+                  A._cb_ficha(456, "serie", "Los Simpsons") == "/s/simp01")
+        A._cb_nombres_tmdb = lambda tmdb, kind: None
+        comprueba("si TMDB no contesta: 'no lo sé' (None), y NO se apunta como que no está",
+                  A._cb_ficha(457, "serie", "Los Simpsons") is None
+                  and A._cb_cache_get("f", "no2:tv:457", A._CB_TTL_NOESTA) is None)
+        A._cb_cache_pon("f", "tv:458", "")
+        respuestas["q:Los Simpson 458:1"] = (200, json.dumps({"posts": [{"tmdb_id": 458, "type": "serie", "link": "/s/simp02"}], "pagination": {}}))
+        comprueba("un 'no la tiene' apuntado antes de dtbl144 ya no vale",
+                  A._cb_ficha(458, "serie", "Los Simpson 458") == "/s/simp02")
+        A._cb_nombres_tmdb = nombres_real
         respuestas["/s/nzp5nh/4x2"] = (200, html)
         r = cli.get("/cbenlaces?id=97546&kind=serie&t=ted%20lasso&s=4&e=2").get_json()
         comprueba("/cbenlaces: los de castellano de España del capítulo",
