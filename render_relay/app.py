@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl146"
+BUILD = "dtbl147"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -16533,22 +16533,39 @@ def cb_embed_ruta():
 
 @app.post("/cbembed/muerto")
 def cb_embed_muerto_ruta():
-    """(dtbl145) El reproductor del móvil se encontró borrado un enlace que el
-    relay tenía por bueno (guardado hasta 12 h, o Render no pudo verlo). No se
-    cree a quien avisa: se pregunta al worker y, si de verdad está borrado, se
-    aparta para todos (la siguiente persona ni lo intenta)."""
+    """(dtbl145-147) El reproductor del móvil se encontró borrado un enlace que
+    el relay tenía por bueno. Se aparta 12 h para todos (la siguiente persona ni
+    lo ve en la lista).
+
+    dtbl147: se cree al reproductor. Medido el 10-11 con el Lulustream del
+    Simpson 7x03: desde España (móvil, caja, worker desde casa) está BORRADO y
+    preguntando desde Render, NO -- los servidores borran por países. Quien ve
+    MejorWolf está en España, así que manda lo que ve el móvil. El worker solo
+    dice "muerto" con un 404/410 o la página de borrado, nunca por un fallo de
+    red. Contra el abuso: un tope por conexión, y solo afecta a ESE enlace."""
     ref = str(request.args.get("r") or "")
     if not _CB_REF.match(ref):
         return jsonify({"ok": False, "error": "referencia"}), 400
     u = _cb_cache_get("i", ref, _CB_TTL_EMBED)
     if not u:
         return jsonify({"ok": True, "muerto": u == ""})
-    if _bounded(lambda: _cb_vivo_worker(u, 6.0), 8.0, True):
-        return jsonify({"ok": True, "muerto": False})
+    ip, ahora = _ip_cliente(), _t.time()
+    q = [x for x in _CB_AVISOS.get(ip, []) if ahora - x < 600]
+    if len(q) >= 6:
+        return jsonify({"ok": False, "error": "demasiados"}), 429
+    q.append(ahora)
+    _CB_AVISOS[ip] = q
+    if len(_CB_AVISOS) > 500:
+        for k in [k for k, v in _CB_AVISOS.items() if not v or ahora - v[-1] > 600]:
+            _CB_AVISOS.pop(k, None)
     _CB["muertos"] = _CB.get("muertos", 0) + 1
     _CB["muertos_aviso"] = _CB.get("muertos_aviso", 0) + 1
+    _CB["ult_muerto"] = [int(ahora), u[:80]]
     _cb_cache_pon("i", ref, "")
     return jsonify({"ok": True, "muerto": True})
+
+
+_CB_AVISOS = {}
 
 
 # -- Las temporadas que existen (TMDB), para completar una serie (dtbl91) --------
@@ -17017,6 +17034,7 @@ def catdiag():
                              "apartadas_403": len([1 for v in _CB_MALAS.values() if _t.time() - v < _CB_MALAS_S]),
                              "vacias": _CB.get("vacias", 0), "ult_vacia": _CB.get("ult_vacia"),
                              "esperas": _CB.get("esperas", 0), "muertos": _CB.get("muertos", 0),
+                             "muertos_aviso": _CB.get("muertos_aviso", 0), "ult_muerto": _CB.get("ult_muerto"),
                              "cuentas": len(_cb_cuentas()), "salud": _cb_salud_diag()}
         except Exception:
             pass

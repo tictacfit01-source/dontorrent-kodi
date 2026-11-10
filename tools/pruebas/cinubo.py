@@ -480,14 +480,22 @@ try:
         cli = A.app.test_client()
         REF = "eyJpdiI6Ik1VRVJUT01VRVJUT01VRVJUTyJ9"
         A._cb_cache_pon("i", REF, "https://luluvid.com/e/borrado1")
-        A._cb_vivo_worker = lambda u, tope=5.0: True          # el worker lo ve vivo
+        # (dtbl147) se cree al móvil: desde Render el mismo enlace se ve vivo
+        # (los servidores borran por países), así que el relay no lo pregunta
+        A._cb_vivo_worker = lambda u, tope=5.0: True
+        A._CB_AVISOS.clear()
         r = cli.post("/cbembed/muerto?r=" + REF).get_json()
-        comprueba("aviso falso (el worker lo ve vivo): no se aparta",
-                  r == {"ok": True, "muerto": False} and A._cb_cache_get("i", REF, A._CB_TTL_EMBED), r)
-        A._cb_vivo_worker = lambda u, tope=5.0: False         # borrado de verdad
-        r = cli.post("/cbembed/muerto?r=" + REF).get_json()
-        comprueba("borrado de verdad: apartado para todos",
+        comprueba("el aviso del móvil aparta el enlace para todos",
                   r.get("muerto") is True and A._cb_cache_get("i", REF, A._CB_TTL_EMBED) == "", r)
+        comprueba("y queda apuntado para /catdiag", (A._CB.get("ult_muerto") or [0, ""])[1].startswith("https://luluvid"))
+        A._CB_AVISOS.clear()
+        cods = []
+        for n in range(7):
+            A._cb_cache_pon("i", REF + "T%d" % n, "https://luluvid.com/e/t%d" % n)
+            cods.append(cli.post("/cbembed/muerto?r=%sT%d" % (REF, n)).status_code)
+        comprueba("tope: 6 avisos por conexión cada 10 min, el 7º se rechaza",
+                  cods == [200] * 6 + [429] and A._cb_cache_get("i", REF + "T6", A._CB_TTL_EMBED), cods)
+        A._CB_AVISOS.clear()
         e = cli.get("/cbembed?r=" + REF).get_json()
         comprueba("la siguiente persona recibe 'muerto' sin gastar Cinubo", e.get("error") == "muerto", e)
         comprueba("referencia rara: 400", cli.post("/cbembed/muerto?r=<x>").status_code == 400)
