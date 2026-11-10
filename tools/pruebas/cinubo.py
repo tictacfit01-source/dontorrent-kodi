@@ -491,6 +491,21 @@ try:
         e = cli.get("/cbembed?r=" + REF).get_json()
         comprueba("la siguiente persona recibe 'muerto' sin gastar Cinubo", e.get("error") == "muerto", e)
         comprueba("referencia rara: 400", cli.post("/cbembed/muerto?r=<x>").status_code == 400)
+        # (dtbl146) lo ya comprobado borrado no vuelve a salir como botón
+        reales2 = A._cb_ficha, A._cb_enlaces
+        try:
+            A._cb_ficha = lambda tmdb, kind, titulo: "/s/simp"
+            A._cb_enlaces = lambda ruta: [{"srv": "LULUSTREAM", "q": "SD HDTV", "r": REF},
+                                          {"srv": "VIDARA", "q": "HD 720p", "r": REF + "VIVO"}]
+            r = cli.get("/cbenlaces?id=456&kind=serie&t=Los%20Simpson&s=7&e=3").get_json()
+            comprueba("/cbenlaces quita el borrado y lo cuenta",
+                      [x["srv"] for x in r.get("items", [])] == ["VIDARA"] and r.get("muertos") == 1, r)
+            A._cb_enlaces = lambda ruta: [{"srv": "LULUSTREAM", "q": "SD HDTV", "r": REF}]
+            r = cli.get("/cbenlaces?id=456&kind=serie&t=Los%20Simpson&s=7&e=3").get_json()
+            comprueba("todos borrados: lista vacía con 'muertos' (no 'sin castellano')",
+                      r.get("items") == [] and r.get("muertos") == 1 and "otros" not in r, r)
+        finally:
+            A._cb_ficha, A._cb_enlaces = reales2
         # _cb_vivo: Render no puede ver la página -> decide el worker
         real_get = A._get_con_tope
         try:
