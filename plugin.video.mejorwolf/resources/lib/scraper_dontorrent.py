@@ -1578,6 +1578,45 @@ def parse_detail_info(html):
     return out
 
 
+def _ficha_cuadra(path, info):
+    """¿El titulo de la ficha corresponde al slug de su ruta?
+    ('/pelicula/31223/La-otra-madre-4K' y 'La otra madre [4K]' -> si;
+    con 'En mar abierto [4K]' -> no). El slug viene sin la vocal acentuada
+    ('Obsesin'), con '39' por el apostrofo y sin puntuacion: se compara igual
+    de destrozado, y ante la duda se da por buena (False solo si NADA casa)."""
+    import unicodedata
+    from difflib import SequenceMatcher
+    titulo = (info or {}).get("title") or ""
+    slug = [p for p in str(path or "").split("/") if p]
+    slug = slug[-1] if slug else ""
+    if not titulo or not slug or slug.isdigit():
+        return True
+    base = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", titulo)
+    if path.startswith("/serie") or "/serie/" in path:
+        base = base.split(" - ")[0]
+
+    def _sin(s, quita):
+        s = unicodedata.normalize("NFD", s)
+        out, prev = [], ""
+        for ch in s:
+            if unicodedata.combining(ch):
+                if quita and out and out[-1] == prev:
+                    out.pop()                 # la letra acentuada entera fuera
+                continue
+            out.append(ch)
+            prev = ch
+        return re.sub(r"[^a-z0-9]+", "", "".join(out).lower())
+
+    s = re.sub(r"(?<=[A-Za-z])39(?=[A-Za-z])", "", slug)
+    s = re.sub(r"[^a-z0-9]+", "", s.lower())
+    for t in (_sin(base.replace("'", ""), True), _sin(base.replace("'", ""), False)):
+        if t and (s.startswith(t) or t.startswith(s)):
+            return True
+        if t and SequenceMatcher(None, t, s[:len(t) + 4]).ratio() >= 0.75:
+            return True
+    return False
+
+
 def detail_info(path, cid=None, fetch=True):
     """Ficha de DonTorrent (titulo con tildes + año + director + reparto).
 
@@ -1595,7 +1634,14 @@ def detail_info(path, cid=None, fetch=True):
     cache = _detail_info_load()
     ent = cache.get(key)
     if ent is not None:
-        return ent
+        if _ficha_cuadra(path, ent):
+            return ent
+        # (2.9.103) La ficha guardada es de OTRA peli: 11-11, la 31223 'La otra
+        # madre' tenia guardada 'En mar abierto [4K]' (la 31221) y el Inicio
+        # enseñaba la portada y la nota de esa. Se tira y se vuelve a leer.
+        _LOG(f"detail_info ({path}): la ficha guardada {ent.get('title')!r} no es de esta ruta, se vuelve a leer")
+        cache.pop(key, None)
+        _detail_info_save()
     if not fetch:
         return {}
     if (time.time() - _DETAIL_FAIL.get(key, 0)) < _DETAIL_FAIL_TTL:
@@ -1606,6 +1652,9 @@ def detail_info(path, cid=None, fetch=True):
     except Exception as e:
         _LOG(f"detail_info ({path}) fallo: {e}")
     info = parse_detail_info(html)
+    if info and not _ficha_cuadra(path, info):
+        _LOG(f"detail_info ({path}): la pagina trajo {info.get('title')!r}, que no es de esta ruta")
+        info = {}
     if not info:
         # NO se cachea en disco como "sin datos" (seria permanente y el titulo
         # real se perderia para siempre), pero SI se aparta un rato: si no, unas

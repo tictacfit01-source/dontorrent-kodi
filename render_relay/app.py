@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl148"
+BUILD = "dtbl149"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -12199,6 +12199,34 @@ def _dt_title_fix(cur, dt_title, serie=False):
     return None
 
 
+_CAT_META_AJENO = {}   # cid -> dt_title rechazado (se ve en /catdiag -> meta_ajeno)
+
+
+def _meta_es_suyo(it, sm):
+    """(dtbl149) ¿Es este meta de ESTA tarjeta? El meta va por content_id y su
+    `dt_title` es el titulo de la ficha que leyo la caja. 11-11: la tarjeta
+    31223 'La otra madre' llevaba un meta con dt_title 'En mar abierto [4K]'
+    (la ficha 31221, de al lado): una caja guardo la ficha equivocada bajo ese
+    numero y el Inicio enseñaba la portada, la nota y la sinopsis de otra
+    pelicula. Si el titulo de la ficha no corresponde al de la tarjeta, el meta
+    no se aplica (la tarjeta va por su propio emparejamiento). Sin dt_title no
+    hay con que comparar: se acepta, como hasta ahora."""
+    dtt = (sm or {}).get("dt_title")
+    cur = (it or {}).get("title")
+    if not dtt or not cur:
+        return True
+
+    def _l(s):
+        s = _re_dt.sub(r"\[[^\]]*\]|\([^)]*\)", " ", s or "")
+        return _re_dt.sub(r"[^a-z0-9]+", "", _dt_mutila(_dt_slug_apos(s)).lower())
+
+    cand = dtt.split(" - ")[0] if it.get("kind") == "serie" else dtt
+    a, b = _l(cur), _l(cand)
+    if not a or not b:
+        return True
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
 def _cat_apply_meta(it, sm):
     """Aplica un meta TMDB (de la semilla o de la cache de enrich del box) a un
     item del Inicio. El meta va POR content_id (es la identidad de ESTE item),
@@ -12210,6 +12238,10 @@ def _cat_apply_meta(it, sm):
     QUITA: mejor sin dato que con el de otra peli. Devuelve True si puso un
     poster de TMDB."""
     if not sm or "image.tmdb.org" not in (sm.get("poster") or ""):
+        return False
+    if not _meta_es_suyo(it, sm):
+        if len(_CAT_META_AJENO) < 200:
+            _CAT_META_AJENO[str(it.get("content_id"))] = sm.get("dt_title")
         return False
     it["poster"] = sm["poster"]
     # TILDES: DonTorrent no publica el titulo completo en sus listados (cada
@@ -16958,6 +16990,8 @@ def catdiag():
         out["wfih"] = {"error": True}
     # la copia de las fichas del Inicio (dtbl65)
     out["enriq_nube"] = dict(_ENRIQ_NUBE)
+    # (dtbl149) fichas de la caja rechazadas por ser de OTRA tarjeta
+    out["meta_ajeno"] = dict(list(_CAT_META_AJENO.items())[:20])
     # los errores de JavaScript que la web ha visto en los moviles (dtbl55)
     try:
         out["jserr"] = _jserr_resumen()
