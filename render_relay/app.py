@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl147"
+BUILD = "dtbl148"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -20875,7 +20875,16 @@ function _todosLosEps(){
  return eps;}
 function _primerSinVer(){
  var eps=_todosLosEps();
- for(var i=0;i<eps.length;i++)if(!isSeen(eps[i].content_id))return eps[i];
+ // (dtbl148) con un pack de temporada, sus capítulos van sueltos debajo: se
+ // empieza por el 1x01 suelto (no por el pack, que puede no tener semillas), y
+ // si el pack ya está visto, sus capítulos sueltos cuentan como vistos.
+ var packs={},hay={};
+ eps.forEach(function(e){if(e.cb)hay[e.season]=1;
+  if(esPack(e)){var m=_EPRANGO.exec(e.label);(packs[e.season]=packs[e.season]||[]).push({a:+m[2],b:+m[3],v:isSeen(e.content_id)})}});
+ for(var i=0;i<eps.length;i++){var e=eps[i];
+  if(esPack(e)&&hay[e.season])continue;
+  if(e.cb&&(packs[e.season]||[]).some(function(p){return p.v&&e.episode>=p.a&&e.episode<=p.b}))continue;
+  if(!isSeen(e.content_id))return e}
  return null;}
 function _seguirHTML(){
  // OJO: EPS se llena mas abajo, al pintar los capitulos; por eso este boton se
@@ -21024,11 +21033,11 @@ function renderEpisodes(){if(!OVDATA)return;var d=OVDATA.d,x=OVDATA.x;EPS={};var
     'T'+(s||'?')+'<i>'+_l.length+'</i></button>'}).join('')+'</div>';}
  keys.forEach(function(s){
   if(keys.length>1&&s!==OVSEASON)return;
-  var list=seasons[s];list.sort(function(a,b){return (a.episode||0)-(b.episode||0)});var allseen=list.every(function(e){return isSeen(e.content_id)});
+  var list=seasons[s];list.sort(function(a,b){return ((a.episode||0)-(b.episode||0))||((a.cb?1:0)-(b.cb?1:0))});var allseen=list.every(function(e){return isSeen(e.content_id)});
   if(keys.length>1||s>0)h+='<div class="seas"><span>Temporada '+(s||'?')+'</span><span class="seasmark" onclick="markSeason('+s+')">'+(allseen?'Marcar no vista':'Marcar toda vista')+'</span></div>';
   list.forEach(function(e){var id='e'+(_epi++);EPS[id]=e;var sn=isSeen(e.content_id);
    h+='<div class="ep'+(sn?' seen':'')+'" id="row-'+id+'"><div class="epmain" onclick="playEp(\''+id+'\')"><span class="epl"><span class="chk">✓</span>'+esc(e.label)+(e.quality?(' <span class="epq" data-q="'+esc(e.quality)+'">'+esc(e.quality)+'</span>'):'')+'<span class="epb" id="epb-'+id+'"></span></span></div>'+
-     ((x.tmdb_id&&e.season&&e.episode&&!e.cb)?'<div class="cbep" onclick="event.stopPropagation();cbEp(\''+id+'\')" title="Streaming sin anuncios" aria-label="Streaming sin anuncios">📺</div>':'')+
+     ((x.tmdb_id&&e.season&&e.episode&&!e.cb&&!esPack(e))?'<div class="cbep" onclick="event.stopPropagation();cbEp(\''+id+'\')" title="Streaming sin anuncios" aria-label="Streaming sin anuncios">📺</div>':'')+
      '<div class="eye" onclick="event.stopPropagation();markSeen(\''+id+'\')" title="Marcar como visto">'+(sn?EYE_ON:EYE_OFF)+'</div></div>'});
  });$('ov-body').innerHTML=h;_seguirPinta();lazyEps();
  // Tráiler de la serie: si ya lo tenemos (de enrichItem) lo mostramos; si no,
@@ -21149,9 +21158,16 @@ function cbTemps(x){if(!x||!x.tmdb_id||x._cbq)return;x._cbq=1;
     return}
    if(!d||!d.ok||!d.t||!d.t.length){nada();return}x._cbt=d.t;
    if(OVDATA&&OVDATA.x===x)renderEpisodes()}).catch(nada)}
+// (dtbl148) Un pack de temporada («1x01 - 1x23», 6 o más capítulos en un
+// archivo) NO tapa el streaming: Héroes T1-T3 eran un pack cada una y por
+// streaming solo se podía ver el 1x01 (el 📺 del pack pedía ese y nada más).
+// Ahora debajo del pack salen sus capítulos sueltos. Los packs cortos de
+// WolfMax («1x01 al 1x03», «1x05 al 1x08») siguen contando como capítulos, para no repetir.
+var _EPRANGO=/(\d{1,2})x(\d{1,3})(?:\s*(?:al|a|-)\s*(?:\d{1,2}x)?(\d{1,3}))?/i;
+function esPack(e){var m=_EPRANGO.exec((e&&e.label)||'');return !!(m&&m[3]&&(+m[3]-(+m[2]))>=5)}
 function cbFunde(eps,x){var t=x&&x._cbt;if(!t||!t.length)return eps;
  var max={};
- eps.forEach(function(e){var m=/(\d{1,2})x(\d{1,3})(?:\s*(?:al|a|-)\s*(?:\d{1,2}x)?(\d{1,3}))?/i.exec(e.label||'');
+ eps.forEach(function(e){if(esPack(e))return;var m=_EPRANGO.exec(e.label||'');
   var s=e.season||(m?+m[1]:0),a=(m?+m[2]:0)||e.episode||0,b=(m&&m[3])?+m[3]:a;
   if(!s)return;max[s]=Math.max(max[s]||0,a,b)});
  var extra=[];

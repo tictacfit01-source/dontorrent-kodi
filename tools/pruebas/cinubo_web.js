@@ -61,7 +61,7 @@ function fetch(u) {
 }
 const setTimeout2 = (f) => f();
 const CTX = new Function('$', 'esc', 'code', 'toast', 'avisaCodigo', 'mwBack', 'mwOpen', 'sendPlay', '_tituloBase', 'fetch', 'setTimeout',
-  codigo + '\nreturn {cbPinta, cbPlay, cbGemelos, cbFunde, set: function(c){CBSEL=c}};')(
+  codigo + '\nreturn {cbPinta, cbPlay, cbGemelos, cbFunde, esPack, set: function(c){CBSEL=c}};')(
   $, esc, code, toast, avisaCodigo, mwBack, mwOpen, sendPlay, _tituloBase, fetch, setTimeout2);
 
 console.log('\n=== 2) La lista ===');
@@ -121,6 +121,16 @@ comprueba('cada añadido es de streaming y con su propio id para "visto"',
   f.filter((e) => e.cb).every((e) => e.quality === 'Streaming' && /^cb:136315:\d+x\d+$/.test(e.content_id)));
 comprueba('sin temporadas de TMDB: la lista tal cual', CTX.cbFunde(tor, { tmdb_id: 1 }) === tor);
 comprueba('serie sin ningún torrent: todo de streaming', CTX.cbFunde([], X).length === 26);
+
+console.log('\n=== 2c) Packs de temporada (Héroes, dtbl148) ===');
+const H = { tmdb_id: 1639, _cbt: [{ s: 1, e: Array.from({ length: 23 }, (_, i) => i + 1) }, { s: 4, e: [1, 2, 3] }] };
+const torH = [{ season: 1, episode: 1, label: '1x01 - 1x23' }, { season: 4, episode: 1, label: '4x01' }, { season: 4, episode: 2, label: '4x02' }, { season: 4, episode: 3, label: '4x03' }];
+const fH = CTX.cbFunde(torH, H), nH = fH.filter((e) => e.cb).map((e) => e.label);
+comprueba('el pack 1x01 - 1x23 no tapa: salen sus 23 capítulos de streaming', nH.filter((l) => l.startsWith('1x')).length === 23, nH);
+comprueba('T4 completa en sueltos: nada añadido', !nH.some((l) => l.startsWith('4x')), nH);
+comprueba('el pack sigue ahí, delante', fH[0] === torH[0]);
+comprueba('esPack: «1x01 - 1x23» sí; «1x05 al 1x08» y «1x01 al 1x03» no; «4x01» no',
+  CTX.esPack(torH[0]) && !CTX.esPack({ label: '1x05 al 1x08' }) && !CTX.esPack({ label: '1x01 al 1x03' }) && !CTX.esPack({ label: '4x01' }));
 
 console.log('\n=== 3) Al elegir ===');
 (async () => {
