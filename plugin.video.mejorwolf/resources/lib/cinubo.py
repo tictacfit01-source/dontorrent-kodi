@@ -72,8 +72,31 @@ def pedir(ev):
     dom = _dominio(ev)
     BASE = "https://" + dom
     s = _sesion(ev.get("ck"), dom)
+    # (2.9.104) Una lista de su portada ("para ver ahora", "recientes",
+    # "mejor valoradas") de pelis o series. Las cajas viejas no lo conocen y
+    # contestan con la portada (path "/"): el relay lo distingue.
+    hm = ev.get("home") if isinstance(ev.get("home"), dict) else None
+    if hm is not None and (str(hm.get("type")) not in ("movie", "serie", "anime")
+                           or str(hm.get("sel")) not in ("now", "recent", "rated")):
+        return ""
     try:
-        if q:
+        if hm is not None:
+            r0 = s.get(BASE + "/", timeout=(6, 12))
+            m = _CSRF.search(r0.text or "")
+            if not m:
+                return json.dumps({"st": r0.status_code or 0, "t": "", "h": _host(r0)})
+            try:
+                pg = max(1, min(5, int(hm.get("pg") or 1)))
+            except (TypeError, ValueError):
+                pg = 1
+            r = s.post(BASE + "/api/home/posts",
+                       json={"type": str(hm["type"]), "page": pg, "filterBy": "", "genres": [],
+                             "networks": [], "platforms": [], "customHome": False,
+                             "selection": str(hm["sel"])},
+                       headers={"Accept": "application/json", "X-CSRF-TOKEN": m.group(1),
+                                "X-Requested-With": "XMLHttpRequest", "Referer": BASE + "/"},
+                       timeout=(6, 12))
+        elif q:
             r0 = s.get(BASE + "/", timeout=(6, 12))
             m = _CSRF.search(r0.text or "")
             if not m:

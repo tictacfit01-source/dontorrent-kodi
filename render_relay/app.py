@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl149"
+BUILD = "dtbl150"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -12953,6 +12953,9 @@ def catbrowse():
                 out["mix"] = []
                 out["mixpend"] = True
                 _home_mix_pronto(kind)
+            # (dtbl150) las novedades de Cinubo en castellano 1080p, una de
+            # cada entre las otras fuentes: se reparten antes de pintar
+            out["mix"] = _cb_nov_en_mezcla(kind, out["items"], out["mix"])
         return jsonify(out)
 
     dt_ent = _load(key, seed=True)
@@ -15554,6 +15557,7 @@ def _cb_cookies():
 # casa: el trabajo "cbget" lleva la sesion y la caja no la guarda.
 _CB_VER_MIN = (2, 9, 91)
 _CB_VER_DOM = (2, 9, 96)        # desde esta, la caja va a la dirección que se le diga
+_CB_VER_HOME = (2, 9, 104)      # (dtbl150) desde esta, la caja pide las listas de la portada
 
 
 def _cb_cajas():
@@ -15592,7 +15596,7 @@ _CB_MALAS_S = 6 * 3600
 _CB_INTENTOS = 3
 
 
-def _cb_pide_una(box, c, path, q, pg, espera, info=None, dom=None):
+def _cb_pide_una(box, c, path, q, pg, espera, info=None, dom=None, home=None):
     """(texto, status) por UNA caja; (None, 0) si no contesta. En `info["h"]`,
     la dirección a la que llegó la caja (cajas 2.9.96+)."""
     sem = _lend_acquire(box)
@@ -15604,7 +15608,9 @@ def _cb_pide_una(box, c, path, q, pg, espera, info=None, dom=None):
         d_ = dom or _cb_dom()
         if d_ != _CB_DOM_DEF:
             ev["dom"] = d_
-        if q:
+        if home:
+            ev.update(path="/", home=home)
+        elif q:
             ev.update(q=q[:80], pg=int(pg))
         else:
             ev["path"] = path
@@ -15621,7 +15627,7 @@ def _cb_pide_una(box, c, path, q, pg, espera, info=None, dom=None):
         return None, 0
 
 
-def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None, info=None, dom=None):
+def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None, info=None, dom=None, home=None):
     """(texto, status) de Cinubo por una caja (si una recibe 403, la siguiente).
     (None, st) si no se pudo. `ck`: la cuenta (si no, la que está sana: la
     principal, o una de reserva si la principal perdió la sesión). `dom`: otra
@@ -15639,6 +15645,9 @@ def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None, info=None, dom=None):
     if dom and dom != _CB_DOM_DEF:
         _kd = _kbstatus_load()
         cajas = [b for b in cajas if _ver_tupla((_kd.get(b) or {}).get("v")) >= _CB_VER_DOM]
+    if home:                                 # (dtbl150) las listas de su portada
+        _kd = _kbstatus_load()
+        cajas = [b for b in cajas if _ver_tupla((_kd.get(b) or {}).get("v")) >= _CB_VER_HOME]
     if not cajas:
         _CB["ult_err"] = "sin caja"
         return None, 0
@@ -15648,7 +15657,7 @@ def _cb_pide(path="", q="", pg=1, espera=20.0, ck=None, info=None, dom=None):
         if not _cb_cupo():
             _CB["ult_err"] = "cupo"
             return None, 0
-        txt, st = _cb_pide_una(box, c, path, q, pg, espera, info, dom)
+        txt, st = _cb_pide_una(box, c, path, q, pg, espera, info, dom, home)
         if st == 403:                       # a esta caja Cloudflare no la deja
             _CB_MALAS[box] = _t.time()
             _CB["cajas_403"] = _CB.get("cajas_403", 0) + 1
@@ -16167,13 +16176,16 @@ _CB_TTL_EMBED = 12 * 3600        # el iframe de un enlace
 _CB_MAX = {"f": 4000, "e": 3000, "i": 3000}
 
 
+_CB_TABLAS = ("f", "e", "i", "q", "p", "n")
+
+
 def _cb_cache_lee():
     try:
         with open(_CB_CACHE_FILE, encoding="utf-8") as f:
             d = _json.load(f)
-        return {k: d.get(k) if isinstance(d.get(k), dict) else {} for k in ("f", "e", "i", "q", "p")}
+        return {k: d.get(k) if isinstance(d.get(k), dict) else {} for k in _CB_TABLAS}
     except Exception:
-        return {"f": {}, "e": {}, "i": {}, "q": {}, "p": {}}
+        return {k: {} for k in _CB_TABLAS}
 
 
 def _cb_cache_get(tabla, clave, ttl):
@@ -16706,18 +16718,32 @@ def cb_search():
     return jsonify({"ok": True, "items": items})
 
 
-# -- El Inicio con lo de Cinubo (dtbl98) -------------------------------------
+# -- El Inicio con lo de Cinubo (dtbl98; dtbl150 solo castellano 1080p) -----
 # Su portada con sesión trae en el HTML (window.homeInitialData) lo que tiene
 # "para ver ahora": pelis, series y anime, 13 de cada, con su tmdb_id. Un GET de
 # la portada por la caja (ya lo sabe hacer, sin versión nueva) cada 2 h.
 _CB_TTL_PORTADA = 2 * 3600
-_CB_MAX["p"] = 4
+_CB_MAX["p"] = 12
 _CB_PORTADA_RE = re.compile(r"window\.homeInitialData\s*=\s*(\{.*?\});\s*\n", re.S)
 
 
+def _cb_con_enlace(posts):
+    """Tarjetas con la ficha de Cinubo en `_cbl` (para comprobarlas sin buscar)."""
+    out = []
+    for p in posts or []:
+        t = _cb_tarjeta(p) if isinstance(p, dict) else None
+        if t:
+            t["_cbl"] = str(p.get("link"))
+            if str(p.get("cover") or "").startswith("https://image.tmdb.org/"):
+                t["backdrop"] = str(p["cover"])
+            out.append(t)
+    return out
+
+
 def _cb_portada():
-    """{"movie": [...], "serie": [...], "anime": [...]} en tarjetas. None si no se pudo."""
-    ya = _cb_cache_get("p", "home", _CB_TTL_PORTADA)
+    """{"movie": [...], "serie": [...], "anime": [...]} en tarjetas (con `_cbl`).
+    None si no se pudo."""
+    ya = _cb_cache_get("p", "home2", _CB_TTL_PORTADA)
     if ya is not None:
         return ya
     txt, st = _cb_pide(path="/")
@@ -16735,21 +16761,259 @@ def _cb_portada():
     out = {}
     for tipo in ("movie", "serie", "anime"):
         posts = ((d.get(tipo) or {}).get("posts") or []) if isinstance(d.get(tipo), dict) else []
-        out[tipo] = [t for t in (_cb_tarjeta(p) for p in posts[:40]) if t]
-    _cb_cache_pon("p", "home", out)
+        out[tipo] = _cb_con_enlace(posts[:40])
+    _cb_cache_pon("p", "home2", out)
+    return out
+
+
+def _cb_lista(tipo, sel, pg):
+    """Una lista de la portada de Cinubo ("now" para ver ahora, "recent" lo
+    recién puesto), en tarjetas con `_cbl`. Necesita una caja 2.9.104+; la
+    primera página de "now" sale también de la portada (cualquier caja).
+    None si no se pudo."""
+    clave = "%s:%s:%d" % (tipo, sel, pg)
+    ya = _cb_cache_get("p", clave, _CB_TTL_PORTADA)
+    if ya is not None:
+        return ya
+    txt, st = _cb_pide(path="/", home={"type": tipo, "sel": sel, "pg": int(pg)})
+    out = None
+    if txt:
+        try:
+            d = _json.loads(txt)
+            if isinstance(d, dict) and isinstance(d.get("posts"), list):
+                out = _cb_con_enlace(d["posts"][:40])
+        except Exception:
+            out = None
+    if out is None:
+        if sel == "now" and pg == 1:
+            por = _cb_portada()
+            return None if por is None else (por.get(tipo) or [])
+        return None
+    _cb_cache_pon("p", clave, out)
+    return out
+
+
+# Qué listas de Cinubo alimentan cada pestaña del Inicio (Israel, 13-11: "que
+# en Estrenos, Cine y Series aparezcan las novedades de Cinubo, si están en
+# castellano 1080p"). Estrenos: lo que se está viendo ahora (los estrenos
+# grandes); Cine: lo último que han puesto; Series: los capítulos nuevos.
+_CB_NOV_FUENTES = {
+    "estrenos": (("movie", "now", 1), ("movie", "now", 2)),
+    "peliculas": (("movie", "recent", 1), ("movie", "recent", 2)),
+    "series": (("serie", "recent", 1), ("serie", "now", 1), ("serie", "recent", 2)),
+}
+_CB_NOV_FILE = "/tmp/mw_cbnov.json"
+_CB_NOV_TTL = 2 * 3600            # se rehace la lista (las comprobaciones duran más)
+_CB_NOV_TOPE = 16                 # por pestaña: un buen puñado, no media portada
+_CB_NOV_POR_VUELTA = 8            # páginas de Cinubo por vuelta (el cupo es de todos)
+_CB_NOV_HUECO = 6 * 60            # entre dos vueltas cualesquiera (las dos workers juntas)
+_CB_NOV_FALLO = 15 * 60           # si Cinubo no contestó, no se insiste
+_CB_NOV_SI_TTL = 24 * 3600        # "está en castellano 1080p": no se va
+_CB_NOV_NO_TTL = 4 * 3600         # "aún no": el doblaje suele llegar después
+_CB_MAX["n"] = 1500
+_CB_NOV_Q = re.compile(r"(1080|2160|4k)", re.I)
+
+
+def _cb_nov_sirve(enlaces):
+    """La calidad que vale ("1080p"/"4K") si hay un enlace en castellano de
+    España, a 1080p o más, en un servidor que MejorWolf abre SIN anuncios. ""
+    si no."""
+    mejor = ""
+    for x in enlaces or []:
+        if x.get("srv") not in _CB_ABRE:
+            continue
+        m = _CB_NOV_Q.search(x.get("q") or "")
+        if not m:
+            continue
+        if m.group(1) != "1080":
+            return "4K"
+        mejor = "1080p"
+    return mejor
+
+
+def _cb_nov_juzga(it):
+    """"1080p"/"4K" si se puede ver así, "" si no, None si no se pudo mirar.
+    Peli: su ficha. Serie: su último capítulo emitido (TMDB) o el anterior."""
+    link = it.get("_cbl") or ""
+    if not _CB_LINK_POST.match(link):
+        return ""
+    if it.get("kind") == "movie":
+        en = _cb_enlaces(link)
+        return None if en is None else _cb_nov_sirve(en)
+    temps = _cb_temps(int(it.get("tmdb_id") or 0))
+    if temps is None:
+        return None
+    if not temps:
+        return ""
+    s_, eps = temps[-1]["s"], temps[-1]["e"]
+    for e in sorted(eps)[-2:][::-1]:
+        en = _cb_enlaces("%s/%dx%d" % (link, s_, e))
+        if en is None:
+            return None
+        q = _cb_nov_sirve(en)
+        if q:
+            return q
+    return ""
+
+
+def _cb_nov_veredicto(clave):
+    """(valor, vigente) de lo apuntado para un título."""
+    e = _cb_cache_lee()["n"].get(clave)
+    if not (isinstance(e, list) and len(e) == 2):
+        return None, False
+    edad = _t.time() - float(e[1] or 0)
+    return e[0], edad < (_CB_NOV_SI_TTL if e[0] else _CB_NOV_NO_TTL)
+
+
+def _cb_nov_lee():
+    try:
+        with open(_CB_NOV_FILE, encoding="utf-8") as f:
+            d = _json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cb_nov_vuelta(kind):
+    """Rehace las novedades de una pestaña: lee sus listas de Cinubo y comprueba
+    los títulos que aún no se han mirado (como mucho _CB_NOV_POR_VUELTA)."""
+    cand, vistos, fallo = [], set(), False
+    for tipo, sel, pg in _CB_NOV_FUENTES[kind]:
+        lst = _cb_lista(tipo, sel, pg)
+        if lst is None:
+            fallo = True
+            continue
+        for it in lst:
+            k = "%s:%s" % (it["kind"], it["tmdb_id"])
+            if k not in vistos:
+                vistos.add(k)
+                cand.append(it)
+    ok, pend, gastadas = [], 0, 0
+    for it in cand:
+        if len(ok) >= _CB_NOV_TOPE:
+            break
+        clave = "%s:%s" % (it["kind"], it["tmdb_id"])
+        v, vigente = _cb_nov_veredicto(clave)
+        if not vigente:
+            # el cupo de Cinubo es de la gente que reproduce: si va por la
+            # mitad, las novedades esperan a la siguiente vuelta
+            usado = len([x for x in _CB["hora"] if _t.time() - x < 3600])
+            if gastadas >= _CB_NOV_POR_VUELTA or usado > _CB_CUPO_H // 2:
+                pend += 1
+                continue
+            gastadas += 1
+            v = _cb_nov_juzga(it)
+            if v is None:
+                pend += 1
+                fallo = True
+                if not _CB.get("ult_err", "").startswith("http"):
+                    break           # sin caja o sin sesión: no se sigue gastando
+                continue
+            _cb_cache_pon("n", clave, v)
+        if v:
+            t = {k2: v2 for k2, v2 in it.items() if not k2.startswith("_")}
+            t["quality"] = v
+            ok.append(t)
+    with _FileLock(_CB_NOV_FILE):
+        d = _cb_nov_lee()
+        viejo = (d.get(kind) or {}).get("items") or []
+        if not cand and viejo:
+            ok = viejo            # Cinubo no contestó: lo de antes antes que nada
+        d[kind] = {"items": ok, "ts": _t.time() if cand else (d.get(kind) or {}).get("ts", 0),
+                   "pend": pend, "fallo": _t.time() if fallo else 0,
+                   "cand": len(cand), "gastadas": gastadas}
+        try:
+            tmp = _CB_NOV_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(d, f)
+            os.replace(tmp, _CB_NOV_FILE)
+        except Exception:
+            pass
+    return ok
+
+
+_CB_NOV_MARCA = "/tmp/mw_cbnov_marca.json"
+
+
+def _cb_nov_pronto(kind, ent):
+    """Lanza una vuelta POR DETRÁS si hace falta (lista vieja o a medias), una
+    sola a la vez entre las dos workers y con aire entre vueltas."""
+    ahora = _t.time()
+    if ent and (ahora - float(ent.get("ts") or 0)) < _CB_NOV_TTL and not ent.get("pend"):
+        return
+    if ent and ent.get("fallo") and (ahora - float(ent["fallo"])) < _CB_NOV_FALLO:
+        return
+    with _FileLock(_CB_NOV_MARCA):
+        try:
+            with open(_CB_NOV_MARCA, encoding="utf-8") as f:
+                m = _json.load(f) or {}
+        except Exception:
+            m = {}
+        if any((ahora - float(v or 0)) < _CB_NOV_HUECO for v in m.values()):
+            return                  # otra vuelta en marcha (o recién hecha)
+        m[kind] = ahora
+        try:
+            with open(_CB_NOV_MARCA, "w", encoding="utf-8") as f:
+                _json.dump(m, f)
+        except Exception:
+            return
+
+    def _ir():
+        try:
+            _cb_nov_vuelta(kind)
+        except Exception as e:
+            _CB["nov_err"] = "%s: %s" % (type(e).__name__, str(e)[:80])
+    try:
+        _thr.Thread(target=_ir, daemon=True).start()
+    except Exception:
+        pass
+
+
+def _cb_novedades(kind):
+    """Las novedades de Cinubo ya comprobadas para una pestaña (al instante,
+    sin esperar a Cinubo; si hace falta, se rehacen por detrás)."""
+    if kind not in _CB_NOV_FUENTES:
+        return []
+    ent = _cb_nov_lee().get(kind) or {}
+    try:
+        _cb_nov_pronto(kind, ent)
+    except Exception:
+        pass
+    return [dict(x) for x in (ent.get("items") or [])]
+
+
+def _cb_nov_en_mezcla(kind, base, mix):
+    """La mezcla del Inicio con las novedades de Cinubo intercaladas (una de
+    cada), sin lo que ya está por tmdb_id en DonTorrent o en las otras."""
+    try:
+        nov = _cb_novedades(kind)
+    except Exception:
+        return mix
+    if not nov:
+        return mix
+    hay = set()
+    for x in list(base or []) + list(mix or []):
+        for a in [x] + list(x.get("alts") or []):
+            if isinstance(a, dict) and a.get("tmdb_id"):
+                hay.add(("s" if a.get("kind") == "serie" else "m", str(a["tmdb_id"])))
+    nov = [x for x in nov if ("s" if x.get("kind") == "serie" else "m", str(x["tmdb_id"])) not in hay]
+    out = []
+    for a, b in _zip_largo(list(mix or []), nov):
+        if a is not None:
+            out.append(a)
+        if b is not None:
+            out.append(b)
     return out
 
 
 @app.get("/cbinicio")
 def cb_inicio():
-    """Lo de Cinubo para una pestaña del Inicio (estrenos|peliculas|series)."""
+    """Lo de Cinubo para una pestaña del Inicio (estrenos|peliculas|series):
+    solo lo comprobado en castellano de España a 1080p o más (dtbl150)."""
     kind = str(request.args.get("kind") or "")
-    if kind not in ("estrenos", "peliculas", "series"):
+    if kind not in _CB_NOV_FUENTES:
         return jsonify({"ok": False, "error": "faltan datos"}), 400
-    por = _cb_portada()
-    if por is None:
-        return jsonify({"ok": False, "error": "no_disponible", "motivo": _CB.get("ult_err") or ""})
-    return jsonify({"ok": True, "items": por.get("serie" if kind == "series" else "movie") or []})
+    return jsonify({"ok": True, "items": _cb_novedades(kind)})
 
 
 @app.get("/cbtemps")
@@ -17069,7 +17333,12 @@ def catdiag():
                              "vacias": _CB.get("vacias", 0), "ult_vacia": _CB.get("ult_vacia"),
                              "esperas": _CB.get("esperas", 0), "muertos": _CB.get("muertos", 0),
                              "muertos_aviso": _CB.get("muertos_aviso", 0), "ult_muerto": _CB.get("ult_muerto"),
-                             "cuentas": len(_cb_cuentas()), "salud": _cb_salud_diag()}
+                             "cuentas": len(_cb_cuentas()), "salud": _cb_salud_diag(),
+                             # (dtbl150) las novedades del Inicio: cuántas valen y cuántas faltan por mirar
+                             "nov": {k: dict({kk: v.get(kk) for kk in ("cand", "pend", "gastadas", "ts", "fallo")},
+                                             n=len(v.get("items") or []))
+                                     for k, v in _cb_nov_lee().items() if isinstance(v, dict)},
+                             "nov_err": _CB.get("nov_err", "")}
         except Exception:
             pass
     else:
@@ -19564,14 +19833,22 @@ function filtraFuente(s){
 // descartarlas no tiene sentido; y si la fuente filtrada es DonTorrent, si.
 function iniVisible(x){return !INI.src||((x.source||'dt')===INI.src)}
 function repartoInicio(){
- var base=[],extra=[];
- LISTS.inicio.forEach(function(x){((x.source||'dt')==='dt'?base:extra).push(x)});
- if(!extra.length||!base.length)return;
+ var base=[],extra=[],cbs=[];
+ LISTS.inicio.forEach(function(x){var s=x.source||'dt';(s==='dt'?base:s==='cb'?cbs:extra).push(x)});
+ if(!base.length||(!extra.length&&!cbs.length))return;
  var out=[],i=0,j=0;
  while(i<base.length||j<extra.length){
   for(var n=0;n<2&&i<base.length;n++)out.push(base[i++]);
   if(j<extra.length)out.push(extra[j++]);
  }
+ // (dtbl150) Las novedades de Cinubo (castellano 1080p) una de cada cinco
+ // desde la quinta: detrás de las otras fuentes quedaban en la fila 7 de Cine
+ // (las tarjetas que WolfMax mejora a 4K también cuentan como "otras").
+ if(cbs.length){var res=[],k=0;i=0;
+  while(i<out.length||k<cbs.length){
+   if(k<cbs.length&&(res.length%5===4||i>=out.length)){res.push(cbs[k++]);continue}
+   res.push(out[i++])}
+  out=res}
  LISTS.inicio=out;}
 // Plan B: la mezcla no estaba calculada cuando se pidio la portada. Entonces
 // se pide aparte y las tarjetas se anaden AL FINAL -- sin tocar el orden de lo

@@ -35,6 +35,10 @@ for r in ("/logout", "/configuracion/notificaciones", "/api/user/settings", "//e
     comprueba("no vale " + r[:30], not C._RUTA.match(r))
 comprueba("pedir() con una ruta que no vale: nada (y sin red)",
           C.pedir({"path": "/logout", "ck": {}}) == "")
+# (2.9.104) las listas de la portada: solo tipo y selección conocidos
+for h in ({"type": "user", "sel": "now"}, {"type": "movie", "sel": "../x"}, {"type": "movie"}):
+    comprueba("lista de la portada que no vale: nada (y sin red) %s" % h,
+              C.pedir({"path": "/", "ck": {}, "home": h}) == "")
 
 print("\n=== 2) Lulustream: P.A.C.K.E.R ===")
 # empaquetado de verdad de: player.setup({sources:[{file:"https://a.b/hls/x/master.m3u8"}]})

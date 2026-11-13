@@ -55,7 +55,7 @@ def quita(f):
         os.remove(f)
     except Exception:
         pass
-FICH = [A._CB_FILE, A._USO_FILE, A._CB_CACHE_FILE, A._CB_RITMO_FILE]
+FICH = [A._CB_FILE, A._USO_FILE, A._CB_CACHE_FILE, A._CB_RITMO_FILE, A._CB_NOV_FILE, A._CB_NOV_MARCA]
 copias = {}
 for f in FICH:
     if os.path.exists(f):
@@ -189,6 +189,10 @@ try:
     def espera(job, secs):
         ev = cola[-1][1]
         clave = ("q:%s:%s" % (ev["q"], ev.get("pg"))) if ev.get("q") else ev.get("path")
+        if ev.get("home"):   # (dtbl150) una caja 2.9.104 contesta la lista; las viejas, la portada
+            h_ = ev["home"]
+            if ("home:%s:%s:%s" % (h_["type"], h_["sel"], h_["pg"])) in respuestas:
+                clave = "home:%s:%s:%s" % (h_["type"], h_["sel"], h_["pg"])
         r = respuestas.get(clave)
         return None if r is None else {"html": json.dumps({"st": r[0], "t": r[1]})}
     A._catjob_wait = espera
@@ -384,19 +388,78 @@ try:
                   "if((x.source||'dt')==='cb')return -5000;" in src_web
                   and "return q*10-1000;" in src_web)
 
-        print("\n=== 8c) El Inicio con lo de Cinubo ===")
+        print("\n=== 8c) El Inicio con lo de Cinubo: solo castellano 1080p (dtbl150) ===")
+        for f_ in (A._CB_NOV_FILE, A._CB_NOV_MARCA):
+            quita(f_)
+        yo = '<a href="https://cinubo.com/@prueba">yo</a>'
+        T_ = "https://cinubo.com/t/"
         portada = ('<html><script>\n    window.homeInitialData = ' + json.dumps({
-            "movie": {"posts": [{"tmdb_id": 1283515, "type": "movie", "title": "Verity", "link": "/p/abcd12"}]},
-            "serie": {"posts": [{"tmdb_id": 259909, "type": "serie", "title": "Dexter: Resurrección", "link": "/s/abcd13"}]},
+            "movie": {"posts": [
+                {"tmdb_id": 1283515, "type": "movie", "title": "Verity", "link": "/p/abcd12"},
+                {"tmdb_id": 1368337, "type": "movie", "title": "La Odisea", "link": "/p/abcd14"},
+                {"tmdb_id": 1000001, "type": "movie", "title": "Solo 720", "link": "/p/abcd15"},
+                {"tmdb_id": 1000002, "type": "movie", "title": "Solo Powvideo", "link": "/p/abcd16"}]},
+            "serie": {"posts": [{"tmdb_id": 259909, "type": "serie", "title": "Dexter: Resurrección", "link": "/s/abcd13"},
+                                {"tmdb_id": 58841, "type": "serie", "title": "Chicago P.D.", "link": "/s/abcd17"}]},
             "anime": {"posts": []}}) + ';\n</script></html>')
         respuestas["/"] = (200, portada)
-        r = cli.get("/cbinicio?kind=estrenos").get_json()
-        comprueba("Estrenos: las pelis de su portada", [x["title"] for x in r.get("items", [])] == ["Verity"], r)
-        n0 = len(cola)
-        r = cli.get("/cbinicio?kind=series").get_json()
-        comprueba("Series: las series, de la caché (sin otra caja)",
-                  [x["kind"] for x in r.get("items", [])] == ["serie"] and len(cola) == n0, r)
-        comprueba("otra pestaña: 400", cli.get("/cbinicio?kind=x").status_code == 400)
+        respuestas["/p/abcd12"] = (200, yo + fila(T_ + "A" * 30, "LULUSTREAM", "HD 1080p", "Español - España"))
+        respuestas["/p/abcd14"] = (200, yo + fila(T_ + "B" * 30, "LULUSTREAM", "HD 1080p", "Español - Latino"))
+        respuestas["/p/abcd15"] = (200, yo + fila(T_ + "C" * 30, "VIDARA", "HD 720p", "Español - España"))
+        respuestas["/p/abcd16"] = (200, yo + fila(T_ + "D" * 30, "POWVIDEO", "HD 1080p", "Español - España"))
+        # Dexter: el último emitido (1x3) aún subtitulado, el anterior en castellano
+        respuestas["/s/abcd13/1x3"] = (200, yo + fila(T_ + "E" * 30, "LULUSTREAM", "HD 1080p", "Español - Subtitulado"))
+        respuestas["/s/abcd13/1x2"] = (200, yo + fila(T_ + "F" * 30, "VIDARA", "HD 1080p", "Español - España"))
+        respuestas["/s/abcd17/14x6"] = (200, yo + fila(T_ + "G" * 30, "LULUSTREAM", "HD 1080p", "Inglés - Subtitulado"))
+        respuestas["/s/abcd17/14x5"] = (200, yo)
+        real_temps = A._cb_temps
+        A._cb_temps = lambda tid: {259909: [{"s": 1, "e": [1, 2, 3]}],
+                                   58841: [{"s": 14, "e": [1, 2, 3, 4, 5, 6]}]}.get(tid)
+        try:
+            A._cb_nov_vuelta("estrenos")
+            r = cli.get("/cbinicio?kind=estrenos").get_json()
+            comprueba("Estrenos: solo lo que está en castellano de España a 1080p y sin anuncios",
+                      [x["title"] for x in r.get("items", [])] == ["Verity"], r)
+            comprueba("la tarjeta dice la calidad y no lleva nada interno",
+                      r["items"] and r["items"][0]["quality"] == "1080p" and r["items"][0]["source"] == "cb"
+                      and not any(k.startswith("_") for k in r["items"][0]), r)
+            n0 = len(cola)
+            A._cb_nov_vuelta("estrenos")
+            comprueba("lo ya comprobado (sí y no) no se vuelve a pedir: solo la lista, de la caché",
+                      len(cola) == n0, len(cola) - n0)
+            A._cb_nov_vuelta("series")
+            r = cli.get("/cbinicio?kind=series").get_json()
+            comprueba("Series: el último capítulo subtitulado no la tapa si el anterior está en castellano;"
+                      " la que solo tiene VOSE no sale",
+                      [x["title"] for x in r.get("items", [])] == ["Dexter: Resurrección"], r)
+            A._cb_nov_vuelta("peliculas")
+            r = cli.get("/cbinicio?kind=peliculas").get_json()
+            comprueba("Cine sin cajas 2.9.104: nada (nunca lo de Estrenos sin comprobar)", r.get("items") == [], r)
+            rv2 = A._kbstatus_load
+            A._kbstatus_load = lambda: {"111111": {"v": "2.9.104"}}
+            respuestas["home:movie:recent:1"] = (200, json.dumps({"posts": [
+                {"tmdb_id": 1314786, "type": "movie", "title": "Zeta", "link": "/p/zeta01"}]}))
+            respuestas["/p/zeta01"] = (200, yo + fila(T_ + "H" * 30, "VIDARA", "4K UHD", "Español - España"))
+            try:
+                A._cb_nov_vuelta("peliculas")
+            finally:
+                A._kbstatus_load = rv2
+            r = cli.get("/cbinicio?kind=peliculas").get_json()
+            comprueba("Cine con caja 2.9.104: lo recién puesto en Cinubo, con su 4K",
+                      [(x["title"], x["quality"]) for x in r.get("items", [])] == [("Zeta", "4K")], r)
+            ev_h = [e for _, e in cola if e.get("home")]
+            comprueba("la caja recibe la lista que se quiere (y la ruta '/' para las viejas)",
+                      ev_h and ev_h[-1]["path"] == "/" and ev_h[-1]["home"]["sel"] in ("recent", "now"), ev_h[-1:])
+            mz = A._cb_nov_en_mezcla("estrenos", [{"kind": "movie", "tmdb_id": 99, "source": "dt"}],
+                                     [{"source": "wf", "kind": "movie", "tmdb_id": 5}, {"source": "dx", "kind": "movie", "tmdb_id": 6}])
+            comprueba("en el Inicio, intercaladas con las otras fuentes", [x["source"] for x in mz] == ["wf", "cb", "dx"], mz)
+            mz = A._cb_nov_en_mezcla("estrenos", [{"kind": "movie", "tmdb_id": 1283515, "source": "dt"}], [])
+            comprueba("lo que ya trae DonTorrent (mismo tmdb_id) no se repite", mz == [], mz)
+            comprueba("otra pestaña: 400", cli.get("/cbinicio?kind=x").status_code == 400)
+        finally:
+            A._cb_temps = real_temps
+            for f_ in (A._CB_NOV_FILE, A._CB_NOV_MARCA):
+                quita(f_)
 
         print("\n=== 8d2) Castigo: esperas que crecen, y vuelven a cero ===")
         quita(A._CB_RITMO_FILE)
