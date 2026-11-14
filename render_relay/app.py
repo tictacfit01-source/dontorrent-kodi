@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl154"
+BUILD = "dtbl155"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -21930,12 +21930,23 @@ function vpCastPrepara(){var v=$('vp-v');
 function vpCastCambia(ev){var pl=CST.pl;if(!pl)return;
  if(ev&&ev.field==='isConnected'&&!pl.isConnected){if(CST.on)vpCastFin();return}
  if(!CST.on)return;
- if(isFinite(pl.currentTime)&&pl.currentTime>0)CST.t=pl.currentTime;
- if(pl.duration>0)CST.d=VP.dur=pl.duration;CST.pausa=!!pl.isPaused;
- if(VP.on&&!VP.drag){vpPinta(CST.t,VP.dur,CST.t);
-  $('vp-pp').innerHTML=CST.pausa?SVG_PLAY:SVG_PAUSE;$('vp-pp').setAttribute('aria-label',CST.pausa?'Reproducir':'Pausa')}
- if(ev&&ev.field==='isPaused')vpLatido();
- if(ev&&ev.field==='playerState'&&pl.playerState==='IDLE'&&CST.d&&CST.t>CST.d-5)vpGuarda(1)}
+ if(pl.duration>0)CST.d=VP.dur=pl.duration;
+ vpCastLee()}
+// (dtbl155) Israel, 14-11: "cuando le dé a pausa, que pause de verdad, y al play
+// que continúe". playOrPause del kit ADIVINA según un estado que llega tarde y el
+// icono solo cambiaba al confirmarlo: un toque "no hacía nada" y el siguiente lo
+// deshacía. Ahora: órdenes explícitas a la sesión de vídeo de la tele (pausa /
+// reproduce), icono al instante, y el estado y la posición se leen de ella.
+function vpCastMedia(){try{var s=CST.ctx&&CST.ctx.getCurrentSession();return (s&&s.getMediaSession())||null}catch(e){return null}}
+function vpCastIcono(){if(!VP.on)return;$('vp-pp').innerHTML=CST.pausa?SVG_PLAY:SVG_PAUSE;$('vp-pp').setAttribute('aria-label',CST.pausa?'Reproducir':'Pausa')}
+function vpCastLee(){var m=vpCastMedia();if(!CST.on||!m)return;
+ try{var t=m.getEstimatedTime();if(isFinite(t)&&t>=0&&Date.now()-(CST.irT||0)>2500)CST.t=t}catch(e){}
+ try{if(m.media&&m.media.duration>0)CST.d=VP.dur=m.media.duration}catch(e){}
+ // mientras viaja una orden, manda lo que pidió la persona (no lo que la tele aún no ha aplicado)
+ if(Date.now()-(CST.ordT||0)>4000){var p=m.playerState==='PAUSED';if(p!==!!CST.pausa){CST.pausa=p;vpCastIcono();vpLatido()}}
+ if(VP.on&&!VP.drag)vpPinta(CST.t,VP.dur,CST.t);
+ if(m.playerState==='IDLE'&&m.idleReason==='FINISHED')vpGuarda(1)}
+setInterval(function(){if(CST.on)vpCastLee()},1000);
 // el botón: elegir la tele y mandarle por donde iba; si ya está enviando, volver al móvil
 function vpCast(){var v=$('vp-v');
  if(vpEsApple()){try{v.webkitShowPlaybackTargetPicker()}catch(e){}return}
@@ -21956,12 +21967,22 @@ function vpCastCarga(){var v=$('vp-v'),ses=CST.ctx&&CST.ctx.getCurrentSession();
  var nom='';try{nom=ses.getCastDevice().friendlyName||''}catch(e){}CST.nom=nom;
  $('vp-co-t').textContent=nom?'En '+nom:'En la tele';$('vp-co-s').textContent='Estos mandos la controlan. Para volver a verlo aquí, toca el icono de arriba.';
  vpMsg('');$('vp-load').hidden=true;
- ses.loadMedia(rq).then(function(){if(!VP.on)return;CST.on=1;try{v.pause()}catch(e){}vpSueno(0);
-   vpCastPinta();vpUi(1,1);vpLatido();toast('📺 '+(nom?'En '+nom:'En la tele'),2500)},
-  function(e){CST.on=0;vpCastPinta();toast('La tele no pudo abrir este servidor: prueba otro',4500);try{CST.ctx.endCurrentSession(true)}catch(x){}})}
-function vpCastPP(){try{CST.ct.playOrPause()}catch(e){}vpUi(1,1)}
-function vpCastIr(t){if(!CST.pl)return;t=Math.max(0,Math.min((CST.d||VP.dur||t+1)-1,t));CST.t=t;
- try{CST.pl.currentTime=t;CST.ct.seek()}catch(e){}vpPinta(t,VP.dur,0);vpUi(1,1)}
+ // si la tele no contesta en 25 s (estaba ocupada con otra cosa...), se dice y el móvil sigue
+ var hecho=0,tope=setTimeout(function(){if(hecho)return;hecho=1;CST.on=0;vpCastPinta();
+   toast('La tele no ha contestado: sigue aquí',4000);try{CST.ctx.endCurrentSession(false)}catch(x){}},25000);
+ ses.loadMedia(rq).then(function(){if(hecho)return;hecho=1;clearTimeout(tope);if(!VP.on)return;CST.on=1;try{v.pause()}catch(e){}vpSueno(0);
+   vpCastPinta();vpCastIcono();vpUi(1,1);vpLatido();toast('📺 '+(nom?'En '+nom:'En la tele'),2500)},
+  function(e){if(hecho)return;hecho=1;clearTimeout(tope);CST.on=0;vpCastPinta();toast('La tele no pudo abrir este servidor: prueba otro',4500);try{CST.ctx.endCurrentSession(true)}catch(x){}})}
+function vpCastPP(){var m=vpCastMedia(),pausar=!CST.pausa;
+ CST.pausa=pausar;CST.ordT=Date.now();vpCastIcono();vpUi(1,1);    // el icono, ya
+ var mal=function(){CST.pausa=!pausar;CST.ordT=0;vpCastIcono();toast('La tele no ha hecho caso: prueba otra vez',3000)};
+ if(m){try{if(pausar)m.pause(new chrome.cast.media.PauseRequest(),function(){vpLatido()},mal);
+   else m.play(new chrome.cast.media.PlayRequest(),function(){vpLatido()},mal);return}catch(e){}}
+ try{if(!!CST.pl.isPaused!==pausar)CST.ct.playOrPause()}catch(e){mal()}}
+function vpCastIr(t){t=Math.max(0,Math.min((CST.d||VP.dur||t+1)-1,t));CST.t=t;CST.irT=Date.now();vpPinta(t,VP.dur,t);vpUi(1,1);
+ var m=vpCastMedia();
+ if(m){try{var sr=new chrome.cast.media.SeekRequest();sr.currentTime=t;m.seek(sr,function(){},function(){});return}catch(e){}}
+ try{CST.pl.currentTime=t;CST.ct.seek()}catch(e){}}
 // se acabó el envío (desde el botón o desde la tele): el móvil sigue por donde iba la tele
 function vpCastFin(){var t=CST.t;CST.on=0;vpCastPinta();if(!VP.on)return;var v=$('vp-v');
  try{if(t>0)v.currentTime=t;var p=v.play();if(p&&p.catch)p.catch(function(){})}catch(e){}vpUi(1)}
@@ -22050,6 +22071,9 @@ function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length
  e.addEventListener('touchend',finG);e.addEventListener('touchcancel',finG);
  e.addEventListener('click',function(ev){if(!VP.on)return;
   if(Date.now()-VP.gesto<450)return;          // acaba de deslizar: no es un toque
+  // (dtbl155) el icono del ▶/⏸ se cambia dentro del mismo toque: lo tocado ya no está
+  // en la página y closest() no encuentra el botón -> no es un toque en la imagen
+  if(ev.target.isConnected===false)return;
   if(ev.target.closest&&ev.target.closest('button,.vp-bar'))return;
   if(e.classList.contains('err')||e.classList.contains('carga')){vpUi(1,1);return}
   vpUi(!e.classList.contains('ui'))});
