@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl151"
+BUILD = "dtbl152"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17975,6 +17975,18 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .cpv-f iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}
 #cpv.listo .vp-load{display:none}
 #cpv.err .vp-load .spin,#cpv.err .cpv-h{display:none}
+/* (dtbl152) pantalla completa: el reproductor de Powvideo se encarga ya con la forma de la pantalla en horizontal
+   (embed-<id>-WxH) y aquí se escala para que encaje; la pantalla completa es la del MARCO, pedida desde la web */
+.cpv-h span{flex:1;min-width:0}
+.cpv-fsb{flex:none;align-self:center;display:none;align-items:center;gap:6px;min-height:40px;padding:0 13px;border-radius:999px;border:1px solid rgba(237,194,122,.55);background:rgba(237,194,122,.16);color:var(--amb,#edc27a);font:inherit;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap}
+.cpv-fsb svg{width:16px;height:16px}
+#cpv.vid .cpv-fsb{display:inline-flex}
+.cpv-f{background:#000;overflow:hidden}
+.cpv-f iframe{transform-origin:0 0;max-width:none;max-height:none}
+.cpv-sal{display:none;position:absolute;z-index:2;top:max(10px,env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));width:40px;height:40px;border-radius:50%;border:1px solid rgba(241,236,228,.18);background:rgba(20,16,24,.55);color:#f1ece4;align-items:center;justify-content:center;padding:0;cursor:pointer}
+.cpv-sal svg{width:18px;height:18px}
+#cpv.pseudo .cpv-top,#cpv.pseudo .cpv-h{display:none}
+#cpv.pseudo .cpv-sal,.cpv-f:fullscreen .cpv-sal,.cpv-f:-webkit-full-screen .cpv-sal{display:flex}
 #cpv .vp-msg b{color:var(--amb,#edc27a)}
 .cbcap{font-size:13px;color:var(--sub);line-height:1.45;margin:0 0 8px}
 .cbcap b{color:inherit}
@@ -18804,7 +18816,7 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
   <button class="vp-x" onclick="cpvCierra()" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg></button>
   <div class="vp-tt"><div class="vp-t" id="cpv-t"></div><div class="vp-q" id="cpv-q"></div></div>
  </div>
- <div class="cpv-h" id="cpv-h"></div>
+ <div class="cpv-h"><span id="cpv-h"></span><button class="cpv-fsb" onclick="cpvPantalla(1)" aria-label="Pantalla completa"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>Pantalla completa</button></div>
  <div class="cpv-f" id="cpv-f"></div>
  <div class="vp-load" id="cpv-load"><span class="spin"></span><div class="vp-msg" id="cpv-msg"></div></div>
 </div>
@@ -21656,11 +21668,46 @@ var CPV={on:0,id:0,n:0,h0:0,tit:'',srv:'',lid:'',latI:0};
 var CPVBLOQ='Tu conexión no deja abrir estos servidores: algunas compañías los bloquean. Prueba con los <b>datos del móvil</b>, o en Android busca «DNS privado» en Ajustes y pon <b>one.one.one.one</b>.';
 function cpvMsg(t){$('cpv-msg').textContent=t||'';$('cpv').classList.remove('err')}
 function cpvAyuda(t){$('cpv-h').innerHTML=t}
+// (dtbl152) Israel, 14-11: "no me deja ponerlo a pantalla completa". El botón del
+// reproductor de Powvideo no puede: su capa de anuncios gasta el toque y el
+// navegador le niega la pantalla completa (llena solo el marco). Y su reproductor
+// se queda FIJO del tamaño del momento del captcha. Arreglo: a Powvideo se le pide
+// ya con la forma de la pantalla en horizontal (embed-<id>-WxH, su propio código
+// lo admite; Streamplay no) y la pantalla completa la pide la web para el marco.
+function cpvTam(){var a=Math.round(screen.width||0),b=Math.round(screen.height||0);
+ var W=Math.max(a,b),H=Math.min(a,b);if(W<480||H<270){W=960;H=540}
+ return [Math.min(W,2560),Math.min(H,1440)]}
+function cpvConTam(u){var m=/^(https:\/\/[^\/]*pow[a-z]*\.[a-z]+\/embed-\w{12})\.html(\?.*)?$/i.exec(u||'');
+ if(!m)return null;var t=cpvTam();return {u:m[1]+'-'+t[0]+'x'+t[1]+'.html'+(m[2]||''),t:t}}
+// el marco: a su tamaño natural durante el captcha; con el vídeo de tamaño
+// conocido, escalado para que encaje entero y centrado
+function cpvAjusta(){var f=$('cpv-f').querySelector('iframe');if(!f)return;var st=f.style;
+ if(!(CPV.tam&&CPV.n>=2)){st.width=st.height=st.left=st.top=st.transform='';st.right=st.bottom='';return}
+ var c=$('cpv-f'),cw=c.clientWidth||window.innerWidth,ch=c.clientHeight||window.innerHeight,W=CPV.tam[0],H=CPV.tam[1],
+  k=Math.min(cw/W,ch/H);
+ st.right=st.bottom='auto';st.width=W+'px';st.height=H+'px';
+ st.left=Math.round((cw-W*k)/2)+'px';st.top=Math.round((ch-H*k)/2)+'px';st.transform='scale('+k.toFixed(4)+')'}
+function cpvEnPantalla(){return document.fullscreenElement||document.webkitFullscreenElement||null}
+function cpvPantalla(on){var e=$('cpv'),c=$('cpv-f');
+ if(on){var rq=c.requestFullscreen||c.webkitRequestFullscreen,p=null;
+  if(rq){try{p=rq.call(c)}catch(x){p=null}}
+  var gira=function(){try{screen.orientation.lock('landscape').catch(function(){})}catch(x){}};
+  if(p&&p.then)p.then(gira,function(){e.classList.add('pseudo');cpvAjusta()});
+  else if(rq&&cpvEnPantalla())gira();
+  else{e.classList.add('pseudo')}                // iPhone: sin pantalla completa para la web; se ocultan las barras
+  setTimeout(cpvAjusta,60)}
+ else{e.classList.remove('pseudo');
+  try{if(cpvEnPantalla()){if(document.exitFullscreen)document.exitFullscreen().catch(function(){});else if(document.webkitExitFullscreen)document.webkitExitFullscreen()}}catch(x){}
+  try{screen.orientation.unlock()}catch(x){}
+  setTimeout(cpvAjusta,60)}}
+try{['fullscreenchange','webkitfullscreenchange'].forEach(function(ev){document.addEventListener(ev,function(){
+ if(!CPV.on)return;if(!cpvEnPantalla()){try{screen.orientation.unlock()}catch(x){}}setTimeout(cpvAjusta,80)})});
+window.addEventListener('resize',function(){if(CPV.on)cpvAjusta()})}catch(e){}
 function cpvFallo(t){if(!CPV.on)return;$('cpv-f').innerHTML='';CPV.n=0;$('cpv-msg').innerHTML=t;
  var e=$('cpv');e.classList.add('err');e.classList.remove('listo')}
 function cpvAbre(t,q){var e=$('cpv');CPV.on=1;CPV.id++;CPV.n=0;CPV.tit=t||'';CPV.srv='';CPV.lid=vpLid();CPV.latI=0;
  $('cpv-t').textContent=t||'';$('cpv-q').textContent=(q?q+' · ':'')+'sin anuncios';$('cpv-f').innerHTML='';
- cpvAyuda('<i>👆</i><span>Toca el vídeo y, en unos segundos, marca <b>«No soy un robot»</b>. Si te pide imágenes, elígelas.</span>');
+ cpvAyuda('👆 Toca el vídeo y, en unos segundos, marca <b>«No soy un robot»</b>. Si te pide imágenes, elígelas.');
  cpvMsg('Preparando…');e.classList.add('on');e.classList.remove('err','listo');document.body.classList.add('vp-abierto');
  mwOpen('cpv',null,cpvCierraYa);CPV.h0=history.length}
 function cpvLatido(fin){if(!CPV.lid||!CPV.latI)return;
@@ -21668,8 +21715,9 @@ function cpvLatido(fin){if(!CPV.lid||!CPV.latI)return;
  var b=JSON.stringify(o);
  try{if(fin&&navigator.sendBeacon&&navigator.sendBeacon('/vp/latido',new Blob([b],{type:'application/json'})))return}catch(e){}
  try{fetch('/vp/latido',{method:'POST',headers:{'Content-Type':'application/json'},body:b,keepalive:true}).catch(function(){})}catch(e){}}
-function cpvCierraYa(){cpvLatido(1);CPV.on=0;CPV.id++;CPV.n=0;CPV.lid='';$('cpv-f').innerHTML='';
- $('cpv').classList.remove('on','err','listo');if(!VP.on)document.body.classList.remove('vp-abierto')}
+function cpvCierraYa(){cpvLatido(1);if(cpvEnPantalla()||$('cpv').classList.contains('pseudo'))cpvPantalla(0);
+ CPV.on=0;CPV.id++;CPV.n=0;CPV.lid='';CPV.tam=null;$('cpv-f').innerHTML='';
+ $('cpv').classList.remove('on','err','listo','vid','pseudo');if(!VP.on)document.body.classList.remove('vp-abierto')}
 // La X: las entradas que el marco haya añadido + la del panel, de una vez
 function cpvCierra(){var t=mwTop(),extra=Math.max(0,Math.min(5,history.length-CPV.h0));
  if(t&&t.n==='cpv'&&t.h&&extra){try{history.go(-(extra+1));return}catch(e){}}
@@ -21680,7 +21728,8 @@ function cpvAlcanza(u,cb){var hecho=0,fin=function(ok){if(hecho)return;hecho=1;c
   t=setTimeout(function(){fin(false)},9000);
  try{fetch(u,{mode:'no-cors',method:'HEAD',cache:'no-store',credentials:'omit'}).then(function(){fin(true)},function(){fin(false)})}catch(e){fin(false)}}
 function cpvCarga(u,nom,fallo){var id=CPV.id;CPV.srv=nom;CPV.n=0;$('cpv-f').innerHTML='';
- $('cpv').classList.remove('listo','err');cpvMsg('Conectando con '+nom+'…');
+ var ct=cpvConTam(u);CPV.tam=ct?ct.t:null;if(ct)u=ct.u;
+ $('cpv').classList.remove('listo','err','vid');cpvMsg('Conectando con '+nom+'…');
  cpvAlcanza(u,function(ok){if(id!==CPV.id||!CPV.on)return;if(!ok)return fallo('bloqueado');
   var f=document.createElement('iframe');
   f.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms');
@@ -21688,10 +21737,14 @@ function cpvCarga(u,nom,fallo){var id=CPV.id;CPV.srv=nom;CPV.n=0;$('cpv-f').inne
   f.setAttribute('allowfullscreen','');f.setAttribute('referrerpolicy','origin');f.title=nom;
   f.onload=function(){if(id!==CPV.id||!CPV.on)return;CPV.n++;
    if(CPV.n===1){$('cpv').classList.add('listo');cpvMsg('')}
-   else if(CPV.n===2){CPV.latI=CPV.latI||1;cpvLatido(0);
-    cpvAyuda('<i>▶</i><span>Toca <b>play</b>. Si no arranca al primer toque, toca otra vez. Para verlo grande, el botón de pantalla completa del reproductor.</span>')}
+   else if(CPV.n===2){CPV.latI=CPV.latI||1;cpvLatido(0);$('cpv').classList.add('vid');cpvAjusta();
+    cpvAyuda(CPV.tam?'Toca <b>play</b> (si no arranca, otra vez) y ponlo en grande:'
+     :'Toca <b>play</b> (si no arranca, otra vez). En pantalla completa, toca también la del reproductor.')}
    else mwBack('cpv')};                       // "atrás" dentro del marco: ya está en la entrada del panel, fuera
-  f.src=u;$('cpv-f').appendChild(f)})}   // src ANTES de meterlo: si no, carga about:blank y cuenta una carga de más
+  f.src=u;$('cpv-f').appendChild(f);   // src ANTES de meterlo: si no, carga about:blank y cuenta una carga de más
+  var sal=document.createElement('button');sal.className='cpv-sal';sal.setAttribute('aria-label','Salir de pantalla completa');
+  sal.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
+  sal.onclick=function(){cpvPantalla(0)};$('cpv-f').appendChild(sal)})}
 setInterval(function(){if(CPV.on&&CPV.latI&&!document.hidden)cpvLatido(0)},45000);
 // Como cbPlay en "Aquí": si uno no abre, el siguiente con captcha (como mucho 2 más)
 function cbCapPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;

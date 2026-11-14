@@ -39,8 +39,8 @@ comprueba('...y debajo de los avisos (mwConfirm)', zDlg < Number(/#mwdlg\{z-inde
 const codigo = saca('var CBSEL=null;', '\nfunction seekTo(');
 function Elem() {
   const cls = new Set();
-  return { innerHTML: '', textContent: '', appendChild(f) { MARCOS.push(f); }, classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c) },
-           querySelector: () => ({}) };
+  return { innerHTML: '', textContent: '', appendChild(f) { if ('src' in f) MARCOS.push(f); }, clientWidth: 390, clientHeight: 600, classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c) },
+           querySelector: (q) => (q === 'iframe' ? MARCOS[MARCOS.length - 1] : ({})) };
 }
 const DOM = {};
 const $ = (id) => DOM[id] || (DOM[id] = Elem());
@@ -198,8 +198,8 @@ console.log('\n=== 3) Al elegir ===');
   console.log('\n=== 3b) Aquí, con captcha: el marco cerrado (dtbl151) ===');
   globalThis.localStorage = { getItem: () => 'aqui', setItem: () => {} };
   globalThis.history = { length: 5 };
-  globalThis.document = { hidden: false, body: Elem(), createElement: () => {
-    const a = {}; return { setAttribute: (k, v) => { a[k] = v; }, attrs: a }; } };
+  globalThis.document = { hidden: false, body: Elem(), createElement: (tag) => {
+    const a = {}; const o = { setAttribute: (k, v) => { a[k] = v; }, attrs: a, style: {} }; if (tag === 'iframe') o.src = ''; return o; } };
   globalThis.navigator = {};
   const espera = async (n) => { for (let k = 0; k < n; k++) await new Promise((r) => setImmediate(r)); };
   PIDE.length = 0; MARCOS.length = 0; ATRAS.length = 0;
@@ -235,6 +235,30 @@ console.log('\n=== 3) Al elegir ===');
   await espera(16);
   comprueba('todos bloqueados: ningún marco y se explica (datos del móvil / DNS privado)',
     MARCOS.length === 0 && $('cpv').classList.contains('err') && /datos del móvil/.test($('cpv-msg').innerHTML), $('cpv-msg').innerHTML);
+  globalThis.BLOQ = [];
+
+  console.log('\n=== 3c) Pantalla completa: Powvideo con la forma de la pantalla (dtbl152) ===');
+  globalThis.screen = { width: 412, height: 915 };
+  PIDE.length = 0; MARCOS.length = 0;
+  RESP = { p1: { ok: true, u: 'https://powvideo.net/embed-lfv5faats8vq.html' }, s1: { ok: true, u: 'https://streamplay.to/embed-560jlt11f3tn.html' } };
+  CTX.cbPlay(0);
+  await espera(10);
+  fr = MARCOS[0];
+  comprueba('Powvideo se pide ya en horizontal con el tamaño de la pantalla (915x412)',
+    fr && fr.src === 'https://powvideo.net/embed-lfv5faats8vq-915x412.html' && PIDE.indexOf('https://powvideo.net/embed-lfv5faats8vq-915x412.html') >= 0, { src: fr && fr.src, PIDE });
+  fr.onload();
+  comprueba('durante el captcha el marco va a su tamaño natural', !fr.style.transform && !fr.style.width, fr.style);
+  fr.onload();
+  comprueba('con el vídeo: escalado para que encaje entero (390 de ancho -> x0,4262) y el botón de pantalla completa a la vista',
+    fr.style.width === '915px' && fr.style.height === '412px' && fr.style.transform === 'scale(0.4262)' && $('cpv').classList.contains('vid'), fr.style);
+  PIDE.length = 0; MARCOS.length = 0;
+  globalThis.BLOQ = ['powvideo.net'];
+  CTX.cbPlay(0);
+  await espera(16);
+  comprueba('Streamplay (no admite el tamaño en la dirección): tal cual, y se avisa de su botón',
+    MARCOS.length === 1 && MARCOS[0].src === 'https://streamplay.to/embed-560jlt11f3tn.html', MARCOS.map((m) => m.src));
+  MARCOS[0].onload(); MARCOS[0].onload();
+  comprueba('...a su tamaño natural y con el aviso', !MARCOS[0].style.transform && /la del reproductor/.test($('cpv-h').innerHTML), $('cpv-h').innerHTML);
   globalThis.BLOQ = []; globalThis.localStorage = undefined;
 
   console.log('\n---- VEREDICTO ----');
