@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl155"
+BUILD = "dtbl156"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17964,6 +17964,8 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 /* (dtbl154) Chromecast / AirPlay desde "Aquí" */
 .vp-x.vp-cast[hidden]{display:none}
 .vp-cast svg{width:21px;height:21px}
+.vp-cast.con{color:var(--amb,#edc27a);animation:vpcastcon 1.1s ease-in-out infinite}
+@keyframes vpcastcon{50%{opacity:.38}}
 #vp.cast .vp-cast{color:var(--amb,#edc27a);border-color:rgba(237,194,122,.6);background:rgba(237,194,122,.16)}
 .vp-co{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;padding:max(92px,17vh) 24px 24px;text-align:center;pointer-events:none;
  background:radial-gradient(ellipse at center,rgba(237,194,122,.10),rgba(0,0,0,0) 62%)}
@@ -21905,12 +21907,16 @@ function vpEmpieza(src,fallo){var v=$('vp-v'),id=VP.id,rec=0,acabado=0;vpSuelta(
 // puestas por el worker): el Chromecast la pide él mismo con el receptor estándar.
 // Powvideo/Streamplay no (marco ajeno y vídeo atado a la IP del móvil).
 // El botón solo aparece si hay una tele con Chromecast en la wifi.
-var CST={on:0,ctx:null,pl:null,ct:null,t:0,d:0,pausa:0,tipo:'Chromecast',sdk:0,nom:''};
+var CST={on:0,ctx:null,pl:null,ct:null,t:0,d:0,pausa:0,tipo:'Chromecast',sdk:0,nom:'',con:0,cid:0,vol:null};
 function vpCastOn(){return !!(CST.on&&VP.on)}
-function vpCastPinta(){var b=$('vp-cast');if(!b)return;var ver=false;
+function vpCastSes(){try{return (CST.ctx&&CST.ctx.getCurrentSession())||null}catch(e){return null}}
+function vpCastPinta(){var b=$('vp-cast');if(!b)return;var ver=false,con=!!CST.con;
  if(vpEsApple())ver=!!CST.air;
- else if(CST.ctx){try{ver=CST.ctx.getCastState()!==cast.framework.CastState.NO_DEVICES_AVAILABLE}catch(e){}}
- b.hidden=!(ver&&VP.on&&VP.src);$('vp').classList.toggle('cast',vpCastOn())}
+ else if(CST.ctx){try{var st=CST.ctx.getCastState();ver=st!==cast.framework.CastState.NO_DEVICES_AVAILABLE;
+   if(st===cast.framework.CastState.CONNECTING)con=true}catch(e){}}
+ b.hidden=!(ver&&VP.on&&VP.src);b.classList.toggle('con',con&&!CST.on);
+ b.setAttribute('aria-label',CST.on||con?'Dejar de enviar a la tele':'Enviar a la tele');
+ $('vp').classList.toggle('cast',vpCastOn())}
 // el kit de Google se carga la primera vez que se abre el reproductor (solo Chrome)
 function vpCastPrepara(){var v=$('vp-v');
  if(vpEsApple()){if(window.WebKitPlaybackTargetAvailabilityEvent&&!CST.airL){CST.airL=1;
@@ -21920,41 +21926,65 @@ function vpCastPrepara(){var v=$('vp-v');
  if(!/Chrome\//.test(navigator.userAgent||'')||/Edg\/|OPR\//.test(navigator.userAgent||''))return;
  window.__onGCastApiAvailable=function(ok){if(!ok)return;try{
   var cx=cast.framework.CastContext.getInstance();
-  cx.setOptions({receiverApplicationId:chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,autoJoinPolicy:chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED});
+  // (dtbl156) PAGE_SCOPED: sin enganches solos a sesiones viejas; la sesión es
+  // nuestra de principio a fin, y así el icono encendido = la tele está con esto
+  cx.setOptions({receiverApplicationId:chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,autoJoinPolicy:chrome.cast.AutoJoinPolicy.PAGE_SCOPED});
   CST.ctx=cx;CST.pl=new cast.framework.RemotePlayer();CST.ct=new cast.framework.RemotePlayerController(CST.pl);
   cx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED,vpCastPinta);
+  cx.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED,function(ev){
+   var S=cast.framework.SessionState;
+   if(ev.sessionState===S.SESSION_ENDED||ev.sessionState===S.SESSION_START_FAILED){
+    if(CST.on)vpCastFin(CST.corto?'':'La tele ha dejado de reproducir: sigue aquí cuando quieras');
+    else if(CST.con){CST.con=0;CST.cid++;vpCastPinta()}}
+   vpCastPinta()});
   CST.ct.addEventListener(cast.framework.RemotePlayerEventType.ANY_CHANGE,vpCastCambia);
   vpCastPinta()}catch(e){}};
  var sc=document.createElement('script');sc.async=true;
  sc.src='https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';document.head.appendChild(sc)}
 function vpCastCambia(ev){var pl=CST.pl;if(!pl)return;
- if(ev&&ev.field==='isConnected'&&!pl.isConnected){if(CST.on)vpCastFin();return}
+ if(ev&&ev.field==='isConnected'&&!pl.isConnected){if(CST.on)vpCastFin(CST.corto?'':'La tele ha dejado de reproducir: sigue aquí cuando quieras');return}
  if(!CST.on)return;
+ if(ev&&ev.field==='volumeLevel'&&!CST.volT&&typeof pl.volumeLevel==='number')CST.vol=pl.volumeLevel;
  if(pl.duration>0)CST.d=VP.dur=pl.duration;
  vpCastLee()}
-// (dtbl155) Israel, 14-11: "cuando le dé a pausa, que pause de verdad, y al play
-// que continúe". playOrPause del kit ADIVINA según un estado que llega tarde y el
-// icono solo cambiaba al confirmarlo: un toque "no hacía nada" y el siguiente lo
-// deshacía. Ahora: órdenes explícitas a la sesión de vídeo de la tele (pausa /
-// reproduce), icono al instante, y el estado y la posición se leen de ella.
-function vpCastMedia(){try{var s=CST.ctx&&CST.ctx.getCurrentSession();return (s&&s.getMediaSession())||null}catch(e){return null}}
+// (dtbl155) órdenes explícitas a la sesión de vídeo de la tele (pausa / reproduce),
+// icono al instante, y el estado y la posición se leen de ella.
+// (dtbl156) Israel, 14-11: "que siempre que le des a pause, se pause; que cuando
+// le des de nuevo al icono se deje de enviar y se corte". Lo que fallaba: al
+// empezar a enviar, el vídeo del MÓVIL se pausa y su aviso de "pausa" pintaba ▶
+// con la tele reproduciendo (el primer toque pausaba lo que parecía parado); una
+// tele que tardaba más de 25 s se quedaba sonando "huérfana" y el icono volvía a
+// enviar en vez de cortar; cerrar el reproductor dejaba la tele sonando; y si la
+// tele soltaba el vídeo (mucho rato en pausa, fallo de red) el ▶ no hacía nada.
+function vpCastMedia(){var s=vpCastSes();try{return (s&&s.getMediaSession())||null}catch(e){return null}}
 function vpCastIcono(){if(!VP.on)return;$('vp-pp').innerHTML=CST.pausa?SVG_PLAY:SVG_PAUSE;$('vp-pp').setAttribute('aria-label',CST.pausa?'Reproducir':'Pausa')}
-function vpCastLee(){var m=vpCastMedia();if(!CST.on||!m)return;
+function vpCastLee(){if(!CST.on||CST.recarga)return;var m=vpCastMedia();
+ if(!m){if(!CST.sinM)CST.sinM=Date.now();return}CST.sinM=0;
  try{var t=m.getEstimatedTime();if(isFinite(t)&&t>=0&&Date.now()-(CST.irT||0)>2500)CST.t=t}catch(e){}
  try{if(m.media&&m.media.duration>0)CST.d=VP.dur=m.media.duration}catch(e){}
+ if(m.playerState==='IDLE'){
+  if(m.idleReason==='FINISHED'){vpGuarda(1);return vpCastCorta('Terminado')}
+  if(m.idleReason==='ERROR'){if(!CST.reint){CST.reint=1;return vpCastCarga(CST.t)}
+   return vpCastCorta('La tele perdió la emisión: sigue aquí')}
+  if(m.idleReason==='INTERRUPTED'||m.idleReason==='CANCELLED')return vpCastCorta('La tele se ha puesto con otra cosa: sigue aquí')}
  // mientras viaja una orden, manda lo que pidió la persona (no lo que la tele aún no ha aplicado)
- if(Date.now()-(CST.ordT||0)>4000){var p=m.playerState==='PAUSED';if(p!==!!CST.pausa){CST.pausa=p;vpCastIcono();vpLatido()}}
+ if(Date.now()-(CST.ordT||0)>4000&&m.playerState!=='IDLE'){var p=m.playerState==='PAUSED';if(p!==!!CST.pausa){CST.pausa=p;vpCastIcono();vpLatido()}}
+ if(m.playerState==='PLAYING')CST.reint=0;
  if(VP.on&&!VP.drag)vpPinta(CST.t,VP.dur,CST.t);
- if(m.playerState==='IDLE'&&m.idleReason==='FINISHED')vpGuarda(1)}
+ if(Date.now()-VP.latT>30000)vpLatido()}
 setInterval(function(){if(CST.on)vpCastLee()},1000);
-// el botón: elegir la tele y mandarle por donde iba; si ya está enviando, volver al móvil
+// el botón: elegir la tele y mandarle por donde iba; si está enviando (o conectando), CORTAR
 function vpCast(){var v=$('vp-v');
  if(vpEsApple()){try{v.webkitShowPlaybackTargetPicker()}catch(e){}return}
  if(!CST.ctx||!VP.src)return;
- if(CST.on){try{CST.ctx.endCurrentSession(true)}catch(e){vpCastFin()}return}
- if(CST.ctx.getCurrentSession())return vpCastCarga();          // ya conectada (otro capítulo): directo
- CST.ctx.requestSession().then(function(){vpCastCarga()},function(e){if(e&&e!=='cancel'&&e.code!=='cancel')toast('No se pudo conectar con la tele',3500)})}
-function vpCastCarga(){var v=$('vp-v'),ses=CST.ctx&&CST.ctx.getCurrentSession();if(!ses||!VP.src)return;
+ if(CST.on||CST.con)return vpCastCorta('');
+ if(vpCastSes()){CST.con=1;vpCastPinta();return vpCastCarga()}   // ya conectada: directo
+ CST.con=1;CST.cid++;vpCastPinta();var cid=CST.cid;
+ CST.ctx.requestSession().then(function(){if(cid!==CST.cid||!VP.on){vpCastCorta('');return}vpCastCarga()},
+  function(e){if(cid!==CST.cid)return;CST.con=0;vpCastPinta();
+   if(e&&e!=='cancel'&&e.code!=='cancel')toast('No se pudo conectar con la tele',3500)})}
+// desde: segundo desde el que se manda (sin él, por donde va el móvil)
+function vpCastCarga(desde){var v=$('vp-v'),ses=vpCastSes();if(!ses||!VP.src){CST.con=0;vpCastPinta();return}
  var mi=new chrome.cast.media.MediaInfo(VP.src,'application/x-mpegurl');
  mi.streamType=chrome.cast.media.StreamType.BUFFERED;
  // trozos fMP4 o TS (hls.js lo sabe por la lista que ya leyó)
@@ -21962,31 +21992,75 @@ function vpCastCarga(){var v=$('vp-v'),ses=CST.ctx&&CST.ctx.getCurrentSession();
   if(fr0&&fr0.initSegment){mi.hlsSegmentFormat=chrome.cast.media.HlsSegmentFormat.FMP4;mi.hlsVideoSegmentFormat=chrome.cast.media.HlsVideoSegmentFormat.FMP4}
   else{mi.hlsSegmentFormat=chrome.cast.media.HlsSegmentFormat.TS;mi.hlsVideoSegmentFormat=chrome.cast.media.HlsVideoSegmentFormat.MPEG2_TS}}catch(e){}
  var md=new chrome.cast.media.GenericMediaMetadata();md.title=VP.tit||'MejorWolf';md.subtitle='MejorWolf';mi.metadata=md;
- var rq=new chrome.cast.media.LoadRequest(mi);rq.autoplay=true;rq.currentTime=Math.max(0,(v.currentTime||0)-2);
- CST.t=rq.currentTime;CST.d=VP.dur;CST.pausa=0;
+ var re=desde!=null,rq=new chrome.cast.media.LoadRequest(mi);rq.autoplay=true;
+ rq.currentTime=re?Math.max(0,desde):Math.max(0,(v.currentTime||0)-2);
  var nom='';try{nom=ses.getCastDevice().friendlyName||''}catch(e){}CST.nom=nom;
- $('vp-co-t').textContent=nom?'En '+nom:'En la tele';$('vp-co-s').textContent='Estos mandos la controlan. Para volver a verlo aquí, toca el icono de arriba.';
- vpMsg('');$('vp-load').hidden=true;
- // si la tele no contesta en 25 s (estaba ocupada con otra cosa...), se dice y el móvil sigue
- var hecho=0,tope=setTimeout(function(){if(hecho)return;hecho=1;CST.on=0;vpCastPinta();
-   toast('La tele no ha contestado: sigue aquí',4000);try{CST.ctx.endCurrentSession(false)}catch(x){}},25000);
- ses.loadMedia(rq).then(function(){if(hecho)return;hecho=1;clearTimeout(tope);if(!VP.on)return;CST.on=1;try{v.pause()}catch(e){}vpSueno(0);
-   vpCastPinta();vpCastIcono();vpUi(1,1);vpLatido();toast('📺 '+(nom?'En '+nom:'En la tele'),2500)},
-  function(e){if(hecho)return;hecho=1;clearTimeout(tope);CST.on=0;vpCastPinta();toast('La tele no pudo abrir este servidor: prueba otro',4500);try{CST.ctx.endCurrentSession(true)}catch(x){}})}
+ if(re)CST.recarga=1;else{CST.con=1;CST.t=rq.currentTime;CST.d=VP.dur;toast('📺 Enviando a '+(nom||'la tele')+'…',6000)}
+ CST.pausa=0;vpCastIcono();CST.ordT=Date.now();
+ $('vp-co-t').textContent=nom?'En '+nom:'En la tele';$('vp-co-s').textContent='Estos mandos la controlan. Para dejar de enviar, toca el icono de arriba.';
+ vpCastPinta();var cid=++CST.cid;
+ // si la tele no contesta en 25 s (estaba ocupada con otra cosa...), se dice, se CORTA y el móvil sigue
+ var hecho=0,tope=setTimeout(function(){if(hecho||cid!==CST.cid)return;hecho=1;
+   vpCastCorta(re?'La tele no ha contestado: sigue aquí':'La tele no ha contestado: sigue aquí');},25000);
+ ses.loadMedia(rq).then(function(){if(hecho||cid!==CST.cid)return;hecho=1;clearTimeout(tope);CST.recarga=0;
+   if(!VP.on){vpCastCorta('');return}
+   if(!re){CST.on=1;CST.con=0;CST.corto=0;CST.reint=0;try{v.pause()}catch(e){}
+    try{if(VP.hls)VP.hls.stopLoad()}catch(e){}      // el móvil deja de bajar: la wifi, para la tele
+    vpSueno(0);toast('📺 '+(nom?'En '+nom:'En la tele'),2500)}
+   try{var vv=ses.getVolume();CST.vol=(typeof vv==='number'&&isFinite(vv))?vv:null}catch(e){}
+   vpCastPinta();vpCastIcono();vpUi(1,1);vpLatido()},
+  function(e){if(hecho||cid!==CST.cid)return;hecho=1;clearTimeout(tope);CST.recarga=0;
+   vpCastCorta(re?'La tele perdió la emisión: sigue aquí':'La tele no pudo abrir este servidor: prueba otro')})}
 function vpCastPP(){var m=vpCastMedia(),pausar=!CST.pausa;
  CST.pausa=pausar;CST.ordT=Date.now();vpCastIcono();vpUi(1,1);    // el icono, ya
- var mal=function(){CST.pausa=!pausar;CST.ordT=0;vpCastIcono();toast('La tele no ha hecho caso: prueba otra vez',3000)};
+ if(CST.recarga)return;
+ // la tele soltó el vídeo (mucho rato en pausa, red...): reproducir = volver a mandarlo desde ahí
+ if(!pausar&&(!m||m.playerState==='IDLE'))return vpCastCarga(CST.t);
+ var mal=function(){var mm=vpCastMedia();
+  if(!pausar&&(!mm||mm.playerState==='IDLE'))return vpCastCarga(CST.t);
+  if(mm&&(mm.playerState==='PAUSED')===pausar)return;          // ya está como se pidió
+  CST.pausa=!pausar;CST.ordT=0;vpCastIcono();toast('La tele no ha hecho caso: prueba otra vez',3000)};
  if(m){try{if(pausar)m.pause(new chrome.cast.media.PauseRequest(),function(){vpLatido()},mal);
    else m.play(new chrome.cast.media.PlayRequest(),function(){vpLatido()},mal);return}catch(e){}}
  try{if(!!CST.pl.isPaused!==pausar)CST.ct.playOrPause()}catch(e){mal()}}
 function vpCastIr(t){t=Math.max(0,Math.min((CST.d||VP.dur||t+1)-1,t));CST.t=t;CST.irT=Date.now();vpPinta(t,VP.dur,t);vpUi(1,1);
+ if(CST.recarga)return;
  var m=vpCastMedia();
- if(m){try{var sr=new chrome.cast.media.SeekRequest();sr.currentTime=t;m.seek(sr,function(){},function(){});return}catch(e){}}
+ if(!m||m.playerState==='IDLE')return vpCastCarga(t);
+ try{var sr=new chrome.cast.media.SeekRequest();sr.currentTime=t;if(!CST.pausa)sr.resumeState=chrome.cast.media.ResumeState.PLAYBACK_START;
+  m.seek(sr,function(){},function(){});return}catch(e){}
  try{CST.pl.currentTime=t;CST.ct.seek()}catch(e){}}
-// se acabó el envío (desde el botón o desde la tele): el móvil sigue por donde iba la tele
-function vpCastFin(){var t=CST.t;CST.on=0;vpCastPinta();if(!VP.on)return;var v=$('vp-v');
- try{if(t>0)v.currentTime=t;var p=v.play();if(p&&p.catch)p.catch(function(){})}catch(e){}vpUi(1)}
-function vpCastSuelta(){CST.on=0;$('vp').classList.remove('cast');var b=$('vp-cast');if(b)b.hidden=true}
+// (dtbl156) el volumen de la TELE con el gesto de la derecha (el brillo no aplica)
+function vpCastVol(x){if(x==null||!isFinite(x))return;x=Math.max(0,Math.min(1,x));CST.vol=x;vpGi('vol',x,1,x===0?VPMUDO:VPVOL);
+ CST.volQ=x;if(CST.volT)return;
+ var manda=function(){var s=vpCastSes(),q=CST.volQ;CST.volQ=null;
+  if(q==null||!s){CST.volT=0;return}
+  try{var p=s.setVolume(q);if(p&&p.catch)p.catch(function(){})}catch(e){}
+  CST.volT=setTimeout(function(){CST.volT=0;if(CST.volQ!=null)manda()},180)};
+ manda()}
+// CORTAR: la tele deja de reproducir (su app se cierra) y el móvil se queda en
+// pausa justo por donde iba la tele, listo para seguir con un toque.
+function vpCastCorta(msg){CST.corto=1;CST.cid++;CST.recarga=0;vpCastCierra();
+ if(CST.on)vpCastFin(msg);else{CST.con=0;vpCastPinta();if(msg)toast(msg,4000)}}
+// (dtbl156) en la prueba con la TCL, cortar mientras conectaba dejó la sesión
+// "conectada" sin cerrarse: primero se para el vídeo EN LA TELE (lo que se ve y se
+// oye), luego se cierra su app; si a los 4 s sigue ahí, se para y se suelta a mano
+function vpCastCierra(){var s=vpCastSes();if(!s)return;var m=vpCastMedia();
+ if(m){try{m.stop(new chrome.cast.media.StopRequest(),function(){},function(){})}catch(e){}}
+ try{CST.ctx.endCurrentSession(true)}catch(e){}
+ clearTimeout(CST.cierraT);CST.cierraT=setTimeout(function(){var s2=vpCastSes();if(!s2||CST.on||CST.con)return;
+  try{var so=s2.getSessionObj&&s2.getSessionObj();if(so)so.stop(function(){},function(){})}catch(e){}
+  try{CST.ctx.endCurrentSession(false)}catch(e){}},4000)}
+// se acabó el envío (desde el icono o desde la tele): el móvil, en pausa por donde iba la tele
+function vpCastFin(msg){if(!CST.on)return;try{if(VP.on)vpGuarda()}catch(e){}
+ var t=CST.t;CST.on=0;CST.con=0;CST.cid++;CST.recarga=0;vpCastPinta();if(!VP.on)return;var v=$('vp-v');
+ try{if(VP.hls)VP.hls.startLoad(t>0?t:-1)}catch(e){}
+ try{v.pause();if(t>0)v.currentTime=t}catch(e){}
+ $('vp-pp').innerHTML=SVG_PLAY;$('vp-pp').setAttribute('aria-label','Reproducir');
+ vpPinta(t,VP.dur,vpBuf(v));vpUi(1,1);vpLatido();
+ toast(msg||'Ya no se envía a la tele: dale al ▶ para seguir aquí',3500)}
+function vpCastSuelta(){if(CST.on||CST.con||vpCastSes()){CST.corto=1;vpCastCierra()}
+ CST.on=0;CST.con=0;CST.cid++;CST.recarga=0;$('vp').classList.remove('cast');var b=$('vp-cast');if(b){b.hidden=true;b.classList.remove('con')}}
 function vpSuelta(){var v=$('vp-v');clearTimeout(VP.startT);
  if(VP.hls){try{VP.hls.destroy()}catch(e){}VP.hls=null}
  try{v.onerror=null;v.pause();v.removeAttribute('src');v.load()}catch(e){}}
@@ -22039,33 +22113,34 @@ function vpPinta(t,d,b){vpFin(t,d);$('vp-a').textContent=fmt(t);$('vp-b').textCo
 function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length;i++)if(v.buffered.start(i)<=t+1)b=Math.max(b,v.buffered.end(i))}catch(e){}return b}
 (function(){var e=$('vp'),v=$('vp-v'),bar=$('vp-bar');if(!e||!v||!bar||!v.addEventListener)return;
  var ult=0;
- v.addEventListener('playing',function(){if(VP.g!==VP.id)return;
+ v.addEventListener('playing',function(){if(VP.g!==VP.id||vpCastOn())return;
   if(!VP.ok){VP.ok=1;clearTimeout(VP.startT);vpReanuda()}
   if(Date.now()-VP.latT>4000||VP.latP)vpLatido();
   e.classList.remove('carga');$('vp-load').hidden=true;$('vp-pp').innerHTML=SVG_PAUSE;$('vp-pp').setAttribute('aria-label','Pausa');vpUi(1);vpSueno(1)});
- v.addEventListener('pause',function(){if(!VP.on)return;vpLatido();$('vp-pp').innerHTML=SVG_PLAY;$('vp-pp').setAttribute('aria-label','Reproducir');vpUi(1,1);vpGuarda();vpSueno(0)});
- v.addEventListener('waiting',function(){if(VP.on&&VP.ok){$('vp-msg').textContent='';$('vp-load').hidden=false}});
+ v.addEventListener('pause',function(){if(!VP.on||vpCastOn())return;vpLatido();$('vp-pp').innerHTML=SVG_PLAY;$('vp-pp').setAttribute('aria-label','Reproducir');vpUi(1,1);vpGuarda();vpSueno(0)});
+ v.addEventListener('waiting',function(){if(VP.on&&VP.ok&&!vpCastOn()){$('vp-msg').textContent='';$('vp-load').hidden=false}});
  v.addEventListener('canplay',function(){if(VP.ok&&!v.paused)$('vp-load').hidden=true});
- v.addEventListener('timeupdate',function(){if(!VP.on||VP.drag)return;var d=v.duration;VP.dur=isFinite(d)?d:0;
+ v.addEventListener('timeupdate',function(){if(!VP.on||VP.drag||vpCastOn())return;var d=v.duration;VP.dur=isFinite(d)?d:0;
   vpPinta(v.currentTime,VP.dur,vpBuf(v));if(Date.now()-ult>8000){ult=Date.now();vpGuarda()}
   if(VP.ok&&Date.now()-VP.latT>30000)vpLatido()});
- v.addEventListener('progress',function(){if(VP.on&&!VP.drag)vpPinta(v.currentTime,VP.dur,vpBuf(v))});
- v.addEventListener('ended',function(){if(!VP.on)return;vpGuarda(1);vpLatido();$('vp-pp').innerHTML=SVG_PLAY;vpUi(1,1);vpSueno(0)});
+ v.addEventListener('progress',function(){if(VP.on&&!VP.drag&&!vpCastOn())vpPinta(v.currentTime,VP.dur,vpBuf(v))});
+ v.addEventListener('ended',function(){if(!VP.on||vpCastOn())return;vpGuarda(1);vpLatido();$('vp-pp').innerHTML=SVG_PLAY;vpUi(1,1);vpSueno(0)});
  // tocar la imagen: aparecen o se van los mandos (tocar un botón no cuenta)
  // deslizar arriba/abajo: izquierda brillo, derecha volumen (el centro, para tocar)
  var G=null;
  e.addEventListener('touchstart',function(ev){G=null;if(!VP.on||!VP.ok||!ev.touches||ev.touches.length!==1)return;
   if(ev.target.closest&&ev.target.closest('button,.vp-bar'))return;
   var t=ev.touches[0],w=window.innerWidth||1,lado=t.clientX<w*.4?'luz':(t.clientX>w*.6?'vol':'');if(!lado)return;
+  if(vpCastOn()&&(lado!=='vol'||CST.vol==null))return;   // enviando: solo el volumen de la tele
   G={lado:lado,x:t.clientX,y:t.clientY,on:0}},{passive:true});
  e.addEventListener('touchmove',function(ev){if(!G||!ev.touches||!ev.touches.length)return;
   var t=ev.touches[0],dy=t.clientY-G.y,dx=t.clientX-G.x;
   if(!G.on){if(Math.abs(dy)>12&&Math.abs(dy)>Math.abs(dx)*1.3){G.on=1;G.y=t.clientY;dy=0;
-    G.v0=G.lado==='luz'?VP.luz:(v.muted?0:(VP.gn&&VP.vol>1?VP.vol:v.volume));e.classList.remove('ui')}
+    G.v0=G.lado==='luz'?VP.luz:(vpCastOn()?CST.vol:(v.muted?0:(VP.gn&&VP.vol>1?VP.vol:v.volume)));e.classList.remove('ui')}
    else if(Math.abs(dx)>16){G=null;return}else return}
   if(ev.cancelable)ev.preventDefault();
   var d=-dy/Math.max(200,(window.innerHeight||600)*.7);
-  if(G.lado==='luz')vpLuz(G.v0+d*(VPLUZMAX-.15));else vpVol(G.v0+d*vpVolMax())},{passive:false});
+  if(G.lado==='luz')vpLuz(G.v0+d*(VPLUZMAX-.15));else if(vpCastOn())vpCastVol(G.v0+d);else vpVol(G.v0+d*vpVolMax())},{passive:false});
  var finG=function(){if(G&&G.on){VP.gesto=Date.now();clearTimeout(VP.giT);
    VP.giT=setTimeout(function(){$('vp-gi').classList.remove('on')},700)}G=null};
  e.addEventListener('touchend',finG);e.addEventListener('touchcancel',finG);
