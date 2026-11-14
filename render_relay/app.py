@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl150"
+BUILD = "dtbl151"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17964,6 +17964,20 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 #vp.carga .vp-bot,#vp.err .vp-bot{visibility:hidden}
 @media (max-height:420px){.vp-t{font-size:19px}.vp-pp{width:64px;height:64px}.vp-sk{width:50px;height:50px}}
 .vp-abierto .toast{z-index:62}
+/* (dtbl151) Powvideo/Streamplay en "Aquí": su página en un marco cerrado (sin ventanas = sin anuncios) para el captcha */
+#cpv{position:fixed;inset:0;z-index:60;background:#000;display:none;flex-direction:column;color:#f1ece4;overscroll-behavior:none}
+#cpv.on{display:flex}
+.cpv-top{flex:none;display:flex;align-items:center;gap:12px;padding:calc(8px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));background:#0e0b10}
+.cpv-h{flex:none;display:flex;gap:10px;align-items:flex-start;padding:9px max(14px,env(safe-area-inset-right)) 10px max(14px,env(safe-area-inset-left));font-size:13.5px;line-height:1.4;color:#f1ece4;background:linear-gradient(90deg,rgba(237,194,122,.16),rgba(237,194,122,.05));border-bottom:1px solid rgba(237,194,122,.22)}
+.cpv-h b{color:var(--amb,#edc27a)}
+.cpv-h i{font-style:normal;font-size:17px;line-height:1.1}
+.cpv-f{flex:1;position:relative;min-height:0}
+.cpv-f iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}
+#cpv.listo .vp-load{display:none}
+#cpv.err .vp-load .spin,#cpv.err .cpv-h{display:none}
+#cpv .vp-msg b{color:var(--amb,#edc27a)}
+.cbcap{font-size:13px;color:var(--sub);line-height:1.45;margin:0 0 8px}
+.cbcap b{color:inherit}
 .novb{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:44px;margin:-4px 0 13px;padding:8px 14px;border-radius:12px;border:1px solid rgba(64,156,255,.35);background:rgba(64,156,255,.10);color:var(--txt);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
 .novb .novv{flex:none;color:#7dbbff;font-weight:600;position:relative;padding-right:4px}
 .novdot{position:absolute;top:-6px;right:-8px;width:8px;height:8px;border-radius:50%;background:#ff453a;display:none}
@@ -18784,6 +18798,15 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
    <button class="vp-fs" onclick="vpPantalla()" aria-label="Pantalla completa"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
   </div>
  </div>
+</div>
+<div id="cpv" aria-label="Reproductor del servidor">
+ <div class="cpv-top">
+  <button class="vp-x" onclick="cpvCierra()" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg></button>
+  <div class="vp-tt"><div class="vp-t" id="cpv-t"></div><div class="vp-q" id="cpv-q"></div></div>
+ </div>
+ <div class="cpv-h" id="cpv-h"></div>
+ <div class="cpv-f" id="cpv-f"></div>
+ <div class="vp-load" id="cpv-load"><span class="spin"></span><div class="vp-msg" id="cpv-msg"></div></div>
 </div>
 <div class="sheet" id="lsheet" onclick="if(event.target===this)closeLS()">
  <div class="box">
@@ -21531,17 +21554,23 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
  // los demás ni se enseñan, para no ofrecer un botón que no va a funcionar.
  var aqui=cbDonde()==='aqui',abre=aqui?CBAQUI:CBABRE;
  var vistos={},tot={},bot=function(it,i,num){return '<button class="cbb" onclick="cbPlay('+i+')">▶ '+esc(cbNom(it.srv))+' <i>'+esc(cbQ(it.q))+(num?' · '+num:'')+'</i></button>'},
-  seg='',otros='',n=0;
+  seg='',otros='',n=0,cap='',capN={};
  c.items.forEach(function(it){var k=it.srv+'|'+cbQ(it.q);tot[k]=(tot[k]||0)+1});
+ // (dtbl151) Powvideo/Streamplay piden captcha: en "Aquí" se abren en su página
+ // dentro de un marco cerrado (cbCapPlay); en la tele NO se pueden (el captcha
+ // solo vale en su web y el vídeo queda atado a la IP de quien lo resuelve).
  c.items.forEach(function(it,i){var k=it.srv+'|'+cbQ(it.q);vistos[k]=(vistos[k]||0)+1;
-  if(abre[it.srv]){seg+=bot(it,i,tot[k]>1?vistos[k]:0);n++}else if(!aqui&&vistos[k]===1)otros+=bot(it,i,0)});
+  if(abre[it.srv]){seg+=bot(it,i,tot[k]>1?vistos[k]:0);n++}
+  else if(CBCAP[it.srv]){capN[cbNom(it.srv)]=1;if(aqui)cap+=bot(it,i,tot[k]>1?vistos[k]:0)}
+  else if(!aqui&&vistos[k]===1)otros+=bot(it,i,0)});
+ var capNom=Object.keys(capN).join(' y '),capTxt='<div class="cbcap">🤖 Piden marcar <b>«No soy un robot»</b> antes de empezar. Sin anuncios.</div>';
  var donde='<div class="cbdonde" role="group" aria-label="Dónde verlo">'+
   '<button class="'+(aqui?'':'on')+'" onclick="cbPonDonde(\'tv\',\''+elId+'\')">📺 En la tele</button>'+
   '<button class="'+(aqui?'on':'')+'" onclick="cbPonDonde(\'aqui\',\''+elId+'\')">📱 Aquí</button></div>';
  // Israel, 10-11: "la regla número 1 son enlaces sin anuncios". Lo que solo se
  // ve en la web del servidor (Powvideo, Streamplay: anuncios + captcha) NO se
  // ofrece: se dice que no hay y punto.
- if(aqui&&!seg)seg='<div class="cbmsg">Ahora mismo ningún servidor de '+(c.k&&c.k.indexOf('movie')===0?'esta película':'este capítulo')+' se puede ver sin anuncios. Vuelve a mirar más adelante.</div>';
+ if(aqui&&!seg&&!cap)seg='<div class="cbmsg">Ahora mismo ningún servidor de '+(c.k&&c.k.indexOf('movie')===0?'esta película':'este capítulo')+' se puede ver sin anuncios. Vuelve a mirar más adelante.</div>';
  // (dtbl95) en la ficha de una peli: si el streaming que la tele abre sola tiene
  // MEJOR calidad que el torrent (1080p frente a 720p/HDTV), sube por encima del
  // botón del torrent. Israel: "si hay buena calidad a 1080p, que gane".
@@ -21553,6 +21582,8 @@ function cbPinta(elId){var c=CBSEL,el=$(elId);if(!c||!el)return;
   if(pb&&pb.parentNode){if(mejor)pb.parentNode.insertBefore(el,pb);else pb.parentNode.insertBefore(el,pb.nextSibling)}}
  el.innerHTML='<div class="cbt">'+(mejor?'⭐ <b>Mejor calidad en streaming</b> <span>· castellano · sin anuncios</span>':'📺 Streaming sin anuncios <span>· castellano · sin semillas</span>')+'</div>'+
   donde+(seg?('<div class="cbr">'+seg+'</div>'):'')+
+  (aqui&&cap?(seg?'<details class="cbmas"><summary>Más servidores (piden captcha)</summary>'+capTxt+'<div class="cbr">'+cap+'</div></details>':capTxt+'<div class="cbr">'+cap+'</div>'):'')+
+  (!aqui&&!seg&&capNom?'<div class="cbmsg" style="margin-bottom:8px">🤖 '+esc(capNom)+' '+(capNom.indexOf(' y ')>0?'piden':'pide')+' captcha: en la tele no se puede. <a href="javascript:void(0)" onclick="cbPonDonde(\'aqui\',\''+elId+'\')">Verlo 📱 Aquí</a></div>':'')+
   (otros?((seg?'<details class="cbmas"><summary>Más servidores (pueden no abrir en la tele)</summary>':'')+'<div class="cbr">'+otros+'</div>'+(seg?'</details>':'')):'')}
 var CBABRE={VIDARA:1,LULUSTREAM:1,FIRESTREAM:1,VIDHIDE:1};   // los que la tele abre sola (2.9.92)
 // las demás subidas del mismo servidor y calidad, por si la elegida falla
@@ -21568,6 +21599,7 @@ function cbSiguientes(c,i,aqui){var a=c.items[i],g=cbGemelos(c,i),vis={},ab=aqui
  var mas=c.items.map(function(x,j){return j}).filter(function(j){return !vis[j]&&ab[c.items[j].srv]&&(j!==i)});
  return g.concat(mas).slice(0,2)}   // (dtbl103) como mucho 2 más: nada de ráfagas
 function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
+ if(CBCAP[it.srv]&&resto===undefined&&cbDonde()==='aqui')return cbCapPlay(i);
  // (dtbl131) "Aquí": el reproductor se abre YA, dentro del toque (si no, el
  // navegador no deja pantalla completa ni sonido), y Cinubo contesta detrás.
  var aqui=cbDonde()==='aqui',av=aqui?vpMsg:toast,cadena=resto!==undefined;
@@ -21609,6 +21641,76 @@ function cbPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return
    (aqui?vpFallo:toast)(d&&d.error==='espera'?('Cinubo está saturado ahora mismo: prueba en '+Math.max(2,Math.round((d.s||120)/60))+' min o elige otra fuente'):
     (d&&d.error==='muerto'?'Ese enlace ya no existe en Cinubo: elige otro servidor':(cbNom(it.srv)+' no contesta ahora: elige otro servidor')),6000)})
   .catch(function(){if(aqui&&(!VP.on||VP.id!==id))return;(aqui?vpFallo:toast)('No se pudo conectar: prueba otra vez')})}
+// ====== (dtbl151) POWVIDEO / STREAMPLAY: con captcha, sin anuncios ======
+// Israel, 14-11: "que salga el captcha (publicidad nunca) pero que se
+// reproduzca". Su captcha solo funciona dentro de SU web (la clave va atada al
+// dominio) y el vídeo que dan después queda atado a la IP de quien lo resolvió:
+// a la tele no se puede mandar. En "Aquí" se abre su página en un marco
+// cerrado: sin allow-popups ni allow-top-navigation, sus anuncios (ventanas al
+// tocar, una capa transparente sobre el reproductor) no pueden abrirse ni
+// llevarse la web. El captcha sale al tocar el vídeo, a los ~4 s.
+// Al resolverlo el marco navega (una entrada más en el historial): un "atrás"
+// lo devuelve al captcha, se nota (3ª carga) y se cierra; la X retrocede todo.
+var CBCAP={POWVIDEO:1,STREAMPLAY:1};
+var CPV={on:0,id:0,n:0,h0:0,tit:'',srv:'',lid:'',latI:0};
+var CPVBLOQ='Tu conexión no deja abrir estos servidores: algunas compañías los bloquean. Prueba con los <b>datos del móvil</b>, o en Android busca «DNS privado» en Ajustes y pon <b>one.one.one.one</b>.';
+function cpvMsg(t){$('cpv-msg').textContent=t||'';$('cpv').classList.remove('err')}
+function cpvAyuda(t){$('cpv-h').innerHTML=t}
+function cpvFallo(t){if(!CPV.on)return;$('cpv-f').innerHTML='';CPV.n=0;$('cpv-msg').innerHTML=t;
+ var e=$('cpv');e.classList.add('err');e.classList.remove('listo')}
+function cpvAbre(t,q){var e=$('cpv');CPV.on=1;CPV.id++;CPV.n=0;CPV.tit=t||'';CPV.srv='';CPV.lid=vpLid();CPV.latI=0;
+ $('cpv-t').textContent=t||'';$('cpv-q').textContent=(q?q+' · ':'')+'sin anuncios';$('cpv-f').innerHTML='';
+ cpvAyuda('<i>👆</i><span>Toca el vídeo y, en unos segundos, marca <b>«No soy un robot»</b>. Si te pide imágenes, elígelas.</span>');
+ cpvMsg('Preparando…');e.classList.add('on');e.classList.remove('err','listo');document.body.classList.add('vp-abierto');
+ mwOpen('cpv',null,cpvCierraYa);CPV.h0=history.length}
+function cpvLatido(fin){if(!CPV.lid||!CPV.latI)return;
+ var o={id:CPV.lid,t:CPV.tit,srv:CPV.srv,pos:0,dur:0,pausa:false};if(fin)o.fin=1;else if(CPV.latI===1){o.ini=1;CPV.latI=2}
+ var b=JSON.stringify(o);
+ try{if(fin&&navigator.sendBeacon&&navigator.sendBeacon('/vp/latido',new Blob([b],{type:'application/json'})))return}catch(e){}
+ try{fetch('/vp/latido',{method:'POST',headers:{'Content-Type':'application/json'},body:b,keepalive:true}).catch(function(){})}catch(e){}}
+function cpvCierraYa(){cpvLatido(1);CPV.on=0;CPV.id++;CPV.n=0;CPV.lid='';$('cpv-f').innerHTML='';
+ $('cpv').classList.remove('on','err','listo');if(!VP.on)document.body.classList.remove('vp-abierto')}
+// La X: las entradas que el marco haya añadido + la del panel, de una vez
+function cpvCierra(){var t=mwTop(),extra=Math.max(0,Math.min(5,history.length-CPV.h0));
+ if(t&&t.n==='cpv'&&t.h&&extra){try{history.go(-(extra+1));return}catch(e){}}
+ mwBack('cpv')}
+// ¿El móvil llega al servidor? (si la compañía lo bloquea por DNS el marco
+// saldría en blanco sin decir nada): una petición sin leer nada, con tope.
+function cpvAlcanza(u,cb){var hecho=0,fin=function(ok){if(hecho)return;hecho=1;clearTimeout(t);cb(ok)},
+  t=setTimeout(function(){fin(false)},9000);
+ try{fetch(u,{mode:'no-cors',method:'HEAD',cache:'no-store',credentials:'omit'}).then(function(){fin(true)},function(){fin(false)})}catch(e){fin(false)}}
+function cpvCarga(u,nom,fallo){var id=CPV.id;CPV.srv=nom;CPV.n=0;$('cpv-f').innerHTML='';
+ $('cpv').classList.remove('listo','err');cpvMsg('Conectando con '+nom+'…');
+ cpvAlcanza(u,function(ok){if(id!==CPV.id||!CPV.on)return;if(!ok)return fallo('bloqueado');
+  var f=document.createElement('iframe');
+  f.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms');
+  f.setAttribute('allow','autoplay; fullscreen; encrypted-media; picture-in-picture');
+  f.setAttribute('allowfullscreen','');f.setAttribute('referrerpolicy','origin');f.title=nom;
+  f.onload=function(){if(id!==CPV.id||!CPV.on)return;CPV.n++;
+   if(CPV.n===1){$('cpv').classList.add('listo');cpvMsg('')}
+   else if(CPV.n===2){CPV.latI=CPV.latI||1;cpvLatido(0);
+    cpvAyuda('<i>▶</i><span>Toca <b>play</b>. Si no arranca al primer toque, toca otra vez. Para verlo grande, el botón de pantalla completa del reproductor.</span>')}
+   else mwBack('cpv')};                       // "atrás" dentro del marco: ya está en la entrada del panel, fuera
+  f.src=u;$('cpv-f').appendChild(f)})}   // src ANTES de meterlo: si no, carga about:blank y cuenta una carga de más
+setInterval(function(){if(CPV.on&&CPV.latI&&!document.hidden)cpvLatido(0)},45000);
+// Como cbPlay en "Aquí": si uno no abre, el siguiente con captcha (como mucho 2 más)
+function cbCapPlay(i,resto,vez){var c=CBSEL,it=c&&c.items&&c.items[i];if(!it)return;
+ if(resto===undefined){cpvAbre(c.t,cbQ(it.q));
+  resto=c.items.map(function(x,j){return j}).filter(function(j){return j!==i&&CBCAP[c.items[j].srv]}).slice(0,2)}
+ vez=vez||0;var id=CPV.id,nom=cbNom(it.srv),vivo=function(){return CBSEL===c&&CPV.on&&CPV.id===id};
+ var sig=function(que){if(!resto.length)return false;var nx=c.items[resto[0]];cpvMsg(que+': pruebo con '+cbNom(nx&&nx.srv)+'…');
+  setTimeout(function(){if(vivo())cbCapPlay(resto[0],resto.slice(1),vez)},1200);return true};
+ $('cpv').classList.remove('listo');cpvMsg('Abriendo '+nom+'…');
+ fetch('/cbembed?r='+encodeURIComponent(it.r)).then(function(r){return r.json()}).then(function(d){if(!vivo())return;
+   if(d&&d.error==='espera'&&vez<3&&(d.s||0)<=120){var sg=Math.max(3,Math.min(90,d.s||30));
+    cpvMsg('⏳ Cinubo va con mucha gente: empieza en '+sg+' s');
+    setTimeout(function(){if(vivo())cbCapPlay(i,resto,vez+1)},sg*1000);return}
+   if(d&&d.ok&&d.u){cpvCarga(d.u,nom,function(por){if(!vivo())return;
+     if(sig(por==='bloqueado'?nom+' no abre desde tu conexión':nom+' no responde'))return;
+     cpvFallo(por==='bloqueado'?CPVBLOQ:'No se pudo abrir '+esc(nom)+'. Prueba en un rato.')});return}
+   if(sig(d&&d.error==='muerto'?'Ese enlace ya no existe':nom+' no responde'))return;
+   cpvFallo(d&&d.error==='espera'?'Cinubo va con mucha gente ahora mismo: prueba en unos minutos.':'Ese enlace ya no existe o no contesta. Prueba en un rato.')})
+  .catch(function(){if(vivo())cpvFallo('No se pudo conectar: prueba otra vez.')})}
 // ====== (dtbl131) VER AQUÍ: el streaming en el propio móvil o tablet ======
 // Israel, 08-11: "que se reproduzca a pantalla completa el contenido; si pulsas
 // la pantalla, la típica barra para saber por dónde va y la pausa". Sin

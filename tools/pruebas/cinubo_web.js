@@ -39,7 +39,7 @@ comprueba('...y debajo de los avisos (mwConfirm)', zDlg < Number(/#mwdlg\{z-inde
 const codigo = saca('var CBSEL=null;', '\nfunction seekTo(');
 function Elem() {
   const cls = new Set();
-  return { innerHTML: '', textContent: '', classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c) },
+  return { innerHTML: '', textContent: '', appendChild(f) { MARCOS.push(f); }, classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c) },
            querySelector: () => ({}) };
 }
 const DOM = {};
@@ -50,16 +50,20 @@ const TOASTS = [], ENVIOS = [], PIDE = [];
 let RESP = {};
 const toast = (t) => TOASTS.push(t);
 const avisaCodigo = () => {};
-const mwBack = (id) => $(id).classList.remove('on');
+const MARCOS = [], ATRAS = [];
+const mwBack = (id) => { ATRAS.push(id); $(id).classList.remove('on'); };
 const mwOpen = () => {};
 const sendPlay = (ref) => { ENVIOS.push(ref); return true; };
 const _tituloBase = (t) => t;
 function fetch(u) {
   PIDE.push(u);
+  // (dtbl151) un servidor que la compañía bloquea: la petición falla (DNS)
+  if ((globalThis.BLOQ || []).some((b) => u.indexOf(b) >= 0)) return Promise.reject(new TypeError('Failed to fetch'));
   const r = RESP[decodeURIComponent(((u.split('r=')[1] || '').split('&')[0]))] || { ok: false, error: 'no_disponible' };
   return Promise.resolve({ json: () => Promise.resolve(r) });
 }
-const setTimeout2 = (f) => f();
+// el tope de 9 s de cpvAlcanza (¿llega el móvil al servidor?) no salta en las pruebas
+const setTimeout2 = (f, ms) => (ms === 9000 ? 0 : f());
 const CTX = new Function('$', 'esc', 'code', 'toast', 'avisaCodigo', 'mwBack', 'mwOpen', 'sendPlay', '_tituloBase', 'fetch', 'setTimeout',
   codigo + '\nreturn {cbPinta, cbPlay, cbGemelos, cbFunde, esPack, set: function(c){CBSEL=c}};')(
   $, esc, code, toast, avisaCodigo, mwBack, mwOpen, sendPlay, _tituloBase, fetch, setTimeout2);
@@ -75,18 +79,38 @@ CTX.set({ k: 'k', el: 'cbd-l', t: 'Ted Lasso 1x10', items });
 CTX.cbPinta('cbd-l');
 const h = $('cbd-l').innerHTML;
 const botones = (h.match(/cbPlay\(\d+\)/g) || []);
-comprueba('cada subida de los que la tele abre sola; los demás sin repetidos: 6 botones para 7 enlaces',
-  botones.length === 6 && botones.join() === 'cbPlay(0),cbPlay(1),cbPlay(2),cbPlay(3),cbPlay(4),cbPlay(6)', botones);
+comprueba('cada subida de los que la tele abre sola; los demás sin repetidos; sin Powvideo (captcha, dtbl151): 5 botones para 7 enlaces',
+  botones.length === 5 && botones.join() === 'cbPlay(0),cbPlay(1),cbPlay(2),cbPlay(3),cbPlay(6)', botones);
 comprueba('las dos subidas de Vidara 1080p, numeradas (dtbl120)',
   /Vidara <i>1080p · 1<\/i>/.test(h) && /Vidara <i>1080p · 2<\/i>/.test(h), h);
 comprueba('una sola subida: sin número', /Lulustream <i>1080p<\/i>/.test(h) && /Lulustream <i>720p<\/i>/.test(h), h);
 comprueba('los que la tele abre sola, arriba y fuera del plegable',
   h.indexOf('Vidara') < h.indexOf('<details') && h.indexOf('Lulustream') < h.indexOf('<details'), h);
 comprueba('el resto, plegado y avisado', /<details class="cbmas"><summary>Más servidores \(pueden no abrir en la tele\)/.test(h)
-  && h.indexOf('Powvideo') > h.indexOf('<details'));
-CTX.set({ k: 'k', el: 'cbd-l', t: 'X', items: items.filter((x) => x.srv === 'POWVIDEO') });
+  && h.indexOf('Vidmoly') > h.indexOf('<details'));
+CTX.set({ k: 'k', el: 'cbd-l', t: 'X', items: items.filter((x) => x.srv === 'POWVIDEO' || x.srv === 'VIDMOLY') });
 CTX.cbPinta('cbd-l');
-comprueba('si no hay ninguno seguro, los otros sin plegar', !/<details/.test($('cbd-l').innerHTML) && /Powvideo/.test($('cbd-l').innerHTML));
+let hp = $('cbd-l').innerHTML;
+comprueba('si no hay ninguno seguro, los otros sin plegar', !/<details/.test(hp) && /Vidmoly/.test(hp), hp);
+comprueba('(dtbl151) en la tele, Powvideo: se dice que pide captcha y se ofrece verlo Aquí, sin botón suyo',
+  /Powvideo pide captcha: en la tele no se puede/.test(hp) && /cbPonDonde\('aqui'/.test(hp) && !/cbPlay\([45]\)/.test(hp), hp);
+
+console.log('\n=== 2d) Aquí, con captcha (dtbl151) ===');
+globalThis.localStorage = { getItem: () => 'aqui', setItem: () => {} };
+CTX.set({ k: 'k', el: 'cbd-l', t: 'Ted Lasso 1x10', items });
+CTX.cbPinta('cbd-l');
+hp = $('cbd-l').innerHTML;
+comprueba('con servidores sin captcha: los de captcha plegados y avisados; Vidmoly ni sale',
+  hp.indexOf('Vidara') < hp.indexOf('<details') && /Más servidores \(piden captcha\)/.test(hp) && /No soy un robot/.test(hp)
+  && /Powvideo <i>720p · 1<\/i>/.test(hp) && /Powvideo <i>720p · 2<\/i>/.test(hp) && !/Vidmoly/.test(hp), hp);
+const capItems = [{ r: 'p1', srv: 'POWVIDEO', q: 'HD 720p' }, { r: 's1', srv: 'STREAMPLAY', q: 'SD HDTV' }, { r: 'x1', srv: 'NETU', q: 'HD 720p' }];
+CTX.set({ k: 'serie:456:8x2', el: 'cbd-l', t: 'Los Simpson 8x02', items: capItems });
+CTX.cbPinta('cbd-l');
+hp = $('cbd-l').innerHTML;
+comprueba('solo con captcha: a la vista, avisados, y ya no "ningún servidor"',
+  !/<details/.test(hp) && /No soy un robot/.test(hp) && /cbPlay\(0\)/.test(hp) && /cbPlay\(1\)/.test(hp) && !/cbPlay\(2\)/.test(hp)
+  && !/ningún servidor/.test(hp), hp);
+globalThis.localStorage = undefined;
 
 console.log('\n=== 2a) En la ficha: si el streaming es mejor, va primero ===');
 globalThis.QRANK = { '4k': 5, '1080p': 4, hdtv: 3, '720p': 2 };
@@ -170,6 +194,48 @@ console.log('\n=== 3) Al elegir ===');
   for (let k = 0; k < 8; k++) await new Promise((r) => setImmediate(r));
   comprueba('enlace muerto: lo dice y pasa al siguiente, que va a la tele',
     /Ese enlace ya no existe: pruebo con Vidara/.test(TOASTS.join(' ')) && ENVIOS.length === 1 && ENVIOS[0].u === 'https://vidara.to/e/VIVO', { TOASTS, ENVIOS });
+
+  console.log('\n=== 3b) Aquí, con captcha: el marco cerrado (dtbl151) ===');
+  globalThis.localStorage = { getItem: () => 'aqui', setItem: () => {} };
+  globalThis.history = { length: 5 };
+  globalThis.document = { hidden: false, body: Elem(), createElement: () => {
+    const a = {}; return { setAttribute: (k, v) => { a[k] = v; }, attrs: a }; } };
+  globalThis.navigator = {};
+  const espera = async (n) => { for (let k = 0; k < n; k++) await new Promise((r) => setImmediate(r)); };
+  PIDE.length = 0; MARCOS.length = 0; ATRAS.length = 0;
+  RESP = { p1: { ok: true, u: 'https://powvideo.net/embed-abc.html' } };
+  CTX.set({ k: 'serie:456:8x2', el: 'cbd-l', t: 'Los Simpson 8x02', items: capItems });
+  CTX.cbPlay(0);
+  await espera(10);
+  let fr = MARCOS[0];
+  comprueba('pide el servidor a Cinubo, comprueba que el móvil llega y abre su página en un marco',
+    /\/cbembed\?r=p1/.test(PIDE[0]) && PIDE[1] === 'https://powvideo.net/embed-abc.html' && fr && fr.src === 'https://powvideo.net/embed-abc.html'
+    && $('cpv').classList.contains('on'), { PIDE, fr });
+  comprueba('marco CERRADO: sin ventanas ni salir de la web (sin anuncios)',
+    fr && fr.attrs.sandbox === 'allow-scripts allow-same-origin allow-forms' && !/popups|top-navigation/.test(fr.attrs.sandbox || ''), fr && fr.attrs);
+  comprueba('dice qué hacer: tocar el vídeo y marcar el captcha', /No soy un robot/.test($('cpv-h').innerHTML));
+  fr.onload();
+  comprueba('cargada la página: fuera el "Conectando"', $('cpv').classList.contains('listo'));
+  PIDE.length = 0; fr.onload(); await espera(2);
+  comprueba('resuelto (2ª carga): cuenta en /uso y dice cómo darle a play',
+    PIDE.some((u) => u === '/vp/latido') && /play/.test($('cpv-h').innerHTML), { PIDE });
+  fr.onload();
+  comprueba('"atrás" dentro del marco (3ª carga): se cierra el panel', ATRAS[ATRAS.length - 1] === 'cpv', ATRAS);
+  // bloqueado por la compañía -> el siguiente con captcha; todos -> lo explica
+  PIDE.length = 0; MARCOS.length = 0;
+  RESP = { p1: { ok: true, u: 'https://powvideo.net/embed-abc.html' }, s1: { ok: true, u: 'https://streamplay.to/embed-xyz.html' } };
+  globalThis.BLOQ = ['powvideo.net'];
+  CTX.cbPlay(0);
+  await espera(16);
+  comprueba('Powvideo bloqueado: lo dice y prueba Streamplay solo',
+    MARCOS.length === 1 && MARCOS[0].src === 'https://streamplay.to/embed-xyz.html' && PIDE.some((u) => /r=s1/.test(u)), { PIDE, MARCOS: MARCOS.map((m) => m.src) });
+  PIDE.length = 0; MARCOS.length = 0;
+  globalThis.BLOQ = ['powvideo.net', 'streamplay.to'];
+  CTX.cbPlay(0);
+  await espera(16);
+  comprueba('todos bloqueados: ningún marco y se explica (datos del móvil / DNS privado)',
+    MARCOS.length === 0 && $('cpv').classList.contains('err') && /datos del móvil/.test($('cpv-msg').innerHTML), $('cpv-msg').innerHTML);
+  globalThis.BLOQ = []; globalThis.localStorage = undefined;
 
   console.log('\n---- VEREDICTO ----');
   if (fallos) { console.log(fallos + ' comprobaciones MAL'); process.exit(1); }
