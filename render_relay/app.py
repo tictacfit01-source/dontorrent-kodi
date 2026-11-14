@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl152"
+BUILD = "dtbl153"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -21738,8 +21738,10 @@ function cpvCarga(u,nom,fallo){var id=CPV.id;CPV.srv=nom;CPV.n=0;$('cpv-f').inne
   f.onload=function(){if(id!==CPV.id||!CPV.on)return;CPV.n++;
    if(CPV.n===1){$('cpv').classList.add('listo');cpvMsg('')}
    else if(CPV.n===2){CPV.latI=CPV.latI||1;cpvLatido(0);$('cpv').classList.add('vid');cpvAjusta();
-    cpvAyuda(CPV.tam?'Toca <b>play</b> (si no arranca, otra vez) y ponlo en grande:'
-     :'Toca <b>play</b> (si no arranca, otra vez). En pantalla completa, toca también la del reproductor.')}
+    // (dtbl153) medido: su web gasta los 3-4 primeros toques en capas de anuncios
+    // invisibles (que aquí no abren nada) y no se pueden quitar desde fuera
+    cpvAyuda(CPV.tam?'Toca <b>play</b> hasta que arranque: su web gasta los 3-4 primeros toques (no se abre nada). Y en grande:'
+     :'Toca <b>play</b> hasta que arranque: su web gasta los 3-4 primeros toques (no se abre nada). En pantalla completa, toca también la del reproductor.')}
    else mwBack('cpv')};                       // "atrás" dentro del marco: ya está en la entrada del panel, fuera
   f.src=u;$('cpv-f').appendChild(f);   // src ANTES de meterlo: si no, carga about:blank y cuenta una carga de más
   var sal=document.createElement('button');sal.className='cpv-sal';sal.setAttribute('aria-label','Salir de pantalla completa');
