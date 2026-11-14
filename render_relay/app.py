@@ -31,7 +31,7 @@ from flask import Flask, request, Response, jsonify, send_file
 # codigo iba por dtbl21: al verificar en produccion no habia forma de saber si
 # lo que contestaba era lo recien desplegado o lo de antes. Se sube AQUI y solo
 # aqui en cada despliegue.
-BUILD = "dtbl153"
+BUILD = "dtbl154"
 
 app = Flask(__name__)
 # No habia NINGUN limite: /relay, /catfeed o /catjob/done aceptaban un cuerpo de
@@ -17961,6 +17961,18 @@ body{min-height:100vh;background:radial-gradient(1100px 600px at 50% -10%,#1b274
 .vp-load .spin{width:34px;height:34px;border-width:3px;border-color:rgba(241,236,228,.18);border-top-color:var(--amb,#edc27a)}
 .vp-msg{font-size:15px;line-height:1.45;max-width:340px;color:#f1ece4;text-shadow:0 1px 8px #000}
 #vp.err .vp-load .spin,#vp.carga .vp-mid,#vp.err .vp-mid{display:none}
+/* (dtbl154) Chromecast / AirPlay desde "Aquí" */
+.vp-x.vp-cast[hidden]{display:none}
+.vp-cast svg{width:21px;height:21px}
+#vp.cast .vp-cast{color:var(--amb,#edc27a);border-color:rgba(237,194,122,.6);background:rgba(237,194,122,.16)}
+.vp-co{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;padding:max(92px,17vh) 24px 24px;text-align:center;pointer-events:none;
+ background:radial-gradient(ellipse at center,rgba(237,194,122,.10),rgba(0,0,0,0) 62%)}
+#vp.cast .vp-co{display:flex}
+#vp.cast #vp-v{visibility:hidden}
+.vp-co svg{width:54px;height:54px;color:var(--amb,#edc27a)}
+.vp-co-t{font-stretch:68%;font-weight:800;font-size:22px;line-height:1.1}
+.vp-co-s{font-size:13.5px;color:rgba(241,236,228,.72);max-width:300px;line-height:1.45}
+@media (max-height:520px){.vp-co{padding-top:64px;gap:6px}.vp-co svg{width:34px;height:34px}.vp-co-s{display:none}}
 #vp.carga .vp-bot,#vp.err .vp-bot{visibility:hidden}
 @media (max-height:420px){.vp-t{font-size:19px}.vp-pp{width:64px;height:64px}.vp-sk{width:50px;height:50px}}
 .vp-abierto .toast{z-index:62}
@@ -18793,10 +18805,12 @@ button:focus-visible,input:focus-visible,.card .ph:focus-visible{outline:2px sol
  <div id="vp-dim"></div>
  <div class="vp-gi" id="vp-gi"><div class="vp-gi-ic" id="vp-gi-ic"></div><div class="vp-gi-bar"><i id="vp-gi-f"></i><b id="vp-gi-100"></b></div><div class="vp-gi-n" id="vp-gi-n"></div></div>
  <div class="vp-load" id="vp-load"><span class="spin"></span><div class="vp-msg" id="vp-msg"></div></div>
+ <div class="vp-co" id="vp-co"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4"/><path d="M3 20h.01" stroke-width="3"/></svg><div class="vp-co-t" id="vp-co-t">En la tele</div><div class="vp-co-s" id="vp-co-s">Estos mandos la controlan. Para volver a verlo aquí, toca el icono de arriba.</div></div>
  <div class="vp-ui">
   <div class="vp-top">
    <button class="vp-x" onclick="mwBack('vp')" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg></button>
    <div class="vp-tt"><div class="vp-t" id="vp-t"></div><div class="vp-q"><span id="vp-q"></span><span class="vp-fin" id="vp-fin"></span></div></div>
+   <button class="vp-x vp-cast" id="vp-cast" hidden onclick="vpCast()" aria-label="Enviar a la tele"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4"/><path d="M3 20h.01" stroke-width="3"/></svg></button>
   </div>
   <div class="vp-mid">
    <button class="vp-sk" onclick="vpSalta(-10)" aria-label="Atrás 10 segundos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4.5 12a7.5 7.5 0 1 0 2.3-5.4"/><path d="M6.6 2.8v4h4"/><text x="12" y="15.6" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg></button>
@@ -21853,7 +21867,7 @@ function vpGira(){try{screen.orientation.lock('landscape').catch(function(){})}c
 function vpLid(){var h='';try{var a=new Uint8Array(8);crypto.getRandomValues(a);for(var i=0;i<8;i++)h+=('0'+a[i].toString(16)).slice(-2)}catch(e){}
  while(h.length<16)h+=Math.floor(Math.random()*16).toString(16);return h.slice(0,16)}
 function vpLatido(fin){if(!VP.lid||(!fin&&!VP.ok))return;if(fin&&!VP.latIni)return;
- var v=$('vp-v'),o={id:VP.lid,t:VP.tit,srv:VP.srv,pos:Math.floor(v.currentTime||0),dur:Math.floor(VP.dur||0),pausa:!!v.paused};
+ var v=$('vp-v'),c=vpCastOn(),o={id:VP.lid,t:VP.tit,srv:(VP.srv+(c?' '+CST.tipo:'')).slice(0,20),pos:Math.floor(c?CST.t:(v.currentTime||0)),dur:Math.floor(VP.dur||0),pausa:c?!!CST.pausa:!!v.paused};
  if(fin)o.fin=1;else if(!VP.latIni){o.ini=1;VP.latIni=1}
  VP.latT=Date.now();VP.latP=o.pausa;var b=JSON.stringify(o);
  try{if(fin&&navigator.sendBeacon&&navigator.sendBeacon('/vp/latido',new Blob([b],{type:'application/json'})))return}catch(e){}
@@ -21864,7 +21878,7 @@ function vpCarga(emb,nom,fallo){var id=VP.id;VP.srv=nom||'';vpMsg('Conectando co
    if(!(d&&d.ok&&d.play))return fallo((d&&d.error)||'no');
    vpHlsJs(function(){if(id===VP.id&&VP.on)vpEmpieza(d.play,fallo)})})
   .catch(function(){if(id===VP.id&&VP.on)fallo('red')})}
-function vpEmpieza(src,fallo){var v=$('vp-v'),id=VP.id,rec=0,acabado=0;vpSuelta();VP.ok=0;
+function vpEmpieza(src,fallo){var v=$('vp-v'),id=VP.id,rec=0,acabado=0;vpSuelta();VP.ok=0;VP.src=src;vpCastPrepara();
  var nat=!!(v.canPlayType&&v.canPlayType('application/vnd.apple.mpegurl'));
  var conHls=!!(window.Hls&&Hls.isSupported())&&!(nat&&vpEsApple());
  var mal=function(por){if(acabado||id!==VP.id)return;acabado=1;clearTimeout(VP.startT);vpGuarda();vpSuelta();fallo(por)};
@@ -21885,10 +21899,77 @@ function vpEmpieza(src,fallo){var v=$('vp-v'),id=VP.id,rec=0,acabado=0;vpSuelta(
  var pp=v.play();if(pp&&pp.catch)pp.catch(function(){
   // el navegador no deja empezar solo: que lo empiece la persona con el ▶
   if(id!==VP.id)return;$('vp').classList.remove('carga');$('vp-pp').innerHTML=SVG_PLAY;vpMsg('');$('vp-load').hidden=true;vpUi(1,1)})}
+// ====== (dtbl154) ENVIAR A LA TELE: Chromecast (Android/ordenador) y AirPlay (Apple) ======
+// Israel, 14-11: "un botón para enviar el contenido a Chromecast". La emisión que
+// ve el móvil es una dirección firmada de mw-video (12 h, CORS abierto, cabeceras
+// puestas por el worker): el Chromecast la pide él mismo con el receptor estándar.
+// Powvideo/Streamplay no (marco ajeno y vídeo atado a la IP del móvil).
+// El botón solo aparece si hay una tele con Chromecast en la wifi.
+var CST={on:0,ctx:null,pl:null,ct:null,t:0,d:0,pausa:0,tipo:'Chromecast',sdk:0,nom:''};
+function vpCastOn(){return !!(CST.on&&VP.on)}
+function vpCastPinta(){var b=$('vp-cast');if(!b)return;var ver=false;
+ if(vpEsApple())ver=!!CST.air;
+ else if(CST.ctx){try{ver=CST.ctx.getCastState()!==cast.framework.CastState.NO_DEVICES_AVAILABLE}catch(e){}}
+ b.hidden=!(ver&&VP.on&&VP.src);$('vp').classList.toggle('cast',vpCastOn())}
+// el kit de Google se carga la primera vez que se abre el reproductor (solo Chrome)
+function vpCastPrepara(){var v=$('vp-v');
+ if(vpEsApple()){if(window.WebKitPlaybackTargetAvailabilityEvent&&!CST.airL){CST.airL=1;
+   v.addEventListener('webkitplaybacktargetavailabilitychanged',function(ev){CST.air=ev.availability==='available';vpCastPinta()})}
+  vpCastPinta();return}
+ if(CST.sdk){vpCastPinta();return}CST.sdk=1;
+ if(!/Chrome\//.test(navigator.userAgent||'')||/Edg\/|OPR\//.test(navigator.userAgent||''))return;
+ window.__onGCastApiAvailable=function(ok){if(!ok)return;try{
+  var cx=cast.framework.CastContext.getInstance();
+  cx.setOptions({receiverApplicationId:chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,autoJoinPolicy:chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED});
+  CST.ctx=cx;CST.pl=new cast.framework.RemotePlayer();CST.ct=new cast.framework.RemotePlayerController(CST.pl);
+  cx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED,vpCastPinta);
+  CST.ct.addEventListener(cast.framework.RemotePlayerEventType.ANY_CHANGE,vpCastCambia);
+  vpCastPinta()}catch(e){}};
+ var sc=document.createElement('script');sc.async=true;
+ sc.src='https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';document.head.appendChild(sc)}
+function vpCastCambia(ev){var pl=CST.pl;if(!pl)return;
+ if(ev&&ev.field==='isConnected'&&!pl.isConnected){if(CST.on)vpCastFin();return}
+ if(!CST.on)return;
+ if(isFinite(pl.currentTime)&&pl.currentTime>0)CST.t=pl.currentTime;
+ if(pl.duration>0)CST.d=VP.dur=pl.duration;CST.pausa=!!pl.isPaused;
+ if(VP.on&&!VP.drag){vpPinta(CST.t,VP.dur,CST.t);
+  $('vp-pp').innerHTML=CST.pausa?SVG_PLAY:SVG_PAUSE;$('vp-pp').setAttribute('aria-label',CST.pausa?'Reproducir':'Pausa')}
+ if(ev&&ev.field==='isPaused')vpLatido();
+ if(ev&&ev.field==='playerState'&&pl.playerState==='IDLE'&&CST.d&&CST.t>CST.d-5)vpGuarda(1)}
+// el botón: elegir la tele y mandarle por donde iba; si ya está enviando, volver al móvil
+function vpCast(){var v=$('vp-v');
+ if(vpEsApple()){try{v.webkitShowPlaybackTargetPicker()}catch(e){}return}
+ if(!CST.ctx||!VP.src)return;
+ if(CST.on){try{CST.ctx.endCurrentSession(true)}catch(e){vpCastFin()}return}
+ if(CST.ctx.getCurrentSession())return vpCastCarga();          // ya conectada (otro capítulo): directo
+ CST.ctx.requestSession().then(function(){vpCastCarga()},function(e){if(e&&e!=='cancel'&&e.code!=='cancel')toast('No se pudo conectar con la tele',3500)})}
+function vpCastCarga(){var v=$('vp-v'),ses=CST.ctx&&CST.ctx.getCurrentSession();if(!ses||!VP.src)return;
+ var mi=new chrome.cast.media.MediaInfo(VP.src,'application/x-mpegurl');
+ mi.streamType=chrome.cast.media.StreamType.BUFFERED;
+ // trozos fMP4 o TS (hls.js lo sabe por la lista que ya leyó)
+ try{var lv=VP.hls&&VP.hls.levels&&VP.hls.levels[Math.max(0,VP.hls.currentLevel)],fr0=lv&&lv.details&&lv.details.fragments&&lv.details.fragments[0];
+  if(fr0&&fr0.initSegment){mi.hlsSegmentFormat=chrome.cast.media.HlsSegmentFormat.FMP4;mi.hlsVideoSegmentFormat=chrome.cast.media.HlsVideoSegmentFormat.FMP4}
+  else{mi.hlsSegmentFormat=chrome.cast.media.HlsSegmentFormat.TS;mi.hlsVideoSegmentFormat=chrome.cast.media.HlsVideoSegmentFormat.MPEG2_TS}}catch(e){}
+ var md=new chrome.cast.media.GenericMediaMetadata();md.title=VP.tit||'MejorWolf';md.subtitle='MejorWolf';mi.metadata=md;
+ var rq=new chrome.cast.media.LoadRequest(mi);rq.autoplay=true;rq.currentTime=Math.max(0,(v.currentTime||0)-2);
+ CST.t=rq.currentTime;CST.d=VP.dur;CST.pausa=0;
+ var nom='';try{nom=ses.getCastDevice().friendlyName||''}catch(e){}CST.nom=nom;
+ $('vp-co-t').textContent=nom?'En '+nom:'En la tele';$('vp-co-s').textContent='Estos mandos la controlan. Para volver a verlo aquí, toca el icono de arriba.';
+ vpMsg('');$('vp-load').hidden=true;
+ ses.loadMedia(rq).then(function(){if(!VP.on)return;CST.on=1;try{v.pause()}catch(e){}vpSueno(0);
+   vpCastPinta();vpUi(1,1);vpLatido();toast('📺 '+(nom?'En '+nom:'En la tele'),2500)},
+  function(e){CST.on=0;vpCastPinta();toast('La tele no pudo abrir este servidor: prueba otro',4500);try{CST.ctx.endCurrentSession(true)}catch(x){}})}
+function vpCastPP(){try{CST.ct.playOrPause()}catch(e){}vpUi(1,1)}
+function vpCastIr(t){if(!CST.pl)return;t=Math.max(0,Math.min((CST.d||VP.dur||t+1)-1,t));CST.t=t;
+ try{CST.pl.currentTime=t;CST.ct.seek()}catch(e){}vpPinta(t,VP.dur,0);vpUi(1,1)}
+// se acabó el envío (desde el botón o desde la tele): el móvil sigue por donde iba la tele
+function vpCastFin(){var t=CST.t;CST.on=0;vpCastPinta();if(!VP.on)return;var v=$('vp-v');
+ try{if(t>0)v.currentTime=t;var p=v.play();if(p&&p.catch)p.catch(function(){})}catch(e){}vpUi(1)}
+function vpCastSuelta(){CST.on=0;$('vp').classList.remove('cast');var b=$('vp-cast');if(b)b.hidden=true}
 function vpSuelta(){var v=$('vp-v');clearTimeout(VP.startT);
  if(VP.hls){try{VP.hls.destroy()}catch(e){}VP.hls=null}
  try{v.onerror=null;v.pause();v.removeAttribute('src');v.load()}catch(e){}}
-function vpCierraYa(){vpLatido(1);VP.lid='';VP.on=0;VP.id++;vpGuarda();vpSuelta();VP.ok=0;
+function vpCierraYa(){vpLatido(1);VP.lid='';VP.on=0;VP.id++;vpGuarda();vpSuelta();VP.ok=0;vpCastSuelta();
  try{if(VP.ac&&VP.ac.state==='running')VP.ac.suspend()}catch(x){}
  var e=$('vp');e.classList.remove('on','ui','carga','err');document.body.classList.remove('vp-abierto');
  try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(function(){})
@@ -21897,7 +21978,7 @@ function vpCierraYa(){vpLatido(1);VP.lid='';VP.on=0;VP.id++;vpGuarda();vpSuelta(
  vpSueno(0)}
 // --- por dónde iba (en este aparato): al volver a abrirlo sigue ahí -----------
 function vpPosLee(){try{return JSON.parse(localStorage.getItem('mw_vppos')||'{}')||{}}catch(e){return {}}}
-function vpGuarda(fin){if(!VP.k||!VP.ok)return;var v=$('vp-v'),t=v.currentTime||0,d=v.duration||0;
+function vpGuarda(fin){if(!VP.k||!VP.ok)return;var v=$('vp-v'),t=vpCastOn()?CST.t:(v.currentTime||0),d=vpCastOn()?(CST.d||VP.dur):(v.duration||0);
  try{var o=vpPosLee();
   if(fin||(d&&t>d-120)||t<30)delete o[VP.k];else o[VP.k]={t:Math.floor(t),d:Math.floor(d),w:Date.now()};
   var ks=Object.keys(o).sort(function(a,b){return o[b].w-o[a].w});ks.slice(80).forEach(function(k){delete o[k]});
@@ -21910,10 +21991,10 @@ function vpSueno(si){try{if(si&&!VP.wl&&navigator.wakeLock)navigator.wakeLock.re
 // --- los mandos: aparecen al tocar y se van solos ------------------------------
 function vpUi(si,fijo){var e=$('vp');clearTimeout(VP.hideT);e.classList.toggle('ui',!!si);
  if(si&&!fijo)VP.hideT=setTimeout(function(){var v=$('vp-v');if(!v.paused&&!VP.drag&&VP.ok)e.classList.remove('ui')},3200)}
-function vpPP(){var v=$('vp-v');if(!VP.ok&&!v.src&&!VP.hls)return;
+function vpPP(){var v=$('vp-v');if(vpCastOn())return vpCastPP();if(!VP.ok&&!v.src&&!VP.hls)return;
  try{if(VP.gn&&VP.ac&&VP.ac.state!=='running')VP.ac.resume()}catch(x){}
  if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){})}else v.pause();vpUi(1)}
-function vpSalta(s){var v=$('vp-v');if(!VP.ok||!v.duration)return;
+function vpSalta(s){var v=$('vp-v');if(vpCastOn())return vpCastIr(CST.t+s);if(!VP.ok||!v.duration)return;
  v.currentTime=Math.max(0,Math.min(v.duration-1,(v.currentTime||0)+s));vpUi(1)}
 function vpPantalla(){var e=$('vp'),v=$('vp-v');
  try{if(document.fullscreenElement||document.webkitFullscreenElement){(document.exitFullscreen||document.webkitExitFullscreen).call(document);return}
@@ -21979,7 +22060,7 @@ function vpBuf(v){var b=0,t=v.currentTime||0;try{for(var i=0;i<v.buffered.length
   try{bar.setPointerCapture(ev.pointerId)}catch(x){}mueve(ev.clientX);clearTimeout(VP.hideT);ev.preventDefault()});
  bar.addEventListener('pointermove',function(ev){if(VP.drag)mueve(ev.clientX)});
  var suelta=function(ev){if(!VP.drag)return;VP.drag=0;bar.classList.remove('drag');
-  var f=fr(ev.clientX);try{v.currentTime=f*VP.dur}catch(x){}vpUi(1)};
+  var f=fr(ev.clientX);if(vpCastOn()){vpCastIr(f*VP.dur);vpUi(1);return}try{v.currentTime=f*VP.dur}catch(x){}vpUi(1)};
  bar.addEventListener('pointerup',suelta);bar.addEventListener('pointercancel',function(){VP.drag=0;bar.classList.remove('drag');vpUi(1)});
  // teclado (ordenador): espacio, flechas
  document.addEventListener('keydown',function(ev){if(!VP.on||!VP.ok)return;
